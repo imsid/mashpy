@@ -38,6 +38,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Packaging artifacts
+*.egg-info/
+
 # Logs and local databases
 *.log
 *.sqlite3
@@ -46,6 +49,7 @@ dmypy.json
 .DS_Store
 
 # uv build artifacts
+.tmp/
 .uv/
 
 # Frontend (Next.js) build and config files

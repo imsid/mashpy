@@ -1,4 +1,0 @@
-apps
-mash
-mashnet
-servers
