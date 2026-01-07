@@ -1,0 +1,1 @@
+"""MashPy application package."""

@@ -1,0 +1,6 @@
+mcp>=0.1.0
+openai>=1.57.4
+requests>=2.31.0
+
+[:python_version < "3.11"]
+tomli>=2.0.1

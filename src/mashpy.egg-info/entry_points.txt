@@ -1,0 +1,6 @@
+[console_scripts]
+github-mcp = servers.github_mcp.server:main
+linear-mcp = servers.linear_mcp.server:main
+plog = plog.cli:main
+plog-app = apps.plog.cli:main
+pocket-app = apps.pocket.cli:main

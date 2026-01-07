@@ -1,0 +1,29 @@
+[project]
+name = "mashpy"
+version = "0.1.0"
+description = "Agentic CLI tooling for Model Context Protocol (MCP) servers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Proprietary"}
+authors = [{ name = "MashPy" }]
+
+dependencies = [
+  "mcp>=0.1.0",
+  "openai>=1.57.4",
+  "requests>=2.31.0",
+  "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[project.scripts]
+plog = "plog.cli:main"
+github-mcp = "servers.github_mcp.server:main"
+linear-mcp = "servers.linear_mcp.server:main"
+plog-app = "apps.plog.cli:main"
+pocket-app = "apps.pocket.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
