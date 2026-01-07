@@ -1,6 +1,6 @@
 # mashpy
 
-CLI tooling for building workflows on top of Model Context Protocol (MCP) servers.
+CLI apps for building workflows on top of Model Context Protocol (MCP) servers.
 
 ## What's in the repo
 
