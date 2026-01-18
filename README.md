@@ -1,14 +1,19 @@
 # mashpy
 
-CLI apps for building workflows on top of Model Context Protocol (MCP) servers.
+MashPy is a set of CLI apps and libraries for building workflows on top of
+Model Context Protocol (MCP) servers. It is split into three layers:
 
-## What's in the repo
+- `src/mash/` provides the CLI framework and optional agent runtime.
+- `src/mashnet/` provides the MCP client/host that talks to servers.
+- `src/apps/` ships example CLIs built on top of `mash`.
 
-- `mash/` – a reusable CLI framework that wires up REPL commands, renderer/logging helpers, on-disk memory, and safe wrappers for listing/using MCP resources.
-- `mashnet/` – a thin HTTP MCP client/host stack that speaks the official initialize → notifications/initialized → shutdown handshake, streams events, and proxies sampling/elicitation requests.
-- `apps/pocket` – ships the `pocket-app` CLI that connects to the hosted Pocket MCP server.
-- `apps/plog` – ships the `plog-app` CLI that talks to GitHub's remote MCP endpoint using a PAT read from `.env`.
-- `servers/github_mcp` + `servers/linear_mcp` – reference MCP servers for GitHub and Linear data.
+## How the pieces connect
+
+`apps/<app>` subclasses `mash.Mash`, which wires up the REPL, commands,
+memory, and optional agent mode. `Mash` uses `mashnet.Host` to maintain
+MCP server connections and surface tools/resources. In agent mode, `mash`
+turns those tools (plus local commands and memory helpers) into a tool
+catalog for the LLM to orchestrate.
 
 ## Quick start
 
@@ -18,46 +23,44 @@ CLI apps for building workflows on top of Model Context Protocol (MCP) servers.
 4. Launch the Pocket CLI: `uv run pocket-app`.
 5. Launch the GitHub CLI: set `GITHUB_MCP_PAT` in `.env`, then `uv run plog-app`.
 
-Both CLIs connect to their configured servers automatically and provide a REPL with the core commands:
+Both CLIs connect to their configured servers automatically and provide
+the shared command set:
 
-- `/help` – list available commands.
-- `/list [server]` – show resources, resource templates, and tools for every connection or a specific server.
-- `/execute <server> <tool>` – call a tool, prompting for any required arguments.
-- `/exit` – close the session.
+- `/help` - list available commands.
+- `/list [server]` - show resources, templates, and tools.
+- `/execute <server> <tool>` - call a tool, prompting for arguments.
+- `/exit` - close the session.
 
-## Mash framework overview
+## Agent mode (optional)
 
-`Mash` is the base class powering every CLI in `src/apps`. It provides:
+Agent mode is enabled per app by passing an `AgentConfig` into `Mash`.
+The runtime uses Anthropic's client for LLM calls and supports tool search,
+token usage telemetry, and tracing.
 
-- **Connection management** – reads server configs (URL, headers, descriptions) and establishes shared MCP clients via `mashnet.Host`.
-- **Command bus + REPL** – registers built-in commands and lets apps add their own via `register_commands`.
-- **Renderer + structured logging** – consistent console output plus a JSON log sink for tracing.
-- **Memory** – opt-in SQLite working memory, helpful for future features like recalling server interactions.
-- **Safety helpers** – `safe_list_resources`, `safe_list_resource_templates`, `safe_list_tools`, and `collect_tool_arguments` abstract the MCP JSON-RPC calls and validation logic.
+Minimal example:
 
-Because `/list` and `/execute` now live in the base class, most apps only need to declare their server list and optional custom commands.
+```python
+from mash import AgentConfig, Mash
 
-## Spinning up a new Mash app
+class MyApp(Mash):
+    def __init__(self, **kwargs):
+        super().__init__(
+            "My App",
+            servers=MY_SERVERS,
+            agent_config=AgentConfig(
+                app_id="myapp",
+                system_prompt="You are a helpful MCP assistant.",
+                mode="hybrid",
+            ),
+            **kwargs,
+        )
+```
 
-1. **Create the package** under `src/apps/<name>/`.
-2. **Define servers** – provide a list of dicts containing at least `name` and `url`. Include headers if the MCP server requires authentication (see `apps/plog/cli.py` for the GitHub example).
-3. **Subclass `Mash`**:
-   ```python
-   class MyAppCLI(Mash):
-       def __init__(self, **kwargs):
-           super().__init__("My App", servers=MY_SERVERS, **kwargs)
+To use agent mode, install the Anthropic SDK and configure credentials:
+`pip install anthropic` and `ANTHROPIC_API_KEY=...`.
 
-       def register_commands(self, command_bus: CommandBus) -> None:
-           # optional: add custom commands or rely on the defaults
-           command_bus.register(Command(name="ping", help="...", handler=self._cmd_ping)))
-   ```
-4. **Expose an entry point** – add `my-app = "apps.myapp.cli:main"` to `[project.scripts]` in `pyproject.toml`.
-5. **Run it** – `uv run my-app` (or reinstall the package so the console script is available globally).
+## Module docs
 
-`Mash` handles the rest: log files per app, memory persistence, host/client lifecycle, and the shared command set.
-
-## Notes
-
-- MCP servers must be reachable over HTTP/S. The CLIs never spawn or manage them directly.
-- Sampling requests are fulfilled through `mashnet.Host`, which currently proxies to OpenAI (configure `src/plog/.env` with the appropriate keys).
-- Logs for the mashnet client/host are stored next to their modules (`src/mashnet/client.log`, `src/mashnet/host.log`) for easier debugging.
+- `src/mash/README.md` - CLI framework + agent runtime details.
+- `src/mashnet/README.md` - MCP client/host details.
+- `src/apps/README.md` - App layout and how to add new CLIs.

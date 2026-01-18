@@ -8,6 +8,7 @@ license = {text = "Proprietary"}
 authors = [{ name = "MashPy" }]
 
 dependencies = [
+  "anthropic>=0.39.0",
   "mcp>=0.1.0",
   "openai>=1.57.4",
   "requests>=2.31.0",
