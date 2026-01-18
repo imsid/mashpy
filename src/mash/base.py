@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,12 +13,16 @@ from typing import Any, Dict, List, Optional, Union
 
 from mashnet import Host, MCPClientError
 
+from .agent import AgentConfig, AgentRuntime
 from .commands import Command, CommandBus
 from .context import CLIContext
-from .logging import JsonLogger
+from .logging import DebugEvent, EventLogger
 from .memory import SqliteMemory
 from .render import PlainRenderer
 from .repl import Repl
+from .router import CommandRouter
+from .tools import ToolRegistry, ToolSpec, normalize_tool_name
+from .telemetry import TelemetryCollector
 
 
 @dataclass
@@ -38,32 +43,60 @@ class Mash(ABC):
         servers: List[Dict[str, str]],
         memory_path: Optional[Union[str, Path]] = None,
         log_path: Optional[Union[str, Path]] = None,
+        agent_config: Optional[AgentConfig] = None,
     ) -> None:
         """Initialize shared infrastructure."""
 
         self.app_name = app_name
         self.host = Host()
-        self.logger = JsonLogger(app_name, log_path or self._default_log_path(app_name))
+        self.logger = EventLogger(log_path or self._default_log_path(app_name))
         self.renderer = PlainRenderer()
         self.memory = SqliteMemory(memory_path or self._default_memory_path(app_name))
+        self.agent_config = agent_config
+        self._agent_runtime: Optional[AgentRuntime] = None
+        self._tool_registry: Optional[ToolRegistry] = None
+        self._telemetry: Optional[TelemetryCollector] = None
         self._connections: List[Connection] = []
         self._connect_servers(servers)
 
     def run(self) -> None:
         """Start the interactive session."""
 
-        command_bus = CommandBus()
+        session_id = str(uuid.uuid4())
+        command_bus = CommandBus(event_logger=self.logger)
         self._register_base_commands(command_bus)
         self.register_commands(command_bus)
+        if self._agent_enabled():
+            self._register_agent_commands(command_bus)
+
         ctx = CLIContext(
             app_name=self.app_name,
             host=self.host,
             memory=self.memory,
             renderer=self.renderer,
-            logger=self.logger,
+            session_id=session_id,
         )
+        router = None
+        if self._agent_enabled():
+            agent_config = self._ensure_agent_config()
+            self._tool_registry = self._build_tool_registry(ctx)
+            self._telemetry = TelemetryCollector()
+            self._agent_runtime = AgentRuntime(
+                agent_config,
+                self._tool_registry,
+                self.memory,
+                telemetry=self._telemetry,
+                event_logger=self.logger,
+            )
+            ctx.agent_trace_id = self._agent_runtime.start_session(session_id)
+            ctx.agent = self._agent_runtime
+            router = CommandRouter(
+                command_bus,
+                agent=self._agent_runtime,
+                event_logger=self.logger,
+            )
         try:
-            Repl.run(ctx, command_bus)
+            Repl.run(ctx, command_bus, router=router)
         finally:
             self.host.close()
 
@@ -119,6 +152,24 @@ class Mash(ABC):
             )
         )
 
+    def _register_agent_commands(self, command_bus: CommandBus) -> None:
+        def usage_handler(ctx: CLIContext, _args: list[str]) -> None:
+            if ctx.agent is None:
+                ctx.renderer.warn("Usage telemetry unavailable.")
+                return
+            totals = ctx.agent.telemetry.session_total(ctx.session_id)
+            ctx.renderer.info(
+                f"Token usage: input={totals.input_tokens} output={totals.output_tokens} total={totals.total_tokens}"
+            )
+
+        command_bus.register(
+            Command(
+                name="usage",
+                help="Show token usage for this session.",
+                handler=usage_handler,
+            )
+        )
+
     @staticmethod
     def _default_memory_path(app_name: str) -> str:
         """Return a deterministic memory file path."""
@@ -160,7 +211,10 @@ class Mash(ABC):
                 continue
             url = entry.get("url")
             if not isinstance(url, str) or not url.strip():
-                self.logger.warn("invalid server config missing url", entry=entry)
+                self._emit_debug(
+                    "server.config.invalid",
+                    {"entry": entry, "reason": "missing_url"},
+                )
                 continue
             name = str(entry.get("name") or url).strip() or url
             self.renderer.info(f"Connecting to {name} ...")
@@ -169,8 +223,9 @@ class Mash(ABC):
                 client = self.host.get_client(url, name, headers=headers)
             except MCPClientError as exc:
                 self.renderer.error(f"Failed to connect to {name}: {exc}")
-                self.logger.error(
-                    "server connection failed", server=name, url=url, error=str(exc)
+                self._emit_debug(
+                    "server.connect.error",
+                    {"server": name, "url": url, "error": str(exc)},
                 )
                 continue
             connection = Connection(name=name, url=url, client=client)
@@ -227,6 +282,15 @@ class Mash(ABC):
             ctx.renderer.warn(f"Failed to list tools for {connection.name}: {exc}")
             return []
 
+    def _emit_debug(self, event_type: str, payload: Dict[str, Any]) -> None:
+        event = DebugEvent(
+            event_type=event_type,
+            app_id=self.app_name,
+            session_id=None,
+            payload=payload,
+        )
+        self.logger.emit(event)
+
     # ------------------------------------------------------------------
     # Default command handlers
     # ------------------------------------------------------------------
@@ -275,6 +339,58 @@ class Mash(ABC):
                     name = tool.get("name", f"tool_{idx}")
                     desc = tool.get("description", "")
                     ctx.renderer.info(f"  [t{idx}] {name} - {desc}")
+
+    def _build_tool_registry(self, ctx: CLIContext) -> ToolRegistry:
+        registry = ToolRegistry()
+
+        for connection in self._connections:
+            tools = self.safe_list_tools(ctx, connection)
+            for tool in tools:
+                name = str(tool.get("name") or "").strip()
+                if not name:
+                    continue
+                safe_tool = normalize_tool_name(name)
+                tool_name = f"mcp_{normalize_tool_name(connection.name)}_{safe_tool}"
+                desc = str(tool.get("description") or "")
+                input_schema = tool.get("inputSchema")
+                if not isinstance(input_schema, dict):
+                    input_schema = {"type": "object", "properties": {}}
+
+                def _invoke(
+                    args: Dict[str, Any],
+                    _ctx: Optional[CLIContext],
+                    *,
+                    _client=connection.client,
+                    _tool=name,
+                ) -> Any:
+                    return _client.call_tool(_tool, args or {})
+
+                registry.register(
+                    ToolSpec(
+                        name=tool_name,
+                        description=desc or f"MCP tool {name}",
+                        input_schema=input_schema,
+                        source="mcp",
+                        tags={normalize_tool_name(connection.name)},
+                        metadata={
+                            "server": connection.name,
+                            "tool": name,
+                            "tool_alias": safe_tool,
+                        },
+                        invoke=_invoke,
+                    )
+                )
+        return registry
+
+    def _agent_enabled(self) -> bool:
+        return self.agent_config is not None
+
+    def _ensure_agent_config(self) -> AgentConfig:
+        if self.agent_config is None:
+            raise RuntimeError("Agent config is required for agent mode.")
+        if not self.agent_config.app_id:
+            self.agent_config.app_id = self.app_name
+        return self.agent_config
 
     def _cmd_execute(self, ctx: CLIContext, args: List[str]) -> None:
         if len(args) < 2:

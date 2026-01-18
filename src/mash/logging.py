@@ -1,79 +1,74 @@
-"""Structured logging helpers for the CLI framework."""
+"""Structured event logging helpers for the CLI framework."""
 
 from __future__ import annotations
 
 import json
-import sys
-from datetime import datetime, timezone
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol, Union
+from typing import Any, Dict, Optional, Union
 
 
-class Logger(Protocol):
-    """Protocol describing the logger interface."""
+@dataclass(frozen=True)
+class LogEvent:
+    """Base event written to the log destination."""
 
-    def debug(self, msg: str, **extra: Any) -> None:
-        """Emit a debug-level log entry."""
+    event_type: str
+    app_id: str
+    session_id: Optional[str]
+    payload: Dict[str, Any] = field(default_factory=dict)
+    ts: float = field(default_factory=time.time)
 
-    def info(self, msg: str, **extra: Any) -> None:
-        """Emit an info-level log entry."""
-
-    def warn(self, msg: str, **extra: Any) -> None:
-        """Emit a warning-level log entry."""
-
-    def error(self, msg: str, **extra: Any) -> None:
-        """Emit an error-level log entry."""
-
-
-class JsonLogger(Logger):
-    """Very small JSON logger that prints one line per entry."""
-
-    def __init__(
-        self,
-        app_name: str,
-        log_path: Optional[Union[str, Path]] = None,
-    ) -> None:
-        self._app = app_name
-        self._log_path = Path(log_path).expanduser() if log_path else None
-        if self._log_path:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def debug(self, msg: str, **extra: Any) -> None:
-        """Emit a debug log."""
-
-        self._log("debug", msg, extra)
-
-    def info(self, msg: str, **extra: Any) -> None:
-        """Emit an info log."""
-
-        self._log("info", msg, extra)
-
-    def warn(self, msg: str, **extra: Any) -> None:
-        """Emit a warning log."""
-
-        self._log("warn", msg, extra)
-
-    def error(self, msg: str, **extra: Any) -> None:
-        """Emit an error log."""
-
-        self._log("error", msg, extra)
-
-    def _log(
-        self, level: str, msg: str, extra: Optional[Dict[str, Any]]
-    ) -> None:
-        """Write a JSON line to stderr or a log file."""
-
-        payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "logger": self._app,
-            "level": level,
-            "msg": msg,
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event_type": self.event_type,
+            "ts": self.ts,
+            "app_id": self.app_id,
+            "session_id": self.session_id,
+            "event_class": type(self).__name__,
+            "payload": dict(self.payload),
         }
-        if extra:
-            payload.update(extra)
+
+
+@dataclass(frozen=True)
+class AgentTraceEvent(LogEvent):
+    """Structured event emitted during agent execution."""
+
+    trace_id: Optional[str] = None
+    duration_ms: Optional[int] = None
+    step_id: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = super().to_dict()
+        payload.update(
+            {
+                "trace_id": self.trace_id,
+                "step_id": self.step_id,
+                "duration_ms": self.duration_ms,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True)
+class DebugEvent(LogEvent):
+    """Free-form debug event."""
+
+
+@dataclass(frozen=True)
+class CommandEvent(LogEvent):
+    """Event emitted for command execution lifecycle."""
+
+
+class EventLogger:
+    """Writes log events as JSON lines to a configured destination."""
+
+    def __init__(self, destination: Union[str, Path]) -> None:
+        self._destination = Path(destination).expanduser()
+        self._destination.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(self, event: LogEvent) -> None:
+        payload = event.to_dict()
         line = json.dumps(payload, default=str)
-        if self._log_path:
-            with self._log_path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-        else:
-            print(line, file=sys.stderr)
+        with self._destination.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")

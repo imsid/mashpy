@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from .commands import CommandBus
 from .context import CLIContext
+from .router import CommandRouter
 
 
 class Repl:
     """Blocking slash-command REPL."""
 
     @staticmethod
-    def run(ctx: CLIContext, command_bus: CommandBus) -> None:
+    def run(
+        ctx: CLIContext,
+        command_bus: CommandBus,
+        *,
+        router: CommandRouter | None = None,
+    ) -> None:
         """Run the REPL until the user exits."""
 
         print(f"{ctx.app_name} interactive session. Type /help.")
@@ -24,7 +30,10 @@ class Repl:
             if not stripped:
                 continue
             try:
-                handled = command_bus.try_execute(ctx, stripped)
+                if router is None:
+                    handled = command_bus.try_execute(ctx, stripped)
+                else:
+                    handled = router.route(ctx, stripped)
             except SystemExit:
                 print("Bye.")
                 raise

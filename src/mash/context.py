@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
 
 from mashnet.host import Host
 
-from .logging import Logger
 from .memory import Memory
 from .render import Renderer
+
+if TYPE_CHECKING:
+    from .agent import AgentRuntime
 
 
 @dataclass
@@ -19,4 +22,6 @@ class CLIContext:
     host: Host
     memory: Memory
     renderer: Renderer
-    logger: Logger
+    session_id: str
+    agent_trace_id: Optional[str] = None
+    agent: Optional["AgentRuntime"] = None
