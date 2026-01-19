@@ -6,7 +6,7 @@ from .commands import Command, CommandBus
 from .context import CLIContext
 from .logging import AgentTraceEvent, CommandEvent, DebugEvent, EventLogger, LogEvent
 from .memory import Memory, SqliteMemory
-from .render import PlainRenderer, Renderer
+from .render import Renderer, RichRenderer
 from .repl import Repl
 from .router import CommandRouter
 from .tools import ToolRegistry, ToolSpec
@@ -22,7 +22,7 @@ __all__ = [
     "EventLogger",
     "Memory",
     "SqliteMemory",
-    "PlainRenderer",
+    "RichRenderer",
     "Renderer",
     "Repl",
     "CLIContext",

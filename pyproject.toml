@@ -11,6 +11,8 @@ dependencies = [
   "anthropic>=0.39.0",
   "mcp>=0.1.0",
   "openai>=1.57.4",
+  "prompt_toolkit>=3.0.36",
+  "rich>=13.7.1",
   "requests>=2.31.0",
   "tomli>=2.0.1; python_version < '3.11'",
 ]
@@ -21,6 +23,7 @@ github-mcp = "servers.github_mcp.server:main"
 linear-mcp = "servers.linear_mcp.server:main"
 plog-app = "apps.plog.cli:main"
 pocket-app = "apps.pocket.cli:main"
+codebase-agent = "apps.codebase.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
