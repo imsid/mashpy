@@ -11,7 +11,7 @@ from .memory import Memory
 from .render import Renderer
 
 if TYPE_CHECKING:
-    from .agent import AgentRuntime
+    from .mashd.agent import AgentRuntime
 
 
 @dataclass

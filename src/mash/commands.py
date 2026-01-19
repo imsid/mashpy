@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .context import CLIContext
 from .logging import CommandEvent, EventLogger
-from .tools import ToolResult, ToolSpec, normalize_tool_name
+from .mashd.tools import ToolResult, ToolSpec, normalize_tool_name
 
 CommandHandler = Callable[[CLIContext, List[str]], None]
 

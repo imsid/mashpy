@@ -11,11 +11,13 @@ structured logging + telemetry.
 - `CommandBus` registers slash commands and emits command lifecycle events.
 - `CommandRouter` forwards `/commands` to the bus and routes other input to the
   agent when enabled.
-- `AgentRuntime` orchestrates LLM calls, tool execution, and trace events.
-- `ToolRegistry` merges MCP server tools, command tools, and memory helpers.
+- `AgentRuntime` orchestrates LLM calls, tool execution, and trace events (in
+  `mashd`).
+- `ToolRegistry` merges MCP server tools, command tools, and memory helpers (in
+  `mashd`).
 - `SqliteMemory` stores conversations + preferences in a local SQLite file.
 - `EventLogger` writes JSONL events to a configured destination.
-- `TelemetryCollector` tracks token usage per session.
+- `TelemetryCollector` tracks token usage per session (in `mashd`).
 
 ### Mash base class
 
@@ -105,8 +107,11 @@ It supports:
 - `base.py` - core app wiring + default command handlers.
 - `commands.py` - slash command system + tool export helpers.
 - `router.py` - command/agent routing logic.
-- `agent.py` - agent runtime and Anthropic client wrapper.
-- `tools.py` - tool registry and invocation helpers.
+- `mashd/agent.py` - agent runtime and loop orchestration.
+- `mashd/models.py` - agent runtime dataclasses.
+- `mashd/llm_provider.py` - LLM provider abstraction + Anthropic adapter.
+- `mashd/telemetry.py` - token usage tracking.
+- `mashd/tools.py` - tool registry and invocation helpers.
 - `memory.py` - SQLite memory for conversations + preferences.
 - `logging.py` - event logger + log event types.
-- `telemetry.py` - token usage tracking.
+- `mashd/README.md` - mashd module overview.
