@@ -113,15 +113,16 @@ by default. Configuration:
 The app context describes Pocket tools such as `search`, `concierge`, and
 `company_profile`. Logs are written to `src/apps/pocket/pocket.log`.
 
-### GitHub (`plog-app`)
+### Codebase (`codebase-agent`)
 
-`PlogCLI` connects to GitHub's MCP server using a PAT. Configuration:
+code analysis assistant helping engineers, PMs, and designers understand how product features work by exploring codebases
 
-- `GITHUB_MCP_PAT` - required (set in `.env`).
+- `ANTHROPIC_API_KEY` - required for agent mode.
+- `ANTHROPIC_MODEL` - optional; defaults to `claude-sonnet-4-5-20250929`.
+- `GITHUB_MCP_URL` - optional; defaults to `https://api.githubcopilot.com/mcp/`
+- `GITHUB_MCP_PAT` - required for GitHub repository mode.
 
-Logs are written to `src/apps/plog/plog.log`. Agent mode is not enabled by
-default for this app, but you can add it by passing an `AgentConfig` in a
-subclass.
+Switch between local filesystem repositories and remote Github repositories
 
 ### Creating a new app
 
