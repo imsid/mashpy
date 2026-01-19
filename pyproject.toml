@@ -18,10 +18,6 @@ dependencies = [
 ]
 
 [project.scripts]
-plog = "plog.cli:main"
-github-mcp = "servers.github_mcp.server:main"
-linear-mcp = "servers.linear_mcp.server:main"
-plog-app = "apps.plog.cli:main"
 pocket-app = "apps.pocket.cli:main"
 codebase-agent = "apps.codebase.cli:main"
 
