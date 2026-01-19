@@ -1,23 +1,50 @@
 ## mash
 
-`mash` is the application/middleware layer for building MCP-aware CLIs.
-It provides a REPL, command framework, optional agent runtime, memory, and
-event logging + telemetry.
+`mash` is the application layer for building MCP-aware CLIs. It provides a
+REPL, slash command framework, optional agent runtime, local memory, and
+structured logging + telemetry.
 
 ### Key components
 
-- `Mash` (base class) wires the REPL, default commands, memory, and MCP
+- `Mash` (base class) wires the REPL, default commands, memory, logging, and MCP
   connections together.
-- `CommandBus` registers slash commands and can export them as tools.
-- `AgentRuntime` orchestrates LLM calls, tool execution, and tracing.
-- `ToolRegistry` merges local command tools and MCP server tools.
-- `SqliteMemory` stores conversation + preference state.
-- `EventLogger` writes JSON log events to the configured destination.
-- `AgentTraceEvent` + `TelemetryCollector` capture agent traces and token usage.
+- `CommandBus` registers slash commands and emits command lifecycle events.
+- `CommandRouter` forwards `/commands` to the bus and routes other input to the
+  agent when enabled.
+- `AgentRuntime` orchestrates LLM calls, tool execution, and trace events.
+- `ToolRegistry` merges MCP server tools, command tools, and memory helpers.
+- `SqliteMemory` stores conversations + preferences in a local SQLite file.
+- `EventLogger` writes JSONL events to a configured destination.
+- `TelemetryCollector` tracks token usage per session.
+
+### Mash base class
+
+`Mash` takes an app name and a list of server configs (`name`, `url`, optional
+`headers`). It creates a `Host`, connects to MCP servers, and launches the REPL.
+Default storage/logging artifacts are created in the working directory:
+
+- `.{slug}_memory.sqlite3` - conversation history + preferences.
+- `.{slug}.log` - JSONL event log.
+
+Base commands registered automatically:
+
+- `/help` - list available commands.
+- `/exit` - terminate the session.
+- `/list [server]` - list resources, templates, and tools.
+- `/execute <server> <tool>` - call a tool with prompted arguments.
+
+### Command framework
+
+`CommandBus` normalizes names and aliases, executes handlers, and emits
+`CommandEvent` telemetry. Commands can be exported as tools with
+`Command.to_tool_spec`, which accepts a JSON schema for argument collection.
+
+`CommandRouter` integrates agent mode: if a line is not a slash command, it is
+sent to the `AgentRuntime` (when enabled) and recorded in memory.
 
 ### Agent mode
 
-Agent mode is optional and configured per app:
+Agent mode is opt-in via `AgentConfig`:
 
 ```python
 from mash import AgentConfig, Mash
@@ -30,47 +57,54 @@ class MyApp(Mash):
             agent_config=AgentConfig(
                 app_id="myapp",
                 system_prompt="You are a helpful MCP assistant.",
-                anthropic_api_key="sk-ant-...",
-                mode="hybrid",
+                model="claude-haiku-4-5-20251001",
             ),
             **kwargs,
         )
 ```
 
-Agent modes:
-- `off` - disable agent behavior.
-- `hybrid` - slash commands run normally, other input goes to the agent.
-- `agent` - same as hybrid today, but reserved for future agent-first routing.
+`AgentConfig` fields:
 
-When enabled, the following command is available:
-- `/usage` - show token usage for the current session.
+- `app_id` - namespace for memory + logging.
+- `system_prompt` / `app_context` - prompt scaffolding.
+- `model`, `max_steps`, `max_tokens`, `max_history_messages`.
+- `tool_search_enabled` - enable server-side tool search.
+- `anthropic_api_key` - optional; defaults to `ANTHROPIC_API_KEY` if the SDK uses env.
 
-Tool search uses Claude's server-side tool search (`tool_search_tool_bm25`)
-with deferred tool loading, and requires the `advanced-tool-use-2025-11-20`
-beta flag in the Anthropic client.
+When agent mode is active, `/usage` is registered to show token totals for the
+current session via `TelemetryCollector`.
 
-### Logging
+Tool search uses Claude's server-side tool search (`tool_search_tool_bm25`) with
+deferred tool loading and requires the `advanced-tool-use-2025-11-20` beta flag.
 
-Logs are emitted as JSON event lines to the destination configured by the app.
-Events include `LogEvent`, `AgentTraceEvent`, `CommandEvent`, and `DebugEvent`.
-
-### Tool naming
+### Tool naming and invocation
 
 Tools exposed to the agent follow a predictable naming scheme:
-- Commands: `cmd_<command>`
-- MCP tools: `mcp_<server>_<tool>`
-- Memory helpers: `get_full_conversation`, `get_preferences`, `set_preferences`
-- Tool search: `tool_search_tool_bm25` (server-side tool search)
 
-### Memory isolation
+- MCP tools: `mcp_<server>_<tool>` (normalized with `normalize_tool_name`).
+- Command tools: `cmd_<command>` if you register them manually.
+- Memory helpers: `get_full_conversation`, `get_preferences`, `set_preferences`.
+- Tool search: `tool_search_tool_bm25` when enabled.
 
-`SqliteMemory` stores conversations and preferences scoped by app + session,
-so context stored by one app/session does not bleed into another.
+`/execute` prompts for arguments using the tool's JSON schema when available.
+It supports:
+
+- Standard `properties`/`required` schemas.
+- Alternate schemas embedded under `content.text` containing JSON with
+  `arguments` (used by some MCP servers).
+
+### Memory and logging
+
+- `SqliteMemory` isolates data by `app_id` + `session_id` to prevent leakage
+  across apps or sessions.
+- `EventLogger` writes JSON lines for `LogEvent`, `CommandEvent`, `DebugEvent`,
+  and `AgentTraceEvent` with optional duration + trace metadata.
 
 ### Files
 
-- `base.py` - core wiring for apps.
-- `commands.py` - slash command system.
+- `base.py` - core app wiring + default command handlers.
+- `commands.py` - slash command system + tool export helpers.
+- `router.py` - command/agent routing logic.
 - `agent.py` - agent runtime and Anthropic client wrapper.
 - `tools.py` - tool registry and invocation helpers.
 - `memory.py` - SQLite memory for conversations + preferences.

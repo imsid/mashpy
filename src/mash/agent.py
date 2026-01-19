@@ -129,7 +129,7 @@ class AgentRuntime:
         self._config = config
         self._tool_registry = tool_registry
         self._memory = memory
-        self._telemetry = telemetry or TelemetryCollector()
+        self._telemetry = telemetry
         self._event_logger = event_logger
         self._llm = AnthropicProvider(
             api_key=self._config.anthropic_api_key,

@@ -1,11 +1,38 @@
 ## apps
 
-`apps` contains example CLIs built on top of `mash`.
+`apps` contains example CLIs built on top of `mash`. Each app subclasses
+`mash.Mash`, defines its MCP server configs, and registers any app-specific
+commands.
 
 ### Included apps
 
-- `pocket` - connects to the hosted Pocket MCP server.
-- `plog` - connects to GitHub's MCP server using a PAT from `.env`.
+- `pocket` (`pocket-app`) - connects to the hosted Pocket MCP server and enables
+  agent mode with an Anthropic-backed runtime.
+- `plog` (`plog-app`) - connects to GitHub's MCP server using a PAT from `.env`.
+
+### Running the apps
+
+- Pocket: `uv run pocket-app`
+- GitHub: `uv run plog-app`
+
+### Configuration
+
+#### Pocket (`src/apps/pocket/cli.py`)
+
+- `ANTHROPIC_API_KEY` - required for agent mode.
+- `ANTHROPIC_MODEL` - optional; defaults to `claude-haiku-4-5-20251001`.
+- Logs: `src/apps/pocket/pocket.log` (JSONL events).
+
+The Pocket CLI seeds `AgentConfig.app_context` with guidance about available MCP
+tools (`search`, `concierge`, `company_profile`).
+
+#### GitHub (`src/apps/plog/cli.py`)
+
+- `GITHUB_MCP_PAT` - required (set in `.env`).
+- Logs: `src/apps/plog/plog.log` (JSONL events).
+
+Agent mode is not enabled for `plog` by default. You can add it by passing an
+`AgentConfig` when subclassing `Mash`.
 
 ### Creating a new app
 
@@ -34,5 +61,5 @@ class MyApp(Mash):
         )
 ```
 
-To enable agent mode, pass an `AgentConfig` into `Mash` and install the
-Anthropic SDK as described in the repo README.
+To enable agent mode, pass an `AgentConfig` into `Mash` and ensure the
+`anthropic` dependency is installed.
