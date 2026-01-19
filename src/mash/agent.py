@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import queue
+import subprocess
+import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -17,6 +22,121 @@ from .tools import ToolRegistry, ToolResult, ToolSpec, format_tool_payload
 _TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_bm25_20251119"
 _TOOL_SEARCH_TOOL_NAME = "tool_search_tool_bm25"
 _TOOL_SEARCH_BETAS = ("advanced-tool-use-2025-11-20",)
+_BASH_TOOL_NAME = "bash"
+_BASH_TOOL_TYPE = "bash_20250124"
+
+_BASH_SENTINEL_PREFIX = "__mash_bash_done__"
+_BASH_EXIT_PREFIX = "__mash_bash_exit__"
+_BASH_DEFAULT_TIMEOUT_SECONDS = 30
+_BASH_MAX_OUTPUT_LINES = 100
+
+
+class BashSession:
+    """Persistent bash session used by the Claude bash tool."""
+
+    def __init__(self, working_dir: Optional[str]) -> None:
+        self.working_dir = working_dir
+        self._process: Optional["subprocess.Popen[str]"] = None
+        self._stdout_queue: "queue.Queue[str]" = queue.Queue()
+        self._reader_thread: Optional[threading.Thread] = None
+        self._start_process()
+
+    def _start_process(self) -> None:
+
+        self._process = subprocess.Popen(
+            ["/bin/bash"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=self.working_dir,
+        )
+        self._stdout_queue = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._read_stdout, name="bash-session-reader", daemon=True
+        )
+        self._reader_thread.start()
+
+    def _read_stdout(self) -> None:
+        assert self._process is not None
+        if self._process.stdout is None:
+            return
+        for line in self._process.stdout:
+            self._stdout_queue.put(line)
+
+    def restart(self, working_dir: Optional[str]) -> None:
+        self.shutdown()
+        self.working_dir = working_dir
+        self._start_process()
+
+    def shutdown(self) -> None:
+        if self._process is None:
+            return
+        try:
+            self._process.terminate()
+            self._process.wait(timeout=2)
+        except Exception:
+            try:
+                self._process.kill()
+            except Exception:
+                pass
+        self._process = None
+
+    def execute_command(self, command: str, timeout: int) -> tuple[str, int]:
+        if self._process is None or self._process.stdin is None:
+            raise RuntimeError("Bash session is not running.")
+        token = uuid.uuid4().hex
+        sentinel = f"{_BASH_SENTINEL_PREFIX}{token}"
+        exit_marker = f"{_BASH_EXIT_PREFIX}{token}"
+        payload = f"{command}\n" f'echo "{exit_marker}$?"\n' f'echo "{sentinel}"\n'
+        self._process.stdin.write(payload)
+        self._process.stdin.flush()
+        output_lines, exit_code, total_lines = self._read_until_sentinel(
+            sentinel, exit_marker, timeout
+        )
+        output_text = self._truncate_output(output_lines, total_lines)
+        return output_text, exit_code
+
+    def _read_until_sentinel(
+        self,
+        sentinel: str,
+        exit_marker: str,
+        timeout: int,
+    ) -> tuple[List[str], int, int]:
+        lines: List[str] = []
+        exit_code: int = 0
+        start = time.time()
+        total_lines = 0
+        while True:
+            remaining = timeout - int(time.time() - start)
+            if remaining <= 0:
+                raise TimeoutError("command timed out")
+            try:
+                line = self._stdout_queue.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError("command timed out") from exc
+            stripped = line.rstrip("\n")
+            if stripped.startswith(exit_marker):
+                raw = stripped[len(exit_marker) :].strip()
+                try:
+                    exit_code = int(raw)
+                except ValueError:
+                    exit_code = 0
+                continue
+            if stripped == sentinel:
+                return lines, exit_code, total_lines
+            total_lines += 1
+            if total_lines <= _BASH_MAX_OUTPUT_LINES:
+                lines.append(line.rstrip("\n"))
+
+    def _truncate_output(self, lines: List[str], total_lines: int) -> str:
+        if not lines:
+            return ""
+        if total_lines <= _BASH_MAX_OUTPUT_LINES:
+            return "\n".join(lines)
+        truncated = "\n".join(lines)
+        return f"{truncated}\n\n... Output truncated ({total_lines} total lines) ..."
 
 
 @dataclass
@@ -32,6 +152,8 @@ class AgentConfig:
     max_history_messages: int = 10
     tool_search_enabled: bool = True
     anthropic_api_key: Optional[str] = None
+    use_bash_tool: bool = False
+    bash_working_dir: Optional[str] = None
 
 
 @dataclass
@@ -131,6 +253,8 @@ class AgentRuntime:
         self._memory = memory
         self._telemetry = telemetry
         self._event_logger = event_logger
+        self.use_bash_tool = bool(config.use_bash_tool)
+        self.bash_working_dir = config.bash_working_dir
         self._llm = AnthropicProvider(
             api_key=self._config.anthropic_api_key,
             event_logger=event_logger,
@@ -140,6 +264,7 @@ class AgentRuntime:
         self._tool_defs: List[Dict[str, Any]] = []
         self._tool_betas: List[str] = []
         self._session_id: Optional[str] = None
+        self._bash_session: Optional[BashSession] = None
 
     @property
     def config(self) -> AgentConfig:
@@ -149,25 +274,15 @@ class AgentRuntime:
     def telemetry(self) -> TelemetryCollector:
         return self._telemetry
 
-    def start_session(self, session_id: str) -> str:
-        if self._session_id == session_id and self._system_prompt and self._tool_defs:
-            return f"{session_id}-{int(time.time() * 1000)}"
-        self._session_id = session_id
+    def set_tool_registry(self, tool_registry: ToolRegistry) -> None:
+        """Replace the tool registry used for MCP/tool invocations."""
 
-        for tool in self._memory_tools(session_id):
-            self._tool_registry.register(tool)
-        tool_defs = self._tool_registry.to_anthropic_tools(
-            enable_search=self._config.tool_search_enabled
-        )
-        if self._config.tool_search_enabled:
-            tool_defs.insert(
-                0,
-                {"type": _TOOL_SEARCH_TOOL_TYPE, "name": _TOOL_SEARCH_TOOL_NAME},
-            )
-        self._tool_defs = tool_defs
-        self._tool_betas = (
-            list(_TOOL_SEARCH_BETAS) if self._config.tool_search_enabled else []
-        )
+        self._tool_registry = tool_registry
+
+    def start_session(self, session_id: str) -> str:
+        self._session_id = session_id
+        self.refresh_prompt()
+        self.refresh_tools(session_id)
         return f"{session_id}-{int(time.time() * 1000)}"
 
     def handle_message(
@@ -203,6 +318,8 @@ class AgentRuntime:
                 or last.get("content") != text
             ):
                 messages.append({"role": "user", "content": text})
+        if not self._tool_defs:
+            self.refresh_tools(session_id)
         system_prompt = self._system_prompt
         tool_defs = list(self._tool_defs)
         while step_id < max(1, self._config.max_steps):
@@ -255,6 +372,7 @@ class AgentRuntime:
             messages.append({"role": "assistant", "content": assistant_blocks})
             tool_results: List[Dict[str, Any]] = []
             for call in tool_calls:
+                self._render_step_status(ctx, step_id, call.name, call.arguments)
                 self._emit(
                     "tool.call",
                     session_id,
@@ -262,6 +380,18 @@ class AgentRuntime:
                     step_id,
                     {"tool": call.name, "arguments": call.arguments},
                 )
+                if call.name == _BASH_TOOL_NAME:
+                    payload = self._handle_bash_tool(call.arguments, call.tool_id)
+                    self._emit(
+                        "tool.result",
+                        session_id,
+                        trace_id,
+                        step_id,
+                        {"tool": call.name, "is_error": payload.get("is_error", False)},
+                    )
+                    tool_results.append(payload)
+                    continue
+
                 tool = self._tool_registry.get(call.name)
                 if tool is None:
                     result = ToolResult(
@@ -391,6 +521,115 @@ class AgentRuntime:
             ),
         ]
 
+    def refresh_prompt(self) -> None:
+        """Rebuild the system prompt from the latest config."""
+
+        self._system_prompt = self._build_system_prompt()
+
+    def refresh_tools(self, session_id: str) -> None:
+        """Rebuild tool definitions and beta flags for the current session."""
+
+        for tool in self._memory_tools(session_id):
+            self._tool_registry.register(tool)
+        tool_defs = self._tool_registry.to_anthropic_tools(
+            enable_search=self._config.tool_search_enabled
+        )
+        if self._config.tool_search_enabled:
+            tool_defs.insert(
+                0,
+                {"type": _TOOL_SEARCH_TOOL_TYPE, "name": _TOOL_SEARCH_TOOL_NAME},
+            )
+        if self.use_bash_tool:
+            tool_defs.append({"type": _BASH_TOOL_TYPE, "name": _BASH_TOOL_NAME})
+        else:
+            if self._bash_session is not None:
+                self._bash_session.shutdown()
+                self._bash_session = None
+        self._tool_defs = tool_defs
+        self._tool_betas = (
+            list(_TOOL_SEARCH_BETAS) if self._config.tool_search_enabled else []
+        )
+
+    def _handle_bash_tool(
+        self, args: Dict[str, Any], tool_use_id: str
+    ) -> Dict[str, Any]:
+        if not isinstance(args, dict):
+            args = {}
+        if not self.use_bash_tool:
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": "Bash tool is disabled.",
+                "is_error": True,
+            }
+        if args.get("restart"):
+            self._restart_bash_session()
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": "Bash session restarted",
+                "is_error": False,
+            }
+        command = str(args.get("command") or "")
+        if not command.strip():
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": "bash tool requires a command.",
+                "is_error": True,
+            }
+        ok, reason = _validate_bash_command(command)
+        if not ok:
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": reason or "Command blocked by policy.",
+                "is_error": True,
+            }
+        try:
+            session = self._get_bash_session()
+            output, exit_code = session.execute_command(
+                command, timeout=_BASH_DEFAULT_TIMEOUT_SECONDS
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": output,
+                "is_error": exit_code != 0,
+            }
+        except TimeoutError:
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": (
+                    f"Command timed out after {_BASH_DEFAULT_TIMEOUT_SECONDS} seconds"
+                ),
+                "is_error": True,
+            }
+        except Exception as exc:
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": f"Bash tool error: {exc}",
+                "is_error": True,
+            }
+
+    def _get_bash_session(self) -> BashSession:
+        working_dir = self.bash_working_dir or os.getcwd()
+        if self._bash_session is None:
+            self._bash_session = BashSession(working_dir)
+            return self._bash_session
+        if self._bash_session.working_dir != working_dir:
+            self._bash_session.restart(working_dir)
+        return self._bash_session
+
+    def _restart_bash_session(self) -> None:
+        working_dir = self.bash_working_dir or os.getcwd()
+        if self._bash_session is None:
+            self._bash_session = BashSession(working_dir)
+            return
+        self._bash_session.restart(working_dir)
+
     def _emit(
         self,
         event_type: str,
@@ -413,6 +652,18 @@ class AgentRuntime:
             duration_ms=duration_ms,
         )
         self._event_logger.emit(event)
+
+    def _render_step_status(
+        self,
+        ctx: Optional[CLIContext],
+        step_id: int,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> None:
+        if ctx is None:
+            return
+        args_text = _format_tool_args(arguments)
+        ctx.renderer.info(f"Step {step_id}: calling {tool_name} args={args_text}")
 
 
 def _invoke_tool(
@@ -441,6 +692,31 @@ def _invoke_tool(
         content=format_tool_payload(result),
         raw=result,
     )
+
+
+def _validate_bash_command(command: str) -> tuple[bool, Optional[str]]:
+    dangerous_patterns = [
+        "rm -rf /",
+        "mkfs",
+        ":(){:|:&};:",
+        "shutdown",
+        "reboot",
+        "sudo",
+    ]
+    for pattern in dangerous_patterns:
+        if pattern in command:
+            return False, f"Command contains dangerous pattern: {pattern}"
+    return True, None
+
+
+def _format_tool_args(args: Dict[str, Any], *, max_chars: int = 200) -> str:
+    if not args:
+        return "{}"
+    payload = format_tool_payload(args)
+    compact = " ".join(payload.split())
+    if len(compact) > max_chars:
+        return f"{compact[:max_chars].rstrip()}..."
+    return compact
 
 
 def _build_messages(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

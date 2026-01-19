@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from dotenv import load_dotenv
-
 from mash import AgentConfig, Mash
 from mash.commands import CommandBus
 from mashnet import MCPClientError
+
+from .config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 
 SERVERS: List[Dict[str, str]] = [
     {
@@ -26,9 +25,6 @@ class PocketCLI(Mash):
     """MashPy Pocket CLI that manages MCP server connections."""
 
     def __init__(self, **kwargs: Any) -> None:
-        load_dotenv()
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-        anthropic_model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         kwargs.setdefault("log_path", Path(__file__).resolve().with_name("pocket.log"))
         super().__init__(
             "MashPy Pocket",
@@ -50,8 +46,8 @@ class PocketCLI(Mash):
                     "a domain, including summary, tags, timeline, concierge "
                     "prompts, and available concierge commands."
                 ),
-                anthropic_api_key=anthropic_key,
-                model=anthropic_model,
+                anthropic_api_key=ANTHROPIC_API_KEY,
+                model=ANTHROPIC_MODEL,
             ),
             **kwargs,
         )

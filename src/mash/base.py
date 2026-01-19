@@ -18,7 +18,7 @@ from .commands import Command, CommandBus
 from .context import CLIContext
 from .logging import DebugEvent, EventLogger
 from .memory import SqliteMemory
-from .render import PlainRenderer
+from .render import RichRenderer
 from .repl import Repl
 from .router import CommandRouter
 from .tools import ToolRegistry, ToolSpec, normalize_tool_name
@@ -50,7 +50,7 @@ class Mash(ABC):
         self.app_name = app_name
         self.host = Host()
         self.logger = EventLogger(log_path or self._default_log_path(app_name))
-        self.renderer = PlainRenderer()
+        self.renderer = RichRenderer()
         self.memory = SqliteMemory(memory_path or self._default_memory_path(app_name))
         self.agent_config = agent_config
         self._agent_runtime: Optional[AgentRuntime] = None

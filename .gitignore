@@ -44,6 +44,7 @@ dmypy.json
 # Logs and local databases
 *.log
 *.sqlite3
+.*_history
 
 # macOS
 .DS_Store
