@@ -1,6 +1,7 @@
 """Reusable CLI framework for MCP-based applications."""
 
-from .agent import AgentConfig, AgentRuntime
+from .mashd.agent import AgentRuntime
+from .mashd.models import AgentConfig
 from .base import Connection, Mash
 from .commands import Command, CommandBus
 from .context import CLIContext
@@ -9,8 +10,8 @@ from .memory import Memory, SqliteMemory
 from .render import Renderer, RichRenderer
 from .repl import Repl
 from .router import CommandRouter
-from .tools import ToolRegistry, ToolSpec
-from .telemetry import TelemetryCollector, TokenUsage
+from .mashd.tools import ToolRegistry, ToolSpec
+from .mashd.telemetry import TelemetryCollector, TokenUsage
 
 __all__ = [
     "Mash",

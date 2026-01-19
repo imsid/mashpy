@@ -67,6 +67,10 @@ class EventLogger:
         self._destination = Path(destination).expanduser()
         self._destination.parent.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def destination(self) -> Path:
+        return self._destination
+
     def emit(self, event: LogEvent) -> None:
         payload = event.to_dict()
         line = json.dumps(payload, default=str)

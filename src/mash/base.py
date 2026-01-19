@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from mashnet import Host, MCPClientError
 
-from .agent import AgentConfig, AgentRuntime
+from .mashd.agent import AgentRuntime
+from .mashd.models import AgentConfig
 from .commands import Command, CommandBus
 from .context import CLIContext
 from .logging import DebugEvent, EventLogger
@@ -21,8 +22,8 @@ from .memory import SqliteMemory
 from .render import RichRenderer
 from .repl import Repl
 from .router import CommandRouter
-from .tools import ToolRegistry, ToolSpec, normalize_tool_name
-from .telemetry import TelemetryCollector
+from .mashd.telemetry import TelemetryCollector
+from .mashd.tools import ToolRegistry, ToolSpec, normalize_tool_name
 
 
 @dataclass
@@ -82,13 +83,14 @@ class Mash(ABC):
             self._tool_registry = self._build_tool_registry(ctx)
             self._telemetry = TelemetryCollector()
             self._agent_runtime = AgentRuntime(
+                session_id,
                 agent_config,
                 self._tool_registry,
                 self.memory,
                 telemetry=self._telemetry,
                 event_logger=self.logger,
             )
-            ctx.agent_trace_id = self._agent_runtime.start_session(session_id)
+            ctx.agent_trace_id = self._agent_runtime.start_session()
             ctx.agent = self._agent_runtime
             router = CommandRouter(
                 command_bus,

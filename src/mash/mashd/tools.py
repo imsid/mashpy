@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from .context import CLIContext
+from ..context import CLIContext
 
 ToolInvoke = Callable[[Dict[str, Any], Optional[CLIContext]], Any]
 
