@@ -31,7 +31,7 @@ class PocketCLI(Mash):
             servers=SERVERS,
             agent_config=AgentConfig(
                 app_id="pocket",
-                app_context=(
+                system_prompt=(
                     "PocketCLI context:\n"
                     "- Connects to the Pocket MCP server for company discovery and "
                     "concierge interactions.\n"

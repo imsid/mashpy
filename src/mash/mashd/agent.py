@@ -6,6 +6,9 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+from ..context import CLIContext
+from ..logging import AgentTraceEvent, EventLogger
+from ..memory import Memory
 from .bash_session import (
     BASH_DEFAULT_TIMEOUT_SECONDS,
     BASH_TOOL_NAME,
@@ -13,14 +16,11 @@ from .bash_session import (
     BashSession,
     validate_bash_command,
 )
-from ..context import CLIContext
-from ..logging import AgentTraceEvent, EventLogger
-from ..memory import Memory
-from .tools import ToolRegistry, ToolResult, ToolSpec, format_tool_payload
 from .llm_provider import AnthropicProvider, LLMProvider
 from .models import Action, AgentConfig, AgentReply, AgentStep, Context, Decision
 from .runtime_tools import MemoryTool
 from .telemetry import TelemetryCollector, TokenUsage
+from .tools import ToolRegistry, ToolResult, ToolSpec, format_tool_payload
 
 _TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_bm25_20251119"
 _TOOL_SEARCH_TOOL_NAME = "tool_search_tool_bm25"
@@ -239,14 +239,6 @@ class AgentRuntime:
                 )
             else:
                 result = _invoke_tool(tool, call.name, call.arguments, ctx)
-            if call.name == "set_preferences" and not result.is_error:
-                self._emit(
-                    "preferences.write",
-                    context.session_id,
-                    trace_id,
-                    step_id,
-                    {},
-                )
             self._emit(
                 "tool.result",
                 context.session_id,
@@ -342,7 +334,6 @@ class AgentRuntime:
         parts: List[str] = [
             _default_system_prompt(
                 tool_search_name=tool_search_name,
-                app_context=self._config.app_context,
             )
         ]
         if self._config.system_prompt:
@@ -556,7 +547,6 @@ def _usage_from_dict(tokens_used: Dict[str, int]) -> TokenUsage:
 def _default_system_prompt(
     *,
     tool_search_name: str,
-    app_context: str = "",
 ) -> str:
     tool_search_line = ""
     if tool_search_name:
@@ -566,17 +556,21 @@ def _default_system_prompt(
             f"Use {tool_search_name} if you are not confident about the right "
             "tool name."
         )
-    base_prompt = (
-        "You are a Mash Agent running inside a Mash CLI app. "
+    parts = [
+        "You are a Mash Agent running inside a Mash CLI app.",
         "Your job is to understand the user's request, use available tools, "
-        "and respond clearly and efficiently. "
-        "You have built-in tools get_full_conversation, get_preferences, and "
-        "set_preferences for working with session context. "
-        "Only store user preferences from the conversation, and save them "
-        "with set_preferences. "
-        f"{tool_search_line}"
-    ).strip()
-    parts = [base_prompt]
-    if app_context:
-        parts.append(app_context.strip())
-    return "\n\n".join(part for part in parts if part)
+        "and respond clearly and efficiently.",
+        "You have built-in tools get_full_conversation, get_preferences, "
+        "set_preferences, list_app_data, and set_app_data for working with "
+        "session context, user preferences and app-specific memory.",
+        "Store user preferences you can infer from the conversation, and save "
+        "them with set_preferences.",
+        "Use list_app_data to review stored app-specific data and set_app_data "
+        "to store new summaries and insights you can reuse when building "
+        "context. The key acts as a tag for the app data; choose a stable identifier for "
+        "the current app context.",
+    ]
+    if tool_search_line:
+        parts.append(tool_search_line)
+    parts.append("App-specific guidance follows.")
+    return " ".join(parts).strip()

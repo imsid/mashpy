@@ -28,7 +28,7 @@ environment loading centralized so the CLI stays lean.
 - `ANTHROPIC_MODEL` - optional; defaults to `claude-haiku-4-5-20251001`.
 - Logs: `src/apps/pocket/pocket.log` (JSONL events).
 
-The Pocket CLI seeds `AgentConfig.app_context` with guidance about available MCP
+The Pocket CLI seeds `AgentConfig.system_prompt` with guidance about available MCP
 tools (`search`, `concierge`, `company_profile`).
 
 #### Codebase (`src/apps/codebase/config.py`)

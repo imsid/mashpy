@@ -80,6 +80,7 @@ class AnthropicProvider(LLMProvider):
             app_id=self._app_id,
             session_id=session_id,
             payload={
+                "system_prompt": system,
                 "tools": tools,
             },
         )
