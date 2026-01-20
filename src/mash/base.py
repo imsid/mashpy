@@ -9,7 +9,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 from mashnet import Host, MCPClientError
 
@@ -33,6 +33,7 @@ class Connection:
     name: str
     url: str
     client: Any
+    allowed_tools: Optional[Set[str]] = None
 
 
 class Mash(ABC):
@@ -153,6 +154,13 @@ class Mash(ABC):
                 handler=self._cmd_execute,
             )
         )
+        command_bus.register(
+            Command(
+                name="app_data",
+                help="Show app data entries: /app_data [key]",
+                handler=self._cmd_app_data,
+            )
+        )
 
     def _register_agent_commands(self, command_bus: CommandBus) -> None:
         def usage_handler(ctx: CLIContext, _args: list[str]) -> None:
@@ -221,6 +229,7 @@ class Mash(ABC):
             name = str(entry.get("name") or url).strip() or url
             self.renderer.info(f"Connecting to {name} ...")
             headers = self._extract_headers(entry.get("headers"))
+            allowed_tools = self._extract_allowed_tools(entry.get("tools"))
             try:
                 client = self.host.get_client(url, name, headers=headers)
             except MCPClientError as exc:
@@ -230,7 +239,9 @@ class Mash(ABC):
                     {"server": name, "url": url, "error": str(exc)},
                 )
                 continue
-            connection = Connection(name=name, url=url, client=client)
+            connection = Connection(
+                name=name, url=url, client=client, allowed_tools=allowed_tools
+            )
             self._connections.append(connection)
             self._render_server_overview(connection)
 
@@ -351,6 +362,11 @@ class Mash(ABC):
                 name = str(tool.get("name") or "").strip()
                 if not name:
                     continue
+                if (
+                    connection.allowed_tools is not None
+                    and name.lower() not in connection.allowed_tools
+                ):
+                    continue
                 safe_tool = normalize_tool_name(name)
                 tool_name = f"mcp_{normalize_tool_name(connection.name)}_{safe_tool}"
                 desc = str(tool.get("description") or "")
@@ -421,6 +437,39 @@ class Mash(ABC):
             return
         ctx.renderer.info("Tool result:")
         ctx.renderer.code(json.dumps(result, indent=2), lang="json")
+
+    def _extract_allowed_tools(self, tools: Any) -> Optional[Set[str]]:
+        if tools is None:
+            return None
+        if not isinstance(tools, (list, tuple, set)):
+            self._emit_debug(
+                "server.config.invalid",
+                {"entry": tools, "reason": "tools_not_list"},
+            )
+            return None
+        allowed = {str(item).strip().lower() for item in tools if str(item).strip()}
+        return allowed or None
+
+    def _cmd_app_data(self, ctx: CLIContext, args: List[str]) -> None:
+        app_id = (
+            self.agent_config.app_id
+            if self.agent_config and self.agent_config.app_id
+            else self.app_name
+        )
+        key = " ".join(args).strip()
+        if key:
+            value = ctx.memory.get_app_data(app_id, ctx.session_id, key)
+            if value is None:
+                ctx.renderer.warn(f"No app data found for key '{key}'.")
+                return
+            payload = {"key": key, "value": value}
+            ctx.renderer.code(json.dumps(payload, indent=2), lang="json")
+            return
+        entries = ctx.memory.list_app_data(app_id, ctx.session_id)
+        if not entries:
+            ctx.renderer.warn("No app data stored.")
+            return
+        ctx.renderer.code(json.dumps(entries, indent=2), lang="json")
 
     @staticmethod
     def find_tool(name: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

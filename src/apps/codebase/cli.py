@@ -35,7 +35,6 @@ class CodebaseAgent(Mash):
         agent_config = AgentConfig(
             app_id="codebase-agent",
             system_prompt=self._build_system_prompt(),
-            app_context=self._build_app_context(),
             model=ANTHROPIC_MODEL,
             max_steps=30,
             max_tokens=4096,
@@ -115,15 +114,11 @@ class CodebaseAgent(Mash):
             ctx.renderer.warn("Usage: /map_feature <name> <path>")
             return
         app_id = self.agent_config.app_id if self.agent_config else self.app_name
-        prefs = ctx.memory.get_preferences(app_id, ctx.session_id)
-        if not isinstance(prefs, dict):
-            prefs = {}
-        feature_map = prefs.get("feature_map")
-        if not isinstance(feature_map, dict):
-            feature_map = {}
-        feature_map[feature_name] = path
-        prefs["feature_map"] = feature_map
-        ctx.memory.set_preferences(app_id, ctx.session_id, prefs)
+        app_data = ctx.memory.get_app_data(app_id, ctx.session_id, "feature_map")
+        if not isinstance(app_data, dict):
+            app_data = {}
+        app_data[feature_name] = path
+        ctx.memory.set_app_data(app_id, ctx.session_id, "feature_map", app_data)
         ctx.renderer.info(f"Mapped feature '{feature_name}' -> {path}")
 
     def _switch_to_local(self, ctx: CLIContext, path: str) -> None:
@@ -178,6 +173,17 @@ class CodebaseAgent(Mash):
                     "description": "GitHub MCP server for repository inspection.",
                     "type": "http",
                     "headers": headers,
+                    "tools": [
+                        "search_code",
+                        "search_pull_requests",
+                        "get_file_contents",
+                        "get_commit",
+                        "list_commits",
+                        "list_pull_requests",
+                        "pull_request_read",
+                        "list_issues",
+                        "issue_read",
+                    ],
                 }
             ]
         )
@@ -209,7 +215,8 @@ class CodebaseAgent(Mash):
     def _update_agent_context(self, ctx: CLIContext) -> None:
         if self.agent_config is None:
             return
-        self.agent_config.app_context = self._build_app_context()
+        self.agent_config.system_prompt = self._build_system_prompt()
+
         if ctx.agent:
             ctx.agent.refresh_prompt()
 
@@ -232,9 +239,16 @@ class CodebaseAgent(Mash):
         return f"{owner}/{repo}"
 
     def _build_system_prompt(self) -> str:
+        repo_context = self._build_repo_context()
         return (
-            "You are an expert code analysis assistant helping engineers, PMs, and "
-            "designers understand how product features work by exploring codebases.\n\n"
+            "Codebase guidance: You are an expert code analysis "
+            "assistant helping engineers, PMs, and designers understand how product "
+            "features work by exploring codebases.\n\n"
+            "At the start of a session, briefly ask the user what they want to do "
+            "today and any preferences (depth, format, or areas of focus). This is "
+            "optional and can be skipped if the user wants to jump in. If they share "
+            "preferences (or you infer them), store them with set_preferences.\n\n"
+            f"{repo_context}\n\n"
             "IMPORTANT: When using bash tool, all commands run in the repository "
             "root directory automatically.\n\n"
             "TOOLS BY REPOSITORY TYPE:\n\n"
@@ -248,35 +262,30 @@ class CodebaseAgent(Mash):
             "  - tree -L 3 -I 'node_modules|__pycache__|.git'\n"
             "  - cat -n src/file.py\n"
             '  - git log --oneline --grep="feature"\n\n'
-            "GITHUB REPOSITORIES (MCP Tools):\n"
-            "- Use mcp_github_search_code\n"
-            "- Use mcp_github_get_file_contents\n"
-            "- Use mcp_github_list_commits\n\n"
+            "GITHUB REPOSITORIES (MCP Tools) Common tools:\n"
+            "  - Use mcp_github_search_code\n"
+            "  - Use mcp_github_get_file_contents\n"
+            "  - Use mcp_github_list_commits\n\n"
             "EXPLORATION STRATEGY:\n"
-            "1. Check get_preferences for feature->code mappings first\n"
-            "2. Start broad (search/find) then narrow down (read specific files)\n"
-            '3. For "how does X work": trace full flow from entry point\n'
-            '4. For "where is X": provide exact file paths and line numbers\n'
-            "5. Adapt to user role (engineer vs PM/designer)\n\n"
+            "1. Start broad (search/find) then narrow down (read specific files)\n"
+            '2. For "how does X work": trace full flow from entry point\n'
+            '3. For "where is X": provide exact file paths and line numbers\n'
+            "4. Adapt to user role (engineer vs PM/designer)\n\n"
             "Be thorough but efficient. Don't read entire large files."
         )
 
-    def _build_app_context(self) -> str:
-        base = (
-            "Commands: /switch_repo, /current_repo, /map_feature, /usage\n"
-            "Memory tools: get_preferences, set_preferences, get_full_conversation\n"
-        )
+    def _build_repo_context(self) -> str:
         if self.current_repo_type == "local" and self.current_repo_path:
             return (
-                f"{base}\nCurrent: Local repo at {self.current_repo_path}\n"
-                "Bash commands execute in repo root automatically.\n"
+                f"Current repo: local at {self.current_repo_path}\n"
+                "Use bash for local repository inspection."
             )
         if self.current_repo_type == "github" and self.current_repo_path:
             return (
-                f"{base}\nCurrent: GitHub repo {self.current_repo_path}\n"
-                "Use mcp_github_* tools (search_code, get_file_contents, list_commits)\n"
+                f"Current repo: GitHub {self.current_repo_path}\n"
+                "Use mcp_github_* tools for repository inspection."
             )
-        return f"{base}\nNo repository selected. Use /switch_repo."
+        return "No repository selected. Ask the user to run /switch_repo."
 
 
 def main() -> int:

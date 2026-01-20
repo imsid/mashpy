@@ -14,7 +14,6 @@ class AgentConfig:
 
     app_id: str
     system_prompt: str = ""
-    app_context: str = ""
     model: str = ""
     max_steps: int = 4
     max_tokens: int = 1024

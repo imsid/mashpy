@@ -15,17 +15,18 @@ structured logging + telemetry.
   `mashd`).
 - `ToolRegistry` merges MCP server tools, command tools, and memory helpers (in
   `mashd`).
-- `SqliteMemory` stores conversations + preferences in a local SQLite file.
+- `SqliteMemory` stores conversations, preferences, and app-specific data in a local SQLite file.
 - `EventLogger` writes JSONL events to a configured destination.
 - `TelemetryCollector` tracks token usage per session (in `mashd`).
 
 ### Mash base class
 
 `Mash` takes an app name and a list of server configs (`name`, `url`, optional
-`headers`). It creates a `Host`, connects to MCP servers, and launches the REPL.
+`headers`, optional `tools` allowlist). It creates a `Host`, connects to MCP
+servers, and launches the REPL.
 Default storage/logging artifacts are created in the working directory:
 
-- `.{slug}_memory.sqlite3` - conversation history + preferences.
+- `.{slug}_memory.sqlite3` - conversation history, preferences, and app-specific data.
 - `.{slug}.log` - JSONL event log.
 
 Base commands registered automatically:
@@ -34,6 +35,7 @@ Base commands registered automatically:
 - `/exit` - terminate the session.
 - `/list [server]` - list resources, templates, and tools.
 - `/execute <server> <tool>` - call a tool with prompted arguments.
+- `/app_data [key]` - show stored app data entries.
 
 ### Command framework
 
@@ -68,7 +70,7 @@ class MyApp(Mash):
 `AgentConfig` fields:
 
 - `app_id` - namespace for memory + logging.
-- `system_prompt` / `app_context` - prompt scaffolding.
+- `system_prompt` - prompt scaffolding.
 - `model`, `max_steps`, `max_tokens`, `max_history_messages`.
 - `tool_search_enabled` - enable server-side tool search.
 - `anthropic_api_key` - optional; defaults to `ANTHROPIC_API_KEY` if the SDK uses env.
@@ -85,7 +87,8 @@ Tools exposed to the agent follow a predictable naming scheme:
 
 - MCP tools: `mcp_<server>_<tool>` (normalized with `normalize_tool_name`).
 - Command tools: `cmd_<command>` if you register them manually.
-- Memory helpers: `get_full_conversation`, `get_preferences`, `set_preferences`.
+- Memory helpers: `get_full_conversation`, `get_preferences`, `set_preferences`,
+  `list_app_data`, `set_app_data`.
 - Tool search: `tool_search_tool_bm25` when enabled.
 
 `/execute` prompts for arguments using the tool's JSON schema when available.
@@ -97,7 +100,8 @@ It supports:
 
 ### Memory and logging
 
-- `SqliteMemory` isolates data by `app_id` + `session_id` to prevent leakage
+- `SqliteMemory` isolates conversations/preferences by `app_id` + `session_id` and
+  app-specific data by `app_id` + `session_id` + `key` to prevent leakage
   across apps or sessions.
 - `EventLogger` writes JSON lines for `LogEvent`, `CommandEvent`, `DebugEvent`,
   and `AgentTraceEvent` with optional duration + trace metadata.
@@ -112,6 +116,6 @@ It supports:
 - `mashd/llm_provider.py` - LLM provider abstraction + Anthropic adapter.
 - `mashd/telemetry.py` - token usage tracking.
 - `mashd/tools.py` - tool registry and invocation helpers.
-- `memory.py` - SQLite memory for conversations + preferences.
+- `memory.py` - SQLite memory for conversations, preferences, and app-specific data.
 - `logging.py` - event logger + log event types.
 - `mashd/README.md` - mashd module overview.

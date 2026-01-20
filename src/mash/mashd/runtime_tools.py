@@ -65,6 +65,34 @@ class MemoryTool(AgentRuntimeTools):
             self._memory.set_preferences(app_id, session_id, args.get("preferences"))
             return ToolResult(_name, "ok")
 
+        def _list_app_data(
+            _args: Dict[str, Any],
+            _ctx: Optional[CLIContext],
+            *,
+            _name: str = "list_app_data",
+        ) -> ToolResult:
+            data = self._memory.list_app_data(app_id, session_id)
+            return ToolResult(
+                _name,
+                format_tool_payload(data),
+                data,
+            )
+
+        def _set_app_data(
+            args: Dict[str, Any],
+            _ctx: Optional[CLIContext],
+            *,
+            _name: str = "set_app_data",
+        ) -> ToolResult:
+            if "key" not in args:
+                return ToolResult(_name, "key is required.", is_error=True)
+            if "value" not in args:
+                return ToolResult(_name, "value is required.", is_error=True)
+            self._memory.set_app_data(
+                app_id, session_id, str(args.get("key")), args.get("value")
+            )
+            return ToolResult(_name, "ok")
+
         return [
             ToolSpec(
                 name="get_full_conversation",
@@ -93,5 +121,25 @@ class MemoryTool(AgentRuntimeTools):
                 source="memory",
                 tags={"memory"},
                 invoke=_set_preferences,
+            ),
+            ToolSpec(
+                name="list_app_data",
+                description="List app-specific data for this session.",
+                input_schema={"type": "object", "properties": {}, "required": []},
+                source="memory",
+                tags={"memory"},
+                invoke=_list_app_data,
+            ),
+            ToolSpec(
+                name="set_app_data",
+                description="Store app-specific data by key (use key as a tag).",
+                input_schema={
+                    "type": "object",
+                    "properties": {"key": {"type": "string"}, "value": {}},
+                    "required": ["key", "value"],
+                },
+                source="memory",
+                tags={"memory"},
+                invoke=_set_app_data,
             ),
         ]
