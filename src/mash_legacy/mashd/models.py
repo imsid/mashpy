@@ -22,6 +22,7 @@ class AgentConfig:
     anthropic_api_key: Optional[str] = None
     use_bash_tool: bool = False
     bash_working_dir: Optional[str] = None
+    subagents_enabled: bool = False
 
 
 @dataclass
@@ -61,6 +62,29 @@ class Context:
     tools: List[Dict[str, Any]]
     system_prompt: str
     metadata: Dict[str, Any]
+
+
+@dataclass
+class SubAgentTask:
+    """Phase 1 context bundle for a delegated sub-agent."""
+
+    task_id: str
+    context: Context
+    max_steps: Optional[int] = None
+    max_tokens: Optional[int] = None
+
+
+@dataclass
+class SubAgentResult:
+    """Outcome from a delegated sub-agent execution."""
+
+    task_id: str
+    success: bool
+    output: str
+    tool_calls: List[ToolCall]
+    tool_results: List[Dict[str, Any]]
+    tokens_used: Dict[str, int]
+    error: Optional[str] = None
 
 
 @dataclass

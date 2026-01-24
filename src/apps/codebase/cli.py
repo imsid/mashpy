@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from mash import AgentConfig, Mash
-from mash.commands import Command, CommandBus
-from mash.context import CLIContext
+from mash_legacy import AgentConfig, Mash
+from mash_legacy.commands import Command, CommandBus
+from mash_legacy.context import CLIContext
 from mashnet import MCPClientError
 
 from .config import (
@@ -43,6 +43,7 @@ class CodebaseAgent(Mash):
             anthropic_api_key=ANTHROPIC_API_KEY,
             use_bash_tool=False,
             bash_working_dir=None,
+            subagents_enabled=True,
         )
         super().__init__(
             "MashPy Codebase Agent",

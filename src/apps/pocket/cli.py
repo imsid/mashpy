@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from mash import AgentConfig, Mash
-from mash.commands import CommandBus
+from mash_legacy import AgentConfig, Mash
+from mash_legacy.commands import CommandBus
 from mashnet import MCPClientError
 
 from .config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL

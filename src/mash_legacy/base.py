@@ -81,6 +81,7 @@ class Mash(ABC):
         router = None
         if self._agent_enabled():
             agent_config = self._ensure_agent_config()
+            agent_config.subagents_enabled = True
             self._tool_registry = self._build_tool_registry(ctx)
             self._telemetry = TelemetryCollector()
             self._agent_runtime = AgentRuntime(

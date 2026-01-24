@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Union
@@ -59,44 +60,46 @@ class SqliteMemory(Memory):
 
     def __init__(self, path: Union[str, Path] = ":memory:") -> None:
         self._db_path = self._prepare_path(path)
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._lock = threading.Lock()
 
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                app_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at REAL NOT NULL
+        with self._lock:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
             )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS preferences (
-                app_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                value TEXT NOT NULL,
-                updated_at REAL NOT NULL,
-                PRIMARY KEY (app_id, session_id)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS preferences (
+                    app_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (app_id, session_id)
+                )
+                """
             )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS app_data (
-                app_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                updated_at REAL NOT NULL,
-                PRIMARY KEY (app_id, session_id, key)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_data (
+                    app_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (app_id, session_id, key)
+                )
+                """
             )
-            """
-        )
-        self._conn.commit()
+            self._conn.commit()
 
     def record_conversation(
         self,
@@ -110,14 +113,15 @@ class SqliteMemory(Memory):
         """Store a conversation message with a timestamp."""
 
         timestamp = created_at if created_at is not None else time.time()
-        self._conn.execute(
-            """
-            INSERT INTO conversations (app_id, session_id, role, content, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (app_id, session_id, role, content, timestamp),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO conversations (app_id, session_id, role, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (app_id, session_id, role, content, timestamp),
+            )
+            self._conn.commit()
 
     def get_conversation(
         self,
@@ -127,28 +131,29 @@ class SqliteMemory(Memory):
     ) -> List[Dict[str, Any]]:
         """Return conversation messages ordered by timestamp."""
 
-        if limit is None:
-            rows = self._conn.execute(
-                """
-                SELECT role, content, created_at
-                FROM conversations
-                WHERE app_id = ? AND session_id = ?
-                ORDER BY created_at ASC, id ASC
-                """,
-                (app_id, session_id),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """
-                SELECT role, content, created_at
-                FROM conversations
-                WHERE app_id = ? AND session_id = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (app_id, session_id, max(0, int(limit))),
-            ).fetchall()
-            rows.reverse()
+        with self._lock:
+            if limit is None:
+                rows = self._conn.execute(
+                    """
+                    SELECT role, content, created_at
+                    FROM conversations
+                    WHERE app_id = ? AND session_id = ?
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (app_id, session_id),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT role, content, created_at
+                    FROM conversations
+                    WHERE app_id = ? AND session_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (app_id, session_id, max(0, int(limit))),
+                ).fetchall()
+                rows.reverse()
         return [
             {"role": role, "content": content, "created_at": created_at}
             for role, content, created_at in rows
@@ -157,14 +162,15 @@ class SqliteMemory(Memory):
     def get_preferences(self, app_id: str, session_id: str) -> Optional[Any]:
         """Return stored preferences for the session."""
 
-        row = self._conn.execute(
-            """
-            SELECT value
-            FROM preferences
-            WHERE app_id = ? AND session_id = ?
-            """,
-            (app_id, session_id),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT value
+                FROM preferences
+                WHERE app_id = ? AND session_id = ?
+                """,
+                (app_id, session_id),
+            ).fetchone()
         if row is None:
             return None
         try:
@@ -180,28 +186,30 @@ class SqliteMemory(Memory):
             payload = json.dumps(value)
         except TypeError:
             payload = json.dumps(str(value))
-        self._conn.execute(
-            """
-            INSERT INTO preferences (app_id, session_id, value, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(app_id, session_id)
-            DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (app_id, session_id, payload, timestamp),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO preferences (app_id, session_id, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(app_id, session_id)
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (app_id, session_id, payload, timestamp),
+            )
+            self._conn.commit()
 
     def get_app_data(self, app_id: str, session_id: str, key: str) -> Optional[Any]:
         """Return stored app-specific data for a key."""
 
-        row = self._conn.execute(
-            """
-            SELECT value
-            FROM app_data
-            WHERE app_id = ? AND session_id = ? AND key = ?
-            """,
-            (app_id, session_id, key),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT value
+                FROM app_data
+                WHERE app_id = ? AND session_id = ? AND key = ?
+                """,
+                (app_id, session_id, key),
+            ).fetchone()
         if row is None:
             return None
         try:
@@ -217,29 +225,31 @@ class SqliteMemory(Memory):
             payload = json.dumps(value)
         except TypeError:
             payload = json.dumps(str(value))
-        self._conn.execute(
-            """
-            INSERT INTO app_data (app_id, session_id, key, value, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(app_id, session_id, key)
-            DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (app_id, session_id, key, payload, timestamp),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO app_data (app_id, session_id, key, value, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(app_id, session_id, key)
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (app_id, session_id, key, payload, timestamp),
+            )
+            self._conn.commit()
 
     def list_app_data(self, app_id: str, session_id: str) -> List[Dict[str, Any]]:
         """Return all app-specific data entries for a session."""
 
-        rows = self._conn.execute(
-            """
-            SELECT key, value, updated_at
-            FROM app_data
-            WHERE app_id = ? AND session_id = ?
-            ORDER BY updated_at DESC, key ASC
-            """,
-            (app_id, session_id),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT key, value, updated_at
+                FROM app_data
+                WHERE app_id = ? AND session_id = ?
+                ORDER BY updated_at DESC, key ASC
+                """,
+                (app_id, session_id),
+            ).fetchall()
         entries: List[Dict[str, Any]] = []
         for key, value_json, updated_at in rows:
             try:
