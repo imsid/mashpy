@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from .base import ToolResult
 
 BASH_DEFAULT_TIMEOUT = 30
-BASH_MAX_OUTPUT_LINES = 100
+BASH_MAX_OUTPUT_LINES = 50  # Reduced from 100 to prevent token explosion
 
 _BASH_SENTINEL_PREFIX = "__mash_bash_done__"
 _BASH_EXIT_PREFIX = "__mash_bash_exit__"
@@ -80,7 +80,9 @@ class BashSession:
                 pass
         self._process = None
 
-    def execute_command(self, command: str, timeout: int = BASH_DEFAULT_TIMEOUT) -> tuple[str, int]:
+    def execute_command(
+        self, command: str, timeout: int = BASH_DEFAULT_TIMEOUT
+    ) -> tuple[str, int]:
         """Execute a command in the bash session.
 
         Args:
@@ -101,11 +103,7 @@ class BashSession:
         sentinel = f"{_BASH_SENTINEL_PREFIX}{token}"
         exit_marker = f"{_BASH_EXIT_PREFIX}{token}"
 
-        payload = (
-            f"{command}\n"
-            f'echo "{exit_marker}$?"\n'
-            f'echo "{sentinel}"\n'
-        )
+        payload = f"{command}\n" f'echo "{exit_marker}$?"\n' f'echo "{sentinel}"\n'
 
         self._process.stdin.write(payload)
         self._process.stdin.flush()
@@ -142,7 +140,7 @@ class BashSession:
             stripped = line.rstrip("\n")
 
             if stripped.startswith(exit_marker):
-                raw = stripped[len(exit_marker):].strip()
+                raw = stripped[len(exit_marker) :].strip()
                 try:
                     exit_code = int(raw)
                 except ValueError:
@@ -226,7 +224,9 @@ class BashTool:
                 )
             return ToolResult.success(output, exit_code=exit_code)
         except TimeoutError as e:
-            return ToolResult.error(f"Command timed out after {timeout} seconds")
+            return ToolResult.error(
+                f"Command timed out after {timeout} seconds: {str(e)}"
+            )
         except Exception as e:
             return ToolResult.error(f"Error executing command: {str(e)}")
 

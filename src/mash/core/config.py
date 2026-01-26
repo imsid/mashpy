@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+
+# Tool search feature constants
+TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_bm25_20251119"
+TOOL_SEARCH_TOOL_NAME = "tool_search_tool_bm25"
+TOOL_SEARCH_BETAS: List[str] = ["advanced-tool-use-2025-11-20"]
+
+load_dotenv()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
 
 @dataclass
@@ -12,11 +23,13 @@ class AgentConfig:
 
     app_id: str
     system_prompt: str
-    model: str = "claude-sonnet-4"
-    max_steps: int = 20
+    model: str = ANTHROPIC_MODEL
+    max_steps: int = 30
     max_tokens: int = 4096
     temperature: float = 1.0
     api_key: Optional[str] = None
+    tool_search_enabled: bool = False
+    prompt_caching_enabled: bool = True
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

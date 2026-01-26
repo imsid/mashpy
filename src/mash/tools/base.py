@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Protocol
+from typing import Any, Callable, Dict, Protocol
 
 
 @dataclass
@@ -41,7 +41,7 @@ class Tool(Protocol):
         Returns:
             ToolResult containing the execution result.
         """
-        ...
+        raise NotImplementedError
 
     def to_llm_format(self) -> Dict[str, Any]:
         """Convert tool definition to LLM API format.
@@ -49,4 +49,26 @@ class Tool(Protocol):
         Returns:
             Tool definition in the format expected by the LLM API.
         """
-        ...
+        raise NotImplementedError
+
+
+@dataclass
+class FunctionTool:
+    """Concrete tool wrapper around a callable."""
+
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+    _executor: Callable[[Dict[str, Any]], ToolResult]
+
+    def execute(self, args: Dict[str, Any]) -> ToolResult:
+        """Execute the tool with the given arguments."""
+        return self._executor(args)
+
+    def to_llm_format(self) -> Dict[str, Any]:
+        """Convert tool definition to LLM API format."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters,
+        }

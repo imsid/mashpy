@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from anthropic import Anthropic
 
+from ..logging import EventLogger, LLMEvent
 from .context import ToolCall
+
+
+# Model-specific minimum token thresholds for prompt caching
+# Based on Anthropic documentation: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+CACHE_MIN_TOKENS = {
+    "claude-haiku": 4096,      # Haiku 4.5 requires 4096 tokens minimum
+    "claude-sonnet": 1024,     # Sonnet 4.5 requires 1024 tokens minimum
+    "claude-opus": 1024,       # Opus 4 requires 1024 tokens minimum
+    "default": 1024,           # Default for unknown models
+}
 
 
 class LLMProvider(ABC):
@@ -23,6 +35,8 @@ class LLMProvider(ABC):
         tools: List[Dict[str, Any]],
         max_tokens: int,
         temperature: float = 1.0,
+        betas: Optional[List[str]] = None,
+        use_prompt_caching: bool = True,
     ) -> Any:
         """Send a message to the LLM provider."""
 
@@ -33,15 +47,38 @@ class LLMProvider(ABC):
     ) -> tuple[str, List[ToolCall], List[Dict[str, Any]]]:
         """Parse provider response into assistant text and tool calls."""
 
+    @abstractmethod
+    def set_event_logger(
+        self, logger: EventLogger, session_id: str, app_id: str
+    ) -> None:
+        """Set the event logger for LLM operations."""
+
+    @abstractmethod
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        """Set the trace ID for the current agent execution.
+
+        Args:
+            trace_id: Trace ID to associate with LLM events.
+        """
+
 
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude provider implementation."""
 
-    def __init__(self, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        app_id: str,
+        api_key: Optional[str] = None,
+        event_logger: Optional[EventLogger] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
         """Initialize the Anthropic provider.
 
         Args:
-            api_key: Anthropic API key. If not provided, will use ANTHROPIC_API_KEY env var.
+            api_key: Anthropic API key. Uses ANTHROPIC_API_KEY env var if not provided.
+            event_logger: Optional event logger for logging LLM operations.
+            session_id: Optional session ID for event logging.
+            app_id: Optional app ID for event logging.
         """
         try:
             self._client = Anthropic(api_key=api_key)
@@ -54,6 +91,52 @@ class AnthropicProvider(LLMProvider):
                 "Failed to initialize Anthropic client. Check your API key."
             ) from exc
 
+        self._event_logger = event_logger
+        self._session_id = session_id
+        self._app_id = app_id
+        self._trace_id: Optional[str] = None
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        """Set the trace ID for the current agent execution.
+
+        Args:
+            trace_id: Trace ID to associate with LLM events.
+        """
+        self._trace_id = trace_id
+
+    def set_event_logger(
+        self, logger: EventLogger, session_id: str, app_id: str
+    ) -> None:
+        """Set the event logger for LLM operations.
+
+        Args:
+            logger: Event logger instance.
+            session_id: Session ID for this run.
+            app_id: Application ID.
+        """
+        self._event_logger = logger
+        self._session_id = session_id
+        self._app_id = app_id
+
+    def _get_cache_threshold(self, model: str) -> int:
+        """Get minimum tokens required for prompt caching based on model.
+
+        Different Claude models have different minimum token requirements:
+        - Haiku 4.5: 4096 tokens
+        - Sonnet 4.5 / Opus 4: 1024 tokens
+
+        Args:
+            model: Model name (e.g., "claude-haiku-4-5-20251001").
+
+        Returns:
+            Minimum token threshold for prompt caching.
+        """
+        model_lower = model.lower()
+        for model_prefix, threshold in CACHE_MIN_TOKENS.items():
+            if model_prefix in model_lower:
+                return threshold
+        return CACHE_MIN_TOKENS["default"]
+
     def create_message(
         self,
         *,
@@ -63,6 +146,8 @@ class AnthropicProvider(LLMProvider):
         tools: List[Dict[str, Any]],
         max_tokens: int,
         temperature: float = 1.0,
+        betas: Optional[List[str]] = None,
+        use_prompt_caching: bool = True,
     ) -> Any:
         """Create a message using the Anthropic API.
 
@@ -73,10 +158,74 @@ class AnthropicProvider(LLMProvider):
             tools: List of tool definitions in Anthropic format.
             max_tokens: Maximum tokens to generate.
             temperature: Sampling temperature.
+            betas: Optional list of beta feature flags.
+            use_prompt_caching: Whether to enable prompt caching for static content.
 
         Returns:
             Anthropic API response.
         """
+        request_start = time.time()
+
+        # Extract tool names for logging
+        tool_names: Optional[List[str]] = None
+        if tools:
+            names: List[str] = []
+            for tool in tools:
+                if not isinstance(tool, dict):
+                    continue
+                name = tool.get("name")
+                if isinstance(name, str) and name:
+                    names.append(name)
+            tool_names = names or None
+
+        # Log request start
+        if self._event_logger:
+            self._event_logger.emit(
+                LLMEvent(
+                    event_type="llm.request.start",
+                    app_id=self._app_id,
+                    session_id=self._session_id,
+                    provider="anthropic",
+                    model=model,
+                    trace_id=self._trace_id,
+                    tools=tool_names,
+                    betas=betas,
+                )
+            )
+
+        # Prepare system prompt with optional caching
+        system_param: Any = system
+        if use_prompt_caching and system:
+            # Get model-specific cache threshold
+            cache_threshold = self._get_cache_threshold(model)
+
+            # Estimate tokens using improved estimation from agent.py
+            system_tokens = int(len(system) / 3.5 * 1.05)
+
+            # Only cache if >= model's minimum threshold
+            if system_tokens >= cache_threshold:
+                system_param = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+
+        # Prepare tools with optional caching
+        tools_param: Optional[List[Dict[str, Any]]] = None
+        if tools:
+            tools_param = tools.copy() if use_prompt_caching else tools
+            # Add cache_control to last tool to cache all tools up to that point
+            # BUT: Only if tools don't have defer_loading (can't use both)
+            if use_prompt_caching and tools_param:
+                last_tool = tools_param[-1]
+                # Check if last tool has defer_loading
+                has_defer_loading = last_tool.get("defer_loading", False)
+                if not has_defer_loading:
+                    # Only cache if NOT using defer_loading
+                    tools_param[-1] = {**tools_param[-1], "cache_control": {"type": "ephemeral"}}
+
         params: Dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
@@ -85,12 +234,75 @@ class AnthropicProvider(LLMProvider):
         }
 
         if system:
-            params["system"] = system
+            params["system"] = system_param
 
-        if tools:
-            params["tools"] = tools
+        if tools_param:
+            params["tools"] = tools_param
 
-        return self._client.messages.create(**params)
+        try:
+            # Use beta client when beta flags are provided
+            if betas:
+                response = self._client.beta.messages.create(**params, betas=betas)
+            else:
+                response = self._client.messages.create(**params)
+
+            # Log request completion
+            if self._event_logger:
+
+                # Extract token usage
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", None) if usage else None
+                output_tokens = getattr(usage, "output_tokens", None) if usage else None
+                cache_creation_input_tokens = getattr(usage, "cache_creation_input_tokens", None) if usage else None
+                cache_read_input_tokens = getattr(usage, "cache_read_input_tokens", None) if usage else None
+
+                total_tokens = None
+                if input_tokens is not None and output_tokens is not None:
+                    total_tokens = input_tokens + output_tokens
+
+                # Extract finish reason
+                finish_reason = getattr(response, "stop_reason", None)
+
+                self._event_logger.emit(
+                    LLMEvent(
+                        event_type="llm.request.complete",
+                        app_id=self._app_id,
+                        session_id=self._session_id,
+                        provider="anthropic",
+                        model=model,
+                        duration_ms=int((time.time() - request_start) * 1000),
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                        cache_creation_input_tokens=cache_creation_input_tokens,
+                        cache_read_input_tokens=cache_read_input_tokens,
+                        finish_reason=finish_reason,
+                        trace_id=self._trace_id,
+                        tools=tool_names,
+                        betas=betas,
+                    )
+                )
+
+            return response
+        except Exception as e:
+            # Log request error
+            if self._event_logger:
+
+                self._event_logger.emit(
+                    LLMEvent(
+                        event_type="llm.request.error",
+                        app_id=self._app_id,
+                        session_id=self._session_id,
+                        provider="anthropic",
+                        model=model,
+                        error=str(e),
+                        duration_ms=int((time.time() - request_start) * 1000),
+                        trace_id=self._trace_id,
+                        tools=tool_names,
+                        betas=betas,
+                    )
+                )
+            raise
 
     def parse_response(
         self,

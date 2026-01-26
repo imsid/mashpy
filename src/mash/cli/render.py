@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import ContextManager, List, Optional, Protocol
+from typing import Any, ContextManager, Generator, List, Optional, Protocol
 
 from rich import box
 from rich.console import Console
@@ -109,7 +109,7 @@ class RichRenderer:
         self._console.print(table)
 
     @contextmanager
-    def status(self, message: str) -> ContextManager[object]:
+    def status(self, message: str) -> Generator[object, None, None]:
         """Return a status spinner context manager."""
         with self._console.status(message) as status:
             yield status
@@ -118,6 +118,6 @@ class RichRenderer:
         """Clear the terminal screen."""
         self._console.clear()
 
-    def print(self, *args: any, **kwargs: any) -> None:
+    def print(self, *args: Any, **kwargs: Any) -> None:
         """Print to console."""
         self._console.print(*args, **kwargs)

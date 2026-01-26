@@ -28,7 +28,7 @@ class Message:
     """A message in the conversation."""
 
     role: MessageRole
-    content: str
+    content: str | List[Dict[str, Any]]
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -110,7 +110,9 @@ class Context:
     signals: Dict[str, Any] = field(default_factory=dict)
     is_complete: bool = False
 
-    def add_message(self, role: MessageRole, content: str, **metadata: Any) -> None:
+    def add_message(
+        self, role: MessageRole, content: str | List[Dict[str, Any]], **metadata: Any
+    ) -> None:
         """Add a message to the context."""
         self.messages.append(Message(role=role, content=content, metadata=metadata))
 
@@ -150,7 +152,16 @@ class Response:
                 last_assistant_msg = msg
                 break
 
-        text = last_assistant_msg.content if last_assistant_msg else ""
+        text = ""
+        if last_assistant_msg:
+            if isinstance(last_assistant_msg.content, str):
+                text = last_assistant_msg.content
+            else:
+                text = "".join(
+                    block.get("text", "")
+                    for block in last_assistant_msg.content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ).strip()
         return cls(
             text=text,
             context=context,

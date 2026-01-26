@@ -19,20 +19,12 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 import requests
 
 DEFAULT_PROTOCOL_VERSION = "2025-03-26"
-LOGGER = logging.getLogger("mashnet.client")
-LOGGER.setLevel(logging.INFO)
-LOGGER.propagate = False
-if not LOGGER.handlers:
-    log_path = Path(__file__).resolve().with_name("client.log")
-    _handler = logging.FileHandler(log_path)
-    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    LOGGER.addHandler(_handler)
+LOGGER = logging.getLogger("mash.mcp.client")
 
 
 class MCPClientError(RuntimeError):
@@ -67,7 +59,7 @@ class MCPHTTPClient:
         sampling_handler: SamplingHandler,
         elicitation_handler: Callable[[Dict[str, Any]], Dict[str, Any]],
     ) -> None:
-        self.base_url = base_url
+        self.base_url = self._normalize_url(base_url)
         self.session = requests.Session()
         self.session_id: Optional[str] = None
         self.server_info: Dict[str, Any] = {}
@@ -203,7 +195,6 @@ class MCPHTTPClient:
             response.status_code,
             response.text,
         )
-        # print(response.text)
         events = self._parse_events(response.text, response.headers.get("Content-Type"))
         rpc_result = self._extract_result_payload(request_id, events)
         sampling, elicitation = self._extract_interactions(events)
@@ -279,7 +270,6 @@ class MCPHTTPClient:
 
     def list_tools(self) -> List[Dict[str, Any]]:
         response = self._make_request("tools/list")
-        # print(response)
         asyncio.run(self._handle_interactions(response))
         return response.result.get("tools", [])
 
@@ -371,6 +361,18 @@ class MCPHTTPClient:
             except requests.RequestException as exc:
                 if self._sse_stop.is_set():
                     break
+
+                # Check if this is a permanent failure (405, 404, 403, 401)
+                if hasattr(exc, "response") and exc.response is not None:
+                    status_code = exc.response.status_code
+                    if status_code in (401, 403, 404, 405):
+                        LOGGER.warning(
+                            "SSE endpoint not available (HTTP %d). "
+                            "Disabling SSE listener for this connection.",
+                            status_code,
+                        )
+                        break  # Stop retrying for permanent failures
+
                 LOGGER.error("SSE connection error: %s", exc)
                 time.sleep(1)
 

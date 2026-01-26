@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -46,7 +46,9 @@ class REPL:
         Args:
             ctx: CLI context.
         """
-        ctx.renderer.info(f"{self.app_name} interactive session. Type /help for commands.")
+        ctx.renderer.info(
+            f"{self.app_name} interactive session. Type /help for commands."
+        )
 
         # Setup prompt
         command_words = self._get_command_words()
@@ -115,7 +117,7 @@ class REPL:
         bindings = KeyBindings()
 
         @bindings.add("c-l")
-        def _clear_screen(event: any) -> None:
+        def _clear_screen(_event: Any) -> None:
             """Clear screen on Ctrl+L."""
             ctx.renderer.clear()
 

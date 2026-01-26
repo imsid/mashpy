@@ -68,6 +68,106 @@ class ConversationStore(Protocol):
         """
         ...
 
+    def get_preferences(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get user preferences for app and session.
+
+        Args:
+            app_id: Application identifier.
+            session_id: Session identifier.
+
+        Returns:
+            User preferences as dictionary, or None if not set.
+        """
+        ...
+
+    def set_preferences(
+        self,
+        app_id: str,
+        session_id: str,
+        preferences: Dict[str, Any],
+    ) -> None:
+        """Set user preferences for app and session.
+
+        Args:
+            app_id: Application identifier.
+            session_id: Session identifier.
+            preferences: User preferences dictionary.
+        """
+        ...
+
+    def get_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+    ) -> Optional[Any]:
+        """Get app-specific data by key.
+
+        Args:
+            app_id: Application identifier.
+            session_id: Session identifier.
+            key: Data key.
+
+        Returns:
+            Data value, or None if key doesn't exist.
+        """
+        ...
+
+    def set_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Set app-specific data by key.
+
+        Args:
+            app_id: Application identifier.
+            session_id: Session identifier.
+            key: Data key.
+            value: Data value (must be JSON-serializable).
+        """
+        ...
+
+    def list_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> List[Dict[str, Any]]:
+        """List all app-specific data for session.
+
+        Args:
+            app_id: Application identifier.
+            session_id: Session identifier.
+
+        Returns:
+            List of dictionaries with 'key', 'value', and 'updated_at' fields.
+        """
+        ...
+
+    def delete_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+    ) -> bool:
+        """Delete app-specific data by key.
+
+        Args:
+            app_id: Application identifier.
+            session_id: Session identifier.
+            key: Data key.
+
+        Returns:
+            True if data was deleted, False if key didn't exist.
+        """
+        ...
+
 
 class SQLiteStore(ConversationStore):
     """SQLite-backed conversation store with signals."""
@@ -86,12 +186,13 @@ class SQLiteStore(ConversationStore):
     def _init_schema(self) -> None:
         """Initialize database schema."""
         with self._lock:
-            # Turns table
+            # Turns table (with app_id for isolation)
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS turns (
                     turn_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
+                    app_id TEXT NOT NULL DEFAULT 'default',
                     user_message TEXT NOT NULL,
                     agent_response TEXT NOT NULL,
                     embedding BLOB,
@@ -100,6 +201,9 @@ class SQLiteStore(ConversationStore):
                 )
                 """
             )
+
+            # Migrate existing turns table if app_id column doesn't exist
+            self._migrate_turns_table()
 
             # Signals table
             self._conn.execute(
@@ -114,15 +218,64 @@ class SQLiteStore(ConversationStore):
                 """
             )
 
+            # Preferences table
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS preferences (
+                    app_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (app_id, session_id)
+                )
+                """
+            )
+
+            # App-specific data table
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_data (
+                    app_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (app_id, session_id, key)
+                )
+                """
+            )
+
             # Indexes for faster queries
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id)"
             )
             self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turns_app ON turns(app_id)"
+            )
+            self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_name ON signals(signal_name)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_app_data_session ON app_data(app_id, session_id)"
             )
 
             self._conn.commit()
+
+    def _migrate_turns_table(self) -> None:
+        """Migrate existing turns table to add app_id column if needed."""
+        # Check if app_id column exists
+        cursor = self._conn.execute("PRAGMA table_info(turns)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "app_id" not in columns:
+            # Add app_id column with default value
+            self._conn.execute(
+                "ALTER TABLE turns ADD COLUMN app_id TEXT NOT NULL DEFAULT 'default'"
+            )
+            # Rebuild index
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turns_app ON turns(app_id)"
+            )
 
     def save_turn(
         self,
@@ -273,7 +426,15 @@ class SQLiteStore(ConversationStore):
 
         # Calculate similarity scores
         results = []
-        for turn_id, session_id, user_msg, agent_resp, embedding_blob, metadata_json, created_at in rows:
+        for (
+            turn_id,
+            session_id,
+            user_msg,
+            agent_resp,
+            embedding_blob,
+            metadata_json,
+            created_at,
+        ) in rows:
             # Deserialize embedding
             embedding = pickle.loads(embedding_blob) if embedding_blob else None
             if not embedding:
@@ -316,7 +477,7 @@ class SQLiteStore(ConversationStore):
         """
         # Placeholder: return None for now
         # In production: call embedding API or model
-        return None
+        return []
 
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """Calculate cosine similarity between two vectors."""
@@ -331,6 +492,156 @@ class SQLiteStore(ConversationStore):
             return 0.0
 
         return dot_product / (magnitude1 * magnitude2)
+
+    def get_preferences(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get user preferences for app and session."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT value
+                FROM preferences
+                WHERE app_id = ? AND session_id = ?
+                """,
+                (app_id, session_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return {}
+
+    def set_preferences(
+        self,
+        app_id: str,
+        session_id: str,
+        preferences: Dict[str, Any],
+    ) -> None:
+        """Set user preferences for app and session."""
+        timestamp = time.time()
+        preferences_json = json.dumps(preferences)
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO preferences (app_id, session_id, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(app_id, session_id)
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (app_id, session_id, preferences_json, timestamp),
+            )
+            self._conn.commit()
+
+    def get_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+    ) -> Optional[Any]:
+        """Get app-specific data by key."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT value
+                FROM app_data
+                WHERE app_id = ? AND session_id = ? AND key = ?
+                """,
+                (app_id, session_id, key),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return row[0]
+
+    def set_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Set app-specific data by key."""
+        timestamp = time.time()
+
+        try:
+            value_json = json.dumps(value)
+        except TypeError:
+            value_json = json.dumps(str(value))
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO app_data (app_id, session_id, key, value, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(app_id, session_id, key)
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (app_id, session_id, key, value_json, timestamp),
+            )
+            self._conn.commit()
+
+    def list_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> List[Dict[str, Any]]:
+        """List all app-specific data for session."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT key, value, updated_at
+                FROM app_data
+                WHERE app_id = ? AND session_id = ?
+                ORDER BY updated_at DESC, key ASC
+                """,
+                (app_id, session_id),
+            ).fetchall()
+
+        entries: List[Dict[str, Any]] = []
+        for key, value_json, updated_at in rows:
+            try:
+                value = json.loads(value_json)
+            except json.JSONDecodeError:
+                value = value_json
+
+            entries.append(
+                {
+                    "key": key,
+                    "value": value,
+                    "updated_at": updated_at,
+                }
+            )
+
+        return entries
+
+    def delete_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+    ) -> bool:
+        """Delete app-specific data by key."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM app_data
+                WHERE app_id = ? AND session_id = ? AND key = ?
+                """,
+                (app_id, session_id, key),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     @staticmethod
     def _prepare_path(path: Union[str, Path]) -> str:

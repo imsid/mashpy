@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, List
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional
+
+from mash.logging.events import CommandEvent
 
 if TYPE_CHECKING:
+    from ..logging import EventLogger
     from .app import CLIContext
 
 CommandHandler = Callable[["CLIContext", List[str]], None]
@@ -24,10 +28,24 @@ class Command:
 class CommandRegistry:
     """Registry for managing commands."""
 
-    def __init__(self) -> None:
-        """Initialize command registry."""
+    def __init__(
+        self,
+        app_id: str,
+        event_logger: Optional[EventLogger] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Initialize command registry.
+
+        Args:
+            event_logger: Optional event logger for logging command execution.
+            session_id: Optional session ID for event logging.
+            app_id: Optional app ID for event logging.
+        """
         self._commands: Dict[str, Command] = {}
         self._lookup: Dict[str, Command] = {}
+        self._event_logger = event_logger
+        self._session_id = session_id
+        self._app_id = app_id
 
     def register(self, command: Command) -> None:
         """Register a command.
@@ -116,11 +134,55 @@ class CommandRegistry:
             ctx.renderer.warn(f"Unknown command: /{cmd_name}. Try /help.")
             return True
 
-        # Execute command
+        # Execute command with logging
+        start_time = time.time()
+        command_name = f"/{command.name}"
+        args_str = " ".join(args)
+
+        # Log command start
+        if self._event_logger:
+
+            self._event_logger.emit(
+                CommandEvent(
+                    event_type="command.start",
+                    app_id=self._app_id,
+                    session_id=self._session_id,
+                    command_name=command_name,
+                    args=args_str,
+                )
+            )
+
         try:
             command.handler(ctx, args)
+
+            # Log command completion
+            if self._event_logger:
+
+                self._event_logger.emit(
+                    CommandEvent(
+                        event_type="command.complete",
+                        app_id=self._app_id,
+                        session_id=self._session_id,
+                        command_name=command_name,
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+                )
         except Exception as e:
             ctx.renderer.error(f"Command failed: {str(e)}")
+
+            # Log command error
+            if self._event_logger:
+
+                self._event_logger.emit(
+                    CommandEvent(
+                        event_type="command.error",
+                        app_id=self._app_id,
+                        session_id=self._session_id,
+                        command_name=command_name,
+                        error=str(e),
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+                )
 
         return True
 

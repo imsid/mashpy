@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict
 
-
 SignalCollectorFunc = Callable[[Dict[str, Any]], Any]
 
 
@@ -79,7 +78,7 @@ class SignalCollector:
                 value = collector(event)
                 if value is not None:
                     signals[name] = value
-            except Exception as e:
+            except Exception:
                 # Log error but don't fail collection
                 # In production, would use proper logging
                 pass

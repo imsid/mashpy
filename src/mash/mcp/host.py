@@ -1,10 +1,11 @@
+"""MCP Host for managing client instances and handling interactions."""
+
 from __future__ import annotations
 
 import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, cast
 
 from dotenv import load_dotenv
@@ -15,14 +16,7 @@ from .client import MCPHTTPClient
 # Load environment variables
 load_dotenv()
 
-LOGGER = logging.getLogger("mashnet.host")
-LOGGER.setLevel(logging.INFO)
-LOGGER.propagate = False
-if not LOGGER.handlers:
-    log_path = Path(__file__).resolve().with_name("host.log")
-    _handler = logging.FileHandler(log_path)
-    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    LOGGER.addHandler(_handler)
+LOGGER = logging.getLogger("mash.mcp.host")
 
 Role = Literal["assistant", "system", "user"]
 StopReason = Literal["endTurn", "stopSequence", "maxTokens"]
@@ -282,9 +276,14 @@ class Host:
     handing data off to humans or downstream LLMs.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, default_model: Optional[str] = None) -> None:
         self._clients: Dict[str, MCPHTTPClient] = {}
-        self._default_model = os.environ.get("PLOG_SAMPLING_MODEL", "gpt-4.1-mini")
+        self._default_model = (
+            default_model
+            or os.environ.get("MASH_SAMPLING_MODEL")
+            or os.environ.get("PLOG_SAMPLING_MODEL")
+            or "gpt-4.1-mini"
+        )
 
     def get_client(
         self, url: str, name: str, headers: Optional[Dict[str, str]] = None
@@ -375,7 +374,7 @@ class Host:
         return SamplingResponseSchema(
             sampling_id=sampling_id,
             role="assistant",
-            model="simulated-plog-llm",
+            model="simulated-mash-llm",
             text=error_text,
             stop_reason="endTurn",
         ).to_dict()
