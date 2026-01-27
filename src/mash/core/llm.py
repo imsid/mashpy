@@ -9,16 +9,16 @@ from typing import Any, Dict, List, Optional
 from anthropic import Anthropic
 
 from ..logging import EventLogger, LLMEvent
+from .config import SystemPrompt
 from .context import ToolCall
-
 
 # Model-specific minimum token thresholds for prompt caching
 # Based on Anthropic documentation: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 CACHE_MIN_TOKENS = {
-    "claude-haiku": 4096,      # Haiku 4.5 requires 4096 tokens minimum
-    "claude-sonnet": 1024,     # Sonnet 4.5 requires 1024 tokens minimum
-    "claude-opus": 1024,       # Opus 4 requires 1024 tokens minimum
-    "default": 1024,           # Default for unknown models
+    "claude-haiku": 4096,  # Haiku 4.5 requires 4096 tokens minimum
+    "claude-sonnet": 1024,  # Sonnet 4.5 requires 1024 tokens minimum
+    "claude-opus": 1024,  # Opus 4 requires 1024 tokens minimum
+    "default": 1024,  # Default for unknown models
 }
 
 
@@ -30,7 +30,7 @@ class LLMProvider(ABC):
         self,
         *,
         model: str,
-        system: str,
+        system: SystemPrompt,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         max_tokens: int,
@@ -141,7 +141,7 @@ class AnthropicProvider(LLMProvider):
         self,
         *,
         model: str,
-        system: str,
+        system: SystemPrompt,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         max_tokens: int,
@@ -189,6 +189,7 @@ class AnthropicProvider(LLMProvider):
                     model=model,
                     trace_id=self._trace_id,
                     tools=tool_names,
+                    payload={"messages": messages},
                     betas=betas,
                 )
             )
@@ -200,17 +201,21 @@ class AnthropicProvider(LLMProvider):
             cache_threshold = self._get_cache_threshold(model)
 
             # Estimate tokens using improved estimation from agent.py
-            system_tokens = int(len(system) / 3.5 * 1.05)
+            if isinstance(system, str):
+                system_tokens = int(len(system) / 3.5 * 1.05)
+            else:
+                system_tokens = 0
 
             # Only cache if >= model's minimum threshold
-            if system_tokens >= cache_threshold:
-                system_param = [
-                    {
-                        "type": "text",
-                        "text": system,
-                        "cache_control": {"type": "ephemeral"}
-                    }
-                ]
+            if isinstance(system, str):
+                if system_tokens >= cache_threshold:
+                    system_param = [
+                        {
+                            "type": "text",
+                            "text": system,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
 
         # Prepare tools with optional caching
         tools_param: Optional[List[Dict[str, Any]]] = None
@@ -224,7 +229,10 @@ class AnthropicProvider(LLMProvider):
                 has_defer_loading = last_tool.get("defer_loading", False)
                 if not has_defer_loading:
                     # Only cache if NOT using defer_loading
-                    tools_param[-1] = {**tools_param[-1], "cache_control": {"type": "ephemeral"}}
+                    tools_param[-1] = {
+                        **tools_param[-1],
+                        "cache_control": {"type": "ephemeral"},
+                    }
 
         params: Dict[str, Any] = {
             "model": model,
@@ -253,8 +261,14 @@ class AnthropicProvider(LLMProvider):
                 usage = getattr(response, "usage", None)
                 input_tokens = getattr(usage, "input_tokens", None) if usage else None
                 output_tokens = getattr(usage, "output_tokens", None) if usage else None
-                cache_creation_input_tokens = getattr(usage, "cache_creation_input_tokens", None) if usage else None
-                cache_read_input_tokens = getattr(usage, "cache_read_input_tokens", None) if usage else None
+                cache_creation_input_tokens = (
+                    getattr(usage, "cache_creation_input_tokens", None)
+                    if usage
+                    else None
+                )
+                cache_read_input_tokens = (
+                    getattr(usage, "cache_read_input_tokens", None) if usage else None
+                )
 
                 total_tokens = None
                 if input_tokens is not None and output_tokens is not None:

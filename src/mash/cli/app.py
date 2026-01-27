@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from ..core.agent import Agent
 from ..core.context import Context
@@ -26,6 +26,7 @@ class CLIContext:
     app_name: str
     session_id: str
     renderer: RichRenderer
+    cached_files: List[str] = field(default_factory=list)
     agent: Optional[Agent] = None
     store: Optional[ConversationStore] = None
 
@@ -114,9 +115,23 @@ class MashApp:
             self.agent.tools.register(tool)
 
         # Append runtime tools prompt to system prompt
-        self.agent.config.system_prompt = (
-            f"{self.agent.config.system_prompt}\n\n{RUNTIME_TOOLS_SYSTEM_PROMPT}"
-        )
+        system_prompt = self.agent.config.system_prompt
+        if isinstance(system_prompt, list):
+            insert_at = len(system_prompt)
+            for idx, block in enumerate(system_prompt):
+                if isinstance(block, dict) and block.get("cache_control"):
+                    insert_at = idx
+                    break
+            runtime_block = {
+                "type": "text",
+                "text": f"\n\n{RUNTIME_TOOLS_SYSTEM_PROMPT}",
+            }
+            system_prompt.insert(insert_at, runtime_block)
+            self.agent.config.system_prompt = system_prompt
+        else:
+            self.agent.config.system_prompt = (
+                f"{self.agent.config.system_prompt}\n\n{RUNTIME_TOOLS_SYSTEM_PROMPT}"
+            )
 
     def register_commands(self) -> None:
         """Register application-specific commands.

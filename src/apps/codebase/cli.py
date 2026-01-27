@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from mash.cli.app import CLIContext, MashApp
@@ -43,7 +44,7 @@ class CodebaseAgent(MashApp):
         # 1. Configure agent
         config = AgentConfig(
             app_id="codebase-agent",
-            system_prompt=self._build_system_prompt(),
+            system_prompt=self._build_system_prompt(ctx=None),
             model=ANTHROPIC_MODEL,
             max_steps=30,
             max_tokens=4096,
@@ -111,6 +112,14 @@ class CodebaseAgent(MashApp):
             )
         )
 
+        self.register_command(
+            Command(
+                name="index",
+                help="Manage repository index (build|show)",
+                handler=self._index_handler,
+            )
+        )
+
     def _switch_repo_handler(self, ctx: CLIContext, args: List[str]) -> None:
         """Handle /switch_repo command for both local and GitHub repos."""
         target = " ".join(args).strip()
@@ -160,11 +169,17 @@ class CodebaseAgent(MashApp):
         self.current_repo_path = repo_path
         self.current_repo_type = "local"
 
-        # Update system prompt
-        self.agent.config.system_prompt = self._build_system_prompt()
+        # Generate repo index if not exists and populate cached_files
+        self._ensure_repo_index(ctx, repo_path)
+
+        # Update system prompt (NOW with ctx to access cached_files)
+        self.agent.config.system_prompt = self._build_system_prompt(ctx)
 
         # Refresh tools (remove GitHub MCP tools if any)
         self._refresh_tools()
+
+        # Disable tool search for local repos
+        self.agent.config.tool_search_enabled = False
 
         ctx.renderer.info(f"Switched to local repository: {repo_path}")
         ctx.renderer.info("Bash tool enabled.")
@@ -251,6 +266,116 @@ class CodebaseAgent(MashApp):
             except Exception as e:
                 ctx.renderer.warn(f"Failed to disconnect GitHub: {e}")
 
+    def _ensure_repo_index(self, ctx: CLIContext, repo_path: str) -> None:
+        """Ensure repo index exists, generate if needed, and populate cached_files."""
+
+        # Clear any previous cached files
+        ctx.cached_files = []
+
+        # Get git SHA and cache paths
+        sha, cache_dir = self._get_cache_info(repo_path)
+        if not sha or not cache_dir:
+            return
+
+        # Check if index exists
+        repomap_json = cache_dir / "repomap.json"
+        tags_file = cache_dir / "tags"
+
+        if repomap_json.exists() and tags_file.exists():
+            ctx.renderer.info(f"Repository index found (SHA: {sha[:7]})")
+            # Populate cached_files
+            ctx.cached_files = [str(repomap_json), str(tags_file)]
+            return
+
+        # Generate index
+        ctx.renderer.info("Generating repository index (first time)...")
+        success = self._run_repomap_script(ctx, repo_path, force=False)
+
+        if success and repomap_json.exists() and tags_file.exists():
+            ctx.renderer.info("Repository index generated successfully")
+            # Populate cached_files
+            ctx.cached_files = [str(repomap_json), str(tags_file)]
+        else:
+            ctx.renderer.warn("Failed to generate complete index")
+
+    def _get_cache_info(self, repo_path: str) -> tuple[Optional[str], Optional[Path]]:
+        """Get git SHA and cache directory for a repo.
+
+        Returns:
+            (sha, cache_dir) or (None, None) if not a git repo
+        """
+
+        try:
+            # Check if we're in a git repo
+            result = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None, None
+
+            # Get SHA
+            sha_result = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if sha_result.returncode != 0:
+                return None, None
+
+            sha = sha_result.stdout.strip()
+            repo_name = Path(repo_path).name
+            cache_dir = Path.home() / ".mash" / "cache" / "repomap" / repo_name / sha
+
+            return sha, cache_dir
+
+        except Exception:
+            return None, None
+
+    def _run_repomap_script(
+        self, ctx: CLIContext, repo_path: str, force: bool = False
+    ) -> bool:
+        """Run repomap.sh script to generate index.
+
+        Args:
+            ctx: CLI context
+            repo_path: Path to repository
+            force: If True, use --force flag to rebuild
+
+        Returns:
+            True if successful, False otherwise
+        """
+
+        script_path = Path(__file__).parent / "repomap.sh"
+
+        try:
+            args = ["bash", str(script_path)]
+            if force:
+                args.append("--force")
+            args.append(repo_path)
+
+            result = subprocess.run(
+                args, capture_output=True, text=True, timeout=120, check=False
+            )
+
+            if result.returncode == 0:
+                return True
+            else:
+                ctx.renderer.warn(f"repomap.sh failed: {result.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            ctx.renderer.warn("Index generation timed out")
+            return False
+        except Exception as e:
+            ctx.renderer.warn(f"Failed to run repomap.sh: {e}")
+            return False
+
     def _refresh_tools(self) -> None:
         """Refresh the tool registry with current tools."""
         # Clear existing tools except bash and runtime tools
@@ -260,7 +385,7 @@ class CodebaseAgent(MashApp):
         if self.current_repo_type == "local":
             new_registry.register(self.bash_tool)
 
-        # Preserve runtime tools (they start with get_, set_, list_, delete_)
+        # Preserve runtime tools (they start with get_, set_, list_, delete_, load_)
         runtime_tool_names = [
             "get_conversation",
             "get_preferences",
@@ -269,6 +394,7 @@ class CodebaseAgent(MashApp):
             "set_app_data",
             "list_app_data",
             "delete_app_data",
+            "load_cached_files",
         ]
         for tool_name in runtime_tool_names:
             tool = self.agent.tools.get(tool_name)
@@ -346,23 +472,39 @@ class CodebaseAgent(MashApp):
 
         return f"{owner}/{repo}"
 
-    def _build_system_prompt(self) -> str:
-        """Build the system prompt with current repo context."""
-        repo_context = self._build_repo_context()
+    def _build_system_prompt(
+        self, ctx: Optional[CLIContext] = None
+    ) -> str | List[Dict[str, Any]]:
+        """Build the system prompt with current repo context.
 
-        return f"""Codebase guidance: You are an expert code analysis assistant helping engineers,
+        Args:
+            ctx: CLI context (used to access cached_files for index instructions)
+        """
+        repo_context, repomap_text = self._build_repo_context(ctx)
+
+        # Add index instructions for local repos
+        index_instructions = ""
+        if self.current_repo_type == "local" and ctx and ctx.cached_files:
+            index_instructions = self._build_index_instructions(
+                ctx.cached_files, repomap_preloaded=repomap_text is not None
+            )
+
+        system_prompt = f"""Codebase guidance: You are an expert code analysis assistant helping engineers,
 PMs, and designers understand how product features work by exploring codebases.
 
 **Session Start Protocol** (CRITICAL - Do this BEFORE exploring code):
 1. Call get_preferences to check for stored user context
 2. Call list_app_data to see what codebase knowledge has been accumulated
-3. If relevant stored context exists (e.g., file locations, patterns, architecture):
+3. **FOR LOCAL REPOS: Repository index is preloaded below** (repomap.json)
+   - Use it to orient before searching
+   - It provides: directory structure, entrypoints, configs, symbol map
+4. If relevant stored context exists (e.g., file locations, patterns, architecture):
    - Call get_app_data to retrieve it
    - Use this context to inform your exploration strategy
    - Avoid re-discovering what's already known
-4. If preferences exist, adapt your communication style immediately
-5. If no preferences and user shares their role/preferences: Call set_preferences IMMEDIATELY
-6. If no preferences and user hasn't shared: Briefly ask (this is optional)
+5. If preferences exist, adapt your communication style immediately
+6. If no preferences and user shares their role/preferences: Call set_preferences IMMEDIATELY
+7. If no preferences and user hasn't shared: Briefly ask (this is optional)
 
 **When to Use set_app_data** (Build knowledge over time):
 Store discoveries that will be useful in future queries:
@@ -379,6 +521,8 @@ DON'T store:
 
 **When User Shares Preferences**: Call set_preferences BEFORE responding!
 Example: User says "I'm a PM" → First call set_preferences({{"role": "PM"}}), THEN respond
+
+{index_instructions}
 
 {repo_context}
 
@@ -409,6 +553,7 @@ AVAILABLE TOOLS:
 2. MEMORY & PERSISTENCE TOOLS (always available):
    - get_conversation, get_preferences, set_preferences
    - get_app_data, set_app_data, list_app_data, delete_app_data
+   - **load_cached_files** - Load cached files (repomap.json is preloaded for local repos)
 
    **Usage Pattern**:
    - START OF QUERY: Call list_app_data to see accumulated knowledge
@@ -434,11 +579,43 @@ EXPLORATION STRATEGY:
 
 Be thorough but efficient. Don't read entire large files. Build knowledge incrementally.
 """
+        if repomap_text:
+            repomap_block = {
+                "type": "text",
+                "text": f"REPOSITORY INDEX (repomap.json):\n{repomap_text}",
+                "cache_control": {"type": "ephemeral"},
+            }
+            return [
+                {"type": "text", "text": system_prompt},
+                repomap_block,
+            ]
 
-    def _build_repo_context(self) -> str:
+        return system_prompt
+
+    def _build_repo_context(
+        self, ctx: Optional[CLIContext] = None
+    ) -> tuple[str, Optional[str]]:
         """Build repository context for system prompt."""
+        repomap_text = None
+        repomap_path = None
+        if self.current_repo_type == "local" and ctx and ctx.cached_files:
+            repomap_path = next(
+                (f for f in ctx.cached_files if f.endswith("repomap.json")), None
+            )
+            if repomap_path:
+                try:
+                    repomap_text = Path(repomap_path).read_text(encoding="utf-8")
+                except Exception:
+                    repomap_text = None
+
         if self.current_repo_type == "local" and self.current_repo_path:
-            return f"""Current repo: local at {self.current_repo_path}
+            repomap_note = (
+                f"\nRepository index: {repomap_path} (preloaded below)"
+                if repomap_path
+                else ""
+            )
+            return (
+                f"""Current repo: local at {self.current_repo_path}{repomap_note}
 
 **BASH EXPLORATION BEST PRACTICES**:
 
@@ -502,13 +679,209 @@ Be thorough but efficient. Don't read entire large files. Build knowledge increm
    - rg -l "pattern" --type py → Find relevant files
    - cat specific_file.py → Read targeted files
 
-Working directory is set to repo root. All bash commands execute there."""
+Working directory is set to repo root. All bash commands execute there.""",
+                repomap_text,
+            )
 
         if self.current_repo_type == "github" and self.current_repo_path:
-            return f"""Current repo: GitHub {self.current_repo_path}
-Use mcp_github_* tools for repository inspection."""
+            return (
+                f"""Current repo: GitHub {self.current_repo_path}
+Use mcp_github_* tools for repository inspection.""",
+                None,
+            )
 
-        return "No repository selected. Ask the user to run /switch_repo <path|github-url>."
+        return (
+            "No repository selected. Ask the user to run /switch_repo <path|github-url>.",
+            None,
+        )
+
+    def _index_handler(self, ctx: CLIContext, args: List[str]) -> None:
+        """Handle /index command.
+
+        Usage:
+            /index build [repo_name]   - Build or rebuild index
+            /index show [repo_name]    - Display index
+        """
+        if not args:
+            ctx.renderer.error("Usage: /index build|show [repo_name]")
+            return
+
+        action = args[0]
+        repo_name = args[1] if len(args) > 1 else None
+
+        # Determine repo path
+        if repo_name:
+            # Custom repo name provided - need to map to path
+            # For now, assume current repo only
+            ctx.renderer.warn("Custom repo name not yet supported. Using current repo.")
+
+        if self.current_repo_type != "local" or not self.current_repo_path:
+            ctx.renderer.error("No local repository selected. Use /switch_repo first.")
+            return
+
+        if action == "build":
+            self._build_index(ctx, self.current_repo_path)
+        elif action == "show":
+            self._show_index(ctx, self.current_repo_path)
+        else:
+            ctx.renderer.error(f"Unknown action: {action}. Use 'build' or 'show'.")
+
+    def _build_index(self, ctx: CLIContext, repo_path: str) -> None:
+        """Build or rebuild repository index."""
+
+        ctx.renderer.info("Building repository index...")
+
+        # Use unified script runner with force=True
+        success = self._run_repomap_script(ctx, repo_path, force=True)
+
+        if success:
+            # Get cache info and show paths
+            _, cache_dir = self._get_cache_info(repo_path)
+            if cache_dir:
+                ctx.renderer.info("✅ Repository index built successfully")
+                ctx.renderer.info(f"  {cache_dir / 'repomap.json'}")
+                ctx.renderer.info(f"  {cache_dir / 'repomap.md'}")
+                ctx.renderer.info(f"  {cache_dir / 'tags'}")
+
+                # Update cached_files in context
+                ctx.cached_files = [
+                    str(cache_dir / "repomap.json"),
+                    str(cache_dir / "tags"),
+                ]
+        else:
+            ctx.renderer.error("Failed to build index")
+
+    def _show_index(self, ctx: CLIContext, repo_path: str) -> None:
+        """Display repository index."""
+
+        try:
+            # Get current SHA
+            sha_result = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if sha_result.returncode != 0:
+                ctx.renderer.error("Failed to get git SHA")
+                return
+
+            sha = sha_result.stdout.strip()
+            repo_name = Path(repo_path).name
+            cache_dir = Path.home() / ".mash" / "cache" / "repomap" / repo_name / sha
+            md_path = cache_dir / "repomap.json"
+            _ = cache_dir / "tags"
+
+            if not md_path.exists():
+                ctx.renderer.warn(
+                    "Repository index not found. Run '/index build' first."
+                )
+                return
+
+            # Read and display markdown
+            md_content = md_path.read_text(encoding="utf-8")
+            ctx.renderer.info(f"\n{md_content}")
+
+        except Exception as e:
+            ctx.renderer.error(f"Failed to show index: {e}")
+
+    def _build_index_instructions(
+        self, cached_files: List[str], repomap_preloaded: bool
+    ) -> str:
+        """Build instructions for using the repository index (local repos only).
+
+        Args:
+            cached_files: List of cached file paths from CLIContext
+        """
+        if not cached_files:
+            return ""
+
+        # Find repomap.json and tags from cached_files
+        repomap_json = next(
+            (f for f in cached_files if f.endswith("repomap.json")), None
+        )
+        tags_file = next((f for f in cached_files if f.endswith("tags")), None)
+
+        if not repomap_json:
+            return ""
+
+        if repomap_preloaded:
+            return f"""
+**REPOSITORY INDEX PRELOADED** (Local repos only):
+
+The repomap.json index is included below from:
+  {repomap_json}
+
+The repomap.json index contains:
+  - directory_overview: Complete folder structure with depth
+  - entrypoints: Main entry files (main.py, cli.py, app.py, etc.)
+  - configs: Configuration files (pyproject.toml, setup.py, etc.)
+  - packages: Symbol map with sample symbols (classes, functions by package)
+  - search_seeds: High-signal search queries for common patterns
+  - anchors: README and other key document locations
+
+{f'Tags file available: {tags_file}. Load with load_cached_files if you need ctags detail.' if tags_file else ''}
+
+USE INDEX TO ORIENT:
+  - Review directory_overview to understand project structure
+  - Check entrypoints to find where execution starts
+  - Scan packages to see major modules and their symbols
+  - Read README if present (path in anchors.readme)
+
+TARGETED EXPLORATION:
+  - Use index to identify relevant directories/files
+  - Then use bash/rg for detailed searches
+  - Example: Index shows "src/mash/tools/" → search there with rg
+
+BENEFITS:
+  ✓ Get complete repo structure without token-heavy bash commands
+  ✓ Find entrypoints and key files instantly
+  ✓ See symbol map (classes/functions) before diving in
+  ✓ Use search_seeds for high-value queries
+"""
+
+        return f"""
+**REPOSITORY INDEX AVAILABLE** (Local repos only):
+
+The repository has been indexed with structural metadata. Load it FIRST before searching.
+
+STEP 1 - LOAD INDEX FILES:
+  # Load the JSON index
+  load_cached_files(file_path="{repomap_json}")
+
+  {'# Load the ctags file (symbol definitions)' if tags_file else ''}
+  {f'load_cached_files(file_path="{tags_file}")' if tags_file else ''}
+
+  The repomap.json index contains:
+  - directory_overview: Complete folder structure with depth
+  - entrypoints: Main entry files (main.py, cli.py, app.py, etc.)
+  - configs: Configuration files (pyproject.toml, setup.py, etc.)
+  - packages: Symbol map with sample symbols (classes, functions by package)
+  - search_seeds: High-signal search queries for common patterns
+  - anchors: README and other key document locations
+
+  {'The tags file is a ctags output with symbol definitions (functions, classes, etc.)' if tags_file else ''}
+
+STEP 2 - USE INDEX TO ORIENT:
+  - Review directory_overview to understand project structure
+  - Check entrypoints to find where execution starts
+  - Scan packages to see major modules and their symbols
+  - Read README if present (path in anchors.readme)
+
+STEP 3 - TARGETED EXPLORATION:
+  - Use index to identify relevant directories/files
+  - Then use bash/rg for detailed searches
+  - Example: Index shows "src/mash/tools/" → search there with rg
+
+BENEFITS:
+  ✓ Get complete repo structure without token-heavy bash commands
+  ✓ Find entrypoints and key files instantly
+  ✓ See symbol map (classes/functions) before diving in
+  ✓ Use search_seeds for high-value queries
+
+After loading index, use bash tool for detailed file exploration.
+"""
 
     def cleanup(self) -> None:
         """Clean up resources on shutdown."""

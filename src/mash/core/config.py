@@ -16,13 +16,15 @@ TOOL_SEARCH_BETAS: List[str] = ["advanced-tool-use-2025-11-20"]
 load_dotenv()
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
+SystemPrompt = str | List[Dict[str, Any]]
+
 
 @dataclass
 class AgentConfig:
     """Configuration for agent behavior."""
 
     app_id: str
-    system_prompt: str
+    system_prompt: SystemPrompt
     model: str = ANTHROPIC_MODEL
     max_steps: int = 30
     max_tokens: int = 4096
@@ -36,7 +38,10 @@ class AgentConfig:
         """Validate configuration."""
         if not self.app_id:
             raise ValueError("app_id is required")
-        if not self.system_prompt:
+        if isinstance(self.system_prompt, str):
+            if not self.system_prompt:
+                raise ValueError("system_prompt is required")
+        elif not self.system_prompt:
             raise ValueError("system_prompt is required")
         if self.max_steps <= 0:
             raise ValueError("max_steps must be positive")

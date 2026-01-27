@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from .config import SystemPrompt
+
 
 class MessageRole(str, Enum):
     """Message role types."""
@@ -105,7 +107,7 @@ class Context:
     """Execution context for the agent."""
 
     messages: List[Message] = field(default_factory=list)
-    system_prompt: str = ""
+    system_prompt: SystemPrompt = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
     signals: Dict[str, Any] = field(default_factory=dict)
     is_complete: bool = False

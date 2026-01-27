@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from .config import (
     TOOL_SEARCH_TOOL_NAME,
     TOOL_SEARCH_TOOL_TYPE,
     AgentConfig,
+    SystemPrompt,
 )
 from .context import Action, ActionType, Context, MessageRole, Response, ToolResult
 from .llm import LLMProvider
@@ -181,7 +183,10 @@ class Agent:
                             # Extract text from content blocks
                             text_parts = []
                             for block in content:
-                                if isinstance(block, dict) and block.get("type") == "text":
+                                if (
+                                    isinstance(block, dict)
+                                    and block.get("type") == "text"
+                                ):
                                     text_parts.append(block.get("text", ""))
                             assistant_response = " ".join(text_parts)
                         break
@@ -239,7 +244,7 @@ class Agent:
         # Log token usage breakdown for debugging
         if self._event_logger:
             # Estimate tokens for each component
-            system_prompt_tokens = self._estimate_tokens(system_prompt)
+            system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
             tool_defs_tokens = sum(self._estimate_tokens_json(t) for t in tool_defs)
             messages_tokens = sum(self._estimate_tokens_json(m) for m in messages)
             estimated_total = system_prompt_tokens + tool_defs_tokens + messages_tokens
@@ -290,7 +295,8 @@ class Agent:
             tool_calls_detail = None
             if action.tool_calls:
                 tool_calls_detail = [
-                    {"name": tc.name, "arguments": tc.arguments} for tc in action.tool_calls
+                    {"name": tc.name, "arguments": tc.arguments}
+                    for tc in action.tool_calls
                 ]
 
             think_event = AgentTraceEvent(
@@ -304,7 +310,11 @@ class Agent:
                     [tc.name for tc in action.tool_calls] if action.tool_calls else None
                 ),
                 token_usage=token_usage,
-                payload={"tool_calls_detail": tool_calls_detail} if tool_calls_detail else {},
+                payload=(
+                    {"tool_calls_detail": tool_calls_detail}
+                    if tool_calls_detail
+                    else {}
+                ),
             )
             self._event_logger.emit(think_event)
 
@@ -373,7 +383,6 @@ class Agent:
 
             # Log tool call with arguments before execution
             if self._event_logger:
-                from ..logging import AgentTraceEvent
 
                 tool_call_event = AgentTraceEvent(
                     event_type="agent.tool.call",
@@ -393,7 +402,6 @@ class Agent:
 
             # Log tool result
             if self._event_logger:
-                from ..logging import AgentTraceEvent
 
                 result_event = AgentTraceEvent(
                     event_type="agent.tool.result",
@@ -405,7 +413,9 @@ class Agent:
                         "tool_call_id": tool_call.id,
                         "is_error": result.is_error,
                         "content_length": len(result.content) if result.content else 0,
-                        "content_preview": result.content[:200] if result.content else None,
+                        "content_preview": (
+                            result.content[:200] if result.content else None
+                        ),
                     },
                 )
                 self._event_logger.emit(result_event)
@@ -559,6 +569,7 @@ class Agent:
                 "set_app_data",
                 "list_app_data",
                 "delete_app_data",
+                "load_cached_files",  # Load repo index and cached files
             }
 
             for tool_def in tool_defs:
@@ -592,32 +603,34 @@ class Agent:
                     # Non-deferred tools send full definition
                     tool_tokens = self._estimate_tokens_json(tool_def)
 
-                tool_sizes.append({
-                    "name": tool_name,
-                    "tokens": tool_tokens,
-                    "deferred": is_deferred
-                })
+                tool_sizes.append(
+                    {"name": tool_name, "tokens": tool_tokens, "deferred": is_deferred}
+                )
 
             # Sort by token count and log top tools
             tool_sizes.sort(key=lambda x: x["tokens"], reverse=True)
             total_tool_tokens = sum(t["tokens"] for t in tool_sizes)
 
-            self._event_logger.emit(DebugEvent(
-                event_type="agent.tools.token_breakdown",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                payload={
-                    "trace_id": self._trace_id,
-                    "tool_count": len(tool_defs),
-                    "deferred_tool_count": deferred_count,
-                    "non_deferred_tool_count": len(tool_defs) - deferred_count,
-                    "total_tool_tokens": total_tool_tokens,
-                    "avg_tokens_per_tool": total_tool_tokens // len(tool_defs) if tool_defs else 0,
-                    "tool_search_enabled": self.config.tool_search_enabled,
-                    "top_10_largest_tools": tool_sizes[:10],
-                    "all_tool_sizes": tool_sizes,
-                },
-            ))
+            self._event_logger.emit(
+                DebugEvent(
+                    event_type="agent.tools.token_breakdown",
+                    app_id=self.config.app_id,
+                    session_id=self._session_id,
+                    payload={
+                        "trace_id": self._trace_id,
+                        "tool_count": len(tool_defs),
+                        "deferred_tool_count": deferred_count,
+                        "non_deferred_tool_count": len(tool_defs) - deferred_count,
+                        "total_tool_tokens": total_tool_tokens,
+                        "avg_tokens_per_tool": (
+                            total_tool_tokens // len(tool_defs) if tool_defs else 0
+                        ),
+                        "tool_search_enabled": self.config.tool_search_enabled,
+                        "top_10_largest_tools": tool_sizes[:10],
+                        "all_tool_sizes": tool_sizes,
+                    },
+                )
+            )
 
         return tool_defs
 
@@ -632,7 +645,7 @@ class Agent:
             return list(TOOL_SEARCH_BETAS)
         return None
 
-    def _add_tool_search_guidance(self, system_prompt: str) -> str:
+    def _add_tool_search_guidance(self, system_prompt: SystemPrompt) -> SystemPrompt:
         """Add tool search guidance to system prompt.
 
         Args:
@@ -647,6 +660,8 @@ class Agent:
 TOOL DISCOVERY:
 You have access to {TOOL_SEARCH_TOOL_NAME} for discovering tools by name or description when you are unsure what to call. Use {TOOL_SEARCH_TOOL_NAME} if you are not confident about the right tool name.
 """
+        if isinstance(system_prompt, list):
+            return system_prompt + [{"type": "text", "text": tool_search_guidance}]
         return f"{system_prompt}\n{tool_search_guidance}"
 
     def _estimate_tokens(self, text: str) -> int:
@@ -683,8 +698,14 @@ You have access to {TOOL_SEARCH_TOOL_NAME} for discovering tools by name or desc
         Returns:
             Estimated token count.
         """
-        import json
+
         try:
             return self._estimate_tokens(json.dumps(obj))
         except (TypeError, ValueError):
             return 0
+
+    def _estimate_system_prompt_tokens(self, system_prompt: SystemPrompt) -> int:
+        """Estimate token count for system prompt."""
+        if isinstance(system_prompt, str):
+            return self._estimate_tokens(system_prompt)
+        return self._estimate_tokens_json(system_prompt)
