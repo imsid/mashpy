@@ -16,19 +16,23 @@ class ConversationStore(Protocol):
 
     def save_turn(
         self,
+        trace_id: str,
         session_id: str,
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
+        session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Save a conversation turn with signals.
 
         Args:
+            trace_id: Trace ID for this turn (used as turn_id).
             session_id: Session identifier.
             user_message: User's message.
             agent_response: Agent's response.
             signals: Collected signals for this turn.
+            session_total_tokens: Total tokens used in this session after this turn.
             metadata: Optional metadata.
 
         Returns:
@@ -196,6 +200,7 @@ class SQLiteStore(ConversationStore):
                     user_message TEXT NOT NULL,
                     agent_response TEXT NOT NULL,
                     embedding BLOB,
+                    session_total_tokens INTEGER NOT NULL DEFAULT 0,
                     metadata TEXT,
                     created_at REAL NOT NULL
                 )
@@ -262,7 +267,7 @@ class SQLiteStore(ConversationStore):
             self._conn.commit()
 
     def _migrate_turns_table(self) -> None:
-        """Migrate existing turns table to add app_id column if needed."""
+        """Migrate existing turns table to add missing columns if needed."""
         # Check if app_id column exists
         cursor = self._conn.execute("PRAGMA table_info(turns)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -277,16 +282,23 @@ class SQLiteStore(ConversationStore):
                 "CREATE INDEX IF NOT EXISTS idx_turns_app ON turns(app_id)"
             )
 
+        if "session_total_tokens" not in columns:
+            self._conn.execute(
+                "ALTER TABLE turns ADD COLUMN session_total_tokens INTEGER NOT NULL DEFAULT 0"
+            )
+
     def save_turn(
         self,
+        trace_id: str,
         session_id: str,
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
+        session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Save a conversation turn with signals."""
-        turn_id = f"{session_id}_{int(time.time() * 1000)}"
+        turn_id = trace_id
         timestamp = time.time()
 
         # Generate embedding (placeholder - would use real embedding model)
@@ -301,8 +313,8 @@ class SQLiteStore(ConversationStore):
             self._conn.execute(
                 """
                 INSERT INTO turns (turn_id, session_id, user_message, agent_response,
-                                   embedding, metadata, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   embedding, session_total_tokens, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     turn_id,
@@ -310,6 +322,7 @@ class SQLiteStore(ConversationStore):
                     user_message,
                     agent_response,
                     embedding_blob,
+                    int(session_total_tokens),
                     metadata_json,
                     timestamp,
                 ),
@@ -345,7 +358,7 @@ class SQLiteStore(ConversationStore):
             if limit is None:
                 rows = self._conn.execute(
                     """
-                    SELECT turn_id, user_message, agent_response, metadata, created_at
+                    SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
                     FROM turns
                     WHERE session_id = ?
                     ORDER BY created_at ASC
@@ -355,7 +368,7 @@ class SQLiteStore(ConversationStore):
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT turn_id, user_message, agent_response, metadata, created_at
+                    SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
                     FROM turns
                     WHERE session_id = ?
                     ORDER BY created_at DESC
@@ -366,7 +379,14 @@ class SQLiteStore(ConversationStore):
                 rows = list(reversed(rows))
 
         turns = []
-        for turn_id, user_msg, agent_resp, metadata_json, created_at in rows:
+        for (
+            turn_id,
+            user_msg,
+            agent_resp,
+            session_total_tokens,
+            metadata_json,
+            created_at,
+        ) in rows:
             # Get signals for this turn
             signals = self._get_signals_for_turn(turn_id)
 
@@ -381,6 +401,7 @@ class SQLiteStore(ConversationStore):
                     "turn_id": turn_id,
                     "user_message": user_msg,
                     "agent_response": agent_resp,
+                    "session_total_tokens": session_total_tokens,
                     "signals": signals,
                     "metadata": metadata,
                     "created_at": created_at,

@@ -49,6 +49,8 @@ class CodebaseAgent(MashApp):
             max_steps=30,
             max_tokens=4096,
             api_key=ANTHROPIC_API_KEY,
+            conversation_history_turns=3,
+            compaction_token_threshold=30000,
             tool_search_enabled=True,  # Enable Claude tool search
         )
 
