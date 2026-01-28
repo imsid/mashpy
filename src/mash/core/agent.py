@@ -48,6 +48,7 @@ class Agent:
         self._session_id: Optional[str] = None
         self._trace_id: Optional[str] = None
         self._chain_renderer: Optional[Any] = None  # ChainOfThoughtRenderer
+        self._run_token_usage: Dict[str, int] = {"input": 0, "output": 0}
 
     def set_signal_collector(self, collector: SignalCollector) -> None:
         """Set the signal collector for automatic signal collection."""
@@ -81,10 +82,13 @@ class Agent:
             Response containing the agent's output.
         """
         # Generate trace ID for this run
+        self._trace_id = str(uuid.uuid4())
+        # Set trace ID in thread-local context for cross-component correlation
         if self._event_logger:
-            self._trace_id = str(uuid.uuid4())
-            # Set trace ID in thread-local context for cross-component correlation
             set_trace_id(self._trace_id)
+
+        # Reset per-run token usage accumulator
+        self._run_token_usage = {"input": 0, "output": 0}
 
         # Set trace ID on LLM provider for event correlation
         if hasattr(self.llm, "set_trace_id"):
@@ -200,6 +204,8 @@ class Agent:
                 )
                 self._event_logger.emit(complete_event)
 
+            context.metadata["trace_id"] = self._trace_id
+            context.metadata["token_usage"] = dict(self._run_token_usage)
             return Response.from_context(context)
         finally:
             # Always clear trace ID when execution completes
@@ -238,18 +244,17 @@ class Agent:
         if self.config.tool_search_enabled:
             system_prompt = self._add_tool_search_guidance(system_prompt)
 
+        # Estimate tokens for compaction decision
+        system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
+        tool_defs_tokens = sum(self._estimate_tokens_json(t) for t in tool_defs)
+        messages_tokens = sum(self._estimate_tokens_json(m) for m in messages)
+        estimated_total = system_prompt_tokens + tool_defs_tokens + messages_tokens
+
         # Get beta flags for LLM request
         betas = self._get_betas()
 
         # Log token usage breakdown for debugging
         if self._event_logger:
-            # Estimate tokens for each component
-            system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
-            tool_defs_tokens = sum(self._estimate_tokens_json(t) for t in tool_defs)
-            messages_tokens = sum(self._estimate_tokens_json(m) for m in messages)
-            estimated_total = system_prompt_tokens + tool_defs_tokens + messages_tokens
-
-            # Log token breakdown
             token_breakdown_event = DebugEvent(
                 event_type="agent.prompt.token_breakdown",
                 app_id=self.config.app_id,
@@ -281,16 +286,23 @@ class Agent:
         # Parse response and update context
         action = self._parse_response_to_action(response, context)
 
+        # Extract token usage for compaction tracking
+        token_usage = None
+        if hasattr(response, "usage"):
+            token_usage = {
+                "input": getattr(response.usage, "input_tokens", None),
+                "output": getattr(response.usage, "output_tokens", None),
+            }
+        if token_usage:
+            input_tokens = token_usage.get("input")
+            output_tokens = token_usage.get("output")
+            if input_tokens is not None:
+                self._run_token_usage["input"] += int(input_tokens)
+            if output_tokens is not None:
+                self._run_token_usage["output"] += int(output_tokens)
+
         # Log think completion
         if self._event_logger:
-            # Extract token usage from response if available
-            token_usage = None
-            if hasattr(response, "usage"):
-                token_usage = {
-                    "input": getattr(response.usage, "input_tokens", None),
-                    "output": getattr(response.usage, "output_tokens", None),
-                }
-
             # Prepare tool calls detail for renderer
             tool_calls_detail = None
             if action.tool_calls:

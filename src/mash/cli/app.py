@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from ..core.agent import Agent
-from ..core.context import Context
-from ..logging import EventLogger
+from ..core.context import Context, MessageRole
+from ..logging import AgentTraceEvent, EventLogger
+from ..memory.compaction import compact_conversation
 from ..memory.store import ConversationStore
 from ..tools.runtime import RUNTIME_TOOLS_SYSTEM_PROMPT, RuntimeToolBuilder
 from .chain_renderer import ChainOfThoughtRenderer
@@ -171,8 +172,81 @@ class MashApp:
             ctx: CLI context.
             message: User message.
         """
+        if ctx.store and self.agent.config.compaction_token_threshold > 0:
+            session_total_tokens = self._get_session_total_tokens(ctx)
+            if session_total_tokens >= self.agent.config.compaction_token_threshold:
+                summary_text, summary_turn_id = compact_conversation(
+                    store=ctx.store,
+                    llm=self.agent.llm,
+                    app_id=self.agent.config.app_id,
+                    session_id=ctx.session_id,
+                    model=self.agent.config.model,
+                    max_tokens=self.agent.config.max_tokens,
+                    temperature=self.agent.config.compaction_temperature,
+                    turn_limit=self.agent.config.compaction_turn_limit,
+                    reason="auto",
+                    session_total_tokens_reset=0,
+                )
+                if summary_text:
+                    ctx.renderer.info(
+                        "Compaction triggered — summary checkpoint created."
+                    )
+                    ctx.renderer.markdown(summary_text)
+                if summary_text and self.event_logger:
+                    self.event_logger.emit(
+                        AgentTraceEvent(
+                            event_type="agent.compaction",
+                            app_id=self.agent.config.app_id,
+                            session_id=ctx.session_id,
+                            trace_id=None,
+                            payload={
+                                "reason": "auto",
+                                "summary_turn_id": summary_turn_id,
+                                "compaction_token_threshold": self.agent.config.compaction_token_threshold,
+                                "session_total_tokens_before_compaction": session_total_tokens,
+                                "turn_limit": self.agent.config.compaction_turn_limit,
+                            },
+                        )
+                    )
+
         # Create context with user message
         context = Context(system_prompt=self.agent.config.system_prompt)
+        # Prepend recent conversation turns for continuity (e.g., "yes" responses).
+        if ctx.store and self.agent.config.conversation_history_turns > 0:
+            turns = ctx.store.get_turns(session_id=ctx.session_id, limit=None)
+            if turns:
+                summary_index = None
+                for idx in range(len(turns) - 1, -1, -1):
+                    meta = turns[idx].get("metadata") or {}
+                    if meta.get("type") == "summary_checkpoint":
+                        summary_index = idx
+                        break
+
+                if summary_index is not None:
+                    tail_turns = turns[summary_index + 1 :]
+                    tail_turns = tail_turns[-self.agent.config.conversation_history_turns :]
+                    turns_to_include = [turns[summary_index]] + tail_turns
+                else:
+                    turns_to_include = turns[-self.agent.config.conversation_history_turns :]
+
+                for turn in turns_to_include:
+                    meta = turn.get("metadata") or {}
+                    user_text = turn.get("user_message")
+                    if user_text and meta.get("type") != "summary_checkpoint":
+                        context.add_message(
+                            MessageRole.USER,
+                            user_text,
+                            source="history",
+                            turn_id=turn.get("turn_id"),
+                        )
+                    agent_text = turn.get("agent_response")
+                    if agent_text:
+                        context.add_message(
+                            MessageRole.ASSISTANT,
+                            agent_text,
+                            source="history",
+                            turn_id=turn.get("turn_id"),
+                        )
         context.add_user_message(message)
 
         # Run agent
@@ -184,12 +258,30 @@ class MashApp:
 
         # Save turn if store available
         if ctx.store:
+            token_usage = None
+            if response.metadata:
+                token_usage = response.metadata.get("token_usage")
+            trace_id = None
+            if response.metadata:
+                trace_id = response.metadata.get("trace_id")
+            total_tokens = 0
+            if token_usage:
+                input_tokens = token_usage.get("input")
+                output_tokens = token_usage.get("output")
+                if input_tokens is not None and output_tokens is not None:
+                    total_tokens = int(input_tokens) + int(output_tokens)
+
+            session_total_tokens = self._get_session_total_tokens(ctx) + total_tokens
+            metadata = dict(response.metadata or {})
+            metadata["token_usage"] = token_usage or {}
             ctx.store.save_turn(
+                trace_id=trace_id or str(uuid.uuid4()),
                 session_id=ctx.session_id,
                 user_message=message,
                 agent_response=response.text,
                 signals=response.signals,
-                metadata=response.metadata,
+                session_total_tokens=session_total_tokens,
+                metadata=metadata,
             )
 
     def _register_default_commands(self) -> None:
@@ -256,6 +348,15 @@ class MashApp:
             )
         )
 
+        self.commands.register(
+            Command(
+                name="compact",
+                help="Summarize conversation and save a checkpoint",
+                handler=self._compact_handler,
+                aliases=("compaction",),
+            )
+        )
+
     def _help_handler(self, ctx: CLIContext, _args: list[str]) -> None:
         """Show help for commands."""
         commands = self.commands.list_commands()
@@ -283,6 +384,23 @@ class MashApp:
         ctx.renderer.info(f"Session ID: {ctx.session_id}")
         ctx.renderer.info(f"Model: {self.agent.config.model}")
         ctx.renderer.info(f"Max steps: {self.agent.config.max_steps}")
+        if ctx.store:
+            ctx.renderer.info(
+                f"Session tokens: {self._get_session_total_tokens(ctx)}"
+            )
+
+    def _get_session_total_tokens(self, ctx: CLIContext) -> int:
+        """Get total tokens used for the current session from the latest turn."""
+        if not ctx.store:
+            return 0
+        turns = ctx.store.get_turns(session_id=ctx.session_id, limit=1)
+        if not turns:
+            return 0
+        value = turns[-1].get("session_total_tokens", 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     def _preferences_handler(self, ctx: CLIContext, args: list[str]) -> None:
         """Handle /preferences command.
@@ -451,3 +569,29 @@ class MashApp:
             ctx.renderer.print(f"\n--- Turn {i} ---")
             ctx.renderer.print(f"User: {turn['user_message']}")
             ctx.renderer.print(f"Agent: {turn['agent_response']}")
+
+    def _compact_handler(self, ctx: CLIContext, _args: list[str]) -> None:
+        """Handle /compact command."""
+        if not ctx.store:
+            ctx.renderer.warn("No conversation store available.")
+            return
+
+        summary_text, turn_id = compact_conversation(
+            store=ctx.store,
+            llm=self.agent.llm,
+            app_id=self.agent.config.app_id,
+            session_id=ctx.session_id,
+            model=self.agent.config.model,
+            max_tokens=self.agent.config.max_tokens,
+            temperature=self.agent.config.compaction_temperature,
+            turn_limit=self.agent.config.compaction_turn_limit,
+            reason="manual",
+            session_total_tokens_reset=0,
+        )
+
+        if not summary_text:
+            ctx.renderer.warn("No conversation history to compact.")
+            return
+
+        ctx.renderer.info(f"Conversation compacted (turn_id={turn_id}).")
+        ctx.renderer.markdown(summary_text)
