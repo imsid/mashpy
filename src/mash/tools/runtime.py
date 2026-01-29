@@ -25,7 +25,7 @@ You have access to the following persistent memory tools in ADDITION to the repo
 
 **Conversation & Preferences:**
 - `get_conversation` - Retrieve past conversation turns (reduces context window usage)
-- `get_preferences` - Get stored user preferences (depth, style, focus areas, etc.)
+- `get_preferences` - Get stored user preferences (style, focus areas, etc.)
 - `set_preferences` - Store user preferences for future conversations
 
 **Knowledge Base (App Data):**

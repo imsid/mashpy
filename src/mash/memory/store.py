@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 import sqlite3
 import threading
 import time
@@ -53,22 +52,6 @@ class ConversationStore(Protocol):
 
         Returns:
             List of turns.
-        """
-        ...
-
-    def search_by_similarity(
-        self,
-        query_embedding: List[float],
-        limit: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """Search for similar conversations by embedding.
-
-        Args:
-            query_embedding: Query embedding vector.
-            limit: Maximum number of results.
-
-        Returns:
-            List of similar turns.
         """
         ...
 
@@ -199,16 +182,12 @@ class SQLiteStore(ConversationStore):
                     app_id TEXT NOT NULL DEFAULT 'default',
                     user_message TEXT NOT NULL,
                     agent_response TEXT NOT NULL,
-                    embedding BLOB,
                     session_total_tokens INTEGER NOT NULL DEFAULT 0,
                     metadata TEXT,
                     created_at REAL NOT NULL
                 )
                 """
             )
-
-            # Migrate existing turns table if app_id column doesn't exist
-            self._migrate_turns_table()
 
             # Signals table
             self._conn.execute(
@@ -266,27 +245,6 @@ class SQLiteStore(ConversationStore):
 
             self._conn.commit()
 
-    def _migrate_turns_table(self) -> None:
-        """Migrate existing turns table to add missing columns if needed."""
-        # Check if app_id column exists
-        cursor = self._conn.execute("PRAGMA table_info(turns)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        if "app_id" not in columns:
-            # Add app_id column with default value
-            self._conn.execute(
-                "ALTER TABLE turns ADD COLUMN app_id TEXT NOT NULL DEFAULT 'default'"
-            )
-            # Rebuild index
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_turns_app ON turns(app_id)"
-            )
-
-        if "session_total_tokens" not in columns:
-            self._conn.execute(
-                "ALTER TABLE turns ADD COLUMN session_total_tokens INTEGER NOT NULL DEFAULT 0"
-            )
-
     def save_turn(
         self,
         trace_id: str,
@@ -301,10 +259,6 @@ class SQLiteStore(ConversationStore):
         turn_id = trace_id
         timestamp = time.time()
 
-        # Generate embedding (placeholder - would use real embedding model)
-        embedding = self._generate_embedding(user_message)
-        embedding_blob = pickle.dumps(embedding) if embedding else None
-
         # Serialize metadata
         metadata_json = json.dumps(metadata or {})
 
@@ -313,15 +267,14 @@ class SQLiteStore(ConversationStore):
             self._conn.execute(
                 """
                 INSERT INTO turns (turn_id, session_id, user_message, agent_response,
-                                   embedding, session_total_tokens, metadata, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   session_total_tokens, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     turn_id,
                     session_id,
                     user_message,
                     agent_response,
-                    embedding_blob,
                     int(session_total_tokens),
                     metadata_json,
                     timestamp,
@@ -423,96 +376,6 @@ class SQLiteStore(ConversationStore):
             ).fetchall()
 
         return {name: value for name, value in rows}
-
-    def search_by_similarity(
-        self,
-        query_embedding: List[float],
-        limit: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """Search for similar conversations by embedding.
-
-        Note: This is a simplified implementation. A production system
-        would use a vector database or more efficient similarity search.
-        """
-        # Get all turns with embeddings
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT turn_id, session_id, user_message, agent_response,
-                       embedding, metadata, created_at
-                FROM turns
-                WHERE embedding IS NOT NULL
-                """
-            ).fetchall()
-
-        # Calculate similarity scores
-        results = []
-        for (
-            turn_id,
-            session_id,
-            user_msg,
-            agent_resp,
-            embedding_blob,
-            metadata_json,
-            created_at,
-        ) in rows:
-            # Deserialize embedding
-            embedding = pickle.loads(embedding_blob) if embedding_blob else None
-            if not embedding:
-                continue
-
-            # Calculate cosine similarity
-            similarity = self._cosine_similarity(query_embedding, embedding)
-
-            # Get signals
-            signals = self._get_signals_for_turn(turn_id)
-
-            # Parse metadata
-            try:
-                metadata = json.loads(metadata_json) if metadata_json else {}
-            except json.JSONDecodeError:
-                metadata = {}
-
-            results.append(
-                {
-                    "turn_id": turn_id,
-                    "session_id": session_id,
-                    "user_message": user_msg,
-                    "agent_response": agent_resp,
-                    "signals": signals,
-                    "metadata": metadata,
-                    "similarity": similarity,
-                    "created_at": created_at,
-                }
-            )
-
-        # Sort by similarity and return top results
-        results.sort(key=lambda x: x["similarity"], reverse=True)
-        return results[:limit]
-
-    def _generate_embedding(self, text: str) -> Optional[List[float]]:
-        """Generate embedding for text.
-
-        This is a placeholder. In production, use a real embedding model
-        like OpenAI embeddings or sentence transformers.
-        """
-        # Placeholder: return None for now
-        # In production: call embedding API or model
-        return []
-
-    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
-        if not vec1 or not vec2 or len(vec1) != len(vec2):
-            return 0.0
-
-        dot_product = sum(a * b for a, b in zip(vec1, vec2))
-        magnitude1 = sum(a * a for a in vec1) ** 0.5
-        magnitude2 = sum(b * b for b in vec2) ** 0.5
-
-        if magnitude1 == 0 or magnitude2 == 0:
-            return 0.0
-
-        return dot_product / (magnitude1 * magnitude2)
 
     def get_preferences(
         self,

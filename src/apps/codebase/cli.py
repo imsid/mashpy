@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from prompt_toolkit import prompt
+
 from mash.cli.app import CLIContext, MashApp
 from mash.cli.commands import Command
 from mash.core.agent import Agent
@@ -108,6 +110,14 @@ class CodebaseAgent(MashApp):
 
         self.register_command(
             Command(
+                name="configure",
+                help="Set onboarding preferences (role, focus, response style)",
+                handler=self._configure_handler,
+            )
+        )
+
+        self.register_command(
+            Command(
                 name="current_repo",
                 help="Show the active repository and tool mode",
                 handler=self._current_repo_handler,
@@ -129,20 +139,24 @@ class CodebaseAgent(MashApp):
             ctx.renderer.warn("Usage: /switch_repo <path|github-url>")
             return
 
+        switched = False
+
         # Check if it's a GitHub URL
         if target.startswith(
             ("https://github.com/", "http://github.com/", "github.com/")
         ):
-            self._switch_to_github(ctx, target)
-            return
+            switched = self._switch_to_github(ctx, target)
+        else:
+            # Otherwise treat as local path
+            path = os.path.expanduser(target)
+            if not os.path.isdir(path):
+                ctx.renderer.error(f"Invalid path or URL: {target}")
+                return
 
-        # Otherwise treat as local path
-        path = os.path.expanduser(target)
-        if not os.path.isdir(path):
-            ctx.renderer.error(f"Invalid path or URL: {target}")
-            return
+            switched = self._switch_to_local(ctx, path)
 
-        self._switch_to_local(ctx, path)
+        if switched:
+            self._maybe_run_onboarding(ctx)
 
     def _current_repo_handler(self, ctx: CLIContext, _args: List[str]) -> None:
         """Handle /current_repo command."""
@@ -158,7 +172,7 @@ class CodebaseAgent(MashApp):
         elif self.current_repo_type == "github":
             ctx.renderer.info("GitHub MCP server connected.")
 
-    def _switch_to_local(self, ctx: CLIContext, path: str) -> None:
+    def _switch_to_local(self, ctx: CLIContext, path: str) -> bool:
         """Switch to a local repository."""
         # Disconnect GitHub if connected
         self._disconnect_github(ctx)
@@ -185,23 +199,24 @@ class CodebaseAgent(MashApp):
 
         ctx.renderer.info(f"Switched to local repository: {repo_path}")
         ctx.renderer.info("Bash tool enabled.")
+        return True
 
-    def _switch_to_github(self, ctx: CLIContext, raw: str) -> None:
+    def _switch_to_github(self, ctx: CLIContext, raw: str) -> bool:
         """Switch to a GitHub repository."""
         repo = self._parse_github_repo(raw)
         if repo is None:
             ctx.renderer.error(f"Invalid GitHub repo URL: {raw}")
-            return
+            return False
 
         if not GITHUB_MCP_PAT:
             ctx.renderer.error(
                 "GITHUB_MCP_PAT is not set. Add it to your .env file to use GitHub MCP."
             )
-            return
+            return False
 
         # Connect to GitHub MCP server
         if not self._ensure_github_connection(ctx):
-            return
+            return False
 
         # Disable bash tool for GitHub repos
         self.bash_tool.restart(working_dir=None)
@@ -218,6 +233,182 @@ class CodebaseAgent(MashApp):
 
         ctx.renderer.info(f"Switched to GitHub repository: {repo}")
         ctx.renderer.info("GitHub MCP server connected.")
+        return True
+
+    def _configure_handler(self, ctx: CLIContext, _args: List[str]) -> None:
+        """Handle /configure command for onboarding preferences."""
+        self._run_preference_onboarding(ctx, allow_skip=True)
+
+    def _maybe_run_onboarding(self, ctx: CLIContext) -> None:
+        """Run onboarding if no preferences are set."""
+        if not self.store:
+            return
+
+        prefs = self.store.get_preferences(
+            app_id=self.agent.config.app_id,
+            session_id=self.session_id,
+        )
+        if prefs:
+            return
+
+        ctx.renderer.info(
+            "No preferences set yet. Let's answer three quick onboarding questions."
+        )
+        self._run_preference_onboarding(ctx, allow_skip=True)
+
+    def _run_preference_onboarding(self, ctx: CLIContext, allow_skip: bool) -> None:
+        """Collect deterministic onboarding preferences."""
+        if not self.store:
+            ctx.renderer.warn("Preferences store not available.")
+            return
+
+        current = (
+            self.store.get_preferences(
+                app_id=self.agent.config.app_id,
+                session_id=self.session_id,
+            )
+            or {}
+        )
+        updated = dict(current)
+        updated.pop("detail_level", None)
+
+        if current:
+            ctx.renderer.info("Press Enter to keep current selections.")
+
+        role_options = [
+            "Engineer",
+            "Product Manager",
+            "Designer",
+            "Data/Analyst",
+            "Other/Not specified",
+        ]
+
+        focus_options = [
+            "Architecture and system design",
+            "Feature behavior and user flows",
+            "Implementation details and code",
+            "Debugging and troubleshooting",
+            "Performance and scalability",
+        ]
+
+        response_options = [
+            "Concise, high-level summary with key takeaways",
+            "Balanced mix of overview and technical detail",
+            "Detailed, technical explanation with implementation steps",
+            "Visual/structured response with bullet lists and diagrams where helpful",
+        ]
+
+        cancel = object()
+
+        role_choice = self._prompt_choice(
+            ctx,
+            "1) What's your role?",
+            role_options,
+            default_value=current.get("role"),
+            allow_skip=allow_skip,
+            cancel_token=cancel,
+        )
+        if role_choice is cancel:
+            ctx.renderer.warn("Preferences setup cancelled.")
+            return
+        if role_choice is not None:
+            updated["role"] = role_choice
+
+        focus_choice = self._prompt_choice(
+            ctx,
+            "2) What's your primary focus when asking about code?",
+            focus_options,
+            default_value=current.get("focus"),
+            allow_skip=allow_skip,
+            cancel_token=cancel,
+        )
+        if focus_choice is cancel:
+            ctx.renderer.warn("Preferences setup cancelled.")
+            return
+        if focus_choice is not None:
+            updated["focus"] = focus_choice
+
+        style_choice = self._prompt_choice(
+            ctx,
+            "3) How should I respond?",
+            response_options,
+            default_value=current.get("style"),
+            allow_skip=allow_skip,
+            cancel_token=cancel,
+        )
+        if style_choice is cancel:
+            ctx.renderer.warn("Preferences setup cancelled.")
+            return
+        if style_choice is not None:
+            updated["style"] = style_choice
+
+        if updated == current:
+            ctx.renderer.info("Preferences unchanged.")
+            return
+
+        self.store.set_preferences(
+            app_id=self.agent.config.app_id,
+            session_id=self.session_id,
+            preferences=updated,
+        )
+
+        ctx.renderer.info("Preferences saved.")
+        rows = [
+            ["role", updated.get("role", "(unset)")],
+            ["focus", updated.get("focus", "(unset)")],
+            ["style", updated.get("style", "(unset)")],
+        ]
+        ctx.renderer.table(["Preference", "Value"], rows)
+
+    def _prompt_choice(
+        self,
+        ctx: CLIContext,
+        question: str,
+        options: List[str],
+        default_value: Any,
+        allow_skip: bool,
+        cancel_token: object,
+    ) -> Any:
+        """Prompt for a numbered choice and return the mapped value."""
+        ctx.renderer.info(question)
+        rows = [[str(idx + 1), label] for idx, label in enumerate(options)]
+        ctx.renderer.table(["#", "Option"], rows)
+
+        default_index = None
+        if default_value is not None:
+            for idx, value in enumerate(options):
+                if value == default_value:
+                    default_index = idx
+                    break
+
+        prompt_parts = [f"Select 1-{len(options)}"]
+        if default_index is not None:
+            prompt_parts.append(f"Enter to keep current ({default_index + 1})")
+        if allow_skip:
+            prompt_parts.append("s to skip")
+        prompt_parts.append("q to cancel")
+        prompt_text = " / ".join(prompt_parts) + ": "
+
+        while True:
+            try:
+                response = prompt(prompt_text).strip()
+            except (EOFError, KeyboardInterrupt):
+                return cancel_token
+
+            if response == "" and default_index is not None:
+                return options[default_index][1]
+            if response.lower() in ("q", "quit"):
+                return cancel_token
+            if allow_skip and response.lower() in ("s", "skip"):
+                return None
+            if response.isdigit():
+                choice = int(response)
+                if 1 <= choice <= len(options):
+                    return options[choice - 1]
+            ctx.renderer.warn(
+                f"Please enter a number between 1 and {len(options)}."
+            )
+
 
     def _ensure_github_connection(self, ctx: CLIContext) -> bool:
         """Ensure GitHub MCP server is connected."""
