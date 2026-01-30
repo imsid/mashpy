@@ -279,7 +279,6 @@ class CodebaseAgent(MashApp):
             "Engineer",
             "Product Manager",
             "Designer",
-            "Data/Analyst",
             "Other/Not specified",
         ]
 
@@ -302,7 +301,7 @@ class CodebaseAgent(MashApp):
 
         role_choice = self._prompt_choice(
             ctx,
-            "1) What's your role?",
+            "1) Which of these roles define the work you're doing?",
             role_options,
             default_value=current.get("role"),
             allow_skip=allow_skip,
@@ -316,7 +315,7 @@ class CodebaseAgent(MashApp):
 
         focus_choice = self._prompt_choice(
             ctx,
-            "2) What's your primary focus when asking about code?",
+            "2) What is your primary focus when asking about code?",
             focus_options,
             default_value=current.get("focus"),
             allow_skip=allow_skip,
@@ -405,10 +404,7 @@ class CodebaseAgent(MashApp):
                 choice = int(response)
                 if 1 <= choice <= len(options):
                     return options[choice - 1]
-            ctx.renderer.warn(
-                f"Please enter a number between 1 and {len(options)}."
-            )
-
+            ctx.renderer.warn(f"Please enter a number between 1 and {len(options)}.")
 
     def _ensure_github_connection(self, ctx: CLIContext) -> bool:
         """Ensure GitHub MCP server is connected."""
