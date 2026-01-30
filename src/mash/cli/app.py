@@ -40,7 +40,7 @@ class MashApp:
         app_name: str,
         agent: Agent,
         store: ConversationStore,
-        log_destination: Optional[Union[str, Path]] = None,
+        log_destination: Union[str, Path],
         enable_runtime_tools: bool = True,
     ) -> None:
         """Initialize the application.
@@ -224,10 +224,14 @@ class MashApp:
 
                 if summary_index is not None:
                     tail_turns = turns[summary_index + 1 :]
-                    tail_turns = tail_turns[-self.agent.config.conversation_history_turns :]
+                    tail_turns = tail_turns[
+                        -self.agent.config.conversation_history_turns :
+                    ]
                     turns_to_include = [turns[summary_index]] + tail_turns
                 else:
-                    turns_to_include = turns[-self.agent.config.conversation_history_turns :]
+                    turns_to_include = turns[
+                        -self.agent.config.conversation_history_turns :
+                    ]
 
                 for turn in turns_to_include:
                     meta = turn.get("metadata") or {}
@@ -385,9 +389,7 @@ class MashApp:
         ctx.renderer.info(f"Model: {self.agent.config.model}")
         ctx.renderer.info(f"Max steps: {self.agent.config.max_steps}")
         if ctx.store:
-            ctx.renderer.info(
-                f"Session tokens: {self._get_session_total_tokens(ctx)}"
-            )
+            ctx.renderer.info(f"Session tokens: {self._get_session_total_tokens(ctx)}")
 
     def _get_session_total_tokens(self, ctx: CLIContext) -> int:
         """Get total tokens used for the current session from the latest turn."""
