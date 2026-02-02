@@ -6,14 +6,19 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional
+
+from mash.core.config import ANTHROPIC_MODEL
+from mash.mcp.client import MCPClientError
+from mash.mcp.manager import MCPManager
+from mash.tools.mcp import MCPToolAdapter
 
 from ..core.agent import Agent
 from ..core.context import Context, MessageRole
 from ..logging import AgentTraceEvent, EventLogger
 from ..memory.compaction import compact_conversation
-from ..memory.store import ConversationStore
-from ..tools.runtime import RUNTIME_TOOLS_SYSTEM_PROMPT, RuntimeToolBuilder
+from ..memory.store import MemoryStore
+from ..tools.runtime import RuntimeToolBuilder
 from .chain_renderer import ChainOfThoughtRenderer
 from .commands import Command, CommandRegistry
 from .render import RichRenderer
@@ -27,9 +32,9 @@ class CLIContext:
     app_name: str
     session_id: str
     renderer: RichRenderer
+    store: MemoryStore
     cached_files: List[str] = field(default_factory=list)
     agent: Optional[Agent] = None
-    store: Optional[ConversationStore] = None
 
 
 class MashApp:
@@ -39,8 +44,10 @@ class MashApp:
         self,
         app_name: str,
         agent: Agent,
-        store: ConversationStore,
-        log_destination: Union[str, Path],
+        store: MemoryStore,
+        cached_files: List[str],
+        log_destination: Path,
+        mcp_servers: List[Dict[str, Any]],
         enable_runtime_tools: bool = True,
     ) -> None:
         """Initialize the application.
@@ -49,65 +56,71 @@ class MashApp:
             app_name: Application name.
             agent: Agent instance.
             store: Conversation store.
-            log_destination: Path to log file. If None, uses default location.
+            cached_files: List[str].
+            log_destination: Path to log file
         """
         self.app_name = app_name
         self.agent = agent
         self.store = store
+        self.cached_files = cached_files
         self.session_id = str(uuid.uuid4())
 
         # Set up event logger
-        if log_destination is None:
-            log_dir = Path.home() / ".mash" / "logs"
-            log_destination = log_dir / f"{self._get_app_slug()}.jsonl"
         self.event_logger = EventLogger(log_destination)
 
         # Pass logger to agent and LLM
         self.agent.set_event_logger(self.event_logger, self.session_id)
-        if hasattr(self.agent.llm, "set_event_logger"):
-            self.agent.llm.set_event_logger(
-                self.event_logger, self.session_id, self.agent.config.app_id
-            )
+        self.agent.llm.set_event_logger(
+            self.event_logger, self.session_id, self.agent.config.app_id
+        )
 
         # Initialize components
         self.renderer = RichRenderer()
         self.chain_renderer = ChainOfThoughtRenderer(console=self.renderer.console)
         self.agent.set_chain_renderer(self.chain_renderer)
 
-        self.commands = CommandRegistry(
+        # Register commands
+        self.command_registry = CommandRegistry(
             event_logger=self.event_logger,
             session_id=self.session_id,
             app_id=agent.config.app_id,
         )
+        # Register default commands
+        self._register_default_commands()
+
+        # Register subclass commands
+        self.register_commands()
+
+        # Auto-register runtime tools if enabled
+        if enable_runtime_tools:
+            self._register_runtime_tools()
+
+        # Register mcp server tools
+        if mcp_servers:
+            self.mcp_manager = MCPManager(
+                default_model=ANTHROPIC_MODEL,
+                event_logger=self.event_logger,
+                session_id=self.session_id,
+                app_id=self.app_name,
+            )
+            self._register_remote_tools(mcp_servers=mcp_servers)
+
+        # Create CLI context
         self.context = CLIContext(
             app_name=app_name,
             session_id=self.session_id,
             renderer=self.renderer,
             agent=agent,
             store=store,
+            cached_files=self.cached_files,
         )
-
-        # Register default commands
-        self._register_default_commands()
-
-        # Auto-register runtime tools if enabled
-        if enable_runtime_tools:
-            self._register_runtime_tools()
-
-        # Allow subclasses to register their commands
-        self.register_commands()
-
-    def _get_app_slug(self) -> str:
-        """Generate a filesystem-safe slug from app name."""
-        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in self.app_name)
-        return slug.strip("_") or "mash"
 
     def _register_runtime_tools(self) -> None:
         """Register runtime tools for memory and preferences."""
 
         builder = RuntimeToolBuilder(
             store=self.store,
-            app_id=self.agent.config.app_id,
+            app_id=self.app_name,
             session_id=self.session_id,
         )
 
@@ -115,24 +128,64 @@ class MashApp:
         for tool in builder.build_tools():
             self.agent.tools.register(tool)
 
-        # Append runtime tools prompt to system prompt
-        system_prompt = self.agent.config.system_prompt
-        if isinstance(system_prompt, list):
-            insert_at = len(system_prompt)
-            for idx, block in enumerate(system_prompt):
-                if isinstance(block, dict) and block.get("cache_control"):
-                    insert_at = idx
-                    break
-            runtime_block = {
-                "type": "text",
-                "text": f"\n\n{RUNTIME_TOOLS_SYSTEM_PROMPT}",
-            }
-            system_prompt.insert(insert_at, runtime_block)
-            self.agent.config.system_prompt = system_prompt
-        else:
-            self.agent.config.system_prompt = (
-                f"{self.agent.config.system_prompt}\n\n{RUNTIME_TOOLS_SYSTEM_PROMPT}"
-            )
+    def _register_remote_tools(self, mcp_servers: List[Dict[str, Any]]) -> None:
+        """Register remote MCP tools"""
+
+        # Connect to MCP servers (MCPManager will log events)
+        try:
+            for server in mcp_servers:
+                self.mcp_manager.add_server(
+                    name=server["name"],
+                    url=server["url"],
+                    description=server["description"],
+                    headers=server["headers"],
+                    allowed_tools=server["allowed_tools"],
+                    auto_connect=True,
+                )
+                mcp_tools = self.mcp_manager.get_flattened_tools(prefix="mcp_")
+                for mcp_tool in mcp_tools:
+                    # Extract metadata
+                    server_name = mcp_tool.get("metadata", {}).get("server")
+                    original_name = mcp_tool.get("metadata", {}).get("original_name")
+
+                    if not server_name or not original_name:
+                        continue
+
+                    # Create executor
+                    def make_executor(srv_name: str, tool_name: str):
+                        def executor(args):
+                            try:
+                                result = self.mcp_manager.call_tool(
+                                    srv_name, tool_name, args
+                                )
+                                # Extract text content from MCP result
+                                if isinstance(result, dict):
+                                    content = result.get("content", [])
+                                    if content and isinstance(content, list):
+                                        texts = []
+                                        for item in content:
+                                            if isinstance(item, dict):
+                                                texts.append(item.get("text", ""))
+                                            elif isinstance(item, str):
+                                                texts.append(item)
+                                        return (
+                                            "\n".join(texts) if texts else str(result)
+                                        )
+                                return str(result)
+                            except Exception as e:
+                                return f"Error: {e}"
+
+                        return executor
+
+                    # Create and register adapter
+                    adapter = MCPToolAdapter.from_mcp_tool(
+                        mcp_tool=mcp_tool,
+                        executor=make_executor(server_name, original_name),
+                        prefix="",  # Already prefixed
+                    )
+                    self.agent.tools.register(adapter)
+        except MCPClientError:
+            pass
 
     def register_commands(self) -> None:
         """Register application-specific commands.
@@ -146,14 +199,14 @@ class MashApp:
         Args:
             command: Command to register.
         """
-        self.commands.register(command)
+        self.command_registry.register(command)
 
     def run(self) -> None:
         """Run the interactive application."""
         # Setup REPL
         repl = REPL(
             app_name=self.app_name,
-            command_registry=self.commands,
+            command_registry=self.command_registry,
             message_handler=self._handle_message,
         )
 
@@ -290,7 +343,7 @@ class MashApp:
 
     def _register_default_commands(self) -> None:
         """Register default commands available to all apps."""
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="help",
                 help="Show available commands",
@@ -299,7 +352,7 @@ class MashApp:
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="exit",
                 help="Exit the application",
@@ -308,7 +361,7 @@ class MashApp:
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="clear",
                 help="Clear the screen",
@@ -317,7 +370,7 @@ class MashApp:
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="session",
                 help="Show current session info",
@@ -325,45 +378,42 @@ class MashApp:
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
-                name="preferences",
+                name="prefs",
                 help="View or set user preferences",
                 handler=self._preferences_handler,
-                aliases=("prefs",),
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="app_data",
                 help="Manage app-specific data",
                 handler=self._app_data_handler,
-                aliases=("data",),
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="conversation",
                 help="View conversation history",
                 handler=self._conversation_handler,
-                aliases=("history", "conv"),
+                aliases=("history",),
             )
         )
 
-        self.commands.register(
+        self.command_registry.register(
             Command(
                 name="compact",
                 help="Summarize conversation and save a checkpoint",
                 handler=self._compact_handler,
-                aliases=("compaction",),
             )
         )
 
     def _help_handler(self, ctx: CLIContext, _args: list[str]) -> None:
         """Show help for commands."""
-        commands = self.commands.list_commands()
+        commands = self.command_registry.list_commands()
 
         if not commands:
             ctx.renderer.info("No commands available.")
@@ -414,9 +464,8 @@ class MashApp:
         """
         if not args:
             # Show current preferences
-            prefs = self.store.get_preferences(
+            prefs = self.store.get_latest_preferences(
                 app_id=self.agent.config.app_id,
-                session_id=self.session_id,
             )
             if prefs:
                 ctx.renderer.info("Current preferences:")
@@ -597,3 +646,8 @@ class MashApp:
 
         ctx.renderer.info(f"Conversation compacted (turn_id={turn_id}).")
         ctx.renderer.markdown(summary_text)
+
+    def cleanup(self) -> None:
+        """Clean up resources on shutdown."""
+        # Disconnect all MCP servers (will log disconnection events)
+        self.mcp_manager.disconnect_all()

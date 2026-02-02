@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Callable, Dict, List
 
 from mash.logging.events import CommandEvent
 
@@ -31,15 +31,15 @@ class CommandRegistry:
     def __init__(
         self,
         app_id: str,
-        event_logger: Optional[EventLogger] = None,
-        session_id: Optional[str] = None,
+        event_logger: EventLogger,
+        session_id: str,
     ) -> None:
         """Initialize command registry.
 
         Args:
-            event_logger: Optional event logger for logging command execution.
-            session_id: Optional session ID for event logging.
-            app_id: Optional app ID for event logging.
+            event_logger: Eevent logger for logging command execution.
+            session_id: session ID for event logging.
+            app_id: app ID for event logging.
         """
         self._commands: Dict[str, Command] = {}
         self._lookup: Dict[str, Command] = {}

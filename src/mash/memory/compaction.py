@@ -6,7 +6,7 @@ import uuid
 from typing import Any, Dict, List, Tuple
 
 from ..core.llm import LLMProvider
-from .store import ConversationStore
+from .store import MemoryStore
 
 COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor.
 Summarize the conversation so far for future context.
@@ -25,7 +25,7 @@ Requirements:
 
 
 def compact_conversation(
-    store: ConversationStore,
+    store: MemoryStore,
     llm: LLMProvider,
     app_id: str,
     session_id: str,

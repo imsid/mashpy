@@ -176,7 +176,21 @@ class BashTool:
             working_dir: Working directory for bash commands.
         """
         self.name = "bash"
-        self.description = "Execute bash commands in a persistent session"
+        self.description = (
+            "Execute bash commands in a persistent session.\n"
+            "Rules:\n"
+            "- Prefer ripgrep (rg) for search.\n"
+            "- Keep outputs small using head, tail, or context flags (-A / -C).\n"
+            "- Avoid full-file dumps and recursive/unbounded scans.\n"
+            "- Ignore irrelevant directories unless asked: node_modules, __pycache__, "
+            ".git, venv, dist, build, migrations, tests.\n"
+            "- Truncate outputs to ~100 lines max.\n"
+            "Examples:\n"
+            "- rg -l \"payment\" --type py\n"
+            "- rg \"def process_payment\" -A 12\n"
+            "- tree -L 2 -I 'node_modules|__pycache__|.git'\n"
+            "- sed -n '1,120p' src/app.py"
+        )
         self.parameters = {
             "type": "object",
             "properties": {

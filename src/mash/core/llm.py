@@ -166,59 +166,9 @@ class AnthropicProvider(LLMProvider):
         """
         request_start = time.time()
 
-        # Extract tool names for logging
-        tool_names: Optional[List[str]] = None
-        if tools:
-            names: List[str] = []
-            for tool in tools:
-                if not isinstance(tool, dict):
-                    continue
-                name = tool.get("name")
-                if isinstance(name, str) and name:
-                    names.append(name)
-            tool_names = names or None
-
-        # Log request start
-        if self._event_logger:
-            self._event_logger.emit(
-                LLMEvent(
-                    event_type="llm.request.start",
-                    app_id=self._app_id,
-                    session_id=self._session_id,
-                    provider="anthropic",
-                    model=model,
-                    trace_id=self._trace_id,
-                    tools=tool_names,
-                    payload={"messages": messages},
-                    betas=betas,
-                )
-            )
-
-        # Prepare system prompt with optional caching
-        system_param: Any = system
-        if use_prompt_caching and system:
-            # Get model-specific cache threshold
-            cache_threshold = self._get_cache_threshold(model)
-
-            # Estimate tokens using improved estimation from agent.py
-            if isinstance(system, str):
-                system_tokens = int(len(system) / 3.5 * 1.05)
-            else:
-                system_tokens = 0
-
-            # Only cache if >= model's minimum threshold
-            if isinstance(system, str):
-                if system_tokens >= cache_threshold:
-                    system_param = [
-                        {
-                            "type": "text",
-                            "text": system,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ]
-
         # Prepare tools with optional caching
-        tools_param: Optional[List[Dict[str, Any]]] = None
+        tools_param: List[Dict[str, Any]] = []
+        tool_names: List[str] = []
         if tools:
             tools_param = tools.copy() if use_prompt_caching else tools
             # Add cache_control to last tool to cache all tools up to that point
@@ -233,6 +183,13 @@ class AnthropicProvider(LLMProvider):
                         **tools_param[-1],
                         "cache_control": {"type": "ephemeral"},
                     }
+            # Extract tool names for logging
+            for tool in tools_param:
+                if not isinstance(tool, dict):
+                    continue
+                name = tool.get("name")
+                if isinstance(name, str) and name:
+                    tool_names.append(name)
 
         params: Dict[str, Any] = {
             "model": model,
@@ -242,11 +199,29 @@ class AnthropicProvider(LLMProvider):
         }
 
         if system:
-            params["system"] = system_param
+            params["system"] = system
 
         if tools_param:
             params["tools"] = tools_param
-
+        # Log request start
+        if self._event_logger:
+            self._event_logger.emit(
+                LLMEvent(
+                    event_type="llm.request.start",
+                    app_id=self._app_id,
+                    session_id=self._session_id,
+                    provider="anthropic",
+                    model=model,
+                    trace_id=self._trace_id,
+                    tools=tool_names,
+                    payload={
+                        "tools": tools_param,
+                        "system_prompt": system,
+                        "messages": messages,
+                    },
+                    betas=betas,
+                )
+            )
         try:
             # Use beta client when beta flags are provided
             if betas:
@@ -256,7 +231,6 @@ class AnthropicProvider(LLMProvider):
 
             # Log request completion
             if self._event_logger:
-
                 # Extract token usage
                 usage = getattr(response, "usage", None)
                 input_tokens = getattr(usage, "input_tokens", None) if usage else None
@@ -269,7 +243,6 @@ class AnthropicProvider(LLMProvider):
                 cache_read_input_tokens = (
                     getattr(usage, "cache_read_input_tokens", None) if usage else None
                 )
-
                 total_tokens = None
                 if input_tokens is not None and output_tokens is not None:
                     total_tokens = input_tokens + output_tokens
@@ -301,7 +274,6 @@ class AnthropicProvider(LLMProvider):
         except Exception as e:
             # Log request error
             if self._event_logger:
-
                 self._event_logger.emit(
                     LLMEvent(
                         event_type="llm.request.error",

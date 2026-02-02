@@ -241,8 +241,8 @@ class Agent:
         system_prompt = context.system_prompt
 
         # Add tool search guidance if enabled
-        if self.config.tool_search_enabled:
-            system_prompt = self._add_tool_search_guidance(system_prompt)
+        # if self.config.tool_search_enabled:
+        # system_prompt = self._add_tool_search_guidance(system_prompt)
 
         # Estimate tokens for compaction decision
         system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
@@ -539,26 +539,6 @@ class Agent:
 
         return self._signal_collector.collect(event)
 
-    def _format_examples(self, examples: List[Dict[str, Any]]) -> str:
-        """Format examples for inclusion in system prompt.
-
-        Args:
-            examples: List of high-quality examples.
-
-        Returns:
-            Formatted string for system prompt.
-        """
-        if not examples:
-            return ""
-
-        lines = ["EXAMPLES FROM HIGH-PERFORMING INTERACTIONS:"]
-        for i, example in enumerate(examples, 1):
-            lines.append(f"\nExample {i}:")
-            lines.append(f"Query: {example.get('user_message', '')}")
-            lines.append(f"Response: {example.get('agent_response', '')}")
-
-        return "\n".join(lines)
-
     def _build_tool_definitions(self) -> List[Dict[str, Any]]:
         """Build tool definitions, optionally including tool search.
 
@@ -580,8 +560,6 @@ class Agent:
                 "get_app_data",
                 "set_app_data",
                 "list_app_data",
-                "delete_app_data",
-                "load_cached_files",  # Load repo index and cached files
             }
 
             for tool_def in tool_defs:
@@ -673,7 +651,13 @@ TOOL DISCOVERY:
 You have access to {TOOL_SEARCH_TOOL_NAME} for discovering tools by name or description when you are unsure what to call. Use {TOOL_SEARCH_TOOL_NAME} if you are not confident about the right tool name.
 """
         if isinstance(system_prompt, list):
-            return system_prompt + [{"type": "text", "text": tool_search_guidance}]
+            return system_prompt + [
+                {
+                    "type": "text",
+                    "text": tool_search_guidance,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         return f"{system_prompt}\n{tool_search_guidance}"
 
     def _estimate_tokens(self, text: str) -> int:

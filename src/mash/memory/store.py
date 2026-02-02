@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Union
 
 
-class ConversationStore(Protocol):
+class MemoryStore(Protocol):
     """Protocol for conversation storage."""
 
     def save_turn(
@@ -65,6 +65,20 @@ class ConversationStore(Protocol):
         Args:
             app_id: Application identifier.
             session_id: Session identifier.
+
+        Returns:
+            User preferences as dictionary, or None if not set.
+        """
+        ...
+
+    def get_latest_preferences(
+        self,
+        app_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get latest user preferences for app.
+
+        Args:
+            app_id: Application identifier.
 
         Returns:
             User preferences as dictionary, or None if not set.
@@ -156,7 +170,7 @@ class ConversationStore(Protocol):
         ...
 
 
-class SQLiteStore(ConversationStore):
+class SQLiteStore(MemoryStore):
     """SQLite-backed conversation store with signals."""
 
     def __init__(self, path: Union[str, Path] = ":memory:") -> None:
@@ -391,6 +405,30 @@ class SQLiteStore(ConversationStore):
                 WHERE app_id = ? AND session_id = ?
                 """,
                 (app_id, session_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return {}
+
+    def get_latest_preferences(
+        self,
+        app_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get latest user preferences for app."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT value
+                FROM preferences
+                WHERE app_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (app_id,),
             ).fetchone()
 
         if row is None:

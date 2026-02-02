@@ -14,58 +14,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..memory.store import ConversationStore
+from ..memory.store import MemoryStore
 from .base import FunctionTool, Tool, ToolResult
-
-# System prompt addition for runtime tools
-RUNTIME_TOOLS_SYSTEM_PROMPT = """
-# Memory and Persistence Tools (ALWAYS AVAILABLE)
-
-You have access to the following persistent memory tools in ADDITION to the repository tools:
-
-**Conversation & Preferences:**
-- `get_conversation` - Retrieve past conversation turns (reduces context window usage)
-- `get_preferences` - Get stored user preferences (style, focus areas, etc.)
-- `set_preferences` - Store user preferences for future conversations
-
-**Knowledge Base (App Data):**
-- `get_app_data` - Retrieve previously stored information by key
-- `set_app_data` - Store important discoveries (file locations, patterns, configs)
-- `list_app_data` - See all accumulated knowledge
-- `delete_app_data` - Remove outdated information
-
-These tools help you:
-1. Build knowledge over time (store discovered file locations, patterns, etc.)
-2. Remember user preferences across sessions
-3. Reduce context window by storing and retrieving information
-4. Maintain context without re-discovering things
-
-**CRITICAL - When to Use set_preferences**:
-
-Call `set_preferences` IMMEDIATELY when the user shares:
-- Their role (PM, engineer, designer, manager, analyst)
-- Preferred detail level (high-level, detailed, technical, overview)
-- Focus areas (architecture, features, implementation, business value)
-- Communication style (concise, detailed, visual, narrative)
-
-Examples of user statements that should trigger set_preferences:
-- "I'm a PM" → set_preferences({"role": "PM"})
-- "I want high level features" → set_preferences({"focus": "high-level"})
-- "I'm an engineer interested in architecture" → set_preferences({"role": "engineer", "interest": "architecture"})
-- "Keep it concise" → set_preferences({"style": "concise"})
-
-**IMPORTANT**: Call set_preferences BEFORE responding. Don't just acknowledge - STORE first!
-
-**Session Start Protocol**:
-1. Call get_preferences at the start of each conversation
-2. If preferences exist, adapt your communication style accordingly
-3. If no preferences and user shares them, call set_preferences immediately
-
-**CRITICAL**:
-- When asked "what tools do you have", ALWAYS list these memory/persistence tools
-- Check for stored preferences at conversation start
-- Proactively store preferences when user shares them
-"""
 
 
 class RuntimeToolBuilder:
@@ -73,7 +23,7 @@ class RuntimeToolBuilder:
 
     def __init__(
         self,
-        store: ConversationStore,
+        store: MemoryStore,
         app_id: str,
         session_id: str,
     ) -> None:
@@ -94,11 +44,8 @@ class RuntimeToolBuilder:
             self._build_get_conversation_tool(),
             self._build_get_preferences_tool(),
             self._build_set_preferences_tool(),
-            self._build_get_app_data_tool(),
-            self._build_set_app_data_tool(),
             self._build_list_app_data_tool(),
-            self._build_delete_app_data_tool(),
-            # self._build_load_cached_files_tool(),
+            self._build_set_app_data_tool(),
         ]
 
     def _build_get_conversation_tool(self) -> Tool:
@@ -460,4 +407,6 @@ class RuntimeToolBuilder:
         )
 
 
-__all__ = ["RuntimeToolBuilder", "RUNTIME_TOOLS_SYSTEM_PROMPT"]
+__all__ = [
+    "RuntimeToolBuilder",
+]
