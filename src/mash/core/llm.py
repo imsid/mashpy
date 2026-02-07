@@ -45,7 +45,7 @@ class LLMProvider(ABC):
         self,
         response: Any,
     ) -> tuple[str, List[ToolCall], List[Dict[str, Any]]]:
-        """Parse provider response into assistant text and tool calls."""
+        """Parse provider response into assistant text, tool calls, and skill calls."""
 
     @abstractmethod
     def set_event_logger(
@@ -203,6 +203,7 @@ class AnthropicProvider(LLMProvider):
 
         if tools_param:
             params["tools"] = tools_param
+
         # Log request start
         if self._event_logger:
             self._event_logger.emit(
@@ -216,7 +217,6 @@ class AnthropicProvider(LLMProvider):
                     tools=tool_names,
                     payload={
                         "tools": tools_param,
-                        "system_prompt": system,
                         "messages": messages,
                     },
                     betas=betas,
@@ -300,7 +300,7 @@ class AnthropicProvider(LLMProvider):
             response: Anthropic API response.
 
         Returns:
-            Tuple of (assistant_text, tool_calls, content_blocks).
+            Tuple of (assistant_text, tool_calls, skill_used, content_blocks).
         """
         content = getattr(response, "content", None)
         if content is None:
@@ -341,9 +341,63 @@ class AnthropicProvider(LLMProvider):
                         "input": arguments,
                     }
                 )
-            else:
-                blocks.append(_coerce_block_dict(block, block_type))
+            elif block_type == "server_tool_use":
+                tool_id = _block_value(block, "id")
+                name = _block_value(block, "name") or ""
+                arguments = _block_value(block, "input") or {}
+                caller = _block_value(block, "caller")
+                caller_type = (
+                    _block_value(caller, "type") if caller is not None else None
+                )
+                caller_data = (
+                    _coerce_block_dict(caller, caller_type)
+                    if caller is not None
+                    else None
+                )
 
+                block_data = {
+                    "type": "server_tool_use",
+                    "id": tool_id,
+                    "name": name,
+                    "input": arguments,
+                }
+                if caller_data is not None:
+                    block_data["caller"] = caller_data
+                blocks.append(block_data)
+            elif block_type == "text_editor_code_execution_tool_result":
+                tool_use_id = _block_value(block, "tool_use_id")
+                result_content = _block_value(block, "content")
+                result_type = _block_value(result_content, "type")
+                result_data = (
+                    _coerce_block_dict(result_content, result_type)
+                    if result_content is not None
+                    else None
+                )
+
+                blocks.append(
+                    {
+                        "type": "text_editor_code_execution_tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result_data,
+                    }
+                )
+            elif block_type == "bash_code_execution_tool_result":
+                tool_use_id = _block_value(block, "tool_use_id")
+                result_content = _block_value(block, "content")
+                result_type = _block_value(result_content, "type")
+                result_data = (
+                    _coerce_block_dict(result_content, result_type)
+                    if result_content is not None
+                    else None
+                )
+
+                blocks.append(
+                    {
+                        "type": "bash_code_execution_tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result_data,
+                    }
+                )
         return "".join(text_parts).strip(), tool_calls, blocks
 
 

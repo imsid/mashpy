@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -13,9 +14,16 @@ from .base import ToolResult
 
 BASH_DEFAULT_TIMEOUT = 30
 BASH_MAX_OUTPUT_LINES = 50  # Reduced from 100 to prevent token explosion
+BASH_MAX_OUTPUT_CHARS = 4000
 
 _BASH_SENTINEL_PREFIX = "__mash_bash_done__"
 _BASH_EXIT_PREFIX = "__mash_bash_exit__"
+_ROOT_FIND_RE = re.compile(r"(^|[;&|()]\\s*)find\\s+/($|\\s)")
+
+
+def _matches_root_find(command: str) -> bool:
+    """Detect full-disk scans like `find / ...`."""
+    return bool(_ROOT_FIND_RE.search(command))
 
 
 class BashSession:
@@ -108,9 +116,14 @@ class BashSession:
         self._process.stdin.write(payload)
         self._process.stdin.flush()
 
-        output_lines, exit_code, total_lines = self._read_until_sentinel(
-            sentinel, exit_marker, timeout
-        )
+        try:
+            output_lines, exit_code, total_lines = self._read_until_sentinel(
+                sentinel, exit_marker, timeout
+            )
+        except TimeoutError:
+            # Reset the session to avoid lingering long-running commands.
+            self.restart(self.working_dir)
+            raise
         output_text = self._truncate_output(output_lines, total_lines)
 
         return output_text, exit_code
@@ -155,15 +168,25 @@ class BashSession:
                 lines.append(line.rstrip("\n"))
 
     def _truncate_output(self, lines: List[str], total_lines: int) -> str:
-        """Truncate output if too many lines."""
+        """Truncate output if too many lines or characters."""
         if not lines:
             return ""
 
-        if total_lines <= BASH_MAX_OUTPUT_LINES:
-            return "\n".join(lines)
-
         truncated = "\n".join(lines)
-        return f"{truncated}\n\n... Output truncated ({total_lines} total lines) ..."
+        suffix_parts: List[str] = []
+
+        if total_lines > BASH_MAX_OUTPUT_LINES:
+            suffix_parts.append(f"{total_lines} total lines")
+
+        if len(truncated) > BASH_MAX_OUTPUT_CHARS:
+            truncated = truncated[:BASH_MAX_OUTPUT_CHARS].rstrip()
+            suffix_parts.append(f"max {BASH_MAX_OUTPUT_CHARS} chars")
+
+        if suffix_parts:
+            suffix = ", ".join(suffix_parts)
+            return f"{truncated}\n\n... Output truncated ({suffix}) ..."
+
+        return truncated
 
 
 class BashTool:
@@ -182,9 +205,10 @@ class BashTool:
             "- Prefer ripgrep (rg) for search.\n"
             "- Keep outputs small using head, tail, or context flags (-A / -C).\n"
             "- Avoid full-file dumps and recursive/unbounded scans.\n"
+            "- Never run full-disk scans like `find / ...`.\n"
             "- Ignore irrelevant directories unless asked: node_modules, __pycache__, "
             ".git, venv, dist, build, migrations, tests.\n"
-            "- Truncate outputs to ~100 lines max.\n"
+            "- Truncate outputs to ~50 lines or ~4000 chars.\n"
             "Examples:\n"
             "- rg -l \"payment\" --type py\n"
             "- rg \"def process_payment\" -A 12\n"
@@ -265,6 +289,9 @@ class BashTool:
         for pattern in dangerous_patterns:
             if pattern in command:
                 return False, f"Command contains dangerous pattern: {pattern}"
+
+        if _matches_root_find(command):
+            return False, "Avoid full-disk scans (find / ...); scope to the repo or a subdirectory."
 
         return True, None
 

@@ -66,14 +66,17 @@ class ChainOfThoughtRenderer:
 
         # Extract tool_calls_detail from payload if available
         tool_calls_detail = None
+        assistant_text = None
         if hasattr(event, "payload") and event.payload:
             tool_calls_detail = event.payload.get("tool_calls_detail")
+            assistant_text = event.payload.get("assistant_text")
 
         step_info = {
             "step": event.step_id,
             "action_type": event.action_type,
             "tool_calls": event.tool_calls,
             "tool_calls_detail": tool_calls_detail,
+            "assistant_text": assistant_text,
             "token_usage": event.token_usage,
             "think_duration": event.duration_ms,
         }
@@ -141,6 +144,7 @@ class ChainOfThoughtRenderer:
         action_type = step.get("action_type", "unknown")
         tool_calls = step.get("tool_calls") or []
         tool_calls_detail = step.get("tool_calls_detail") or []
+        assistant_text = step.get("assistant_text")
         token_usage = step.get("token_usage") or {}
         think_duration = step.get("think_duration", 0)
 
@@ -166,6 +170,9 @@ class ChainOfThoughtRenderer:
             f"  [cyan]→[/cyan] Step {self._current_step + 1}: {desc}{token_str} "
             f"[dim]{think_duration}ms[/dim]"
         )
+
+        if assistant_text:
+            self._console.print(f"    [dim]assistant: {assistant_text}[/dim]")
 
         # Show tool commands/arguments if available
         if tool_calls_detail:

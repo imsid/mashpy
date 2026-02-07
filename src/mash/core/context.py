@@ -59,6 +59,23 @@ class ToolCall:
 
 
 @dataclass
+class SkillUsed:
+    """A skill used object."""
+
+    skill_id: str
+    type: str
+    version: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format."""
+        return {
+            "skill_id": self.skill_id,
+            "type": self.type,
+            "version": self.version,
+        }
+
+
+@dataclass
 class ToolResult:
     """Result from executing a tool."""
 
@@ -87,14 +104,26 @@ class Action:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_tool_calls(cls, tool_calls: List[ToolCall]) -> Action:
+    def from_tool_calls(
+        cls, tool_calls: List[ToolCall], metadata: Optional[Dict[str, Any]] = None
+    ) -> Action:
         """Create a tool call action."""
-        return cls(type=ActionType.TOOL_CALL, tool_calls=tool_calls)
+        return cls(
+            type=ActionType.TOOL_CALL,
+            tool_calls=tool_calls,
+            metadata=metadata or {},
+        )
 
     @classmethod
-    def from_response(cls, text: str) -> Action:
+    def from_response(
+        cls, text: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> Action:
         """Create a response action."""
-        return cls(type=ActionType.RESPONSE, response_text=text)
+        return cls(
+            type=ActionType.RESPONSE,
+            response_text=text,
+            metadata=metadata or {},
+        )
 
     @classmethod
     def finish(cls) -> Action:

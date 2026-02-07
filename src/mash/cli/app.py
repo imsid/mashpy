@@ -396,10 +396,9 @@ class MashApp:
 
         self.command_registry.register(
             Command(
-                name="conversation",
+                name="history",
                 help="View conversation history",
                 handler=self._conversation_handler,
-                aliases=("history",),
             )
         )
 

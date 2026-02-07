@@ -1,6 +1,5 @@
 SHELL := /bin/bash
 
-TELEMETRY_LOG ?= $(HOME)/.mash/logs/codebase.jsonl
 TELEMETRY_PORT ?= 8765
 VITE_PORT ?= 5173
 
@@ -13,7 +12,8 @@ telemetry-web:
 	cd src/mash/telemetry/web && npm run dev -- --port $(VITE_PORT)
 
 telemetry-server:
-	python -m mash.telemetry --log $(TELEMETRY_LOG) --port $(TELEMETRY_PORT)
+	@if [ -z "$(TELEMETRY_LOG)" ]; then echo "TELEMETRY_LOG is required"; exit 1; fi
+	python -m mash.telemetry --log "$(TELEMETRY_LOG)" --port $(TELEMETRY_PORT)
 
 telemetry-dev: telemetry-web-install
 	@echo "Starting telemetry server on :$(TELEMETRY_PORT) and Vite on :$(VITE_PORT)"

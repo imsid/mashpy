@@ -97,6 +97,7 @@ Use bash in a focused, incremental way:
 - Move from search results to specific files, then to specific code blocks
 
 Avoid broad or unfocused exploration. Always use bash to support a clear hypothesis about where relevant logic lives.
+Never run full-disk scans like `find / ...`; always scope to the repo or a specific subdirectory.
 
 ---------------------------------------------------------------------
 
@@ -155,4 +156,18 @@ OUTPUT STYLE
 Explain how the system works, not just where code lives.
 Connect implementation details to behavior and user-visible outcomes when relevant.
 Structure answers logically, moving from high-level understanding to specific evidence in the code.
+
+---------------------------------------------------------------------
+
+MAX-TOKENS SAFE RESPONSES
+
+- Keep initial responses short (aim for ~300-600 tokens).
+- If the answer will be long, split it into phases and ask to continue.
+- Avoid multi-page outputs, large ASCII diagrams, or dumping full files.
+- If you create a file, summarize and point to the path; do not `cat` it.
+
+Suggested structure for strategy/guide requests:
+1. Most relevant user-facing features (3-6 bullets, anchored in code).
+2. Habit-forming opportunities (3-5 bullets, each with cue/routine/reward).
+3. Metrics/next steps (3-5 bullets).
 """

@@ -19,6 +19,7 @@ from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider
 from mash.mcp.client import MCPClientError
 from mash.memory.store import MemoryStore, SQLiteStore
+from mash.skills.registry import SkillRegistry
 from mash.tools.base import Tool
 from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
@@ -41,6 +42,7 @@ class CodebaseAgent(MashApp):
         self.gh = gh
         self.store = self.register_memory_store()
         self.tools = self.register_tools()
+        self.skills = self.register_skills()
         self.cached_files = self.register_cached_files()
         self.agent = self.register_agent()
 
@@ -71,7 +73,8 @@ class CodebaseAgent(MashApp):
 
     @staticmethod
     def get_logger_destination() -> Path:
-        return Path.home() / ".mash" / "logs" / "codebase.jsonl"
+        return Path(__file__).resolve().parent / "logs" / "codebase.jsonl"
+        # return Path.home() / ".mash" / "logs" / "codebase.jsonl"
 
     @staticmethod
     def get_llm_provider() -> LLMProvider:
@@ -107,7 +110,8 @@ class CodebaseAgent(MashApp):
 
     @staticmethod
     def get_local_tools() -> List[Tool]:
-        bash_tool = BashTool()  # Start with no working dir
+        mash_dir = Path(__file__).resolve().parent / ".mash"
+        bash_tool = BashTool(working_dir=str(mash_dir))
         return [bash_tool]
 
     def register_cached_files(self) -> List[str]:
@@ -115,7 +119,7 @@ class CodebaseAgent(MashApp):
         return cached_files
 
     def register_memory_store(self) -> MemoryStore:
-        db_path = Path(__file__).resolve().with_name("codebase.db")
+        db_path = Path(__file__).resolve().parent / ".mash" / "codebase.db"
         store = SQLiteStore(str(db_path))
         return store
 
@@ -126,6 +130,13 @@ class CodebaseAgent(MashApp):
             tools.register(tool)
         return tools
 
+    def register_skills(self) -> SkillRegistry:
+        skills = SkillRegistry()
+        skills_dir = Path(__file__).resolve().parent / ".mash" / "skills"
+        for skill in skills.get_custom_skills(skills_dir):
+            skills.register(skill)
+        return skills
+
     def register_agent(self) -> Agent:
         llm = CodebaseAgent.get_llm_provider()
         user_prefs = self.store.get_latest_preferences(app_id=self.app_id) or {}
@@ -133,6 +144,7 @@ class CodebaseAgent(MashApp):
             repo=self.repo, cached_files=self.cached_files, user_prefs=user_prefs
         )
         tools = self.tools
+        skills = self.skills
         config = AgentConfig(
             app_id=self.app_id,
             system_prompt=system_prompt,
@@ -142,9 +154,10 @@ class CodebaseAgent(MashApp):
             api_key=ANTHROPIC_API_KEY,
             conversation_history_turns=3,
             compaction_token_threshold=30000,
+            skills_enabled=True,
             tool_search_enabled=False,  # Enable Claude tool search
         )
-        agent = Agent(llm=llm, tools=tools, config=config)
+        agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
         return agent
 
     def register_commands(self) -> None:

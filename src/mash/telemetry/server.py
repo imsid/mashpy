@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-DEFAULT_LOG_PATH = Path.home() / ".mash" / "logs" / "codebase.jsonl"
 DEFAULT_LIMIT = 2000
 
 
@@ -96,9 +95,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Not Found")
 
 
-def _resolve_log_path(raw: Optional[str]) -> Path:
-    if not raw:
-        return DEFAULT_LOG_PATH
+def _resolve_log_path(raw: str) -> Path:
     return Path(os.path.expanduser(raw)).resolve()
 
 
@@ -132,19 +129,19 @@ def _read_log(path: Path, limit: int) -> List[Dict[str, object]]:
 
 
 def main() -> None:
-    global DEFAULT_LOG_PATH, DEFAULT_LIMIT
+    global DEFAULT_LIMIT
     parser = argparse.ArgumentParser(description="Mash telemetry server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--log", default=str(DEFAULT_LOG_PATH))
+    parser.add_argument("--log")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     args = parser.parse_args()
-    DEFAULT_LOG_PATH = Path(os.path.expanduser(args.log)).resolve()
+    log_path = Path(os.path.expanduser(args.log)).resolve()
     DEFAULT_LIMIT = args.limit
 
     server = ThreadingHTTPServer((args.host, args.port), TelemetryHandler)
     print(f"Telemetry server listening on http://{args.host}:{args.port}")
-    print(f"Log file: {DEFAULT_LOG_PATH}")
+    print(f"Log file: {log_path}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

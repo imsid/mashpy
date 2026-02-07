@@ -7,6 +7,9 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from mash.skills.registry import SkillRegistry
+from mash.skills.tool import SkillTool
+
 from ..logging import AgentTraceEvent, DebugEvent, clear_trace_id, set_trace_id
 from .config import (
     TOOL_SEARCH_BETAS,
@@ -15,7 +18,15 @@ from .config import (
     AgentConfig,
     SystemPrompt,
 )
-from .context import Action, ActionType, Context, MessageRole, Response, ToolResult
+from .context import (
+    Action,
+    ActionType,
+    Context,
+    MessageRole,
+    Response,
+    ToolCall,
+    ToolResult,
+)
 from .llm import LLMProvider
 
 if TYPE_CHECKING:
@@ -31,6 +42,7 @@ class Agent:
         self,
         llm: LLMProvider,
         tools: ToolRegistry,
+        skills: SkillRegistry,
         config: AgentConfig,
     ) -> None:
         """Initialize the agent.
@@ -42,7 +54,12 @@ class Agent:
         """
         self.llm = llm
         self.tools = tools
+        self.skills = skills
         self.config = config
+
+        if self.config.skills_enabled and self.skills.list_skills():
+            if "Skill" not in self.tools:
+                self.tools.register(SkillTool(self.skills))
         self._signal_collector: Optional[SignalCollector] = None
         self._event_logger: Optional[EventLogger] = None
         self._session_id: Optional[str] = None
@@ -222,6 +239,12 @@ class Agent:
         """
         think_start = time.time()
 
+        # Get tool definitions with tool search support
+        tool_defs = self._build_tool_definitions()
+
+        # Get messages for LLM
+        messages = context.get_messages_for_llm()
+
         # Log think start
         if self._event_logger:
             think_start_event = AgentTraceEvent(
@@ -231,12 +254,6 @@ class Agent:
                 trace_id=self._trace_id,
             )
             self._event_logger.emit(think_start_event)
-
-        # Get tool definitions with tool search support
-        tool_defs = self._build_tool_definitions()
-
-        # Get messages for LLM
-        messages = context.get_messages_for_llm()
 
         system_prompt = context.system_prompt
 
@@ -282,6 +299,17 @@ class Agent:
             betas=betas,
             use_prompt_caching=self.config.prompt_caching_enabled,
         )
+        # Log LLM response for debugging
+
+        if self._event_logger:
+            self._event_logger.emit(
+                DebugEvent(
+                    event_type="agent.llm.response",
+                    app_id=self.config.app_id,
+                    session_id=self._session_id,
+                    payload={"response": response},
+                )
+            )
 
         # Parse response and update context
         action = self._parse_response_to_action(response, context)
@@ -310,6 +338,15 @@ class Agent:
                     {"name": tc.name, "arguments": tc.arguments}
                     for tc in action.tool_calls
                 ]
+            assistant_text = action.metadata.get("assistant_text")
+            if assistant_text:
+                assistant_text = self._truncate_assistant_text(assistant_text)
+
+            payload: Dict[str, Any] = {}
+            if tool_calls_detail:
+                payload["tool_calls_detail"] = tool_calls_detail
+            if assistant_text:
+                payload["assistant_text"] = assistant_text
 
             think_event = AgentTraceEvent(
                 event_type="agent.think.complete",
@@ -322,11 +359,7 @@ class Agent:
                     [tc.name for tc in action.tool_calls] if action.tool_calls else None
                 ),
                 token_usage=token_usage,
-                payload=(
-                    {"tool_calls_detail": tool_calls_detail}
-                    if tool_calls_detail
-                    else {}
-                ),
+                payload=payload,
             )
             self._event_logger.emit(think_event)
 
@@ -493,6 +526,16 @@ class Agent:
         """
         # Parse response
         text, tool_calls, blocks = self.llm.parse_response(response)
+        stop_reason = getattr(response, "stop_reason", None)
+
+        tool_calls, blocks = self._sanitize_tool_calls(
+            tool_calls=tool_calls,
+            blocks=blocks,
+            stop_reason=stop_reason,
+        )
+
+        assistant_text = text.strip()
+        action_metadata = {"assistant_text": assistant_text} if assistant_text else {}
 
         # Store the assistant's response in context
         if blocks:
@@ -501,16 +544,77 @@ class Agent:
 
         # Determine action type
         if tool_calls:
-            return Action.from_tool_calls(tool_calls)
+            return Action.from_tool_calls(tool_calls, metadata=action_metadata)
         else:
             # Check stop_reason to determine if we should finish
             # When Claude sends "end_turn", it means it's done and we should finish
-            stop_reason = getattr(response, "stop_reason", None)
             if stop_reason == "end_turn" or not text:
                 return Action.finish()
             else:
                 # For other stop reasons (like max_tokens), treat as response
-                return Action.from_response(text)
+                return Action.from_response(text, metadata=action_metadata)
+
+    def _truncate_assistant_text(self, text: str, max_len: int = 240) -> str:
+        """Limit assistant text previews for renderer payloads."""
+        cleaned = " ".join(text.split())
+        if len(cleaned) <= max_len:
+            return cleaned
+        return f"{cleaned[: max_len - 3]}..."
+
+    def _sanitize_tool_calls(
+        self,
+        tool_calls: List[ToolCall],
+        blocks: List[Dict[str, Any]],
+        stop_reason: Optional[str],
+    ) -> tuple[List[ToolCall], List[Dict[str, Any]]]:
+        """Filter or drop tool calls that are invalid or unsafe to execute."""
+        if stop_reason == "max_tokens":
+            filtered_blocks = [
+                block for block in blocks if block.get("type") != "tool_use"
+            ]
+            return [], filtered_blocks
+
+        if not tool_calls:
+            return tool_calls, blocks
+
+        valid_calls: List[ToolCall] = []
+        invalid_ids: set[str] = set()
+        for tool_call in tool_calls:
+            if not self._is_tool_call_valid(tool_call):
+                invalid_ids.add(tool_call.id)
+                continue
+            valid_calls.append(tool_call)
+
+        if not invalid_ids:
+            return valid_calls, blocks
+
+        filtered_blocks = [
+            block
+            for block in blocks
+            if not (block.get("type") == "tool_use" and block.get("id") in invalid_ids)
+        ]
+        return valid_calls, filtered_blocks
+
+    def _is_tool_call_valid(self, tool_call: ToolCall) -> bool:
+        """Check if a tool call satisfies required arguments."""
+        tool = self.tools.get(tool_call.name)
+        if tool is None:
+            return True
+
+        required = tool.parameters.get("required", [])
+        if not required:
+            return True
+
+        args = tool_call.arguments or {}
+        for field in required:
+            if field not in args:
+                return False
+            value = args.get(field)
+            if value is None:
+                return False
+            if isinstance(value, str) and not value.strip():
+                return False
+        return True
 
     def _collect_signals(
         self,
@@ -557,7 +661,6 @@ class Agent:
                 "get_conversation",  # Runtime memory tools
                 "get_preferences",
                 "set_preferences",
-                "get_app_data",
                 "set_app_data",
                 "list_app_data",
             }
@@ -630,10 +733,10 @@ class Agent:
         Returns:
             List of beta feature flags, or None if tool search is disabled.
         """
+        betas: List[str] = []
         if self.config.tool_search_enabled:
-
-            return list(TOOL_SEARCH_BETAS)
-        return None
+            betas.extend(TOOL_SEARCH_BETAS)
+        return betas
 
     def _add_tool_search_guidance(self, system_prompt: SystemPrompt) -> SystemPrompt:
         """Add tool search guidance to system prompt.

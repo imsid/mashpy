@@ -105,6 +105,7 @@ class AgentTraceEvent(LogEvent):
     duration_ms: Optional[int] = None
     action_type: Optional[str] = None
     tool_calls: Optional[List[str]] = None
+    skill_calls: Optional[List[str]] = None
     token_usage: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -117,6 +118,7 @@ class AgentTraceEvent(LogEvent):
                 "duration_ms": self.duration_ms,
                 "action_type": self.action_type,
                 "tool_calls": self.tool_calls,
+                "skill_calls": self.skill_calls,
                 "token_usage": self.token_usage,
             }
         )
@@ -188,6 +190,7 @@ class LLMEvent(LogEvent):
     - "llm.stream.start" - Streaming response started
     - "llm.stream.chunk" - Received stream chunk
     - "llm.stream.complete" - Streaming completed
+    - "llm.skill.create" - Create skill completed
 
     Additional fields:
     - provider: LLM provider name (e.g., "anthropic", "openai")
