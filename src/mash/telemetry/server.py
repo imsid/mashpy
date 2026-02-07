@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_LIMIT = 2000
+DEFAULT_LOG_PATH: Optional[Path] = None
 
 
 class TelemetryHandler(BaseHTTPRequestHandler):
@@ -35,7 +36,11 @@ class TelemetryHandler(BaseHTTPRequestHandler):
 
     def _handle_logs(self, parsed) -> None:
         params = parse_qs(parsed.query)
-        path = _resolve_log_path(params.get("path", [None])[0])
+        try:
+            path = _resolve_log_path(params.get("path", [None])[0])
+        except ValueError:
+            self._send_json({"error": "log path required"}, status=400)
+            return
         limit = _parse_limit(params.get("limit", [None])[0])
         if not path.exists():
             self._send_json({"error": "log file not found"}, status=404)
@@ -46,7 +51,11 @@ class TelemetryHandler(BaseHTTPRequestHandler):
 
     def _handle_stream(self, parsed) -> None:
         params = parse_qs(parsed.query)
-        path = _resolve_log_path(params.get("path", [None])[0])
+        try:
+            path = _resolve_log_path(params.get("path", [None])[0])
+        except ValueError:
+            self._send_json({"error": "log path required"}, status=400)
+            return
         if not path.exists():
             self._send_json({"error": "log file not found"}, status=404)
             return
@@ -95,8 +104,12 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Not Found")
 
 
-def _resolve_log_path(raw: str) -> Path:
-    return Path(os.path.expanduser(raw)).resolve()
+def _resolve_log_path(raw: Optional[str]) -> Path:
+    if raw:
+        return Path(os.path.expanduser(raw)).resolve()
+    if DEFAULT_LOG_PATH is not None:
+        return DEFAULT_LOG_PATH
+    raise ValueError("log path not provided")
 
 
 def _parse_limit(raw: Optional[str]) -> int:
@@ -129,19 +142,25 @@ def _read_log(path: Path, limit: int) -> List[Dict[str, object]]:
 
 
 def main() -> None:
-    global DEFAULT_LIMIT
+    global DEFAULT_LIMIT, DEFAULT_LOG_PATH
     parser = argparse.ArgumentParser(description="Mash telemetry server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--log")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     args = parser.parse_args()
-    log_path = Path(os.path.expanduser(args.log)).resolve()
+    log_path: Optional[Path] = None
+    if args.log:
+        log_path = Path(os.path.expanduser(args.log)).resolve()
+        DEFAULT_LOG_PATH = log_path
     DEFAULT_LIMIT = args.limit
 
     server = ThreadingHTTPServer((args.host, args.port), TelemetryHandler)
     print(f"Telemetry server listening on http://{args.host}:{args.port}")
-    print(f"Log file: {log_path}")
+    if log_path is not None:
+        print(f"Log file: {log_path}")
+    else:
+        print("Log file: not set (pass --log or ?path=...)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
