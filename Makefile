@@ -18,6 +18,12 @@ telemetry-server:
 telemetry-dev: telemetry-web-install
 	@echo "Starting telemetry server on :$(TELEMETRY_PORT) and Vite on :$(VITE_PORT)"
 	@bash -c 'set -euo pipefail; \
-	trap "echo Shutting down...; kill 0" INT TERM EXIT; \
+	shutdown() { \
+	  if [ -n "$${_shutdown:-}" ]; then return; fi; \
+	  _shutdown=1; \
+	  echo "Shutting down..."; \
+	  kill 0; \
+	}; \
+	trap shutdown INT TERM EXIT; \
 	$(MAKE) telemetry-server & \
 	$(MAKE) telemetry-web'
