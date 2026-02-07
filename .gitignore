@@ -46,6 +46,7 @@ dmypy.json
 *.sqlite3
 *.db
 .*_history
+*.jsonl
 
 # macOS
 .DS_Store
