@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from apps.codebase.index import create_cached_files, index_handler
 from apps.codebase.onboard import configure_handler
-from apps.codebase.prompts import (
+from apps.codebase.prompt import (
     build_base_prompt,
     build_repo_context,
     build_user_prefs_context,
