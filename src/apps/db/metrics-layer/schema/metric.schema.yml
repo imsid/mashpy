@@ -1,0 +1,39 @@
+type: object
+required:
+  - kind
+  - version
+  - id
+  - label
+  - type
+  - base_source
+properties:
+  kind:
+    type: string
+    enum: [metric]
+  version:
+    type: integer
+  id:
+    type: string
+  label:
+    type: string
+  type:
+    type: string
+    enum: [simple, ratio]
+  base_source:
+    type: string
+  expr:
+    type: string
+  numerator:
+    type: string
+  denominator:
+    type: string
+  dimensions:
+    type: array
+    items:
+      type: string
+  format:
+    type: string
+  filters:
+    type: array
+    items:
+      type: string

@@ -1,0 +1,57 @@
+kind: metric
+version: 1
+id: ad_performance
+label: Campaign Ad Performance Metrics
+type: simple
+base_source: campaign_ads_fact
+dimensions:
+  - campaign_id
+  - creative_id
+  - channel_id
+  - start_date
+  - end_date
+  - status
+metrics:
+  - id: ad_impressions
+    label: Ad Impressions
+    type: simple
+    expr: impressions
+    format: "#,##0"
+  - id: ad_clicks
+    label: Ad Clicks
+    type: simple
+    expr: clicks
+    format: "#,##0"
+  - id: ad_conversions
+    label: Ad Conversions
+    type: simple
+    expr: conversions
+    format: "#,##0"
+  - id: ad_spend
+    label: Ad Spend
+    type: simple
+    expr: spent_amount
+    format: "$#,##0.00"
+  - id: ad_revenue
+    label: Ad Revenue
+    type: simple
+    expr: revenue
+    format: "$#,##0.00"
+  - id: ad_ctr
+    label: Click-Through Rate
+    type: ratio
+    numerator: ad_clicks
+    denominator: ad_impressions
+    format: "0.00%"
+  - id: ad_conversion_rate
+    label: Conversion Rate
+    type: ratio
+    numerator: ad_conversions
+    denominator: ad_clicks
+    format: "0.00%"
+  - id: ad_roas
+    label: Return on Ad Spend
+    type: ratio
+    numerator: ad_revenue
+    denominator: ad_spend
+    format: "0.00x"

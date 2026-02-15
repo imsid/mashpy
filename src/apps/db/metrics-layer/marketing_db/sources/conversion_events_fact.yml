@@ -1,0 +1,43 @@
+kind: source
+version: 1
+id: conversion_events_fact
+dataset: marketing_db
+table: conversion_events
+grain:
+  - conversion_id
+dimensions:
+  - name: conversion_id
+    expr: conversion_id
+    data_type: INT64
+    is_primary_key: true
+  - name: campaign_id
+    expr: campaign_id
+    data_type: INT64
+  - name: customer_id
+    expr: customer_id
+    data_type: INT64
+  - name: conversion_type
+    expr: conversion_type
+    data_type: STRING
+  - name: product_purchased
+    expr: product_purchased
+    data_type: STRING
+measures:
+  - name: conversion_value
+    expr: conversion_value
+    agg: SUM
+    data_type: FLOAT64
+  - name: revenue
+    expr: revenue
+    agg: SUM
+    data_type: FLOAT64
+  - name: quantity
+    expr: quantity
+    agg: SUM
+    data_type: INT64
+joins:
+  - to_source: campaign_ads_fact
+    join_type: LEFT
+    left_key: campaign_id
+    right_key: campaign_id
+    relationship: many_to_one

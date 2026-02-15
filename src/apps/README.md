@@ -6,15 +6,17 @@ commands.
 
 ### Included apps
 
-- `pocket` (`pocket-app`) - connects to the hosted Pocket MCP server and enables
+- `pocket` (`pocket-agent`) - connects to the hosted Pocket MCP server and enables
   agent mode with an Anthropic-backed runtime.
 - `codebase` (`codebase-agent`) - answers questions about local or GitHub
   repositories with agent mode enabled.
+- `db` (`db-agent`) - connects to the BigQuery MCP server for data exploration.
 
 ### Running the apps
 
-- Pocket: `uv run pocket-app`
+- Pocket: `uv run pocket-agent`
 - Codebase: `uv run codebase-agent`
+- DB: `uv run db-agent`
 
 ### Configuration
 
@@ -37,6 +39,14 @@ tools (`search`, `concierge`, `company_profile`).
 - `ANTHROPIC_MODEL` - optional; defaults to `claude-sonnet-4-5-20250929`.
 - `GITHUB_MCP_URL` - optional; defaults to `https://api.githubcopilot.com/mcp/`
 - `GITHUB_MCP_PAT` - required for GitHub repository mode.
+
+#### DB (`src/apps/db/config.py`)
+
+- `ANTHROPIC_API_KEY` - required for agent mode.
+- `ANTHROPIC_MODEL` - optional; defaults to `claude-haiku-4-5-20251001`.
+- `BIGQUERY_MCP_URL` - optional; defaults to `https://bigquery.googleapis.com/mcp`.
+- `BIGQUERY_PROJECT_ID` - strongly recommended; used for `x-goog-user-project`.
+- `BIGQUERY_ALLOWED_TOOLS` - optional CSV override for the tool allowlist.
 
 ### Creating a new app
 

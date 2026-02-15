@@ -9,8 +9,10 @@ authors = [{ name = "MashPy" }]
 
 dependencies = [
   "anthropic>=0.39.0",
+  "google-auth>=2.35.0",
   "mcp>=0.1.0",
   "openai>=1.57.4",
+  "PyYAML>=6.0.2",
   "prompt_toolkit>=3.0.36",
   "rich>=13.7.1",
   "requests>=2.31.0",
@@ -20,6 +22,7 @@ dependencies = [
 [project.scripts]
 pocket-agent = "apps.pocket.cli:main"
 codebase-agent = "apps.codebase.cli:main"
+db-agent = "apps.db.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

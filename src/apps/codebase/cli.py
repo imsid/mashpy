@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from apps.codebase.index import create_cached_files, index_handler
 from apps.codebase.onboard import configure_handler
-from apps.codebase.prompts import (
+from apps.codebase.prompt import (
     build_base_prompt,
     build_repo_context,
     build_user_prefs_context,
@@ -74,7 +74,6 @@ class CodebaseAgent(MashApp):
     @staticmethod
     def get_logger_destination() -> Path:
         return Path(__file__).resolve().parent / "logs" / "codebase.jsonl"
-        # return Path.home() / ".mash" / "logs" / "codebase.jsonl"
 
     @staticmethod
     def get_llm_provider() -> LLMProvider:
