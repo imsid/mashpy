@@ -20,6 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -62,6 +63,7 @@ class MCPHTTPClient:
         self.base_url = self._normalize_url(base_url)
         self.session = requests.Session()
         self.session_id: Optional[str] = None
+        self._initialized: bool = False
         self.server_info: Dict[str, Any] = {}
         self.client_name = client_name
         self.client_version = client_version
@@ -86,10 +88,30 @@ class MCPHTTPClient:
     # Connection + lifecycle helpers
     # ------------------------------------------------------------------
     def _normalize_url(self, url: str) -> str:
-        trimmed = url.rstrip("/")
-        if not trimmed.endswith("/mcp"):
-            trimmed = f"{trimmed}/mcp"
-        return trimmed + "/"
+        """Normalize MCP endpoint URL while preserving explicit paths/query params."""
+        raw = (url or "").strip()
+        parts = urlsplit(raw)
+
+        path = parts.path or ""
+        trimmed_path = path.rstrip("/")
+        if not trimmed_path:
+            normalized_path = "/mcp"
+        elif trimmed_path.endswith("/mcp"):
+            normalized_path = trimmed_path
+        elif "/mcp/" in trimmed_path:
+            normalized_path = trimmed_path
+        else:
+            normalized_path = f"{trimmed_path}/mcp"
+
+        return urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                normalized_path,
+                parts.query,
+                parts.fragment,
+            )
+        )
 
     def _default_headers(self) -> Dict[str, str]:
         headers = {
@@ -128,7 +150,10 @@ class MCPHTTPClient:
             "MCP-Session-ID"
         ) or response.headers.get("mcp-session-id")
         if not self.session_id:
-            raise MCPClientError("Server did not return MCP-Session-ID header")
+            LOGGER.info(
+                "Server did not return MCP-Session-ID header; continuing in stateless mode"
+            )
+        self._initialized = True
         self._send_notification("notifications/initialized")
 
     def _send_notification(
@@ -156,13 +181,12 @@ class MCPHTTPClient:
         )
 
     def shutdown(self) -> None:
-        if not self.session_id:
-            return
         if self._sse_thread:
             self._sse_stop.set()
             self._sse_thread.join(timeout=2)
             self._sse_thread = None
         self.session_id = None
+        self._initialized = False
         self.session.close()
 
     def close(self) -> None:
@@ -176,7 +200,7 @@ class MCPHTTPClient:
         method: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> RPCResponse:
-        if not self.session_id and method != "initialize":
+        if not self._initialized and method != "initialize":
             raise MCPClientError("Client is not initialized")
         request_id = str(uuid.uuid4())
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}

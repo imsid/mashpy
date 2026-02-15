@@ -1,0 +1,15 @@
+kind: metrics_index
+version: 1
+dataset: marketing_db
+generated_at: "2026-02-15T00:00:00Z"
+sources:
+  - id: campaign_ads_fact
+    file: sources/campaign_ads_fact.yml
+    table: marketing_db.campaign_ads
+  - id: conversion_events_fact
+    file: sources/conversion_events_fact.yml
+    table: marketing_db.conversion_events
+metrics:
+  - id: ad_performance
+    file: metrics/ad_performance.yml
+    type: metric

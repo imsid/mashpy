@@ -1,0 +1,5 @@
+kind: metrics_layer_index
+version: 1
+datasets:
+  - dataset: marketing_db
+    file: marketing_db/index.yml

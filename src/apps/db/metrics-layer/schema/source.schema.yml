@@ -1,0 +1,82 @@
+type: object
+required:
+  - kind
+  - version
+  - id
+  - dataset
+  - table
+  - grain
+  - dimensions
+  - measures
+properties:
+  kind:
+    type: string
+    enum: [source]
+  version:
+    type: integer
+  id:
+    type: string
+  dataset:
+    type: string
+  table:
+    type: string
+  grain:
+    type: array
+    items:
+      type: string
+  dimensions:
+    type: array
+    items:
+      type: object
+      required:
+        - name
+        - expr
+        - data_type
+      properties:
+        name:
+          type: string
+        expr:
+          type: string
+        data_type:
+          type: string
+        is_primary_key:
+          type: boolean
+  measures:
+    type: array
+    items:
+      type: object
+      required:
+        - name
+        - expr
+        - agg
+        - data_type
+      properties:
+        name:
+          type: string
+        expr:
+          type: string
+        agg:
+          type: string
+        data_type:
+          type: string
+  joins:
+    type: array
+    items:
+      type: object
+      required:
+        - to_source
+        - join_type
+        - left_key
+        - right_key
+        - relationship
+      properties:
+        to_source:
+          type: string
+        join_type:
+          type: string
+        left_key:
+          type: string
+        right_key:
+          type: string
+        relationship:
+          type: string

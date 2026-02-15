@@ -74,7 +74,6 @@ class CodebaseAgent(MashApp):
     @staticmethod
     def get_logger_destination() -> Path:
         return Path(__file__).resolve().parent / "logs" / "codebase.jsonl"
-        # return Path.home() / ".mash" / "logs" / "codebase.jsonl"
 
     @staticmethod
     def get_llm_provider() -> LLMProvider:
