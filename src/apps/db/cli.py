@@ -27,7 +27,7 @@ from .config import (
     BIGQUERY_PROJECT_ID,
 )
 from .local_tools import build_local_tools
-from .prompts import build_base_prompt, build_roles_context
+from .prompt import build_base_prompt, build_roles_context
 
 APP_ID: str = "data-agent"
 BIGQUERY_CONNECTION_NAME = "bigquery"
@@ -86,10 +86,11 @@ class DataAgentApp(MashApp):
         return SQLiteStore(str(db_path))
 
     def register_cached_files(self) -> List[str]:
+        # Keep cached files limited to stable schema artifacts.
+        # Plan/index files are session- and workflow-dynamic and should be read
+        # via local tools at execution time to avoid stale context.
         db_dir = Path(__file__).resolve().parent
         candidates = [
-            db_dir / ".mash" / "plan.md",
-            db_dir / "metrics-layer" / "index.yml",
             db_dir / "metrics-layer" / "schema" / "index.schema.yml",
             db_dir / "metrics-layer" / "schema" / "source.schema.yml",
             db_dir / "metrics-layer" / "schema" / "metric.schema.yml",

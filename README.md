@@ -1,108 +1,199 @@
 # mashpy
 
-MashPy is a Python framework for building CLI-native agent applications.
+Platform for building CLI-native agent applications.
 
-It gives you a reusable runtime for:
-- LLM-driven think/act loops
-- local and remote tools (including MCP)
-- persistent memory (conversation + preferences + app data)
-- interactive REPL UX with slash commands
-- structured JSONL tracing for debugging and telemetry
+MashPy gives you reusable pieces for interactive agent CLIs: a REPL, slash commands, memory, an LLM think/act loop, skills, runtime tools, `BashTool`, MCP integration, and telemetry.
 
 ## What MashPy Does
 
-A Mash app runs this loop on every user message:
-1. Build context (system prompt + selected conversation history).
-2. Ask the model what to do next.
-3. Execute tool calls if requested.
-4. Feed tool results back into context.
-5. Repeat until the model finishes.
-6. Persist the turn with trace metadata and token usage.
+Each line typed in a Mash app follows one of two paths:
 
-This makes it practical to build domain-specific agent CLIs without rewriting orchestration each time.
+1. Slash command path (`/help`, `/prefs`, `/app_data`, etc.): command handlers run immediately in the CLI.
+2. Agent path (normal message): Mash builds context, runs the agent loop, executes tools, and persists/logs the turn.
+
+This lets you combine deterministic CLI controls with model-driven tool execution in one interface.
 
 ## High-Level Flow
 
 ```mermaid
-flowchart TB
+flowchart LR
     U[User]
 
     subgraph CLI[CLI Layer]
-        R[REPL + Slash Commands]
-        A[MashApp]
+        REPL[REPL]
+        CMD[Commands]
+        APP[MashApp]
     end
 
-    subgraph Runtime[Agent Runtime]
-        C[Context Builder]
-        G[Agent Think/Act Loop]
-        L[LLM Provider]
-        T[Tool Registry]
-    end
-
-    subgraph Integrations[Tools]
+    subgraph RUNTIME[Runtime Layer]
+        LOOP[Agent Loop]
+        SKILLS[Skills]
         RT[Runtime Tools]
-        BT[Bash Tool]
-        MM[MCP Manager]
-        MS[MCP Servers]
+        BASH[BashTool]
+        MCP[Remote MCP Loops]
+        LLM[LLM Provider]
     end
 
-    DB[SQLite Memory Store]
-    LOG[Event Logger JSONL]
+    MEM[Memory Store]
+    LOG[Telemetry Events JSONL]
     TEL[Telemetry Server + Web UI]
 
-    U --> R --> A --> C --> G
-    G <--> L
-    G --> T
-    T --> RT
-    T --> BT
-    T --> MM
-    MM --> MS
+    U --> REPL
+    REPL --> CMD
+    REPL --> APP
 
-    A --> DB
-    RT --> DB
+    CMD --> MEM
+    CMD --> LOG
 
-    A --> LOG
-    G --> LOG
-    MM --> LOG
+    APP --> LOOP
+    LOOP <--> LLM
+    LOOP --> SKILLS
+    LOOP --> RT
+    LOOP --> BASH
+    LOOP --> MCP
+
+    RT <--> MEM
+    LOOP --> MEM
+
+    LOOP --> LOG
+    MCP --> LOG
     LOG --> TEL
 ```
 
-## Core Capabilities
+How to read this diagram:
 
-- Agent runtime with configurable max steps, model, token limits, and temperature.
-- Anthropic provider integration with tool-use support and prompt-caching controls.
-- Optional tool search integration for large tool catalogs.
-- Built-in runtime memory tools (auto-registered by `MashApp`):
-  - `get_conversation`
-  - `get_preferences`
-  - `set_preferences`
-  - `list_app_data`
-  - `set_app_data`
-- MCP connectivity for remote tools, with server/tool whitelisting support.
-- Conversation compaction (summary checkpoints) to manage long sessions.
-- Structured event logging (`JSONL`) for agent, command, MCP, and LLM events.
-- Optional skills loading via `SkillRegistry` + `Skill` tool.
+1. `REPL` receives user input and routes slash commands to `Commands`.
+2. Non-command messages go through `MashApp` into the `Agent Loop`.
+3. The `Agent Loop` can call local `Runtime Tools`, `BashTool`, `Skills`, and `Remote MCP Loops`.
+4. State is persisted in the `Memory Store`.
+5. Command, agent, and MCP events are written as JSONL and visualized in telemetry.
 
-## Quick Start
+## Core Modules
 
-### 1) Install
+### REPL
 
-```bash
-uv pip install -e .
+The REPL handles interactive input, command auto-completion, and history persistence. It is the entrypoint UX for every Mash app session.
+
+### Commands
+
+Slash commands provide deterministic control without involving the model. `MashApp` registers these built-ins out of the box:
+
+- `/help` (`/h`, `/?`) - list available slash commands.
+- `/exit` (`/quit`, `/q`) - exit the application.
+- `/clear` (`/cls`) - clear terminal output.
+- `/session` - show app name, session id, model, max steps, and session token total.
+- `/prefs` - view preferences, or `set`/`clear` persistent preferences.
+- `/app_data` - `list`, `get`, `set`, or `delete` app-scoped JSON data.
+- `/history [limit]` - print saved conversation turns (optionally capped).
+- `/compact` - summarize conversation into a checkpoint turn.
+
+### Memory Store
+
+`SQLiteStore` persists conversation turns, signals, preferences, and app data. This gives both commands and tools durable state across turns and sessions.
+
+### Agent Loop
+
+The agent runs a bounded think/act/observe loop (`max_steps`) for non-command messages. It builds context from prompt + recent history, calls tools when needed, and writes final response metadata (including token usage).
+
+### Skills
+
+Skills are discoverable instructions stored in local `SKILL.md` files and registered via `SkillRegistry`. When `skills_enabled=True`, Mash auto-injects a `Skill` tool so the model can load skill content at runtime.
+
+### Runtime Tools
+
+`MashApp` auto-registers runtime tools for memory access (enabled by default):
+
+- `get_conversation` - fetch conversation history for the current session.
+- `get_preferences` - read stored user preferences.
+- `set_preferences` - update stored user preferences.
+- `list_app_data` - list stored app-scoped key/value entries.
+- `set_app_data` - persist app-scoped key/value data.
+
+### BashTool
+
+`BashTool` is an opt-in execution tool for shell commands in a persistent bash session. Register it explicitly in your app when you want repository inspection or CLI automation from the agent.
+
+- `bash` - execute shell commands with timeout controls and output truncation safeguards.
+
+### Remote MCP Tools
+
+`MCPManager` manages remote MCP server connections, optional tool allowlists, and tool invocation. Remote MCP tools are adapted into normal Mash tools so the agent can call them like local tools.
+
+### Telemetry
+
+`EventLogger` writes structured JSONL events for commands, LLM calls, agent steps, and MCP activity. The telemetry server exposes:
+
+- `/api/logs` for snapshots
+- `/api/stream` for live SSE tailing
+
+## How to Write a New App
+
+### 1) Simple app
+
+```python
+from pathlib import Path
+
+from mash.cli.app import MashApp
+from mash.cli.commands import Command
+from mash.core.agent import Agent
+from mash.core.config import AgentConfig
+from mash.core.llm import AnthropicProvider
+from mash.memory.store import SQLiteStore
+from mash.skills.registry import SkillRegistry
+from mash.tools.bash import BashTool
+from mash.tools.registry import ToolRegistry
+
+APP_ID = "hello-mash"
+
+
+class HelloMashApp(MashApp):
+    def __init__(self) -> None:
+        store = SQLiteStore(Path(".mash/hello-mash.db"))
+
+        tools = ToolRegistry()
+        tools.register(BashTool(working_dir="."))
+
+        agent = Agent(
+            llm=AnthropicProvider(app_id=APP_ID),
+            tools=tools,
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id=APP_ID,
+                system_prompt="You are a concise CLI assistant.",
+                skills_enabled=False,
+            ),
+        )
+
+        super().__init__(
+            app_name="Hello Mash",
+            agent=agent,
+            store=store,
+            cached_files=[],
+            log_destination=Path.home() / ".mash" / "logs" / "hello-mash.jsonl",
+            mcp_servers=[],
+        )
+
+    def register_commands(self) -> None:
+        self.register_command(
+            Command(
+                name="ping",
+                help="Check app responsiveness",
+                handler=lambda ctx, _args: ctx.renderer.info("pong"),
+            )
+        )
+
+
+if __name__ == "__main__":
+    HelloMashApp().run()
 ```
 
-(Equivalent: `pip install -e .`)
-
-### 2) Set Environment
-
-Create `.env` in your project root:
+Run it:
 
 ```bash
-ANTHROPIC_API_KEY=your_key_here
-ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+python my_app.py
 ```
 
-### 3) Build a Minimal App
+### 2) App with skills enabled
 
 ```python
 from pathlib import Path
@@ -112,67 +203,60 @@ from mash.core.agent import Agent
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.memory.store import SQLiteStore
+from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
-from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 
-APP_ID = "my-agent"
+APP_ID = "hello-skills"
 
 
-class MyAgentApp(MashApp):
+class HelloSkillsApp(MashApp):
     def __init__(self) -> None:
-        store = SQLiteStore(Path(".mash/my-agent.db"))
+        store = SQLiteStore(Path(".mash/hello-skills.db"))
 
-        tools = ToolRegistry()
-        tools.register(BashTool(working_dir="."))
-
-        skills = SkillRegistry()  # Register custom skills if needed
-
-        llm = AnthropicProvider(app_id=APP_ID)
-        config = AgentConfig(
-            app_id=APP_ID,
-            system_prompt="You are a practical CLI coding assistant.",
-            tool_search_enabled=False,
-            skills_enabled=False,
+        skills = SkillRegistry()
+        skills.register(
+            Skill(
+                type="custom",
+                name="repo-audit",
+                description="Checklist for auditing a repository",
+                location=str(Path("./mash/skills/repo-audit").resolve()),
+            )
         )
-        agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
+
+        agent = Agent(
+            llm=AnthropicProvider(app_id=APP_ID),
+            tools=ToolRegistry(),
+            skills=skills,
+            config=AgentConfig(
+                app_id=APP_ID,
+                system_prompt="You are a CLI agent that can load skills when needed.",
+                skills_enabled=True,
+            ),
+        )
 
         super().__init__(
-            app_name="My Agent",
+            app_name="Hello Skills",
             agent=agent,
             store=store,
             cached_files=[],
-            log_destination=Path.home() / ".mash" / "logs" / "my-agent.jsonl",
+            log_destination=Path.home() / ".mash" / "logs" / "hello-skills.jsonl",
             mcp_servers=[],
         )
-
-
-if __name__ == "__main__":
-    MyAgentApp().run()
 ```
 
-### 4) Run
+Skill requirements:
 
-```bash
-python my_app.py
-```
+1. `location` must point to a folder containing `SKILL.md`.
+2. Set `skills_enabled=True` in `AgentConfig`.
+3. Register at least one skill in `SkillRegistry`.
 
-Built-in slash commands include:
-- `/help`
-- `/exit`
-- `/clear`
-- `/session`
-- `/prefs`
-- `/app_data`
-- `/history`
-- `/compact`
+## Add Remote MCP Tools
 
-## Add MCP Tools
-
-To attach remote MCP tools at app startup, pass `mcp_servers` to `MashApp`:
+To register remote MCP tools at startup, pass `mcp_servers` to `MashApp`:
 
 ```python
-mcp_servers=[
+mcp_servers = [
     {
         "name": "github",
         "url": "https://api.githubcopilot.com/mcp/",
@@ -183,39 +267,17 @@ mcp_servers=[
 ]
 ```
 
-Mash will connect, pull tool definitions, and register them as callable tools for the agent.
-
-## Reference CLI Scripts
-
-This repository currently exposes:
-- `codebase-agent`
-- `pocket-agent`
-
-Example:
-
-```bash
-uv run codebase-agent --repo /path/to/repo --gh https://github.com/org/repo
-```
+Mash will connect to each server, fetch tool definitions, and expose them as callable tools in the agent runtime.
 
 ## Telemetry
 
-Mash writes JSONL traces to your configured log destination. You can inspect traces live with the telemetry server + web UI.
+Mash writes traces to your configured JSONL log. To start the telemetry server, run:
 
 ```bash
-# terminal 1
-make telemetry-server TELEMETRY_LOG=~/.mash/logs/my-agent.jsonl
-
-# terminal 2
-make telemetry-web
+make telemetry-dev TELEMETRY_LOG=src/apps/db/logs/db.jsonl
 ```
 
 Default endpoints:
+
 - API/SSE: `http://127.0.0.1:8765`
 - Web UI: `http://127.0.0.1:5173`
-
-## Notes for App Authors
-
-- If you enable `skills_enabled=True`, register skills in `SkillRegistry`.
-- If you enable `tool_search_enabled=True`, the runtime adds tool-search metadata/betas for the LLM.
-- For long sessions, set `compaction_token_threshold` and `compaction_turn_limit` in `AgentConfig`.
-- Keep tool outputs small to avoid token blowups, especially for shell tools.
