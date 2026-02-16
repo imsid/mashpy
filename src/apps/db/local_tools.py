@@ -212,50 +212,51 @@ def build_local_tools(
         except Exception as exc:
             return ToolResult.error(f"get_plan_state failed: {exc}")
 
+    def get_current_plan_path(_args: Dict[str, Any]) -> ToolResult:
+        try:
+            session_id = ensure_session_id()
+            session_plan = (
+                Path("src/apps/db/.mash") / f"plan_{session_id}.md"
+            ).as_posix()
+            plan_path = resolve_workspace_path(session_plan)
+            plan_exists = plan_path.exists() and plan_path.is_file()
+            payload = {
+                "session_id": session_id,
+                "plan_exists": plan_exists,
+                "plan_path": plan_path.relative_to(root).as_posix(),
+                "message": (
+                    "Current session plan found."
+                    if plan_exists
+                    else "No plan was generated for this session yet."
+                ),
+            }
+            return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
+        except Exception as exc:
+            return ToolResult.error(f"get_current_plan failed: {exc}")
+
     def set_plan_state(args: Dict[str, Any]) -> ToolResult:
         key = str(args.get("key", "plan_state"))
         state_json = args.get("state_json")
-        plan_path_arg = args.get("plan_path")
         session_id = ensure_session_id()
 
         if not isinstance(state_json, dict):
             return ToolResult.error("state_json must be a JSON object")
 
-        state_to_store = dict(state_json)
-        state_to_store["session_id"] = session_id
-
-        if isinstance(plan_path_arg, str) and plan_path_arg.strip():
-            try:
-                plan_path = resolve_workspace_path(plan_path_arg)
-                session_suffix = f"_{session_id}"
-                session_plan_name = (
-                    plan_path.name
-                    if plan_path.stem.endswith(session_suffix)
-                    else f"{plan_path.stem}{session_suffix}{plan_path.suffix}"
-                )
-                session_plan_path = plan_path.with_name(session_plan_name)
-
-                if plan_path.exists() and plan_path.is_file():
-                    plan_text = plan_path.read_text(encoding="utf-8")
-                    # Keep a session-specific plan file for easier traceability.
-                    session_plan_path.parent.mkdir(parents=True, exist_ok=True)
-                    session_plan_path.write_text(plan_text, encoding="utf-8")
-                    state_to_store["plan_path"] = (
-                        session_plan_path.relative_to(root).as_posix()
-                    )
-                    state_to_store["plan_hash"] = hashlib.sha256(
-                        plan_text.encode("utf-8")
-                    ).hexdigest()
-                else:
-                    state_to_store["plan_path"] = (
-                        session_plan_path.relative_to(root).as_posix()
-                    )
-            except Exception as exc:
-                return ToolResult.error(
-                    f"set_plan_state failed to hash plan_path: {exc}"
-                )
-
         try:
+            state_to_store = dict(state_json)
+            state_to_store["session_id"] = session_id
+            session_plan = (
+                Path("src/apps/db/.mash") / f"plan_{session_id}.md"
+            ).as_posix()
+            session_plan_path = resolve_workspace_path(session_plan)
+            state_to_store["plan_path"] = session_plan_path.relative_to(root).as_posix()
+
+            if session_plan_path.exists() and session_plan_path.is_file():
+                plan_text = session_plan_path.read_text(encoding="utf-8")
+                state_to_store["plan_hash"] = hashlib.sha256(
+                    plan_text.encode("utf-8")
+                ).hexdigest()
+
             store.set_app_data(
                 app_id=app_id,
                 session_id=session_id,
@@ -403,11 +404,23 @@ def build_local_tools(
             _executor=get_plan_state,
         ),
         FunctionTool(
+            name="get_current_plan",
+            description=(
+                "Get the session-specific plan file path for this session_id and "
+                "indicate whether it exists."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {},
+            },
+            _executor=get_current_plan_path,
+        ),
+        FunctionTool(
             name="set_plan_state",
             description=(
                 "Persist plan lifecycle state into app data for this session. "
-                "Optionally include plan_path to store a stable plan hash and "
-                "normalize to a session-suffixed plan filename."
+                "Automatically includes the session-specific plan path and plan hash "
+                "when the session plan file exists."
             ),
             parameters={
                 "type": "object",
@@ -419,13 +432,6 @@ def build_local_tools(
                     "state_json": {
                         "type": "object",
                         "description": "Plan state object to persist.",
-                    },
-                    "plan_path": {
-                        "type": "string",
-                        "description": (
-                            "Optional workspace-relative plan path. "
-                            "Stored plan path is normalized to include _<session_id>."
-                        ),
                     },
                 },
                 "required": ["state_json"],
