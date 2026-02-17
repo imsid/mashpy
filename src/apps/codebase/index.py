@@ -68,7 +68,6 @@ def _build_index(ctx: CLIContext, repo_path: str) -> None:
         ctx.renderer.info("✅ Repository index built successfully")
         ctx.renderer.info(f"  {cached_files[0]}")
         ctx.renderer.info(f"  {cached_files[1]}")
-        ctx.cached_files = cached_files
     else:
         ctx.renderer.error("Failed to build index")
 

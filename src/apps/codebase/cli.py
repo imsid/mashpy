@@ -43,14 +43,12 @@ class CodebaseAgent(MashApp):
         self.store = self.register_memory_store()
         self.tools = self.register_tools()
         self.skills = self.register_skills()
-        self.cached_files = self.register_cached_files()
         self.agent = self.register_agent()
 
         super().__init__(
             app_name=APP_ID,
             agent=self.agent,
             store=self.store,
-            cached_files=self.cached_files,
             mcp_servers=[
                 {
                     "name": GITHUB_CONNECTION_NAME,
@@ -113,8 +111,9 @@ class CodebaseAgent(MashApp):
         bash_tool = BashTool(working_dir=str(mash_dir))
         return [bash_tool]
 
-    def register_cached_files(self) -> List[str]:
-        cached_files = create_cached_files(repo_path=self.repo)
+    @staticmethod
+    def get_cached_files(repo: str) -> List[str]:
+        cached_files = create_cached_files(repo_path=repo)
         return cached_files
 
     def register_memory_store(self) -> MemoryStore:
@@ -139,8 +138,9 @@ class CodebaseAgent(MashApp):
     def register_agent(self) -> Agent:
         llm = CodebaseAgent.get_llm_provider()
         user_prefs = self.store.get_latest_preferences(app_id=self.app_id) or {}
+        cached_files = CodebaseAgent.get_cached_files(repo=self.repo)
         system_prompt = CodebaseAgent.get_system_prompt(
-            repo=self.repo, cached_files=self.cached_files, user_prefs=user_prefs
+            repo=self.repo, cached_files=cached_files, user_prefs=user_prefs
         )
         tools = self.tools
         skills = self.skills

@@ -1,333 +1,401 @@
-"""Reusable local tools for db-agent skills."""
+"""Deterministic local tools for DB roles."""
 
 from __future__ import annotations
 
-import difflib
-import fnmatch
 import hashlib
 import json
+import re
+from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from mash.memory.store import MemoryStore
 from mash.tools.base import FunctionTool, Tool, ToolResult
 
+METRICS_LAYER_ROOT = Path("src/apps/db/metrics-layer")
+SCHEMA_ROOT = METRICS_LAYER_ROOT / "schema"
+KIND_TO_SUBDIR = {
+    "source": "sources",
+    "metric": "metrics",
+}
+IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
-def build_local_tools(
-    store: MemoryStore,
-    app_id: str,
-    get_session_id: Callable[[], Optional[str]],
-    workspace_root: Path,
-) -> List[Tool]:
-    """Build general-purpose local tools that can be reused by multiple skills."""
+ToolContext = Dict[str, Any]
 
-    root = workspace_root.resolve()
 
-    def resolve_workspace_path(raw_path: str) -> Path:
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = root / path
-        resolved = path.resolve()
-        if not resolved.is_relative_to(root):
-            raise ValueError(f"path must be within workspace root: {root}")
-        return resolved
+def _resolve_workspace_path(raw_path: str, root: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"path must be within workspace root: {root}")
+    return resolved
 
-    def ensure_session_id() -> str:
-        session_id = get_session_id()
-        if not session_id:
-            raise ValueError("session_id is not available")
-        return session_id
 
-    def list_workspace_files(args: Dict[str, Any]) -> ToolResult:
-        raw_path = str(args.get("path", "."))
-        pattern = str(args.get("glob", "*"))
-        recursive = bool(args.get("recursive", True))
-        limit = int(args.get("limit", 200))
+def _to_json(payload: Dict[str, Any]) -> ToolResult:
+    return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
 
-        if limit <= 0:
-            return ToolResult.error("limit must be > 0")
 
-        try:
-            base = resolve_workspace_path(raw_path)
-            if not base.exists():
-                return ToolResult.error(f"path does not exist: {raw_path}")
-            if not base.is_dir():
-                return ToolResult.error(f"path is not a directory: {raw_path}")
+def _normalize_identifier(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is required")
+    normalized = value.strip()
+    if normalized.endswith(".yml"):
+        normalized = normalized[:-4]
+    if "/" in normalized or "\\" in normalized:
+        raise ValueError(f"{field_name} must not contain path separators")
+    if not IDENTIFIER_RE.fullmatch(normalized):
+        raise ValueError(f"{field_name} must match regex {IDENTIFIER_RE.pattern}")
+    return normalized
 
-            iterator = base.rglob("*") if recursive else base.iterdir()
-            results: List[str] = []
-            for candidate in iterator:
-                if not candidate.is_file():
-                    continue
-                rel = candidate.relative_to(root).as_posix()
-                if fnmatch.fnmatch(candidate.name, pattern) or fnmatch.fnmatch(
-                    rel, pattern
-                ):
-                    results.append(rel)
-                if len(results) >= limit:
-                    break
 
-            payload = {
-                "root": root.as_posix(),
-                "path": base.relative_to(root).as_posix(),
-                "glob": pattern,
-                "recursive": recursive,
-                "count": len(results),
-                "files": sorted(results),
-            }
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
-        except Exception as exc:
-            return ToolResult.error(f"workspace_list_files failed: {exc}")
+def _ensure_kind(raw_kind: Any) -> str:
+    if not isinstance(raw_kind, str):
+        raise ValueError("kind is required")
+    kind = raw_kind.strip().lower()
+    if kind not in KIND_TO_SUBDIR:
+        raise ValueError("kind must be one of: source, metric")
+    return kind
 
-    def read_workspace_file(args: Dict[str, Any]) -> ToolResult:
-        raw_path = args.get("path")
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            return ToolResult.error("path is required")
-        try:
-            path = resolve_workspace_path(raw_path)
-            if not path.exists():
-                return ToolResult.error(f"file not found: {raw_path}")
-            if not path.is_file():
-                return ToolResult.error(f"not a file: {raw_path}")
-            content = path.read_text(encoding="utf-8")
-            payload = {
-                "path": path.relative_to(root).as_posix(),
-                "content": content,
-                "size": len(content),
-            }
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True))
-        except Exception as exc:
-            return ToolResult.error(f"workspace_read_file failed: {exc}")
 
-    def write_workspace_file(args: Dict[str, Any]) -> ToolResult:
-        raw_path = args.get("path")
-        content = args.get("content")
-        create_dirs = bool(args.get("create_dirs", False))
+def _resolve_config_path(
+    context: ToolContext, kind: str, dataset_id: Any, name: Any
+) -> Tuple[Path, str, str]:
+    normalized_dataset = _normalize_identifier(dataset_id, "dataset_id")
+    normalized_name = _normalize_identifier(name, "name")
+    subdir = KIND_TO_SUBDIR[kind]
+    relative_path = (
+        METRICS_LAYER_ROOT / normalized_dataset / subdir / f"{normalized_name}.yml"
+    )
+    resolved = _resolve_workspace_path(relative_path.as_posix(), context["root"])
+    return resolved, normalized_dataset, normalized_name
 
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            return ToolResult.error("path is required")
-        if not isinstance(content, str):
-            return ToolResult.error("content must be a string")
 
-        try:
-            path = resolve_workspace_path(raw_path)
-            parent = path.parent
-            if not parent.exists() and not create_dirs:
-                return ToolResult.error(
-                    "parent directory does not exist; set create_dirs=true"
-                )
-            if create_dirs:
-                parent.mkdir(parents=True, exist_ok=True)
+def list_metrics_layer_configs(
+    args: Dict[str, Any], context: ToolContext
+) -> ToolResult:
+    dataset_arg = args.get("dataset_id")
+    metrics_root = context["metrics_root"]
+    root = context["root"]
 
-            path.write_text(content, encoding="utf-8")
-            payload = {
-                "path": path.relative_to(root).as_posix(),
-                "bytes_written": len(content.encode("utf-8")),
-                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            }
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True))
-        except Exception as exc:
-            return ToolResult.error(f"workspace_write_file failed: {exc}")
+    try:
+        dataset_filter = None
+        if dataset_arg is not None:
+            dataset_filter = _normalize_identifier(dataset_arg, "dataset_id")
 
-    def structured_diff(args: Dict[str, Any]) -> ToolResult:
-        before_text = args.get("before_text")
-        after_text = args.get("after_text")
-        fmt = str(args.get("format", "unified"))
-        from_file = str(args.get("from_file", "before"))
-        to_file = str(args.get("to_file", "after"))
-
-        if not isinstance(before_text, str) or not isinstance(after_text, str):
-            return ToolResult.error("before_text and after_text must be strings")
-
-        before_lines = before_text.splitlines(keepends=True)
-        after_lines = after_text.splitlines(keepends=True)
-
-        try:
-            if fmt == "unified":
-                lines = list(
-                    difflib.unified_diff(
-                        before_lines,
-                        after_lines,
-                        fromfile=from_file,
-                        tofile=to_file,
-                        lineterm="",
-                    )
-                )
-            elif fmt == "context":
-                lines = list(
-                    difflib.context_diff(
-                        before_lines,
-                        after_lines,
-                        fromfile=from_file,
-                        tofile=to_file,
-                        lineterm="",
-                    )
-                )
-            else:
-                return ToolResult.error("format must be one of: unified, context")
-
-            payload = {
-                "format": fmt,
-                "line_count": len(lines),
-                "diff": "\n".join(lines),
-            }
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True))
-        except Exception as exc:
-            return ToolResult.error(f"structured_diff failed: {exc}")
-
-    def validate_yaml(args: Dict[str, Any]) -> ToolResult:
-        document_text = args.get("document_text")
-        schema_text = args.get("schema_text")
-        if not isinstance(document_text, str) or not isinstance(schema_text, str):
-            return ToolResult.error("document_text and schema_text must be strings")
-
-        try:
-            document = yaml.safe_load(document_text)
-            schema = yaml.safe_load(schema_text)
-        except Exception as exc:
-            return ToolResult.error(f"invalid yaml: {exc}")
-
-        errors: List[str] = []
-        _validate_against_schema(value=document, schema=schema, path="$", errors=errors)
+        configs: List[Dict[str, Any]] = []
+        for candidate in metrics_root.rglob("*.yml"):
+            relative = candidate.relative_to(metrics_root).as_posix()
+            parts = relative.split("/")
+            if len(parts) != 3:
+                continue
+            dataset_id, subdir, filename = parts
+            if dataset_filter and dataset_id != dataset_filter:
+                continue
+            if subdir not in {"sources", "metrics"}:
+                continue
+            kind = "source" if subdir == "sources" else "metric"
+            configs.append(
+                {
+                    "kind": kind,
+                    "dataset_id": dataset_id,
+                    "name": Path(filename).stem,
+                    "path": candidate.relative_to(root).as_posix(),
+                }
+            )
 
         payload = {
-            "valid": len(errors) == 0,
-            "errors": errors,
+            "root": metrics_root.relative_to(root).as_posix(),
+            "dataset_id": dataset_filter,
+            "count": len(configs),
+            "configs": sorted(configs, key=lambda item: item["path"]),
         }
-        return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
+        return _to_json(payload)
+    except Exception as exc:
+        return ToolResult.error(f"list_metrics_layer_configs failed: {exc}")
 
-    def get_plan_state(args: Dict[str, Any]) -> ToolResult:
-        key = str(args.get("key", "plan_state"))
-        try:
-            session_id = ensure_session_id()
-            value = store.get_app_data(
-                app_id=app_id,
-                session_id=session_id,
-                key=key,
+
+def read_metrics_layer_config(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    root = context["root"]
+    try:
+        kind = _ensure_kind(args.get("kind"))
+        path, dataset_id, name = _resolve_config_path(
+            context=context,
+            kind=kind,
+            dataset_id=args.get("dataset_id"),
+            name=args.get("name"),
+        )
+        if not path.exists():
+            return ToolResult.error(
+                f"config file not found: {path.relative_to(root).as_posix()}"
             )
-            payload = {"key": key, "value": value}
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
-        except Exception as exc:
-            return ToolResult.error(f"get_plan_state failed: {exc}")
-
-    def get_current_plan_path(_args: Dict[str, Any]) -> ToolResult:
-        try:
-            session_id = ensure_session_id()
-            session_plan = (
-                Path("src/apps/db/.mash") / f"plan_{session_id}.md"
-            ).as_posix()
-            plan_path = resolve_workspace_path(session_plan)
-            plan_exists = plan_path.exists() and plan_path.is_file()
-            payload = {
-                "session_id": session_id,
-                "plan_exists": plan_exists,
-                "plan_path": plan_path.relative_to(root).as_posix(),
-                "message": (
-                    "Current session plan found."
-                    if plan_exists
-                    else "No plan was generated for this session yet."
-                ),
-            }
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
-        except Exception as exc:
-            return ToolResult.error(f"get_current_plan failed: {exc}")
-
-    def set_plan_state(args: Dict[str, Any]) -> ToolResult:
-        key = str(args.get("key", "plan_state"))
-        state_json = args.get("state_json")
-        session_id = ensure_session_id()
-
-        if not isinstance(state_json, dict):
-            return ToolResult.error("state_json must be a JSON object")
-
-        try:
-            state_to_store = dict(state_json)
-            state_to_store["session_id"] = session_id
-            session_plan = (
-                Path("src/apps/db/.mash") / f"plan_{session_id}.md"
-            ).as_posix()
-            session_plan_path = resolve_workspace_path(session_plan)
-            state_to_store["plan_path"] = session_plan_path.relative_to(root).as_posix()
-
-            if session_plan_path.exists() and session_plan_path.is_file():
-                plan_text = session_plan_path.read_text(encoding="utf-8")
-                state_to_store["plan_hash"] = hashlib.sha256(
-                    plan_text.encode("utf-8")
-                ).hexdigest()
-
-            store.set_app_data(
-                app_id=app_id,
-                session_id=session_id,
-                key=key,
-                value=state_to_store,
+        if not path.is_file():
+            return ToolResult.error(
+                f"config path is not a file: {path.relative_to(root).as_posix()}"
             )
-            payload = {"key": key, "value": state_to_store}
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
-        except Exception as exc:
-            return ToolResult.error(f"plan_state_set failed: {exc}")
+        content = path.read_text(encoding="utf-8")
+        payload = {
+            "kind": kind,
+            "dataset_id": dataset_id,
+            "name": name,
+            "path": path.relative_to(root).as_posix(),
+            "size": len(content),
+            "content": content,
+        }
+        return _to_json(payload)
+    except Exception as exc:
+        return ToolResult.error(f"read_metrics_layer_config failed: {exc}")
+
+
+def validate_and_write_metrics_layer_config(
+    args: Dict[str, Any], context: ToolContext
+) -> ToolResult:
+    content = args.get("content")
+    create_dirs = bool(args.get("create_dirs", False))
+    root = context["root"]
+    if not isinstance(content, str):
+        return ToolResult.error("content must be a string")
+
+    kind: Optional[str] = None
+    dataset_id: Optional[str] = None
+    name: Optional[str] = None
+    path: Optional[Path] = None
+    try:
+        kind = _ensure_kind(args.get("kind"))
+        path, dataset_id, name = _resolve_config_path(
+            context=context,
+            kind=kind,
+            dataset_id=args.get("dataset_id"),
+            name=args.get("name"),
+        )
+        schema_path, schema_text = _load_metrics_layer_schema_text(
+            context=context, schema_kind=kind
+        )
+        valid, validation_errors, parse_error = _validate_yaml_text(
+            document_text=content,
+            schema_text=schema_text,
+        )
+        if parse_error:
+            return ToolResult.error(
+                json.dumps(
+                    {
+                        "status": "validation_failed",
+                        "stage": "parse",
+                        "kind": kind,
+                        "dataset_id": dataset_id,
+                        "name": name,
+                        "schema_path": schema_path.relative_to(root).as_posix(),
+                        "error": parse_error,
+                    },
+                    ensure_ascii=True,
+                    indent=2,
+                )
+            )
+        if not valid:
+            return ToolResult.error(
+                json.dumps(
+                    {
+                        "status": "validation_failed",
+                        "stage": "schema_validation",
+                        "kind": kind,
+                        "dataset_id": dataset_id,
+                        "name": name,
+                        "schema_path": schema_path.relative_to(root).as_posix(),
+                        "errors": validation_errors,
+                    },
+                    ensure_ascii=True,
+                    indent=2,
+                )
+            )
+        if not path.parent.exists() and not create_dirs:
+            return ToolResult.error(
+                json.dumps(
+                    {
+                        "status": "write_failed",
+                        "stage": "write",
+                        "kind": kind,
+                        "dataset_id": dataset_id,
+                        "name": name,
+                        "path": path.relative_to(root).as_posix(),
+                        "error": "parent directory does not exist; set create_dirs=true",
+                    },
+                    ensure_ascii=True,
+                    indent=2,
+                )
+            )
+        if create_dirs:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        payload = {
+            "status": "written",
+            "kind": kind,
+            "dataset_id": dataset_id,
+            "name": name,
+            "path": path.relative_to(root).as_posix(),
+            "schema_path": schema_path.relative_to(root).as_posix(),
+            "validation": {"valid": True, "errors": []},
+            "bytes_written": len(content.encode("utf-8")),
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        }
+        return _to_json(payload)
+    except Exception as exc:
+        return ToolResult.error(
+            json.dumps(
+                {
+                    "status": "write_failed",
+                    "stage": "write",
+                    "kind": kind,
+                    "dataset_id": dataset_id,
+                    "name": name,
+                    "path": path.relative_to(root).as_posix() if path else None,
+                    "error": str(exc),
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+
+
+def get_metrics_layer_schema(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    raw_schema_kind = args.get("schema_kind")
+    root = context["root"]
+    if not isinstance(raw_schema_kind, str):
+        return ToolResult.error("schema_kind is required")
+    schema_kind = raw_schema_kind.strip().lower()
+    if schema_kind not in {"source", "metric"}:
+        return ToolResult.error("schema_kind must be one of: source, metric")
+
+    try:
+        schema_path, content = _load_metrics_layer_schema_text(
+            context=context, schema_kind=schema_kind
+        )
+        payload = {
+            "schema_kind": schema_kind,
+            "path": schema_path.relative_to(root).as_posix(),
+            "size": len(content),
+            "content": content,
+        }
+        return _to_json(payload)
+    except Exception as exc:
+        return ToolResult.error(f"get_metrics_layer_schema failed: {exc}")
+
+
+def validate_yaml(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    del context
+    document_text = args.get("document_text")
+    schema_text = args.get("schema_text")
+    if not isinstance(document_text, str) or not isinstance(schema_text, str):
+        return ToolResult.error("document_text and schema_text must be strings")
+
+    valid, errors, parse_error = _validate_yaml_text(
+        document_text=document_text,
+        schema_text=schema_text,
+    )
+    if parse_error:
+        return ToolResult.error(f"invalid yaml: {parse_error}")
+    payload = {"valid": valid, "errors": errors}
+    return ToolResult.success(json.dumps(payload, ensure_ascii=True, indent=2))
+
+
+def _load_metrics_layer_schema_text(
+    context: ToolContext, schema_kind: str
+) -> Tuple[Path, str]:
+    schema_root = context["schema_root"]
+    root = context["root"]
+    schema_path = schema_root / f"{schema_kind}.schema.yml"
+    if not schema_path.exists() or not schema_path.is_file():
+        raise ValueError(
+            f"schema not found: {schema_path.relative_to(root).as_posix()}"
+        )
+    content = schema_path.read_text(encoding="utf-8")
+    return schema_path, content
+
+
+def _validate_yaml_text(
+    document_text: str, schema_text: str
+) -> Tuple[bool, List[str], Optional[str]]:
+    try:
+        document = yaml.safe_load(document_text)
+        schema = yaml.safe_load(schema_text)
+    except Exception as exc:
+        return False, [], str(exc)
+
+    errors: List[str] = []
+    _validate_against_schema(value=document, schema=schema, path="$", errors=errors)
+    return len(errors) == 0, errors, None
+
+
+def build_steward_tools(workspace_root: Path) -> List[Tool]:
+    """Build tools used by the data steward role."""
+
+    root = workspace_root.resolve()
+    context: ToolContext = {
+        "root": root,
+        "metrics_root": _resolve_workspace_path(METRICS_LAYER_ROOT.as_posix(), root),
+        "schema_root": _resolve_workspace_path(SCHEMA_ROOT.as_posix(), root),
+    }
 
     return [
         FunctionTool(
-            name="list_workspace_files",
+            name="list_metrics_layer_configs",
             description=(
-                "List files in the workspace from a relative path and glob pattern. "
-                "Useful for discovering config files, plans, and schemas."
+                "List source/metric config files under src/apps/db/metrics-layer."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "dataset_id": {
                         "type": "string",
-                        "description": "Directory path relative to workspace root.",
-                    },
-                    "glob": {
-                        "type": "string",
-                        "description": "Glob pattern (for example: *.yml or metrics-layer/**/*.yml).",
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "Whether to recurse into subdirectories.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum files to return.",
-                    },
-                },
-            },
-            _executor=list_workspace_files,
-        ),
-        FunctionTool(
-            name="read_workspace_file",
-            description=(
-                "Read a UTF-8 text file from the workspace. "
-                "Useful for loading plan.md, YAML configs, and schema files."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to workspace root.",
+                        "description": "Optional dataset id filter.",
                     }
                 },
-                "required": ["path"],
             },
-            _executor=read_workspace_file,
+            _executor=partial(list_metrics_layer_configs, context=context),
         ),
         FunctionTool(
-            name="write_workspace_file",
+            name="read_metrics_layer_config",
             description=(
-                "Write UTF-8 text content to a workspace file. "
-                "Use for plan artifacts and generated config files."
+                "Read one deterministic source/metric config by kind, dataset_id, and name."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "kind": {
                         "type": "string",
-                        "description": "File path relative to workspace root.",
+                        "enum": ["source", "metric"],
+                    },
+                    "dataset_id": {
+                        "type": "string",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Config name without path; .yml optional.",
+                    },
+                },
+                "required": ["kind", "dataset_id", "name"],
+            },
+            _executor=partial(read_metrics_layer_config, context=context),
+        ),
+        FunctionTool(
+            name="validate_and_write_metrics_layer_config",
+            description=(
+                "Validate a source/metric config against schema and write only if valid."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["source", "metric"],
+                    },
+                    "dataset_id": {
+                        "type": "string",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Config name without path; .yml optional.",
                     },
                     "content": {
                         "type": "string",
@@ -335,42 +403,33 @@ def build_local_tools(
                     },
                     "create_dirs": {
                         "type": "boolean",
-                        "description": "Create parent directories if missing.",
+                        "description": "Create parent directories when missing.",
                     },
                 },
-                "required": ["path", "content"],
+                "required": ["kind", "dataset_id", "name", "content"],
             },
-            _executor=write_workspace_file,
+            _executor=partial(validate_and_write_metrics_layer_config, context=context),
         ),
         FunctionTool(
-            name="structured_diff",
+            name="get_metrics_layer_schema",
             description=(
-                "Produce a deterministic text diff between before and after strings. "
-                "Useful for plan generation and review."
+                "Read a metrics-layer YAML schema for source or metric config kinds."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "before_text": {"type": "string"},
-                    "after_text": {"type": "string"},
-                    "format": {
+                    "schema_kind": {
                         "type": "string",
-                        "enum": ["unified", "context"],
-                        "description": "Diff output format.",
-                    },
-                    "from_file": {"type": "string"},
-                    "to_file": {"type": "string"},
+                        "enum": ["source", "metric"],
+                    }
                 },
-                "required": ["before_text", "after_text"],
+                "required": ["schema_kind"],
             },
-            _executor=structured_diff,
+            _executor=partial(get_metrics_layer_schema, context=context),
         ),
         FunctionTool(
             name="validate_yaml",
-            description=(
-                "Validate a YAML document against a lightweight YAML schema. "
-                "Supports required fields, basic types, enum values, nested objects, and arrays."
-            ),
+            description=("Validate a YAML document against a lightweight YAML schema."),
             parameters={
                 "type": "object",
                 "properties": {
@@ -385,60 +444,15 @@ def build_local_tools(
                 },
                 "required": ["document_text", "schema_text"],
             },
-            _executor=validate_yaml,
-        ),
-        FunctionTool(
-            name="get_plan_state",
-            description=(
-                "Read the current plan lifecycle state from app data for this session."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "App data key to read (default: plan_state).",
-                    }
-                },
-            },
-            _executor=get_plan_state,
-        ),
-        FunctionTool(
-            name="get_current_plan",
-            description=(
-                "Get the session-specific plan file path for this session_id and "
-                "indicate whether it exists."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-            },
-            _executor=get_current_plan_path,
-        ),
-        FunctionTool(
-            name="set_plan_state",
-            description=(
-                "Persist plan lifecycle state into app data for this session. "
-                "Automatically includes the session-specific plan path and plan hash "
-                "when the session plan file exists."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "App data key to write (default: plan_state).",
-                    },
-                    "state_json": {
-                        "type": "object",
-                        "description": "Plan state object to persist.",
-                    },
-                },
-                "required": ["state_json"],
-            },
-            _executor=set_plan_state,
+            _executor=partial(validate_yaml, context=context),
         ),
     ]
+
+
+def build_analyst_tools(workspace_root: Path) -> List[Tool]:
+    """Build tools for a future analyst role."""
+    del workspace_root
+    return []
 
 
 def _validate_against_schema(

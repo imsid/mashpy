@@ -1,0 +1,15 @@
+kind: metric
+version: 1
+id: spend_total
+label: Total Spend
+type: simple
+base_source: ad_performance
+expr: spend
+dimensions:
+  - campaign_id
+  - campaign_name
+  - ad_name
+  - ad_status
+  - ad_type
+  - region
+format: "$#,##0.00"

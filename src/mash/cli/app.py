@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,7 +33,6 @@ class CLIContext:
     session_id: str
     renderer: RichRenderer
     store: MemoryStore
-    cached_files: List[str] = field(default_factory=list)
     agent: Optional[Agent] = None
 
 
@@ -45,7 +44,6 @@ class MashApp:
         app_name: str,
         agent: Agent,
         store: MemoryStore,
-        cached_files: List[str],
         log_destination: Path,
         mcp_servers: List[Dict[str, Any]],
         enable_runtime_tools: bool = True,
@@ -56,13 +54,11 @@ class MashApp:
             app_name: Application name.
             agent: Agent instance.
             store: Conversation store.
-            cached_files: List[str].
             log_destination: Path to log file
         """
         self.app_name = app_name
         self.agent = agent
         self.store = store
-        self.cached_files = cached_files
         self.session_id = str(uuid.uuid4())
 
         # Set up event logger
@@ -112,7 +108,6 @@ class MashApp:
             renderer=self.renderer,
             agent=agent,
             store=store,
-            cached_files=self.cached_files,
         )
 
     def _register_runtime_tools(self) -> None:

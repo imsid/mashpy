@@ -1,0 +1,16 @@
+kind: metric
+version: 1
+id: ctr
+label: Click-Through Rate
+type: ratio
+base_source: ad_performance
+numerator: clicks_total
+denominator: impressions_total
+dimensions:
+  - campaign_id
+  - campaign_name
+  - ad_name
+  - ad_status
+  - ad_type
+  - region
+format: "0.00%"

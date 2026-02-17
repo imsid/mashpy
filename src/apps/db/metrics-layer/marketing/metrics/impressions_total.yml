@@ -1,0 +1,15 @@
+kind: metric
+version: 1
+id: impressions_total
+label: Total Impressions
+type: simple
+base_source: ad_performance
+expr: impressions
+dimensions:
+  - campaign_id
+  - campaign_name
+  - ad_name
+  - ad_status
+  - ad_type
+  - region
+format: "#,##0"

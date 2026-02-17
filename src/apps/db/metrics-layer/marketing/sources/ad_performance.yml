@@ -1,0 +1,61 @@
+kind: source
+version: 1
+id: ad_performance
+dataset: marketing
+table: campaign_ads
+grain:
+  - campaign_ad_id
+dimensions:
+  - name: campaign_ad_id
+    expr: campaign_ad_id
+    data_type: INT64
+    is_primary_key: true
+  - name: campaign_id
+    expr: campaign_id
+    data_type: INT64
+  - name: ad_id
+    expr: ad_id
+    data_type: INT64
+  - name: campaign_name
+    expr: campaign_name
+    data_type: STRING
+  - name: ad_name
+    expr: ad_name
+    data_type: STRING
+  - name: status
+    expr: status
+    data_type: STRING
+  - name: start_date
+    expr: start_date
+    data_type: DATE
+  - name: end_date
+    expr: end_date
+    data_type: DATE
+  - name: budget
+    expr: budget
+    data_type: NUMERIC
+measures:
+  - name: impression_count
+    expr: impressions
+    agg: SUM
+    data_type: INT64
+  - name: click_count
+    expr: clicks
+    agg: SUM
+    data_type: INT64
+  - name: spend_total
+    expr: spend
+    agg: SUM
+    data_type: NUMERIC
+  - name: spend_avg
+    expr: spend
+    agg: AVG
+    data_type: NUMERIC
+  - name: ad_count
+    expr: campaign_ad_id
+    agg: COUNT_DISTINCT
+    data_type: INT64
+  - name: row_count
+    expr: "1"
+    agg: COUNT
+    data_type: INT64

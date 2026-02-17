@@ -26,8 +26,8 @@ from .config import (
     BIGQUERY_MCP_URL,
     BIGQUERY_PROJECT_ID,
 )
-from .local_tools import build_local_tools
-from .prompt import build_base_prompt, build_roles_context
+from .local_tools import build_steward_tools
+from .prompt import build_base_prompt, build_roles_context, build_schema_context
 
 APP_ID: str = "data-agent"
 BIGQUERY_CONNECTION_NAME = "bigquery"
@@ -42,7 +42,6 @@ class DataAgentApp(MashApp):
         self.store = self.register_memory_store()
         self.tools = self.register_tools()
         self.skills = self.register_skills()
-        self.cached_files = self.register_cached_files()
         self.agent = self.register_agent()
         self._startup_auth_error: Optional[str] = None
         mcp_servers = self._build_mcp_servers()
@@ -51,7 +50,6 @@ class DataAgentApp(MashApp):
             app_name=APP_ID,
             agent=self.agent,
             store=self.store,
-            cached_files=self.cached_files,
             mcp_servers=mcp_servers,
             log_destination=DataAgentApp.get_logger_destination(),
         )
@@ -67,8 +65,17 @@ class DataAgentApp(MashApp):
             app_id=APP_ID,
         )
 
+    @staticmethod
+    def get_cached_files() -> List[str]:
+        db_dir = Path(__file__).resolve().parent
+        candidates = [
+            db_dir / "metrics-layer" / "schema" / "source.schema.yml",
+            db_dir / "metrics-layer" / "schema" / "metric.schema.yml",
+        ]
+        return [str(path) for path in candidates if path.exists()]
+
     def get_system_prompt(self) -> List[Dict[str, Any]]:
-        return [
+        prompt: List[Dict[str, Any]] = [
             {
                 "type": "text",
                 "text": build_base_prompt(),
@@ -80,31 +87,24 @@ class DataAgentApp(MashApp):
                 "cache_control": {"type": "ephemeral"},
             },
         ]
+        schema_context = build_schema_context(DataAgentApp.get_cached_files())
+        if schema_context:
+            prompt.append(
+                {
+                    "type": "text",
+                    "text": schema_context,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        return prompt
 
     def register_memory_store(self) -> MemoryStore:
         db_path = Path(__file__).resolve().parent / ".mash" / "data-agent.db"
         return SQLiteStore(str(db_path))
 
-    def register_cached_files(self) -> List[str]:
-        # Keep cached files limited to stable schema artifacts.
-        # Plan/index files are session- and workflow-dynamic and should be read
-        # via local tools at execution time to avoid stale context.
-        db_dir = Path(__file__).resolve().parent
-        candidates = [
-            db_dir / "metrics-layer" / "schema" / "index.schema.yml",
-            db_dir / "metrics-layer" / "schema" / "source.schema.yml",
-            db_dir / "metrics-layer" / "schema" / "metric.schema.yml",
-        ]
-        return [str(path) for path in candidates if path.exists()]
-
     def register_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
-        local_tools = build_local_tools(
-            store=self.store,
-            app_id=self.app_id,
-            get_session_id=lambda: getattr(self, "session_id", None),
-            workspace_root=self.workspace_root,
-        )
+        local_tools = build_steward_tools(workspace_root=self.workspace_root)
         for tool in local_tools:
             tools.register(tool)
         return tools
@@ -126,7 +126,7 @@ class DataAgentApp(MashApp):
             max_tokens=4096,
             api_key=ANTHROPIC_API_KEY,
             conversation_history_turns=3,
-            compaction_token_threshold=30000,
+            compaction_token_threshold=100000,
             skills_enabled=True,
             tool_search_enabled=False,
         )

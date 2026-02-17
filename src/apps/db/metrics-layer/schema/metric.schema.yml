@@ -1,4 +1,5 @@
 type: object
+description: Schema for a metrics-layer metric config file.
 required:
   - kind
   - version
@@ -9,31 +10,45 @@ required:
 properties:
   kind:
     type: string
+    description: Discriminator for metric config documents.
     enum: [metric]
   version:
     type: integer
+    description: Schema version for this metric definition.
   id:
     type: string
+    description: Stable metric id, typically matching the filename stem.
   label:
     type: string
+    description: Human-readable metric label for display.
   type:
     type: string
+    description: Metric shape. Use simple for expr-based metrics, ratio for division metrics.
     enum: [simple, ratio]
   base_source:
     type: string
+    description: Source id this metric is defined against.
   expr:
     type: string
+    description: SQL expression for simple metrics.
   numerator:
     type: string
+    description: Numerator expression or metric id for ratio metrics.
   denominator:
     type: string
+    description: Denominator expression or metric id for ratio metrics.
   dimensions:
     type: array
+    description: Allowed grouping dimensions from the base source.
     items:
       type: string
+      description: Dimension id.
   format:
     type: string
+    description: Optional display format (for example 0.00%, $#,##0.00).
   filters:
     type: array
+    description: Optional filter expressions applied to metric evaluation.
     items:
       type: string
+      description: A single filter expression.

@@ -1,96 +1,94 @@
 ---
 name: data-steward
-description: Role for maintaining semantic metrics-layer configs by scanning BigQuery tables, computing diffs, creating plan.md, and executing only after explicit user approval.
+description: Role for creating and updating metrics-layer source and metric configs with concise approval-gated workflows and strong config quality standards.
 ---
 
 # Data Steward Role
 
-Use this role when the user asks to create, update, reconcile, or steward semantic configs for BigQuery datasets and metrics.
+Use this role when the user asks to create, update, or refine semantic configs for BigQuery datasets and metrics.
 
-## Capabilities
+## Scope
 
-1. Agent-led plan mode
-- Inspect datasets/tables with available BigQuery MCP tools.
-- Read existing configs in `src/apps/db/metrics-layer`.
-- Compute diffs and write a change plan to the path returned by `get_current_plan_path`.
+- Only write:
+  - `source` configs at `src/apps/db/metrics-layer/<dataset_id>/sources/<name>.yml`
+  - `metric` configs at `src/apps/db/metrics-layer/<dataset_id>/metrics/<name>.yml`
+- Do not create or edit index manifests.
 
-2. User-led plan mode
-- Accept user-provided schema/table changes.
-- Compare those changes with existing metrics-layer configs in `src/apps/db/metrics-layer`.
-- Write a change plan to the path returned by `get_current_plan_path`.
+## Tools for this role
 
-3. Execute mode
-- Apply the approved session plan updates (from `get_current_plan_path`) to metrics-layer YAML files.
-- Validate YAML outputs against schema files before finalizing.
+- `list_metrics_layer_configs`
+- `read_metrics_layer_config`
+- `validate_and_write_metrics_layer_config`
+- `get_metrics_layer_schema`
+- `validate_yaml` (optional diagnostics only)
 
-## Output Path Contract (Strict)
 
-- All semantic config outputs must be created under `src/apps/db/metrics-layer`.
-- Dataset-specific configs must be created under `src/apps/db/metrics-layer/<dataset_id>/`.
-- Source configs belong in `src/apps/db/metrics-layer/<dataset_id>/sources/`.
-- Metric configs belong in `src/apps/db/metrics-layer/<dataset_id>/metrics/`.
-- Never create semantic configs under `src/apps/db/.mash/` (for example, `src/apps/db/.mash/configs` is invalid for config outputs).
-- `src/apps/db/.mash/` is only for planning/state artifacts such as `plan.md` and session metadata.
+## Modes
+
+- `user-led`:
+  - Change only files and fields explicitly requested by the user.
+  - Do not widen scope unless the user asks.
+- `agent-led`:
+  - You may discover related gaps and propose broader consistency updates.
+  - Show proposed scope before writing.
 
 ## Required Workflow
 
-1. Confirm role mode
-- Ask whether this is agent-led discovery or user-led updates if unclear.
+1. Confirm mode
+- If mode is unclear, ask whether it is `agent-led` or `user-led`.
 
 2. Build context
-- Use BigQuery MCP tools for scan/query context (read-only and focused).
-- Use local tools to inspect workspace files:
-  - `list_workspace_files`
-  - `read_workspace_file`
-  - `get_current_plan_path`
+- Use BigQuery MCP tools for read-only discovery when needed.
+- Use `list_metrics_layer_configs` and `read_metrics_layer_config` for current local config state.
+- Use loaded schema descriptions to map discovered columns/metrics into valid config fields.
 
-3. Draft plan
-- Call `get_current_plan_path` first to retrieve the plan file for the current session.
-- Check `plan_exists` from `get_current_plan_path`:
-  - If `plan_exists` is `true`, call `read_workspace_file` on the returned `plan_path`, modify the current plan content, then write the full updated plan back with `write_workspace_file`.
-  - If `plan_exists` is `false`, create a new plan file at the returned `plan_path` with `write_workspace_file`.
-- Never append partial plan fragments. Always write a complete, updated plan document.
-- Include:
-  - Goal
-  - Detected changes / requested changes
-  - Files to add/update
-  - Validation steps
-  - Rollback notes
-- Every file path in "Files to add/update" must be under `src/apps/db/metrics-layer/<dataset_id>/...`.
-- Persist lifecycle state with `set_plan_state`:
-  - `status: draft`
-  - `mode: agent-led | user-led`
-  - `set_plan_state` automatically stores the session `plan_path` and `plan_hash` when the plan file exists.
+3. Draft concrete changes
+- Use `Schema-Driven Authoring` for schema-first structure and field meaning.
+- Use the `Config Best Practices` section in this skill as guidance for proposed source and metric shapes.
+- Draft YAML schema-first: enumerate required properties for `source` or `metric`, then fill values using schema descriptions.
+- Keep proposals concise and deterministic.
+- Present intended file operations and the exact config shape to add or modify.
 
-4. Approval gate (strict)
-- Do not apply changes until the user explicitly approves execution.
-- Examples of approval signals:
-  - "approve and execute"
-  - "go ahead and apply the plan"
+4. Approval gate
+- Never write before explicit user approval (for example: "approve", "apply", "go ahead").
+- Approval is conversational and turn-local; do not persist workflow state.
 
-5. Execute approved plan
-- Call `get_current_plan_path` first and re-read the returned `plan_path`.
-- If `get_current_plan_path` reports no plan for the session, stop and ask the user to generate/approve a plan first.
-- Validate relevant YAML against schema with `validate_yaml`.
-- Apply file updates with `write_workspace_file`.
-- Before each write, verify the target path starts with `src/apps/db/metrics-layer/`. If not, stop and report an error instead of writing.
-- Persist lifecycle state with `set_plan_state`:
-  - `status: applied`
-  - `applied_files: [...]`
-  - `summary: ...`
-
-6. Summarize executed changes
-- Provide a concise execution summary immediately after applying changes.
-- Include:
-  - Files created/updated
-  - Schema validations performed and results
-  - Any skipped items or follow-up actions
+5. Validate and write
+- Use schema definitions already loaded in prompt context when drafting YAML.
+- Call `get_metrics_layer_schema` only if schema context is missing or uncertain.
+- Write via `validate_and_write_metrics_layer_config`, which deterministically validates against schema before write.
+- If the tool returns validation or write errors, surface them clearly and revise before retrying.
 
 ## Safety and Quality Rules
 
-- Keep queries small and read-only.
+- Keep BigQuery exploration focused and read-only.
 - Never run destructive SQL.
-- Never apply plan changes before explicit approval.
-- Never write semantic config YAML outside `src/apps/db/metrics-layer`.
-- Report validation failures with specific file-level errors.
-- Keep diffs deterministic and reviewable (`structured_diff`).
+- Report validation failures with concrete field-level errors.
+
+## Schema-Driven Authoring
+
+- `source.schema.yml` and `metric.schema.yml` are loaded into system prompt context, including property descriptions.
+- Treat schema descriptions as the canonical meaning for each field when constructing YAML.
+- Build configs from schema first:
+  - include all required fields for the selected kind
+  - use optional fields only when they add clear value
+  - do not invent keys not defined by schema
+- If user intent conflicts with schema shape, call it out and ask for clarification before writing.
+
+## Config Best Practices
+
+Use schema descriptions for field semantics and required structure. Use these best practices for modeling quality decisions.
+
+### Source config
+- Keep naming consistent across related sources so joins and downstream metrics remain predictable.
+- Keep `grain` minimal and stable; avoid derived uniqueness keys unless required.
+- Prefer simple column expressions first; use computed expressions only when semantics require it.
+- Add joins only for real relationships and set conservative, accurate cardinality.
+- Prefer additive measures for reuse and easier rollups.
+
+### Metric config
+- Use stable snake_case `id` for machine usage and clear `label` for user display.
+- Keep metric definitions focused on one business concept per file.
+- Prefer simple metrics when possible; use ratio metrics only when numerator/denominator semantics are explicit.
+- Keep dimensions intentionally narrow to relevant slicing dimensions.
+- Use `format` and optional `filters` to encode output intent and scope explicitly.

@@ -11,7 +11,6 @@ All tools are app-scoped for clean isolation between applications.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Dict, List
 
 from ..memory.store import MemoryStore
@@ -339,73 +338,6 @@ class RuntimeToolBuilder:
             },
             _executor=execute,
         )
-
-    def _build_load_cached_files_tool(self) -> Tool:
-        """Build the load_cached_files tool."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
-            """Load a cached file and return its contents.
-
-            Args:
-                file_path: Path to the cached file to load
-
-            Returns:
-                File contents
-            """
-            file_path = args.get("file_path")
-            if not file_path:
-                return ToolResult.error("Missing required parameter: file_path")
-
-            try:
-
-                path = Path(file_path).expanduser()
-
-                # Security: Only allow reading from ~/.mash/cache/
-                cache_dir = Path.home() / ".mash" / "cache"
-                if not path.is_relative_to(cache_dir):
-                    return ToolResult.error(
-                        f"Access denied. Can only load files from {cache_dir}"
-                    )
-
-                if not path.exists():
-                    return ToolResult.error(f"File not found: {file_path}")
-
-                if not path.is_file():
-                    return ToolResult.error(f"Not a file: {file_path}")
-
-                # Read file
-                content = path.read_text(encoding="utf-8")
-
-                return ToolResult.success(
-                    content, metadata={"file_path": str(path), "size": len(content)}
-                )
-
-            except Exception as e:
-                return ToolResult.error(f"Failed to load file: {e}")
-
-        return FunctionTool(
-            name="load_cached_files",
-            description=(
-                "Load a cached file from ~/.mash/cache/ directory. "
-                "Use this to load repository indexes (repomap.json, repomap.md) "
-                "or other cached data. Security: Only files in ~/.mash/cache/ can be accessed."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": (
-                            "Path to the cached file to load. Can be absolute or start with ~. "
-                            "Example: ~/.mash/cache/repomap/mashpy/<sha>/repomap.json"
-                        ),
-                    },
-                },
-                "required": ["file_path"],
-            },
-            _executor=execute,
-        )
-
 
 __all__ = [
     "RuntimeToolBuilder",

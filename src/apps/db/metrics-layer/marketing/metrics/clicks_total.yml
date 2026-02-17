@@ -1,0 +1,15 @@
+kind: metric
+version: 1
+id: clicks_total
+label: Total Clicks
+type: simple
+base_source: ad_performance
+expr: clicks
+dimensions:
+  - campaign_id
+  - campaign_name
+  - ad_name
+  - ad_status
+  - ad_type
+  - region
+format: "#,##0"

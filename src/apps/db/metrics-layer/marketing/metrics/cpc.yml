@@ -1,0 +1,16 @@
+kind: metric
+version: 1
+id: cpc
+label: Cost Per Click
+type: ratio
+base_source: ad_performance
+numerator: spend_total
+denominator: clicks_total
+dimensions:
+  - campaign_id
+  - campaign_name
+  - ad_name
+  - ad_status
+  - ad_type
+  - region
+format: "$#,##0.00"
