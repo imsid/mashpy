@@ -19,10 +19,10 @@ This lets you combine deterministic CLI controls with model-driven tool executio
 flowchart LR
     U[User]
 
-    subgraph CLI[CLI Layer]
+    subgraph MashApp[MashApp CLI]
         REPL[REPL]
         CMD[Commands]
-        APP[MashApp]
+        AGENT[Agent]
     end
 
     subgraph RUNTIME[Runtime Layer]
@@ -30,22 +30,25 @@ flowchart LR
         SKILLS[Skills]
         RT[Runtime Tools]
         BASH[BashTool]
-        MCP[Remote MCP Loops]
+        MCP[Remote MCP Tools]
         LLM[LLM Provider]
     end
 
-    MEM[Memory Store]
-    LOG[Telemetry Events JSONL]
-    TEL[Telemetry Server + Web UI]
+    subgraph TELEMETRY[Telemetry]
+        LOG[Command Telemetry Events]
+        TEL[Telemetry Server + Web UI]
+        AGENT_LOG[Agent Telemetry Events]
+    end
 
+    subgraph MEMORY[Memory]
+        MEM[Memory Store]
+    end
+    
     U --> REPL
     REPL --> CMD
-    REPL --> APP
+    REPL --> AGENT
 
-    CMD --> MEM
-    CMD --> LOG
-
-    APP --> LOOP
+    AGENT --> LOOP
     LOOP <--> LLM
     LOOP --> SKILLS
     LOOP --> RT
@@ -53,18 +56,18 @@ flowchart LR
     LOOP --> MCP
 
     RT <--> MEM
-    LOOP --> MEM
 
-    LOOP --> LOG
-    MCP --> LOG
+    RUNTIME --> AGENT_LOG
+    CMD --> LOG
     LOG --> TEL
+    AGENT_LOG --> TEL
 ```
 
 How to read this diagram:
 
 1. `REPL` receives user input and routes slash commands to `Commands`.
-2. Non-command messages go through `MashApp` into the `Agent Loop`.
-3. The `Agent Loop` can call local `Runtime Tools`, `BashTool`, `Skills`, and `Remote MCP Loops`.
+2. Non-command messages go through `Agent` into the `Agent Loop`.
+3. The `Agent Loop` can call local `Runtime Tools`, `BashTool`, `Remote MCP Tools` and `Skills`.
 4. State is persisted in the `Memory Store`.
 5. Command, agent, and MCP events are written as JSONL and visualized in telemetry.
 
