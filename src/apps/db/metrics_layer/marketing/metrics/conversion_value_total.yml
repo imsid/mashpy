@@ -1,0 +1,11 @@
+kind: metric
+version: 1
+id: conversion_value_total
+label: Total Conversion Value
+type: simple
+base_source: conversion_events
+expr: conversion_value_total
+dimensions:
+  - conversion_type
+  - customer_id
+format: "$#,##0.00"

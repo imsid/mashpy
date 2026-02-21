@@ -1,6 +1,6 @@
 ---
 name: data-steward
-description: Role for creating and updating metrics-layer source and metric configs with concise approval-gated workflows and strong config quality standards.
+description: Role for creating and updating metrics_layer source and metric configs with concise approval-gated workflows and strong config quality standards.
 ---
 
 # Data Steward Role
@@ -10,8 +10,8 @@ Use this role when the user asks to create, update, or refine semantic configs f
 ## Scope
 
 - Only write:
-  - `source` configs at `src/apps/db/metrics-layer/<dataset_id>/sources/<name>.yml`
-  - `metric` configs at `src/apps/db/metrics-layer/<dataset_id>/metrics/<name>.yml`
+  - `source` configs at `src/apps/db/metrics_layer/<dataset_id>/sources/<name>.yml`
+  - `metric` configs at `src/apps/db/metrics_layer/<dataset_id>/metrics/<name>.yml`
 - Do not create or edit index manifests.
 
 ## Tools for this role

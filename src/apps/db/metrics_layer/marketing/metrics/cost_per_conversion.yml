@@ -1,0 +1,13 @@
+kind: metric
+version: 1
+id: cost_per_conversion
+label: Cost Per Conversion
+type: ratio
+base_source: ad_performance
+numerator: spend_total
+denominator: conversion_count
+dimensions:
+  - campaign_id
+  - channel_id
+  - status
+format: "$#,##0.00"

@@ -26,8 +26,13 @@ from .config import (
     BIGQUERY_MCP_URL,
     BIGQUERY_PROJECT_ID,
 )
-from .local_tools import build_steward_tools
-from .prompt import build_base_prompt, build_roles_context, build_schema_context
+from .local_tools import build_analyst_tools, build_steward_tools
+from .prompt import (
+    build_base_prompt,
+    build_project_context,
+    build_roles_context,
+    build_schema_context,
+)
 
 APP_ID: str = "data-agent"
 BIGQUERY_CONNECTION_NAME = "bigquery"
@@ -69,8 +74,8 @@ class DataAgentApp(MashApp):
     def get_cached_files() -> List[str]:
         db_dir = Path(__file__).resolve().parent
         candidates = [
-            db_dir / "metrics-layer" / "schema" / "source.schema.yml",
-            db_dir / "metrics-layer" / "schema" / "metric.schema.yml",
+            db_dir / "metrics_layer" / "schema" / "source.schema.yml",
+            db_dir / "metrics_layer" / "schema" / "metric.schema.yml",
         ]
         return [str(path) for path in candidates if path.exists()]
 
@@ -87,6 +92,15 @@ class DataAgentApp(MashApp):
                 "cache_control": {"type": "ephemeral"},
             },
         ]
+        project_context = build_project_context(BIGQUERY_PROJECT_ID)
+        if project_context:
+            prompt.append(
+                {
+                    "type": "text",
+                    "text": project_context,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
         schema_context = build_schema_context(DataAgentApp.get_cached_files())
         if schema_context:
             prompt.append(
@@ -104,7 +118,9 @@ class DataAgentApp(MashApp):
 
     def register_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
-        local_tools = build_steward_tools(workspace_root=self.workspace_root)
+        local_tools = build_steward_tools(
+            workspace_root=self.workspace_root
+        ) + build_analyst_tools(workspace_root=self.workspace_root)
         for tool in local_tools:
             tools.register(tool)
         return tools

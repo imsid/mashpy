@@ -1,5 +1,5 @@
 type: object
-description: Schema for a metrics-layer source config file.
+description: Schema for a metrics_layer source config file.
 required:
   - kind
   - version
@@ -22,7 +22,7 @@ properties:
     description: Stable source identifier, typically matching the filename stem.
   dataset:
     type: string
-    description: Logical dataset id under metrics-layer.
+    description: Logical dataset id under metrics_layer.
   table:
     type: string
     description: Physical BigQuery table name backing this source.

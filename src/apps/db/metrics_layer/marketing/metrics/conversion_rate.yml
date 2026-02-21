@@ -1,0 +1,13 @@
+kind: metric
+version: 1
+id: conversion_rate
+label: Conversion Rate
+type: ratio
+base_source: ad_performance
+numerator: conversion_count
+denominator: click_count
+dimensions:
+  - campaign_id
+  - channel_id
+  - status
+format: "0.00%"

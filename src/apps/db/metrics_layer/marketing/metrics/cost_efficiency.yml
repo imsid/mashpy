@@ -1,0 +1,13 @@
+kind: metric
+version: 1
+id: cost_efficiency
+label: Cost Efficiency (Impressions Per Dollar)
+type: ratio
+base_source: ad_performance
+numerator: impression_count
+denominator: spend_total
+dimensions:
+  - campaign_id
+  - channel_id
+  - status
+format: "0.00"

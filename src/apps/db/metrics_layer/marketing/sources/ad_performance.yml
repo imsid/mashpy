@@ -1,7 +1,7 @@
 kind: source
 version: 1
 id: ad_performance
-dataset: marketing
+dataset: marketing_db
 table: campaign_ads
 grain:
   - campaign_ad_id
@@ -13,15 +13,12 @@ dimensions:
   - name: campaign_id
     expr: campaign_id
     data_type: INT64
-  - name: ad_id
-    expr: ad_id
+  - name: creative_id
+    expr: creative_id
     data_type: INT64
-  - name: campaign_name
-    expr: campaign_name
-    data_type: STRING
-  - name: ad_name
-    expr: ad_name
-    data_type: STRING
+  - name: channel_id
+    expr: channel_id
+    data_type: INT64
   - name: status
     expr: status
     data_type: STRING
@@ -31,9 +28,6 @@ dimensions:
   - name: end_date
     expr: end_date
     data_type: DATE
-  - name: budget
-    expr: budget
-    data_type: NUMERIC
 measures:
   - name: impression_count
     expr: impressions
@@ -43,12 +37,24 @@ measures:
     expr: clicks
     agg: SUM
     data_type: INT64
+  - name: conversion_count
+    expr: conversions
+    agg: SUM
+    data_type: INT64
+  - name: revenue_total
+    expr: revenue
+    agg: SUM
+    data_type: NUMERIC
   - name: spend_total
-    expr: spend
+    expr: spent_amount
+    agg: SUM
+    data_type: NUMERIC
+  - name: budget_allocation
+    expr: budget_allocation
     agg: SUM
     data_type: NUMERIC
   - name: spend_avg
-    expr: spend
+    expr: spent_amount
     agg: AVG
     data_type: NUMERIC
   - name: ad_count

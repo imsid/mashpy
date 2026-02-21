@@ -1,0 +1,13 @@
+kind: metric
+version: 1
+id: engagement_score
+label: Average Pages Per Visit
+type: simple
+base_source: website_visits
+expr: pages_per_visit_avg
+dimensions:
+  - device_type
+  - utm_source
+  - utm_medium
+  - country
+format: "0.00"

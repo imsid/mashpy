@@ -1,5 +1,5 @@
 type: object
-description: Schema for a metrics-layer metric config file.
+description: Schema for a metrics_layer metric config file.
 required:
   - kind
   - version

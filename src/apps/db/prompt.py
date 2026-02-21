@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from mash.skills.registry import SkillRegistry
 
@@ -42,6 +42,19 @@ def build_roles_context(skills: SkillRegistry) -> str:
         desc = skill.description or "No description provided."
         lines.append(f"- {skill.name}: {desc}")
     return "\n".join(lines)
+
+
+def build_project_context(project_id: Optional[str]) -> str:
+    if not project_id:
+        return ""
+
+    return "\n".join(
+        [
+            "RUNTIME BIGQUERY CONTEXT",
+            f"- Default project_id: {project_id}",
+            "- Use this as the default BigQuery project unless the user explicitly overrides it.",
+        ]
+    )
 
 
 def build_schema_context(cached_files: List[str]) -> str:

@@ -1,16 +1,13 @@
 kind: metric
 version: 1
-id: cpm
-label: Cost Per Mille
+id: cpc
+label: Cost Per Click
 type: ratio
 base_source: ad_performance
 numerator: spend_total
-denominator: impressions_total / 1000
+denominator: click_count
 dimensions:
   - campaign_id
-  - campaign_name
-  - ad_name
-  - ad_status
-  - ad_type
-  - region
+  - channel_id
+  - status
 format: "$#,##0.00"

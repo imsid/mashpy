@@ -4,13 +4,10 @@ id: ctr
 label: Click-Through Rate
 type: ratio
 base_source: ad_performance
-numerator: clicks_total
-denominator: impressions_total
+numerator: click_count
+denominator: impression_count
 dimensions:
   - campaign_id
-  - campaign_name
-  - ad_name
-  - ad_status
-  - ad_type
-  - region
+  - channel_id
+  - status
 format: "0.00%"
