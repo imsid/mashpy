@@ -6,6 +6,7 @@ from .events import (
     DebugEvent,
     LLMEvent,
     LogEvent,
+    MemorySearchEvent,
     MCPEvent,
 )
 from .logger import EventLogger
@@ -17,6 +18,7 @@ __all__ = [
     "AgentTraceEvent",
     "MCPEvent",
     "LLMEvent",
+    "MemorySearchEvent",
     "DebugEvent",
     "EventLogger",
     "set_trace_id",

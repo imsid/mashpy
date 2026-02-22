@@ -249,6 +249,45 @@ class LLMEvent(LogEvent):
 
 
 @dataclass(frozen=True)
+class MemorySearchEvent(LogEvent):
+    """Event emitted for memory search pipeline operations.
+
+    Tracks parse/retrieval/rerank lifecycle when `MemorySearchService.search()`
+    is invoked.
+
+    Example event_types:
+    - "memory.search.start"
+    - "memory.search.parse.complete"
+    - "memory.search.retrieval.complete"
+    - "memory.search.rerank.complete"
+    - "memory.search.complete"
+    - "memory.search.error"
+    """
+
+    query_id: Optional[str] = None
+    level: Optional[str] = None
+    stage: Optional[str] = None
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize event to dictionary."""
+        payload = super().to_dict()
+        payload.update(
+            {
+                "query_id": self.query_id,
+                "level": self.level,
+                "stage": self.stage,
+                "duration_ms": self.duration_ms,
+                "error": self.error,
+                "metadata": self.metadata,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True)
 class DebugEvent(LogEvent):
     """Free-form debug event for debugging and exception tracking.
 

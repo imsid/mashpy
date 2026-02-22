@@ -29,7 +29,6 @@ from .config import (
 from .local_tools import build_analyst_tools, build_steward_tools
 from .prompt import (
     build_base_prompt,
-    build_project_context,
     build_roles_context,
     build_schema_context,
 )
@@ -83,7 +82,7 @@ class DataAgentApp(MashApp):
         prompt: List[Dict[str, Any]] = [
             {
                 "type": "text",
-                "text": build_base_prompt(),
+                "text": build_base_prompt(BIGQUERY_PROJECT_ID),
                 "cache_control": {"type": "ephemeral"},
             },
             {
@@ -92,15 +91,7 @@ class DataAgentApp(MashApp):
                 "cache_control": {"type": "ephemeral"},
             },
         ]
-        project_context = build_project_context(BIGQUERY_PROJECT_ID)
-        if project_context:
-            prompt.append(
-                {
-                    "type": "text",
-                    "text": project_context,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            )
+
         schema_context = build_schema_context(DataAgentApp.get_cached_files())
         if schema_context:
             prompt.append(

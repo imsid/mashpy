@@ -8,8 +8,8 @@ from typing import List, Optional
 from mash.skills.registry import SkillRegistry
 
 
-def build_base_prompt() -> str:
-    return """ROLE
+def build_base_prompt(project_id: Optional[str] = None) -> str:
+    prompt = """ROLE
 You are the BigQuery Database Assistant.
 
 MISSION
@@ -26,6 +26,14 @@ DATA ACCESS RULES
 - Prefer short, focused, read-only SQL queries.
 - Keep query scope small and explain findings clearly.
 """
+    if project_id:
+        prompt = (
+            f"{prompt}\n"
+            "RUNTIME BIGQUERY CONTEXT\n"
+            f"- Default project_id: {project_id}\n"
+            "- Use this as the default BigQuery project unless the user explicitly overrides it.\n"
+        )
+    return prompt
 
 
 def build_roles_context(skills: SkillRegistry) -> str:
@@ -42,19 +50,6 @@ def build_roles_context(skills: SkillRegistry) -> str:
         desc = skill.description or "No description provided."
         lines.append(f"- {skill.name}: {desc}")
     return "\n".join(lines)
-
-
-def build_project_context(project_id: Optional[str]) -> str:
-    if not project_id:
-        return ""
-
-    return "\n".join(
-        [
-            "RUNTIME BIGQUERY CONTEXT",
-            f"- Default project_id: {project_id}",
-            "- Use this as the default BigQuery project unless the user explicitly overrides it.",
-        ]
-    )
 
 
 def build_schema_context(cached_files: List[str]) -> str:

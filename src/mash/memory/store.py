@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Union
 
+from .search.types import SearchColumn
+
 
 class MemoryStore(Protocol):
     """Protocol for conversation storage."""
@@ -52,6 +54,39 @@ class MemoryStore(Protocol):
 
         Returns:
             List of turns.
+        """
+        ...
+
+    def keyword_search(
+        self,
+        column: SearchColumn,
+        query_term: str,
+        limit: int,
+        session_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search turns by keyword in a single column.
+
+        Returns:
+            List of hits ordered by descending score in [0, 1].
+            Each hit must include: turn_id, session_id, score, preview.
+        """
+        ...
+
+    def semantic_search(
+        self,
+        column: SearchColumn,
+        query_term: str,
+        query_embedding: Optional[List[float]],
+        limit: int,
+        session_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search turns semantically in a single column.
+
+        Returns:
+            List of hits ordered by descending score in [0, 1].
+            Each hit must include: turn_id, session_id, score, preview.
         """
         ...
 
@@ -173,6 +208,8 @@ class MemoryStore(Protocol):
 class SQLiteStore(MemoryStore):
     """SQLite-backed conversation store with signals."""
 
+    _FTS_TABLE = "fts_turns"
+
     def __init__(self, path: Union[str, Path] = ":memory:") -> None:
         """Initialize SQLite store.
 
@@ -257,6 +294,35 @@ class SQLiteStore(MemoryStore):
                 "CREATE INDEX IF NOT EXISTS idx_app_data_session ON app_data(app_id, session_id)"
             )
 
+            try:
+                self._conn.execute(
+                    f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS {self._FTS_TABLE} USING fts5(
+                        turn_id UNINDEXED,
+                        session_id UNINDEXED,
+                        user_message,
+                        agent_response,
+                        tokenize='unicode61'
+                    )
+                    """
+                )
+            except sqlite3.OperationalError as exc:
+                raise RuntimeError(
+                    "SQLite FTS5 support is required for SQLiteStore keyword search"
+                ) from exc
+
+            turns_has_rows = (
+                self._conn.execute("SELECT 1 FROM turns LIMIT 1").fetchone() is not None
+            )
+            fts_has_rows = (
+                self._conn.execute(
+                    f"SELECT 1 FROM {self._FTS_TABLE} LIMIT 1"
+                ).fetchone()
+                is not None
+            )
+            if turns_has_rows and not fts_has_rows:
+                self._rebuild_turns_fts_index_locked()
+
             self._conn.commit()
 
     def save_turn(
@@ -293,6 +359,19 @@ class SQLiteStore(MemoryStore):
                     metadata_json,
                     timestamp,
                 ),
+            )
+
+            self._conn.execute(
+                f"""
+                INSERT INTO {self._FTS_TABLE} (
+                    turn_id,
+                    session_id,
+                    user_message,
+                    agent_response
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (turn_id, session_id, user_message, agent_response),
             )
 
             # Save signals
@@ -390,6 +469,126 @@ class SQLiteStore(MemoryStore):
             ).fetchall()
 
         return {name: value for name, value in rows}
+
+    def keyword_search(
+        self,
+        column: SearchColumn,
+        query_term: str,
+        limit: int,
+        session_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search turns by keyword using SQLite FTS5 BM25 ranking."""
+        normalized_limit = max(0, int(limit))
+        if normalized_limit <= 0:
+            return []
+
+        match_query = self._build_keyword_match_query(column, query_term)
+        if not match_query:
+            return []
+
+        column_name = self._validated_search_column(column)
+        params: List[Any] = [match_query]
+        filters: List[str] = []
+        if session_id is not None:
+            filters.append(f"{self._FTS_TABLE}.session_id = ?")
+            params.append(session_id)
+        if app_id is not None:
+            filters.append("t.app_id = ?")
+            params.append(app_id)
+
+        where_filters = ""
+        if filters:
+            where_filters = " AND " + " AND ".join(filters)
+
+        sql = f"""
+            SELECT
+                t.turn_id,
+                t.session_id,
+                t.{column_name} AS preview,
+                bm25({self._FTS_TABLE}) AS bm25_score
+            FROM {self._FTS_TABLE}
+            JOIN turns AS t ON t.turn_id = {self._FTS_TABLE}.turn_id
+            WHERE {self._FTS_TABLE} MATCH ?{where_filters}
+            ORDER BY bm25_score ASC, t.created_at DESC, t.turn_id ASC
+            LIMIT ?
+        """
+        params.append(normalized_limit)
+
+        try:
+            with self._lock:
+                rows = self._conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                "SQLite FTS5 support is required for SQLiteStore keyword search"
+            ) from exc
+
+        hits: List[Dict[str, Any]] = []
+        for rank, (turn_id, hit_session_id, preview, _bm25_score) in enumerate(
+            rows, start=1
+        ):
+            hits.append(
+                {
+                    "turn_id": turn_id,
+                    "session_id": str(hit_session_id),
+                    "score": 1.0 / (1.0 + rank),
+                    "preview": "" if preview is None else str(preview),
+                }
+            )
+        return hits
+
+    def semantic_search(
+        self,
+        column: SearchColumn,
+        query_term: str,
+        query_embedding: Optional[List[float]],
+        limit: int,
+        session_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Phase 1 contract only; SQLite-backed implementation comes next."""
+        raise NotImplementedError("SQLiteStore.semantic_search is not implemented yet")
+
+    def _rebuild_turns_fts_index_locked(self) -> None:
+        """Rebuild the FTS index from the canonical turns table.
+
+        Caller must hold ``self._lock``.
+        """
+        self._conn.execute(f"DELETE FROM {self._FTS_TABLE}")
+        self._conn.execute(
+            f"""
+            INSERT INTO {self._FTS_TABLE} (
+                turn_id,
+                session_id,
+                user_message,
+                agent_response
+            )
+            SELECT turn_id, session_id, user_message, agent_response
+            FROM turns
+            """
+        )
+
+    @staticmethod
+    def _validated_search_column(column: SearchColumn) -> str:
+        """Return a whitelisted turns column name for search."""
+        if column not in ("user_message", "agent_response"):
+            raise ValueError(f"Unsupported search column: {column}")
+        return column
+
+    @classmethod
+    def _build_keyword_match_query(
+        cls,
+        column: SearchColumn,
+        query_term: str,
+    ) -> str:
+        """Build a column-scoped FTS5 MATCH expression with token-AND semantics."""
+        column_name = cls._validated_search_column(column)
+        tokens = [token for token in str(query_term).split() if token]
+        if not tokens:
+            return ""
+        escaped_tokens = [f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens]
+        token_expr = " AND ".join(escaped_tokens)
+        return f"{column_name} : ({token_expr})"
 
     def get_preferences(
         self,
