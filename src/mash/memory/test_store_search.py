@@ -19,12 +19,14 @@ class SQLiteStoreKeywordSearchTests(unittest.TestCase):
         session_id: str,
         user_message: str,
         agent_response: str,
+        app_id: str,
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
         self.store.save_turn(
             trace_id=turn_id,
             session_id=session_id,
+            app_id=app_id,
             user_message=user_message,
             agent_response=agent_response,
             signals={},
@@ -77,9 +79,12 @@ class SQLiteStoreKeywordSearchTests(unittest.TestCase):
             )
             self.store._conn.commit()
 
-    def test_keyword_search_returns_empty_for_non_positive_limit_or_blank_query(self) -> None:
+    def test_keyword_search_returns_empty_for_non_positive_limit_or_blank_query(
+        self,
+    ) -> None:
         self._save_turn(
             session_id="s1",
+            app_id="app",
             user_message="hello world",
             agent_response="response",
         )
@@ -100,21 +105,26 @@ class SQLiteStoreKeywordSearchTests(unittest.TestCase):
     def test_keyword_search_is_column_scoped_and_token_and(self) -> None:
         user_hit = self._save_turn(
             session_id="s1",
+            app_id="app",
             user_message="hello world",
             agent_response="irrelevant response",
         )
         self._save_turn(
             session_id="s1",
+            app_id="app",
             user_message="hello only",
             agent_response="world hello",
         )
         agent_hit = self._save_turn(
             session_id="s1",
+            app_id="app",
             user_message="no match here",
             agent_response="hello world",
         )
 
-        user_results = self.store.keyword_search("user_message", "hello world", limit=10)
+        user_results = self.store.keyword_search(
+            "user_message", "hello world", limit=10
+        )
         self.assertEqual([hit["turn_id"] for hit in user_results], [user_hit])
         self.assertEqual(user_results[0]["preview"], "hello world")
         self.assertEqual(user_results[0]["session_id"], "s1")
@@ -124,13 +134,24 @@ class SQLiteStoreKeywordSearchTests(unittest.TestCase):
             "hello world",
             limit=10,
         )
-        self.assertEqual({hit["turn_id"] for hit in agent_results}, {agent_hit, "turn-2"})
+        self.assertEqual(
+            {hit["turn_id"] for hit in agent_results}, {agent_hit, "turn-2"}
+        )
         self.assertNotIn(user_hit, {hit["turn_id"] for hit in agent_results})
 
     def test_keyword_search_uses_rank_based_score_normalization(self) -> None:
-        self._save_turn(session_id="s1", user_message="alpha", agent_response="x")
-        self._save_turn(session_id="s1", user_message="alpha beta", agent_response="x")
-        self._save_turn(session_id="s1", user_message="beta alpha gamma", agent_response="x")
+        self._save_turn(
+            session_id="s1", app_id="app", user_message="alpha", agent_response="x"
+        )
+        self._save_turn(
+            session_id="s1", app_id="app", user_message="alpha beta", agent_response="x"
+        )
+        self._save_turn(
+            session_id="s1",
+            app_id="app",
+            user_message="beta alpha gamma",
+            agent_response="x",
+        )
 
         results = self.store.keyword_search("user_message", "alpha", limit=3)
 
@@ -145,11 +166,13 @@ class SQLiteStoreKeywordSearchTests(unittest.TestCase):
     def test_keyword_search_filters_by_session_id(self) -> None:
         wanted = self._save_turn(
             session_id="session-a",
+            app_id="app",
             user_message="shared keyword",
             agent_response="x",
         )
         self._save_turn(
             session_id="session-b",
+            app_id="app",
             user_message="shared keyword",
             agent_response="x",
         )
@@ -188,6 +211,31 @@ class SQLiteStoreKeywordSearchTests(unittest.TestCase):
         )
 
         self.assertEqual([hit["turn_id"] for hit in results], ["app-a-turn"])
+
+    def test_keyword_search_filters_by_app_id_for_turns_saved_via_save_turn(
+        self,
+    ) -> None:
+        wanted = self._save_turn(
+            session_id="s1",
+            app_id="app-a",
+            user_message="saved via save_turn",
+            agent_response="x",
+        )
+        self._save_turn(
+            session_id="s1",
+            app_id="app-b",
+            user_message="saved via save_turn",
+            agent_response="x",
+        )
+
+        results = self.store.keyword_search(
+            "user_message",
+            "saved via save_turn",
+            limit=10,
+            app_id="app-a",
+        )
+
+        self.assertEqual([hit["turn_id"] for hit in results], [wanted])
 
     def test_keyword_search_combines_session_and_app_filters(self) -> None:
         self._insert_turn_with_app(

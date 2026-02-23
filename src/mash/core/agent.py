@@ -658,9 +658,10 @@ class Agent:
             # Critical tools (bash, runtime tools) need full definitions always available
             critical_tools = {
                 "bash",  # Essential for local repo exploration
-                "get_conversation",  # Runtime memory tools
-                "get_preferences",
-                "set_preferences",
+                "search_conversations",
+                "get_full_turn_message",
+                "get_user_preferences",
+                "set_user_preferences",
                 "set_app_data",
                 "list_app_data",
             }

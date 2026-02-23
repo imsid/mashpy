@@ -1,7 +1,7 @@
 # AGENTS Guide for `src/mash/memory`
 
 ## Scope
-Persistence and memory utilities: SQLite store, signal collection, checkpoint summarization, and memory search pipeline.
+Persistence and memory utilities: memory store protocol + backends, signal collection, checkpoint summarization, and memory search pipeline.
 
 ## Invariants
 - SQLite operations should remain guarded by the store lock for thread safety.
@@ -9,6 +9,11 @@ Persistence and memory utilities: SQLite store, signal collection, checkpoint su
 - `get_turns()` returns chronological order.
 - Signal persistence is numeric-only (non-numeric values are skipped).
 - Memory search retrieval must go through `MemoryStore` protocol methods (`keyword_search`, `semantic_search`) rather than bypassing the store.
+
+## Store Organization
+- Public memory store imports remain under `src/mash/memory/store/` (package) and should expose backend-agnostic types plus selected concrete backends.
+- Backend implementation details live under `src/mash/memory/store/backends/` (currently `sqlite`).
+- Backend-specific store invariants and extension guidance should be documented in `src/mash/memory/store/AGENTS.md`.
 
 ## Data Model Notes
 - Conversation turns are session-scoped.

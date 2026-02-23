@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
+import sys
 import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,6 +31,13 @@ class TelemetryHTTPServer(ThreadingHTTPServer):
 
     search_service: Optional[MemorySearchService]
     memory_db_path: Optional[Path]
+
+    def handle_error(self, request, client_address) -> None:  # type: ignore[override]
+        """Suppress noisy disconnect tracebacks from browsers/SSE reconnects."""
+        _, exc, _ = sys.exc_info()
+        if _is_expected_disconnect_error(exc):
+            return
+        super().handle_error(request, client_address)
 
 
 class TelemetryHandler(BaseHTTPRequestHandler):
@@ -220,6 +229,16 @@ def _read_log(path: Path, limit: int) -> List[Dict[str, object]]:
         except json.JSONDecodeError:
             continue
     return events
+
+
+def _is_expected_disconnect_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return True
+    if isinstance(exc, OSError):
+        return exc.errno in {errno.EPIPE, errno.ECONNRESET}
+    return False
 
 
 def main() -> None:

@@ -117,6 +117,7 @@ class MashApp:
             store=self.store,
             app_id=self.app_name,
             session_id=self.session_id,
+            event_logger=self.event_logger,
         )
 
         # Register tools with agent
@@ -329,6 +330,7 @@ class MashApp:
             ctx.store.save_turn(
                 trace_id=trace_id or str(uuid.uuid4()),
                 session_id=ctx.session_id,
+                app_id=self.agent.config.app_id,
                 user_message=message,
                 agent_response=response.text,
                 signals=response.signals,

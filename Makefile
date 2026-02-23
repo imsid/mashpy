@@ -13,8 +13,11 @@ telemetry-web:
 
 telemetry-server:
 	@if [ -z "$(TELEMETRY_LOG)" ]; then echo "TELEMETRY_LOG is required"; exit 1; fi
-	python -m mash.telemetry --log "$(TELEMETRY_LOG)" --port $(TELEMETRY_PORT)
+	@if [ -z "$(TELEMETRY_MEMORY_DB)" ]; then echo "TELEMETRY_MEMORY_DB is required"; exit 1; fi
+	python -m mash.telemetry --log "$(TELEMETRY_LOG)" --port $(TELEMETRY_PORT) --memory-db "$(TELEMETRY_MEMORY_DB)"
 
+# Usage:
+#   make telemetry-dev TELEMETRY_LOG=/path/to/telemetry.jsonl TELEMETRY_MEMORY_DB=/path/to/memory.db
 telemetry-dev: telemetry-web-install
 	@echo "Starting telemetry server on :$(TELEMETRY_PORT) and Vite on :$(VITE_PORT)"
 	@bash -c 'set -euo pipefail; \

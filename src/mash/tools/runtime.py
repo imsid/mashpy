@@ -11,8 +11,12 @@ All tools are app-scoped for clean isolation between applications.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any, Dict, List
 
+from ..logging import EventLogger
+from ..memory.search.service import MemorySearchService
+from ..memory.search.types import SearchResult
 from ..memory.store import MemoryStore
 from .base import FunctionTool, Tool, ToolResult
 
@@ -25,6 +29,7 @@ class RuntimeToolBuilder:
         store: MemoryStore,
         app_id: str,
         session_id: str,
+        event_logger: EventLogger,
     ) -> None:
         """Initialize runtime tool builder.
 
@@ -36,13 +41,18 @@ class RuntimeToolBuilder:
         self._store = store
         self._app_id = app_id
         self._session_id = session_id
+        self._search_service = MemorySearchService(
+            store=store,
+            event_logger=event_logger,
+        )
 
     def build_tools(self) -> List[Tool]:
         """Build runtime tools for this app and session."""
         return [
-            self._build_get_conversation_tool(),
-            self._build_get_preferences_tool(),
-            self._build_set_preferences_tool(),
+            self._build_search_conversations_tool(),
+            self._build_get_full_turn_message_tool(),
+            self._build_get_user_preferences_tool(),
+            self._build_set_user_preferences_tool(),
             self._build_list_app_data_tool(),
             self._build_set_app_data_tool(),
         ]
@@ -96,7 +106,7 @@ class RuntimeToolBuilder:
             _executor=execute,
         )
 
-    def _build_get_preferences_tool(self) -> Tool:
+    def _build_get_user_preferences_tool(self) -> Tool:
         """Tool to get user preferences."""
 
         def execute(_args: Dict[str, Any]) -> ToolResult:
@@ -115,7 +125,7 @@ class RuntimeToolBuilder:
             )
 
         return FunctionTool(
-            name="get_preferences",
+            name="get_user_preferences",
             description=(
                 "Get stored user preferences for this session. "
                 "Preferences are persistent across conversations. "
@@ -125,7 +135,250 @@ class RuntimeToolBuilder:
             _executor=execute,
         )
 
-    def _build_set_preferences_tool(self) -> Tool:
+    def _build_search_conversations_tool(self) -> Tool:
+        """Tool to search conversation history."""
+
+        def execute(args: Dict[str, Any]) -> ToolResult:
+            query = args.get("query")
+            if not isinstance(query, str) or not query.strip():
+                return ToolResult.error(
+                    "query is required and must be a non-empty string"
+                )
+            query = query.strip()
+
+            raw_limit = args.get("limit", 10)
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return ToolResult.error("limit must be an integer")
+
+            scope = args.get("scope", "session")
+            if not isinstance(scope, str):
+                return ToolResult.error("scope must be 'session' or 'app'")
+            scope = scope.strip().lower() or "session"
+            if scope not in {"session", "app"}:
+                return ToolResult.error("scope must be 'session' or 'app'")
+
+            search_session_id = self._session_id if scope == "session" else None
+            try:
+                normalized_queries = self._normalize_search_queries(query)
+                results = self._search_with_prefixes(
+                    normalized_queries,
+                    app_id=self._app_id,
+                    limit=limit,
+                    session_id=search_session_id,
+                )
+            except (ValueError, NotImplementedError, RuntimeError) as exc:
+                return ToolResult.error(str(exc))
+            except Exception as exc:  # pragma: no cover - defensive guard
+                return ToolResult.error(f"search failed: {exc}")
+
+            payload = {
+                "query": query,
+                "effective_queries": normalized_queries,
+                "scope": scope,
+                "app_id": self._app_id,
+                "session_id": search_session_id,
+                "limit": limit,
+                "results": [asdict(result) for result in results],
+            }
+            return ToolResult(
+                content=json.dumps(payload, indent=2),
+                is_error=False,
+            )
+
+        return FunctionTool(
+            name="search_conversations",
+            description=(
+                "Search conversation history for relevant prior turns. "
+                "Use scope='session' to search only the current conversation, "
+                "or scope='app' to search across all sessions for this app. "
+                "Prefix query with @user: to search only user messages "
+                "(useful for finding what the user asked for or stated), "
+                "or @agent: to search only agent responses "
+                "(useful for finding prior answers, explanations, or outputs). "
+                "If omitted, the tool searches both and merges ranked results. "
+                "Returns ranked results with turn IDs, session IDs, scores, and previews."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Search query. Use @user:<text> to search user messages, "
+                            "@agent:<text> to search agent responses, or plain text "
+                            "to search both and merge results."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum number of results to return (default: 10)"
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["session", "app"],
+                        "description": (
+                            "Search scope: current session only ('session') "
+                            "or all sessions in this app ('app')"
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+            _executor=execute,
+        )
+
+    @staticmethod
+    def _normalize_search_queries(query: str) -> list[str]:
+        """Return one or more prefixed queries accepted by the memory parser."""
+        stripped = query.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("@user:") or lowered.startswith("@agent:"):
+            return [stripped]
+        return [f"@user:{stripped}", f"@agent:{stripped}"]
+
+    def _search_with_prefixes(
+        self,
+        queries: list[str],
+        *,
+        app_id: str,
+        limit: int,
+        session_id: str | None,
+    ) -> list[SearchResult]:
+        """Search one or more prefixed queries and merge/dedupe results."""
+        merged: dict[tuple[str, str], SearchResult] = {}
+        for prefixed_query in queries:
+            for result in self._search_service.search(
+                prefixed_query,
+                app_id=app_id,
+                limit=limit,
+                session_id=session_id,
+            ):
+                key = (result.session_id, result.turn_id)
+                existing = merged.get(key)
+                if (
+                    existing is None
+                    or result.similarity_score > existing.similarity_score
+                ):
+                    merged[key] = result
+        return sorted(
+            merged.values(),
+            key=lambda item: item.similarity_score,
+            reverse=True,
+        )[:limit]
+
+    def _build_get_full_turn_message_tool(self) -> Tool:
+        """Tool to fetch full messages for one or more conversation turns."""
+
+        def execute(args: Dict[str, Any]) -> ToolResult:
+            raw_pairs = args.get("pairs")
+            if not isinstance(raw_pairs, list) or not raw_pairs:
+                return ToolResult.error(
+                    "pairs is required and must be a non-empty array"
+                )
+
+            normalized_pairs: List[Dict[str, str]] = []
+            for idx, pair in enumerate(raw_pairs):
+                if not isinstance(pair, dict):
+                    return ToolResult.error(
+                        f"pairs[{idx}] must be an object with session_id and turn_id"
+                    )
+
+                session_id = pair.get("session_id")
+                turn_id = pair.get("turn_id")
+                if not isinstance(session_id, str) or not session_id.strip():
+                    return ToolResult.error(
+                        f"pairs[{idx}].session_id must be a non-empty string"
+                    )
+                if not isinstance(turn_id, str) or not turn_id.strip():
+                    return ToolResult.error(
+                        f"pairs[{idx}].turn_id must be a non-empty string"
+                    )
+
+                normalized_pairs.append(
+                    {
+                        "session_id": session_id.strip(),
+                        "turn_id": turn_id.strip(),
+                    }
+                )
+
+            try:
+                turns = self._store.get_turn_by_ids(
+                    pairs=normalized_pairs,
+                )
+            except Exception as exc:  # pragma: no cover - defensive guard
+                return ToolResult.error(f"failed to fetch turns: {exc}")
+
+            found_turns = turns or []
+            found_keys = {
+                (str(turn.get("session_id")), str(turn.get("turn_id")))
+                for turn in found_turns
+            }
+            missing_pairs = [
+                pair
+                for pair in normalized_pairs
+                if (pair["session_id"], pair["turn_id"]) not in found_keys
+            ]
+
+            return ToolResult(
+                content=json.dumps(
+                    {
+                        "requested_count": len(normalized_pairs),
+                        "found_count": len(found_turns),
+                        "turns": found_turns,
+                        "missing_pairs": missing_pairs,
+                    },
+                    indent=2,
+                ),
+                is_error=False,
+            )
+
+        return FunctionTool(
+            name="get_full_turn_message",
+            description=(
+                "Fetch full user and assistant messages for one or more turns "
+                "using (session_id, turn_id) pairs, typically from "
+                "search_conversations results. Returns matched turns with the "
+                "full user_message and agent_response text for each result."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "pairs": {
+                        "type": "array",
+                        "description": (
+                            "List of session/turn pairs from search_conversations "
+                            "results to expand into full messages"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "session_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Session ID from search_conversations results"
+                                    ),
+                                },
+                                "turn_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Turn ID from search_conversations results"
+                                    ),
+                                },
+                            },
+                            "required": ["session_id", "turn_id"],
+                        },
+                    },
+                },
+                "required": ["pairs"],
+            },
+            _executor=execute,
+        )
+
+    def _build_set_user_preferences_tool(self) -> Tool:
         """Tool to set user preferences."""
 
         def execute(args: Dict[str, Any]) -> ToolResult:
@@ -146,7 +399,7 @@ class RuntimeToolBuilder:
             )
 
         return FunctionTool(
-            name="set_preferences",
+            name="set_user_preferences",
             description=(
                 "Store user preferences for this session. "
                 "Use this to remember user settings, preferences, or context "
@@ -338,6 +591,7 @@ class RuntimeToolBuilder:
             },
             _executor=execute,
         )
+
 
 __all__ = [
     "RuntimeToolBuilder",

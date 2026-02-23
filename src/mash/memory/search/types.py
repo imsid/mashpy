@@ -63,7 +63,7 @@ class RetrievalConfig:
     """Feature toggles for retrieval methods."""
 
     enable_keyword: bool = True
-    enable_semantic: bool = True
+    enable_semantic: bool = False
 
 
 @dataclass(frozen=True)

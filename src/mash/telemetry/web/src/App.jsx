@@ -23,7 +23,6 @@ export default function App() {
 
   const [searchText, setSearchText] = useState('');
   const [searchTarget, setSearchTarget] = useState('user');
-  const [searchScope, setSearchScope] = useState('session');
   const [searchResults, setSearchResults] = useState([]);
   const [searchStatus, setSearchStatus] = useState('idle');
   const [searchError, setSearchError] = useState(null);
@@ -141,16 +140,13 @@ export default function App() {
       return;
     }
     if (!available.has(selectedTraceId)) {
-      if (selectedSearchTurnId && selectedTraceId === selectedSearchTurnId) {
-        return;
-      }
       const firstTrace = Array.from(available.keys())[0];
       setSelectedTraceId(firstTrace);
     }
   }, [selectedSessionId, selectedTraceId, selectedSearchTurnId, sessionMap]);
 
   useEffect(() => {
-    if (!activeSearchContext || activeSearchContext.scope !== 'session') {
+    if (!activeSearchContext) {
       return;
     }
     if (activeSearchContext.sessionId === selectedSessionId) {
@@ -169,12 +165,6 @@ export default function App() {
     selectedSession && selectedTraceId ? selectedSession.traces.get(selectedTraceId) || [] : [];
   const selectedTraceExists = Boolean(
     selectedSession && selectedTraceId && selectedSession.traces.has(selectedTraceId)
-  );
-  const searchHitMissingFromTelemetry = Boolean(
-    selectedSearchTurnId &&
-      selectedTraceId === selectedSearchTurnId &&
-      selectedSession &&
-      !selectedTraceExists
   );
   const baseTs = selectedEvents.length ? timestamp(selectedEvents[0]) : null;
   const canSearch = Boolean(selectedSessionId && selectedSessionAppId);
@@ -227,12 +217,9 @@ export default function App() {
     const params = new URLSearchParams({
       q: query,
       app_id: selectedSessionAppId,
+      session_id: selectedSessionId,
       limit: String(DEFAULT_SEARCH_LIMIT)
     });
-    const scopedSessionId = searchScope === 'session' ? selectedSessionId : null;
-    if (scopedSessionId) {
-      params.set('session_id', scopedSessionId);
-    }
 
     setSearchStatus('loading');
     setSearchError(null);
@@ -251,8 +238,7 @@ export default function App() {
       setSearchError(null);
       setActiveSearchContext({
         appId: selectedSessionAppId,
-        sessionId: scopedSessionId,
-        scope: searchScope,
+        sessionId: selectedSessionId,
         target: searchTarget,
         query,
         text: trimmed
@@ -264,9 +250,23 @@ export default function App() {
   };
 
   const handleSearchResultClick = (result) => {
-    setSelectedSearchTurnId(result.turn_id || null);
-    setSelectedSessionId(result.session_id || null);
-    setSelectedTraceId(result.turn_id || null);
+    const turnId = result.turn_id || null;
+    if (!turnId) {
+      return;
+    }
+    if (result.session_id && result.session_id !== selectedSessionId) {
+      return;
+    }
+
+    setSearchError(null);
+    setSelectedSearchTurnId(turnId);
+
+    if (selectedSession?.traces.has(turnId)) {
+      setSelectedTraceId(turnId);
+      return;
+    }
+
+    setSearchError('Selected memory hit is not present in the loaded telemetry trace list for this session.');
   };
 
   return (
@@ -385,8 +385,7 @@ export default function App() {
                 </p>
                 {activeSearchContext && (
                   <p className="mt-1 text-xs text-slate-400">
-                    Last search: {activeSearchContext.target} / {activeSearchContext.scope} / "
-                    {activeSearchContext.text}"
+                    Last search: {activeSearchContext.target} / "{activeSearchContext.text}"
                   </p>
                 )}
               </div>
@@ -411,27 +410,6 @@ export default function App() {
                       disabled={!canSearch}
                     >
                       {target === 'user' ? 'User' : 'Agent'}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
-                  {[
-                    ['session', 'Session'],
-                    ['app', 'App']
-                  ].map(([scopeValue, label]) => (
-                    <button
-                      key={scopeValue}
-                      type="button"
-                      className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-                        searchScope === scopeValue
-                          ? 'bg-amber-100 text-amber-900'
-                          : 'text-slate-600 hover:bg-slate-100'
-                      }`}
-                      onClick={() => setSearchScope(scopeValue)}
-                      disabled={!canSearch}
-                    >
-                      {label}
                     </button>
                   ))}
                 </div>
@@ -493,9 +471,6 @@ export default function App() {
                           score {formatSearchScore(result.similarity_score)}
                         </span>
                       </div>
-                      <div className="mt-1 truncate font-mono text-[11px] text-slate-500">
-                        session {result.session_id}
-                      </div>
                       <div className="mt-2 line-clamp-3 text-sm text-slate-700">
                         {result.preview || 'No preview available.'}
                       </div>
@@ -514,9 +489,7 @@ export default function App() {
               </p>
               {selectedSearchTurnId && selectedTraceId === selectedSearchTurnId && (
                 <p className="mt-1 text-xs text-sky-700">
-                  {searchHitMissingFromTelemetry
-                    ? 'Memory hit selected, but this trace is not present in the loaded telemetry log.'
-                    : 'Viewing trace selected from memory search.'}
+                  Viewing trace selected from memory search.
                 </p>
               )}
             </div>
@@ -540,9 +513,7 @@ export default function App() {
 
           {selectedTraceId && selectedEvents.length === 0 && (
             <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-              {searchHitMissingFromTelemetry
-                ? 'Memory search found this turn, but the corresponding trace is not available in the current telemetry log file.'
-                : 'No events yet for this trace.'}
+              No events yet for this trace.
             </div>
           )}
 

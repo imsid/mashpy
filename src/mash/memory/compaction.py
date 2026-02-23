@@ -101,6 +101,7 @@ def compact_conversation(
     turn_id = store.save_turn(
         trace_id=trace_id,
         session_id=session_id,
+        app_id=app_id,
         user_message=f"[summary checkpoint:{reason}]",
         agent_response=summary_text,
         signals={},
