@@ -42,7 +42,7 @@ flowchart LR
 
     subgraph MEMORY[Memory]
         MEM[Memory Store]
-        SEARCH[Search]
+        SEARCH[Search History]
         PREFS[Preferences]
         APPD[App Data]
     end
