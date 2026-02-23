@@ -42,6 +42,9 @@ flowchart LR
 
     subgraph MEMORY[Memory]
         MEM[Memory Store]
+        SEARCH[Search]
+        PREFS[Preferences]
+        APPD[App Data]
     end
     
     U --> REPL
@@ -55,10 +58,13 @@ flowchart LR
     LOOP --> BASH
     LOOP --> MCP
 
-    RT <--> MEM
+    RT <--> MEMORY
+    SEARCH --> MEM
+    PREFS --> MEM
+    APPD --> MEM
 
-    RUNTIME --> AGENT_LOG
-    CMD --> LOG
+    RUNTIME --> TELEMETRY
+    CMD --> TELEMETRY
     LOG --> TEL
     AGENT_LOG --> TEL
 ```
