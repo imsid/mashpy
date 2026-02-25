@@ -34,8 +34,8 @@ jobs:
       - name: Sync dependencies (frozen)
         run: uv sync --frozen --extra dev
 
-      - name: Run tests
-        run: uv run pytest
+      - name: Run framework tests
+        run: uv run pytest src/mash
 
       - name: Build artifacts
         run: uv build
