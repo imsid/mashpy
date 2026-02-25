@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from mash.core.config import ANTHROPIC_MODEL
 from mash.mcp.client import MCPClientError
 from mash.mcp.manager import MCPManager
+from mash.mcp.types import MCPServerConfig
 from mash.tools.mcp import MCPToolAdapter
 
 from ..core.agent import Agent
@@ -24,42 +26,83 @@ from .commands import Command, CommandRegistry
 from .render import RichRenderer
 from .repl import REPL
 
+if TYPE_CHECKING:
+    from ..core.config import AgentConfig
+    from ..core.llm import LLMProvider
+    from ..skills.registry import SkillRegistry
+    from ..tools.registry import ToolRegistry
+
 
 @dataclass
 class CLIContext:
     """Context for CLI operations."""
 
-    app_name: str
+    app_id: str
     session_id: str
     renderer: RichRenderer
     store: MemoryStore
     agent: Optional[Agent] = None
 
 
-class MashApp:
+class AbstractMashApp(ABC):
     """Base class for building agent-powered CLI applications."""
 
-    def __init__(
+    def __init__(self) -> None:
+        app_id = self.get_app_id()
+
+        store = self.build_store()
+        tools = self.build_tools()
+        skills = self.build_skills()
+
+        self.store = store
+        self.tools = tools
+        self.skills = skills
+
+        llm = self.build_llm()
+        config = self.build_agent_config()
+        if config.app_id != app_id:
+            raise ValueError(
+                "AbstractMashApp.get_app_id() must match build_agent_config().app_id "
+                f"(got {app_id!r} vs {config.app_id!r})"
+            )
+
+        agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
+        self.agent = agent
+
+        self._initialize_runtime(
+            app_id=app_id,
+            agent=agent,
+            store=store,
+            log_destination=self.get_log_destination(),
+            mcp_servers=self.build_mcp_servers(),
+            enable_runtime_tools=self.enable_runtime_tools(),
+        )
+
+        self.register_commands()
+        self.on_startup()
+
+    def _initialize_runtime(
         self,
-        app_name: str,
+        app_id: str,
         agent: Agent,
         store: MemoryStore,
         log_destination: Path,
-        mcp_servers: List[Dict[str, Any]],
+        mcp_servers: Optional[Sequence[MCPServerConfig]] = None,
         enable_runtime_tools: bool = True,
     ) -> None:
         """Initialize the application.
 
         Args:
-            app_name: Application name.
+            app_id: Application ID.
             agent: Agent instance.
             store: Conversation store.
             log_destination: Path to log file
         """
-        self.app_name = app_name
+        self.app_id = app_id
         self.agent = agent
         self.store = store
         self.session_id = str(uuid.uuid4())
+        self._has_mcp_manager = False
 
         # Set up event logger
         self.event_logger = EventLogger(log_destination)
@@ -84,9 +127,6 @@ class MashApp:
         # Register default commands
         self._register_default_commands()
 
-        # Register subclass commands
-        self.register_commands()
-
         # Auto-register runtime tools if enabled
         if enable_runtime_tools:
             self._register_runtime_tools()
@@ -97,13 +137,14 @@ class MashApp:
                 default_model=ANTHROPIC_MODEL,
                 event_logger=self.event_logger,
                 session_id=self.session_id,
-                app_id=self.app_name,
+                app_id=self.agent.config.app_id,
             )
+            self._has_mcp_manager = True
             self._register_remote_tools(mcp_servers=mcp_servers)
 
         # Create CLI context
         self.context = CLIContext(
-            app_name=app_name,
+            app_id=app_id,
             session_id=self.session_id,
             renderer=self.renderer,
             agent=agent,
@@ -115,7 +156,7 @@ class MashApp:
 
         builder = RuntimeToolBuilder(
             store=self.store,
-            app_id=self.app_name,
+            app_id=self.agent.config.app_id,
             session_id=self.session_id,
             event_logger=self.event_logger,
         )
@@ -124,18 +165,18 @@ class MashApp:
         for tool in builder.build_tools():
             self.agent.tools.register(tool)
 
-    def _register_remote_tools(self, mcp_servers: List[Dict[str, Any]]) -> None:
+    def _register_remote_tools(self, mcp_servers: Sequence[MCPServerConfig]) -> None:
         """Register remote MCP tools"""
 
         # Connect to MCP servers (MCPManager will log events)
         try:
             for server in mcp_servers:
                 self.mcp_manager.add_server(
-                    name=server["name"],
-                    url=server["url"],
-                    description=server["description"],
-                    headers=server["headers"],
-                    allowed_tools=server["allowed_tools"],
+                    name=server.name,
+                    url=server.url,
+                    description=server.description,
+                    headers=server.headers,
+                    allowed_tools=server.allowed_tools,
                     auto_connect=True,
                 )
                 mcp_tools = self.mcp_manager.get_flattened_tools(prefix="mcp_")
@@ -201,7 +242,7 @@ class MashApp:
         """Run the interactive application."""
         # Setup REPL
         repl = REPL(
-            app_name=self.app_name,
+            app_id=self.app_id,
             command_registry=self.command_registry,
             message_handler=self._handle_message,
         )
@@ -430,7 +471,7 @@ class MashApp:
 
     def _session_handler(self, ctx: CLIContext, _args: list[str]) -> None:
         """Show session information."""
-        ctx.renderer.info(f"App: {ctx.app_name}")
+        ctx.renderer.info(f"App: {ctx.app_id}")
         ctx.renderer.info(f"Session ID: {ctx.session_id}")
         ctx.renderer.info(f"Model: {self.agent.config.model}")
         ctx.renderer.info(f"Max steps: {self.agent.config.max_steps}")
@@ -645,5 +686,53 @@ class MashApp:
 
     def cleanup(self) -> None:
         """Clean up resources on shutdown."""
-        # Disconnect all MCP servers (will log disconnection events)
-        self.mcp_manager.disconnect_all()
+        try:
+            self.on_shutdown()
+        finally:
+            # Disconnect all MCP servers (will log disconnection events)
+            if getattr(self, "_has_mcp_manager", False) and hasattr(
+                self, "mcp_manager"
+            ):
+                self.mcp_manager.disconnect_all()
+
+    @abstractmethod
+    def get_app_id(self) -> str:
+        """Return the stable app ID used for storage/logging scope."""
+
+    @abstractmethod
+    def build_store(self) -> MemoryStore:
+        """Construct the app memory store."""
+
+    @abstractmethod
+    def build_tools(self) -> ToolRegistry:
+        """Construct the app tool registry."""
+
+    @abstractmethod
+    def build_skills(self) -> SkillRegistry:
+        """Construct the app skill registry."""
+
+    @abstractmethod
+    def build_llm(self) -> LLMProvider:
+        """Construct the app LLM provider."""
+
+    @abstractmethod
+    def build_agent_config(self) -> AgentConfig:
+        """Construct the app agent configuration."""
+
+    @abstractmethod
+    def get_log_destination(self) -> Path:
+        """Return the path for structured event logs."""
+
+    def build_mcp_servers(self) -> List[MCPServerConfig]:
+        """Build typed MCP server configs for the app."""
+        return []
+
+    def enable_runtime_tools(self) -> bool:
+        """Whether Mash runtime tools should be auto-registered."""
+        return True
+
+    def on_startup(self) -> None:
+        """Hook called after runtime initialization and command registration."""
+
+    def on_shutdown(self) -> None:
+        """Hook called before runtime cleanup."""

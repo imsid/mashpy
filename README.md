@@ -4,6 +4,26 @@ Platform for building CLI-native agent applications.
 
 MashPy gives you reusable pieces for interactive agent CLIs: a REPL, slash commands, memory, an LLM think/act loop, skills, runtime tools, `BashTool`, MCP integration, and telemetry.
 
+## Install
+
+```bash
+pip install mashpy
+```
+
+Or with `uv`:
+
+```bash
+uv add mashpy
+```
+
+Validate the installation:
+
+```bash
+mash --version
+```
+
+The PyPI package is framework-only and ships the `mash` library plus a thin `mash` CLI for install validation. App-specific CLIs in `src/apps/*` (for example `db-agent`, `codebase-agent`, `pocket-agent`) are not part of the published PyPI artifact.
+
 ## What MashPy Does
 
 Each line typed in a Mash app follows one of two paths:

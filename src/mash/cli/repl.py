@@ -25,18 +25,18 @@ class REPL:
 
     def __init__(
         self,
-        app_name: str,
+        app_id: str,
         command_registry: CommandRegistry,
         message_handler: Optional[MessageHandler] = None,
     ) -> None:
         """Initialize REPL.
 
         Args:
-            app_name: Application name for history file.
+            app_id: Application ID for banner text and history file.
             command_registry: Command registry for command completion.
             message_handler: Handler for non-command messages.
         """
-        self.app_name = app_name
+        self.app_id = app_id
         self.command_registry = command_registry
         self.message_handler = message_handler
 
@@ -47,7 +47,7 @@ class REPL:
             ctx: CLI context.
         """
         ctx.renderer.info(
-            f"{self.app_name} interactive session. Type /help for commands."
+            f"{self.app_id} interactive session. Type /help for commands."
         )
 
         # Setup prompt
@@ -108,7 +108,7 @@ class REPL:
 
     def _get_history_path(self) -> Path:
         """Get path to history file."""
-        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in self.app_name)
+        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in self.app_id)
         slug = slug.strip("_") or "mash"
         return Path(f".{slug}_history")
 

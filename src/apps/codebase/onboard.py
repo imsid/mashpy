@@ -17,7 +17,7 @@ def maybe_run_onboarding(ctx: CLIContext) -> None:
         return
 
     prefs = ctx.store.get_preferences(
-        app_id=ctx.app_name,
+        app_id=ctx.app_id,
         session_id=ctx.session_id,
     )
     if prefs:
@@ -34,7 +34,7 @@ def _run_preference_onboarding(ctx: CLIContext, allow_skip: bool) -> None:
 
     current = (
         ctx.store.get_preferences(
-            app_id=ctx.app_name,
+            app_id=ctx.app_id,
             session_id=ctx.session_id,
         )
         or {}
@@ -116,7 +116,7 @@ def _run_preference_onboarding(ctx: CLIContext, allow_skip: bool) -> None:
         return
 
     ctx.store.set_preferences(
-        app_id=ctx.app_name,
+        app_id=ctx.app_id,
         session_id=ctx.session_id,
         preferences=updated,
     )

@@ -7,14 +7,14 @@ import traceback
 from pathlib import Path
 from typing import List
 
-from mash.cli.app import CLIContext, MashApp
+from mash.cli.app import AbstractMashApp, CLIContext
 from mash.cli.commands import Command
-from mash.core.agent import Agent
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.mcp import MCPClientError, MCPManager
+from mash.mcp import MCPClientError, MCPManager, MCPServerConfig
 from mash.memory.signals import SignalCollector
-from mash.memory.store import SQLiteStore
+from mash.memory.store import MemoryStore, SQLiteStore
+from mash.skills.registry import SkillRegistry
 from mash.tools.mcp import MCPToolAdapter
 from mash.tools.registry import ToolRegistry
 
@@ -23,7 +23,7 @@ from .config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, POCKET_MCP_TOKEN, POCKET
 POCKET_CONNECTION_NAME = "Pocket"
 
 
-class PocketApp(MashApp):
+class PocketApp(AbstractMashApp):
     """Pocket MCP client for company discovery and concierge interactions.
 
     Provides access to:
@@ -34,9 +34,38 @@ class PocketApp(MashApp):
 
     def __init__(self) -> None:
         """Initialize PocketApp."""
-        # 1. Configure agent
-        config = AgentConfig(
-            app_id="pocket",
+        self._signal_collector = SignalCollector()
+        self._signal_collector.register_signal(
+            "tool_calls", lambda e: len(e["action"].tool_calls)
+        )
+        self._signal_collector.register_signal(
+            "has_error",
+            lambda e: 1 if any(r.is_error for r in e.get("results", [])) else 0,
+        )
+        super().__init__()
+
+    def get_app_id(self) -> str:
+        return "pocket"
+
+    def build_store(self) -> MemoryStore:
+        db_path = Path(__file__).resolve().with_name("pocket.db")
+        return SQLiteStore(str(db_path))
+
+    def build_tools(self) -> ToolRegistry:
+        return ToolRegistry()
+
+    def build_skills(self) -> SkillRegistry:
+        return SkillRegistry()
+
+    def build_llm(self) -> AnthropicProvider:
+        return AnthropicProvider(
+            api_key=ANTHROPIC_API_KEY,
+            app_id=self.get_app_id(),
+        )
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=self.get_app_id(),
             system_prompt=self._build_system_prompt(),
             model=ANTHROPIC_MODEL,
             max_steps=30,
@@ -45,77 +74,47 @@ class PocketApp(MashApp):
             tool_search_enabled=True,
         )
 
-        # 2. Set up empty tool registry (MCP tools added after connection)
-        tools = ToolRegistry()
+    def get_log_destination(self) -> Path:
+        return Path.home() / ".mash" / "logs" / "pocket.jsonl"
 
-        # 3. Set up signals
-        signals = SignalCollector()
-        signals.register_signal("tool_calls", lambda e: len(e["action"].tool_calls))
-        signals.register_signal(
-            "has_error",
-            lambda e: 1 if any(r.is_error for r in e.get("results", [])) else 0,
-        )
-
-        # 4. Set up store
-        db_path = Path(__file__).resolve().with_name("pocket.db")
-        store = SQLiteStore(str(db_path))
-
-        # 5. Create agent with LLM provider
-        llm = AnthropicProvider(
-            api_key=ANTHROPIC_API_KEY,
-            app_id=config.app_id,
-        )
-        agent = Agent(llm=llm, tools=tools, config=config)
-        agent.set_signal_collector(signals)
-
-        # 6. Initialize MashApp with log destination
-        log_destination = Path.home() / ".mash" / "logs" / "pocket.jsonl"
-        super().__init__(
-            app_name="Pocket",
-            agent=agent,
-            store=store,
-            log_destination=log_destination,
-        )
-
-        # 7. Set up MCP manager
-        self.mcp_manager = MCPManager(
-            default_model=ANTHROPIC_MODEL,
-            event_logger=self.event_logger,
-            session_id=self.session_id,
-            app_id=config.app_id,
-        )
-
-        # 8. Auto-connect to Pocket MCP server on startup
-        self._auto_connect_pocket()
-
-    def _auto_connect_pocket(self) -> None:
-        """Automatically connect to Pocket MCP server on startup."""
+    def build_mcp_servers(self) -> list[MCPServerConfig]:
         if not POCKET_MCP_URL or not POCKET_MCP_TOKEN:
             print(
                 "Warning: POCKET_MCP_URL or POCKET_MCP_TOKEN not configured. "
                 "Set these in your .env file to use Pocket tools.",
                 file=sys.stderr,
             )
-            return
+            return []
 
-        # Build URL with token
-        url_with_token = f"{POCKET_MCP_URL}?token={POCKET_MCP_TOKEN}"
-
-        try:
-            self.mcp_manager.add_server(
+        return [
+            MCPServerConfig(
                 name=POCKET_CONNECTION_NAME,
-                url=url_with_token,
+                url=f"{POCKET_MCP_URL}?token={POCKET_MCP_TOKEN}",
                 description="Pocket MCP server for company discovery and concierge",
                 allowed_tools=["search", "concierge", "company_profile"],
-                auto_connect=True,
             )
+        ]
 
-            # Add MCP tools to agent
-            self._refresh_tools()
+    def on_startup(self) -> None:
+        self.agent.set_signal_collector(self._signal_collector)
+        # Ensure reconnect/status commands work even when no startup MCP server config.
+        if not hasattr(self, "mcp_manager"):
+            self.mcp_manager = MCPManager(
+                default_model=ANTHROPIC_MODEL,
+                event_logger=self.event_logger,
+                session_id=self.session_id,
+                app_id=self.agent.config.app_id,
+            )
+            self._has_mcp_manager = True
 
-            print("✓ Connected to Pocket MCP server")
-        except MCPClientError as e:
-            print(f"Failed to connect to Pocket MCP server: {e}", file=sys.stderr)
+        if POCKET_MCP_URL and POCKET_MCP_TOKEN:
+            if POCKET_CONNECTION_NAME in self.mcp_manager:
+                print("✓ Connected to Pocket MCP server")
+            else:
+                print(
+                    "Failed to connect to Pocket MCP server",
+                    file=sys.stderr,
+                )
 
     def register_commands(self) -> None:
         """Register Pocket-specific commands."""
@@ -147,7 +146,26 @@ class PocketApp(MashApp):
 
         # Reconnect
         ctx.renderer.info("Reconnecting to Pocket MCP server...")
-        self._auto_connect_pocket()
+        config = self._pocket_server_config()
+        if config is None:
+            ctx.renderer.error(
+                "POCKET_MCP_URL or POCKET_MCP_TOKEN not configured. "
+                "Set these in your .env file to use Pocket tools."
+            )
+            return
+
+        try:
+            self.mcp_manager.add_server(
+                name=config.name,
+                url=config.url,
+                description=config.description,
+                headers=config.headers,
+                allowed_tools=config.allowed_tools,
+                auto_connect=True,
+            )
+            self._refresh_tools()
+        except MCPClientError as e:
+            ctx.renderer.error(f"Failed to connect to Pocket MCP server: {e}")
 
         if POCKET_CONNECTION_NAME in self.mcp_manager:
             ctx.renderer.info("✓ Reconnected successfully")
@@ -171,17 +189,10 @@ class PocketApp(MashApp):
         """Refresh the tool registry with MCP tools."""
         new_registry = ToolRegistry()
 
-        # Preserve runtime tools
-        runtime_tool_names = [
-            "get_conversation",
-            "get_preferences",
-            "set_preferences",
-            "get_app_data",
-            "set_app_data",
-            "list_app_data",
-            "delete_app_data",
-        ]
-        for tool_name in runtime_tool_names:
+        # Preserve all non-MCP tools (runtime tools, local tools, skill tool).
+        for tool_name in self.agent.tools.list_tools():
+            if tool_name.startswith("mcp_"):
+                continue
             tool = self.agent.tools.get(tool_name)
             if tool:
                 new_registry.register(tool)
@@ -315,10 +326,16 @@ USAGE STRATEGY:
 Be helpful and concise. Focus on providing relevant company information efficiently.
 """
 
-    def cleanup(self) -> None:
-        """Clean up resources on shutdown."""
-        # Disconnect all MCP servers
-        self.mcp_manager.disconnect_all()
+    @staticmethod
+    def _pocket_server_config() -> MCPServerConfig | None:
+        if not POCKET_MCP_URL or not POCKET_MCP_TOKEN:
+            return None
+        return MCPServerConfig(
+            name=POCKET_CONNECTION_NAME,
+            url=f"{POCKET_MCP_URL}?token={POCKET_MCP_TOKEN}",
+            description="Pocket MCP server for company discovery and concierge",
+            allowed_tools=["search", "concierge", "company_profile"],
+        )
 
 
 def main() -> int:

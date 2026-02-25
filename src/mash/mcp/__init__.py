@@ -4,6 +4,7 @@ from .client import MCPClientError, MCPHTTPClient
 from .host import Host
 from .manager import MCPManager
 from .server import MCPServer
+from .types import MCPServerConfig
 
 __all__ = [
     "Host",
@@ -11,4 +12,5 @@ __all__ = [
     "MCPClientError",
     "MCPServer",
     "MCPManager",
+    "MCPServerConfig",
 ]

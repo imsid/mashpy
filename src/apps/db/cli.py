@@ -5,16 +5,15 @@ from __future__ import annotations
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import google.auth
 from google.auth.transport.requests import Request
 
-from mash.cli.app import MashApp
-from mash.core.agent import Agent
+from mash.cli.app import AbstractMashApp
 from mash.core.config import AgentConfig
-from mash.core.llm import AnthropicProvider
-from mash.mcp import MCPClientError
+from mash.core.llm import AnthropicProvider, LLMProvider
+from mash.mcp import MCPClientError, MCPServerConfig
 from mash.memory.store import MemoryStore, SQLiteStore
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
@@ -37,33 +36,20 @@ APP_ID: str = "data-agent"
 BIGQUERY_CONNECTION_NAME = "bigquery"
 
 
-class DataAgentApp(MashApp):
+class DataAgentApp(AbstractMashApp):
     """CLI app for role-based BigQuery assistance."""
 
-    def __init__(self) -> None:
-        self.app_id: str = APP_ID
-        self.workspace_root = Path(__file__).resolve().parents[3]
-        self.store = self.register_memory_store()
-        self.tools = self.register_tools()
-        self.skills = self.register_skills()
-        self.agent = self.register_agent()
-        self._startup_auth_error: Optional[str] = None
-        mcp_servers = self._build_mcp_servers()
-
-        super().__init__(
-            app_name=APP_ID,
-            agent=self.agent,
-            store=self.store,
-            mcp_servers=mcp_servers,
-            log_destination=DataAgentApp.get_logger_destination(),
-        )
+    def get_app_id(self) -> str:
+        return APP_ID
 
     @staticmethod
-    def get_logger_destination() -> Path:
+    def _workspace_root() -> Path:
+        return Path(__file__).resolve().parents[3]
+
+    def get_log_destination(self) -> Path:
         return Path(__file__).resolve().parent / "logs" / "db.jsonl"
 
-    @staticmethod
-    def get_llm_provider() -> AnthropicProvider:
+    def build_llm(self) -> LLMProvider:
         return AnthropicProvider(
             api_key=ANTHROPIC_API_KEY,
             app_id=APP_ID,
@@ -103,30 +89,29 @@ class DataAgentApp(MashApp):
             )
         return prompt
 
-    def register_memory_store(self) -> MemoryStore:
+    def build_store(self) -> MemoryStore:
         db_path = Path(__file__).resolve().parent / ".mash" / "data-agent.db"
         return SQLiteStore(str(db_path))
 
-    def register_tools(self) -> ToolRegistry:
+    def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
         local_tools = build_steward_tools(
-            workspace_root=self.workspace_root
-        ) + build_analyst_tools(workspace_root=self.workspace_root)
+            workspace_root=self._workspace_root()
+        ) + build_analyst_tools(workspace_root=self._workspace_root())
         for tool in local_tools:
             tools.register(tool)
         return tools
 
-    def register_skills(self) -> SkillRegistry:
+    def build_skills(self) -> SkillRegistry:
         skills = SkillRegistry()
         skills_dir = Path(__file__).resolve().parent / ".mash" / "skills"
         for skill in skills.get_custom_skills(skills_dir):
             skills.register(skill)
         return skills
 
-    def register_agent(self) -> Agent:
-        llm = DataAgentApp.get_llm_provider()
+    def build_agent_config(self) -> AgentConfig:
         config = AgentConfig(
-            app_id=self.app_id,
+            app_id=self.get_app_id(),
             system_prompt=self.get_system_prompt(),
             model=ANTHROPIC_MODEL,
             max_steps=30,
@@ -137,14 +122,9 @@ class DataAgentApp(MashApp):
             skills_enabled=True,
             tool_search_enabled=False,
         )
-        return Agent(
-            llm=llm,
-            tools=self.tools,
-            skills=self.skills,
-            config=config,
-        )
+        return config
 
-    def _build_mcp_servers(self) -> List[Dict[str, Any]]:
+    def build_mcp_servers(self) -> List[MCPServerConfig]:
         try:
             access_token = self._generate_access_token()
         except RuntimeError as exc:
@@ -162,13 +142,13 @@ class DataAgentApp(MashApp):
             headers["x-goog-user-project"] = BIGQUERY_PROJECT_ID
 
         return [
-            {
-                "name": BIGQUERY_CONNECTION_NAME,
-                "url": BIGQUERY_MCP_URL,
-                "description": "BigQuery MCP server for data exploration",
-                "headers": headers,
-                "allowed_tools": BIGQUERY_ALLOWED_TOOLS,
-            }
+            MCPServerConfig(
+                name=BIGQUERY_CONNECTION_NAME,
+                url=BIGQUERY_MCP_URL,
+                description="BigQuery MCP server for data exploration",
+                headers=headers,
+                allowed_tools=BIGQUERY_ALLOWED_TOOLS,
+            )
         ]
 
     @staticmethod
@@ -189,10 +169,6 @@ class DataAgentApp(MashApp):
         if not token:
             raise RuntimeError("google-auth returned an empty access token")
         return token
-
-    def cleanup(self) -> None:
-        if hasattr(self, "mcp_manager"):
-            self.mcp_manager.disconnect_all()
 
 
 def main() -> int:

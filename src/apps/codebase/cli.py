@@ -12,12 +12,11 @@ from apps.codebase.prompt import (
     build_repo_context,
     build_user_prefs_context,
 )
-from mash.cli.app import CLIContext, MashApp
+from mash.cli.app import AbstractMashApp, CLIContext
 from mash.cli.commands import Command
-from mash.core.agent import Agent
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider
-from mash.mcp.client import MCPClientError
+from mash.mcp import MCPClientError, MCPServerConfig
 from mash.memory.store import MemoryStore, SQLiteStore
 from mash.skills.registry import SkillRegistry
 from mash.tools.base import Tool
@@ -35,46 +34,19 @@ class RepoType(str, Enum):
     REMOTE = "remote"
 
 
-class CodebaseAgent(MashApp):
+class CodebaseAgent(AbstractMashApp):
     def __init__(self, repo: str, gh: str):
-        self.app_id: str = APP_ID
         self.repo = repo
         self.gh = gh
-        self.store = self.register_memory_store()
-        self.tools = self.register_tools()
-        self.skills = self.register_skills()
-        self.agent = self.register_agent()
+        super().__init__()
 
-        super().__init__(
-            app_name=APP_ID,
-            agent=self.agent,
-            store=self.store,
-            mcp_servers=[
-                {
-                    "name": GITHUB_CONNECTION_NAME,
-                    "url": GITHUB_MCP_URL,
-                    "description": "GitHub MCP server for repository inspection",
-                    "headers": {"Authorization": f"Bearer {GITHUB_MCP_PAT}"},
-                    "allowed_tools": [
-                        "search_pull_requests",
-                        "list_pull_requests",
-                        "pull_request_read",
-                        "get_commit",
-                        "list_commits",
-                        "list_issues",
-                        "issue_read",
-                    ],
-                }
-            ],
-            log_destination=CodebaseAgent.get_logger_destination(),
-        )
+    def get_app_id(self) -> str:
+        return APP_ID
 
-    @staticmethod
-    def get_logger_destination() -> Path:
+    def get_log_destination(self) -> Path:
         return Path(__file__).resolve().parent / "logs" / "codebase.jsonl"
 
-    @staticmethod
-    def get_llm_provider() -> LLMProvider:
+    def build_llm(self) -> LLMProvider:
         return AnthropicProvider(
             api_key=ANTHROPIC_API_KEY,
             app_id=APP_ID,
@@ -116,36 +88,33 @@ class CodebaseAgent(MashApp):
         cached_files = create_cached_files(repo_path=repo)
         return cached_files
 
-    def register_memory_store(self) -> MemoryStore:
+    def build_store(self) -> MemoryStore:
         db_path = Path(__file__).resolve().parent / ".mash" / "codebase.db"
         store = SQLiteStore(str(db_path))
         return store
 
-    def register_tools(self) -> ToolRegistry:
+    def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
         local_tools = CodebaseAgent.get_local_tools()
         for tool in local_tools:
             tools.register(tool)
         return tools
 
-    def register_skills(self) -> SkillRegistry:
+    def build_skills(self) -> SkillRegistry:
         skills = SkillRegistry()
         skills_dir = Path(__file__).resolve().parent / ".mash" / "skills"
         for skill in skills.get_custom_skills(skills_dir):
             skills.register(skill)
         return skills
 
-    def register_agent(self) -> Agent:
-        llm = CodebaseAgent.get_llm_provider()
-        user_prefs = self.store.get_latest_preferences(app_id=self.app_id) or {}
+    def build_agent_config(self) -> AgentConfig:
+        user_prefs = self.store.get_latest_preferences(app_id=self.get_app_id()) or {}
         cached_files = CodebaseAgent.get_cached_files(repo=self.repo)
         system_prompt = CodebaseAgent.get_system_prompt(
             repo=self.repo, cached_files=cached_files, user_prefs=user_prefs
         )
-        tools = self.tools
-        skills = self.skills
         config = AgentConfig(
-            app_id=self.app_id,
+            app_id=self.get_app_id(),
             system_prompt=system_prompt,
             model=ANTHROPIC_MODEL,
             max_steps=30,
@@ -156,8 +125,26 @@ class CodebaseAgent(MashApp):
             skills_enabled=True,
             tool_search_enabled=False,  # Enable Claude tool search
         )
-        agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
-        return agent
+        return config
+
+    def build_mcp_servers(self) -> List[MCPServerConfig]:
+        return [
+            MCPServerConfig(
+                name=GITHUB_CONNECTION_NAME,
+                url=GITHUB_MCP_URL,
+                description="GitHub MCP server for repository inspection",
+                headers={"Authorization": f"Bearer {GITHUB_MCP_PAT}"},
+                allowed_tools=[
+                    "search_pull_requests",
+                    "list_pull_requests",
+                    "pull_request_read",
+                    "get_commit",
+                    "list_commits",
+                    "list_issues",
+                    "issue_read",
+                ],
+            )
+        ]
 
     def register_commands(self) -> None:
         """Register codebase-specific commands."""
