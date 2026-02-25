@@ -94,15 +94,25 @@ class FailingKeywordStore(FakeSearchStore):
 class QueryParserTests(unittest.TestCase):
     def setUp(self) -> None:
         self.parser = QueryParser()
+        self.event_logger = FakeEventLogger()
+        self.query_id = "q-query-parser"
+
+    def _parse(self, query: str):
+        return self.parser.parse(
+            query,
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+            app_id="app1",
+        )
 
     def test_parses_user_query(self) -> None:
-        parsed = self.parser.parse("@user:hello")
+        parsed = self._parse("@user:hello")
         self.assertEqual(parsed.column, "user_message")
         self.assertEqual(parsed.query_term, "hello")
         self.assertIsNone(parsed.semantic_embedding)
 
     def test_parses_agent_query_and_collapses_whitespace(self) -> None:
-        parsed = self.parser.parse("  @agent:  hello   world  ")
+        parsed = self._parse("  @agent:  hello   world  ")
         self.assertEqual(parsed.column, "agent_response")
         self.assertEqual(parsed.query_term, "hello world")
         self.assertEqual(parsed.keyword_query, "hello world")
@@ -110,19 +120,19 @@ class QueryParserTests(unittest.TestCase):
 
     def test_rejects_empty_query(self) -> None:
         with self.assertRaises(ValueError):
-            self.parser.parse("   ")
+            self._parse("   ")
 
     def test_rejects_unprefixed_query(self) -> None:
         with self.assertRaises(ValueError):
-            self.parser.parse("hello")
+            self._parse("hello")
 
     def test_rejects_unknown_prefix(self) -> None:
         with self.assertRaises(ValueError):
-            self.parser.parse("@foo:bar")
+            self._parse("@foo:bar")
 
     def test_rejects_empty_query_term(self) -> None:
         with self.assertRaises(ValueError):
-            self.parser.parse("@user:   ")
+            self._parse("@user:   ")
 
 
 class RetrievalOrchestratorTests(unittest.TestCase):
@@ -131,6 +141,16 @@ class RetrievalOrchestratorTests(unittest.TestCase):
         self.parser = QueryParser()
         self.keyword_retriever = KeywordRetriever(self.store)  # type: ignore[arg-type]
         self.semantic_retriever = SemanticRetriever(self.store)  # type: ignore[arg-type]
+        self.event_logger = FakeEventLogger()
+        self.query_id = "q-retrieval"
+
+    def _parse(self, query: str):
+        return self.parser.parse(
+            query,
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+            app_id="app1",
+        )
 
     def test_keyword_only_calls_only_keyword_search(self) -> None:
         self.store.keyword_hits = [
@@ -142,8 +162,13 @@ class RetrievalOrchestratorTests(unittest.TestCase):
             config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         )
 
-        parsed = self.parser.parse("@user:hello")
-        outputs = orchestrator.retrieve(parsed, limit=5)
+        parsed = self._parse("@user:hello")
+        outputs = orchestrator.retrieve(
+            parsed,
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+            limit=5,
+        )
 
         self.assertEqual(len(outputs.keyword_hits), 1)
         self.assertEqual(outputs.keyword_hits[0].turn_id, "t1")
@@ -164,8 +189,13 @@ class RetrievalOrchestratorTests(unittest.TestCase):
             config=RetrievalConfig(enable_keyword=False, enable_semantic=True),
         )
 
-        parsed = self.parser.parse("@agent:answer")
-        outputs = orchestrator.retrieve(parsed, limit=3)
+        parsed = self._parse("@agent:answer")
+        outputs = orchestrator.retrieve(
+            parsed,
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+            limit=3,
+        )
 
         self.assertEqual(outputs.keyword_hits, [])
         self.assertEqual(len(outputs.semantic_hits), 1)
@@ -194,14 +224,21 @@ class RetrievalOrchestratorTests(unittest.TestCase):
             self.semantic_retriever,
         )
 
-        parsed = self.parser.parse("@user:x")
-        outputs = orchestrator.retrieve(parsed, limit=2)
+        parsed = self._parse("@user:x")
+        outputs = orchestrator.retrieve(
+            parsed,
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+            limit=2,
+        )
         self.assertEqual(len(outputs.keyword_hits[0].preview), 200)
 
 
 class WeightedFusionRerankerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.reranker = WeightedFusionReranker()
+        self.event_logger = FakeEventLogger()
+        self.query_id = "q-rerank"
 
     def test_fuses_overlapping_hits_with_weighted_scores(self) -> None:
         keyword_hits = [
@@ -228,6 +265,8 @@ class WeightedFusionRerankerTests(unittest.TestCase):
         ]
 
         fused = self.reranker.rerank(
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=keyword_hits,
             semantic_hits=semantic_hits,
         )
@@ -241,6 +280,8 @@ class WeightedFusionRerankerTests(unittest.TestCase):
 
     def test_handles_missing_method_scores(self) -> None:
         fused = self.reranker.rerank(
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
                     turn_id="t1",
@@ -271,6 +312,8 @@ class WeightedFusionRerankerTests(unittest.TestCase):
 
     def test_tie_breaks_by_turn_id(self) -> None:
         fused = self.reranker.rerank(
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
                     turn_id="b",
@@ -297,6 +340,8 @@ class WeightedFusionRerankerTests(unittest.TestCase):
 
     def test_caps_preview_length(self) -> None:
         fused = self.reranker.rerank(
+            query_id=self.query_id,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
                     turn_id="t1",
@@ -316,6 +361,7 @@ class WeightedFusionRerankerTests(unittest.TestCase):
 class MemorySearchServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = FakeSearchStore()
+        self.event_logger = FakeEventLogger()
 
     def test_returns_search_results_with_scores_and_preview(self) -> None:
         self.store.keyword_hits = [
@@ -325,7 +371,11 @@ class MemorySearchServiceTests(unittest.TestCase):
             {"turn_id": "t1", "session_id": "s1", "score": 0.5, "preview": "semantic hit"},
             {"turn_id": "t2", "session_id": "s1", "score": 0.8, "preview": "semantic only"},
         ]
-        service = MemorySearchService(self.store)  # type: ignore[arg-type]
+        service = MemorySearchService(  # type: ignore[arg-type]
+            self.store,
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+            retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
+        )
 
         results = service.search(
             "@user:foo",
@@ -357,6 +407,7 @@ class MemorySearchServiceTests(unittest.TestCase):
         ]
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
+            event_logger=self.event_logger,  # type: ignore[arg-type]
             retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         )
 
@@ -375,6 +426,7 @@ class MemorySearchServiceTests(unittest.TestCase):
         ]
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
+            event_logger=self.event_logger,  # type: ignore[arg-type]
             retrieval_config=RetrievalConfig(enable_keyword=False, enable_semantic=True),
         )
 
@@ -386,7 +438,10 @@ class MemorySearchServiceTests(unittest.TestCase):
         self.assertEqual(self.store.calls[0]["method"], "semantic")
 
     def test_search_requires_app_id(self) -> None:
-        service = MemorySearchService(self.store)  # type: ignore[arg-type]
+        service = MemorySearchService(
+            self.store,  # type: ignore[arg-type]
+            event_logger=self.event_logger,  # type: ignore[arg-type]
+        )
         with self.assertRaises(TypeError):
             service.search("@user:test")  # type: ignore[call-arg]
 
@@ -401,6 +456,7 @@ class MemorySearchServiceTests(unittest.TestCase):
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
             event_logger=event_logger,  # type: ignore[arg-type]
+            retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
         )
 
         results = service.search("@user:hello world", app_id="app1", session_id="s1")
@@ -445,6 +501,7 @@ class MemorySearchServiceTests(unittest.TestCase):
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
             event_logger=event_logger,  # type: ignore[arg-type]
+            retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
         )
 
         with self.assertRaises(ValueError):
@@ -491,6 +548,7 @@ class MemorySearchServiceTests(unittest.TestCase):
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
             event_logger=event_logger,  # type: ignore[arg-type]
+            retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
         )
 
         with self.assertRaises(ValueError):

@@ -18,12 +18,14 @@ class SQLiteStoreTurnLookupTests(unittest.TestCase):
         session_id: str,
         user_message: str,
         agent_response: str,
+        app_id: str = "test-app",
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
         self.store.save_turn(
             trace_id=turn_id,
             session_id=session_id,
+            app_id=app_id,
             user_message=user_message,
             agent_response=agent_response,
             signals={},
