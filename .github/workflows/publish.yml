@@ -2,7 +2,13 @@ name: Publish PyPI
 
 on:
   release:
-    types: [published]
+    # `released` covers promoting a prerelease to a stable release.
+    # `published` covers direct stable releases and some draft->published flows.
+    types: [published, released]
+
+concurrency:
+  group: pypi-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -78,3 +84,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Avoid hard failures if GitHub emits both `published` and `released`
+          # for the same tag and the second run reaches this step.
+          skip-existing: true
