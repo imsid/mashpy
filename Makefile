@@ -1,9 +1,12 @@
 SHELL := /bin/bash
 
-TELEMETRY_PORT ?= 8765
 VITE_PORT ?= 5173
+TELEMETRY_WEB_STATIC_DIR ?= packages/mash-telemetry-web/src/mash_telemetry_web/static
 
-.PHONY: telemetry-web-install telemetry-web telemetry-server telemetry-dev
+# Maintainer-only helpers for telemetry observer UI packaging.
+# Runtime telemetry server usage is:
+#   python -m mash.telemetry --log /path/to/events.jsonl [--memory-db ...] [--ui ...]
+.PHONY: telemetry-web-install telemetry-web telemetry-web-build telemetry-web-package-sync
 
 telemetry-web-install:
 	cd src/mash/telemetry/web && npm install
@@ -11,22 +14,10 @@ telemetry-web-install:
 telemetry-web:
 	cd src/mash/telemetry/web && npm run dev -- --port $(VITE_PORT)
 
-telemetry-server:
-	@if [ -z "$(TELEMETRY_LOG)" ]; then echo "TELEMETRY_LOG is required"; exit 1; fi
-	@if [ -z "$(TELEMETRY_MEMORY_DB)" ]; then echo "TELEMETRY_MEMORY_DB is required"; exit 1; fi
-	python -m mash.telemetry --log "$(TELEMETRY_LOG)" --port $(TELEMETRY_PORT) --memory-db "$(TELEMETRY_MEMORY_DB)"
+telemetry-web-build:
+	cd src/mash/telemetry/web && npm run build
 
-# Usage:
-#   make telemetry-dev TELEMETRY_LOG=/path/to/telemetry.jsonl TELEMETRY_MEMORY_DB=/path/to/memory.db
-telemetry-dev: telemetry-web-install
-	@echo "Starting telemetry server on :$(TELEMETRY_PORT) and Vite on :$(VITE_PORT)"
-	@bash -c 'set -euo pipefail; \
-	shutdown() { \
-	  if [ -n "$${_shutdown:-}" ]; then return; fi; \
-	  _shutdown=1; \
-	  echo "Shutting down..."; \
-	  kill 0; \
-	}; \
-	trap shutdown INT TERM EXIT; \
-	$(MAKE) telemetry-server & \
-	$(MAKE) telemetry-web'
+telemetry-web-package-sync: telemetry-web-build
+	rm -rf "$(TELEMETRY_WEB_STATIC_DIR)"
+	mkdir -p "$(TELEMETRY_WEB_STATIC_DIR)"
+	cp -R src/mash/telemetry/web/dist/. "$(TELEMETRY_WEB_STATIC_DIR)/"

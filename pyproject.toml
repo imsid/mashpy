@@ -41,6 +41,9 @@ dev = [
   "pytest>=8.3.0",
   "twine>=6.1.0",
 ]
+telemetry-web = [
+  "mash-telemetry-web>=0.1.0",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -50,3 +53,6 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["mash*"]
 exclude = ["apps*"]
+
+[tool.uv.sources]
+mash-telemetry-web = { path = "packages/mash-telemetry-web" }

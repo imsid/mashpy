@@ -17,6 +17,12 @@ jobs:
   build:
     if: ${{ github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.resolve_target.outputs.should_publish }}
+      package_name: ${{ steps.resolve_target.outputs.package_name }}
+      package_dir: ${{ steps.resolve_target.outputs.package_dir }}
+      artifact_name: ${{ steps.resolve_target.outputs.artifact_name }}
+      package_version: ${{ steps.resolve_target.outputs.package_version }}
 
     steps:
       - name: Checkout
@@ -32,42 +38,111 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Validate release tag matches pyproject version
+      - name: Resolve package target from release tag
+        id: resolve_target
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           python - <<'PY'
           import os
+          import re
           from pathlib import Path
           import tomllib
 
-          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          version = data["project"]["version"]
           release_tag = os.environ["RELEASE_TAG"]
-          expected = f"v{version}"
 
-          if release_tag != expected:
+          candidates = [
+              {
+                  "package_name": "mashpy",
+                  "package_dir": ".",
+                  # Keep supporting the existing vX.Y.Z format for mashpy.
+                  "tag_patterns": [r"^v(?P<version>.+)$", r"^mashpy-v(?P<version>.+)$"],
+              },
+              {
+                  "package_name": "mash-telemetry-web",
+                  "package_dir": "packages/mash-telemetry-web",
+                  "tag_patterns": [r"^mash-telemetry-web-v(?P<version>.+)$"],
+              },
+          ]
+
+          match = None
+          selected = None
+          for candidate in candidates:
+              for pattern in candidate["tag_patterns"]:
+                  current = re.match(pattern, release_tag)
+                  if current:
+                      match = current
+                      selected = candidate
+                      break
+              if selected:
+                  break
+
+          if selected is None or match is None:
+              expected = ", ".join(
+                  [
+                      "v<version>",
+                      "mashpy-v<version>",
+                      "mash-telemetry-web-v<version>",
+                  ]
+              )
               raise SystemExit(
-                  f"Release tag mismatch: expected {expected!r}, got {release_tag!r}"
+                  f"Unsupported release tag {release_tag!r}. Expected one of: {expected}"
               )
 
-          print(f"Validated release tag {release_tag} for mashpy {version}")
+          version_from_tag = match.group("version")
+          pyproject_path = Path(selected["package_dir"]) / "pyproject.toml"
+          data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+          pyproject_version = data["project"]["version"]
+
+          if version_from_tag != pyproject_version:
+              raise SystemExit(
+                  "Release tag mismatch: "
+                  f"tag version {version_from_tag!r} does not match "
+                  f"{pyproject_path} project.version {pyproject_version!r}"
+              )
+
+          artifact_name = f"pypi-dist-{selected['package_name']}"
+          print(
+              f"Resolved {selected['package_name']} from tag {release_tag} "
+              f"(version {pyproject_version})"
+          )
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          output_path.write_text(
+              "\n".join(
+                  [
+                      "should_publish=true",
+                      f"package_name={selected['package_name']}",
+                      f"package_dir={selected['package_dir']}",
+                      f"artifact_name={artifact_name}",
+                      f"package_version={pyproject_version}",
+                  ]
+              )
+              + "\n",
+              encoding="utf-8",
+          )
           PY
 
       - name: Build artifacts
-        run: uv build
+        if: ${{ steps.resolve_target.outputs.should_publish == 'true' }}
+        run: |
+          cd "${{ steps.resolve_target.outputs.package_dir }}"
+          uv build
 
       - name: Check package metadata
-        run: uvx twine check dist/*
+        if: ${{ steps.resolve_target.outputs.should_publish == 'true' }}
+        run: |
+          uvx twine check "${{ steps.resolve_target.outputs.package_dir }}/dist/*"
 
       - name: Upload dist artifacts
+        if: ${{ steps.resolve_target.outputs.should_publish == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: pypi-dist
-          path: dist/*
+          name: ${{ steps.resolve_target.outputs.artifact_name }}
+          path: ${{ steps.resolve_target.outputs.package_dir }}/dist/*
 
   publish:
-    if: ${{ github.event.release.prerelease == false }}
+    if: ${{ github.event.release.prerelease == false && needs.build.outputs.should_publish == 'true' }}
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
@@ -79,7 +154,7 @@ jobs:
       - name: Download dist artifacts
         uses: actions/download-artifact@v4
         with:
-          name: pypi-dist
+          name: ${{ needs.build.outputs.artifact_name }}
           path: dist
 
       - name: Publish to PyPI

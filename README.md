@@ -16,6 +16,14 @@ Or with `uv`:
 uv add mashpy
 ```
 
+Optional telemetry observer UI package:
+
+```bash
+pip install "mashpy[telemetry-web]"
+# or
+uv add "mashpy[telemetry-web]"
+```
+
 Validate the installation:
 
 ```bash
@@ -151,23 +159,28 @@ Skills are discoverable instructions stored in local `SKILL.md` files and regist
 
 ### Telemetry
 
-`EventLogger` writes structured JSONL events for commands, LLM calls, agent steps, MCP activity, and memory-search stages. The telemetry server exposes:
+`EventLogger` writes structured JSONL events for commands, LLM calls, agent steps, MCP activity, and memory-search stages.
 
-- `/api/logs` for snapshots
-- `/api/stream` for live SSE tailing
-- `/api/search` for memory search (requires starting the server with `--memory-db`)
-    - `q` - query DSL string (for example `@user:billing issue` or `@agent:retry logic`)
-    - `app_id` - required app scope for memory search
-    - `session_id` - optional session scope filter
-    - `limit` - optional result limit (max 50)
+Telemetry now uses a versioned API contract under `/api/v1`:
 
-Start the telemetry API server directly with:
+- `GET /api/v1/health` - server/runtime capability status
+- `GET /api/v1/logs` - log snapshot (`limit` optional, max 20000)
+- `GET /api/v1/stream` - live SSE tail
+- `GET /api/v1/search` - memory search (requires `--memory-db`)
+  - `q` required query DSL (for example `@user:billing issue`)
+  - `app_id` required app scope
+  - `session_id` optional session scope
+  - `limit` optional result limit (max 50)
+
+Start telemetry API-only mode:
 
 ```bash
-python -m mash.telemetry --log /path/to/events.jsonl
+python -m mash.telemetry \
+  --log /path/to/events.jsonl \
+  --ui off
 ```
 
-Enable memory search in telemetry (`/api/search`) by also passing your memory DB:
+Enable memory search by also passing your memory DB:
 
 ```bash
 python -m mash.telemetry \
@@ -175,23 +188,25 @@ python -m mash.telemetry \
   --memory-db /path/to/memory.db
 ```
 
-Telemetry API endpoints (default `--host 127.0.0.1 --port 8765`):
-
-- Logs snapshot: `http://127.0.0.1:8765/api/logs`
-- Live stream (SSE): `http://127.0.0.1:8765/api/stream`
-- Search (requires `--memory-db`): `http://127.0.0.1:8765/api/search`
-
-For local API + web UI development together, use:
+Run the optional generic observer UI at `/`:
 
 ```bash
-make telemetry-dev \
-  TELEMETRY_LOG=/path/to/events.jsonl \
-  TELEMETRY_MEMORY_DB=/path/to/memory.db
+python -m mash.telemetry --log /path/to/events.jsonl --ui auto
 ```
 
-Default dev UI endpoint:
+`--ui` modes:
 
-- Web UI: `http://127.0.0.1:5173`
+- `auto` (default): serve UI if optional `mash-telemetry-web` package is installed
+- `on`: require UI package and fail startup if unavailable
+- `off`: API-only mode
+
+Default API endpoints (`--host 127.0.0.1 --port 8765`):
+
+- Health: `http://127.0.0.1:8765/api/v1/health`
+- Logs: `http://127.0.0.1:8765/api/v1/logs`
+- Stream: `http://127.0.0.1:8765/api/v1/stream`
+- Search: `http://127.0.0.1:8765/api/v1/search`
+
 
 ## How to Write a New App
 
@@ -386,4 +401,3 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 ```
-

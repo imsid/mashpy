@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
+const API_BASE = '/api/v1';
 const MAX_EVENTS = 5000;
 const DEFAULT_LIMIT = 2000;
 const DEFAULT_SEARCH_LIMIT = 10;
@@ -20,6 +21,7 @@ export default function App() {
   const [expanded, setExpanded] = useState(new Set());
   const [status, setStatus] = useState({ connected: false, error: null });
   const [logPath, setLogPath] = useState('');
+  const [health, setHealth] = useState({ memorySearchAvailable: false });
 
   const [searchText, setSearchText] = useState('');
   const [searchTarget, setSearchTarget] = useState('user');
@@ -29,19 +31,48 @@ export default function App() {
   const [activeSearchContext, setActiveSearchContext] = useState(null);
 
   useEffect(() => {
-    fetch(`/api/logs?limit=${DEFAULT_LIMIT}`)
-      .then((res) => res.json())
-      .then((data) => {
-        setEvents(Array.isArray(data.events) ? data.events : []);
-        setLogPath(data.path || '');
-      })
-      .catch((err) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [healthResponse, logsResponse] = await Promise.all([
+          fetch(`${API_BASE}/health`),
+          fetch(`${API_BASE}/logs?limit=${DEFAULT_LIMIT}`)
+        ]);
+        const healthPayload = await healthResponse.json().catch(() => ({}));
+        const logsPayload = await logsResponse.json().catch(() => ({}));
+        if (!healthResponse.ok) {
+          throw new Error(apiErrorMessage(healthPayload, `Health check failed (${healthResponse.status})`));
+        }
+        if (!logsResponse.ok) {
+          throw new Error(apiErrorMessage(logsPayload, `Logs request failed (${logsResponse.status})`));
+        }
+
+        const healthData = apiData(healthPayload) || {};
+        const logsData = apiData(logsPayload) || {};
+        if (cancelled) {
+          return;
+        }
+
+        setHealth({
+          memorySearchAvailable: Boolean(healthData?.memory?.search_available)
+        });
+        setEvents(Array.isArray(logsData.events) ? logsData.events : []);
+        setLogPath(logsData.path || '');
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
         setStatus((prev) => ({ ...prev, error: String(err) }));
-      });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    const stream = new EventSource('/api/stream');
+    const stream = new EventSource(`${API_BASE}/stream`);
     stream.onopen = () => setStatus({ connected: true, error: null });
     stream.onerror = () => setStatus({ connected: false, error: 'stream disconnected' });
     stream.onmessage = (message) => {
@@ -167,7 +198,7 @@ export default function App() {
     selectedSession && selectedTraceId && selectedSession.traces.has(selectedTraceId)
   );
   const baseTs = selectedEvents.length ? timestamp(selectedEvents[0]) : null;
-  const canSearch = Boolean(selectedSessionId && selectedSessionAppId);
+  const canSearch = Boolean(selectedSessionId && selectedSessionAppId && health.memorySearchAvailable);
 
   const toggleExpand = (key) => {
     setExpanded((prev) => {
@@ -226,12 +257,13 @@ export default function App() {
     setSelectedSearchTurnId(null);
 
     try {
-      const response = await fetch(`/api/search?${params.toString()}`);
-      const data = await response.json().catch(() => ({}));
+      const response = await fetch(`${API_BASE}/search?${params.toString()}`);
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data?.error || `Search failed (${response.status})`);
+        throw new Error(apiErrorMessage(payload, `Search failed (${response.status})`));
       }
 
+      const data = apiData(payload) || {};
       const results = Array.isArray(data.results) ? data.results : [];
       setSearchResults(results);
       setSearchStatus('success');
@@ -378,7 +410,9 @@ export default function App() {
                   Memory Search
                 </h2>
                 <p className="mt-2 text-xs text-slate-500">
-                  {selectedSessionAppId
+                  {!health.memorySearchAvailable
+                    ? 'Memory search unavailable (start telemetry with --memory-db)'
+                    : selectedSessionAppId
                     ? `App ${selectedSessionAppId}`
                     : 'Select a session with app_id to search memory'}
                   {selectedSessionId ? ` - Session ${selectedSessionId}` : ''}
@@ -578,6 +612,17 @@ function normalizeAppId(value) {
   if (value == null) return null;
   const normalized = String(value).trim();
   return normalized || null;
+}
+
+function apiData(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.data && typeof payload.data === 'object' ? payload.data : null;
+}
+
+function apiErrorMessage(payload, fallback) {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const message = payload?.error?.message;
+  return typeof message === 'string' && message ? message : fallback;
 }
 
 function buildSearchQuery(target, text) {
