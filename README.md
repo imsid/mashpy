@@ -161,15 +161,6 @@ sequenceDiagram
     Entry-->>User: Response
 ```
 
-How to read this diagram:
-
-1. `REPL` runs `CLIAppShell`.
-2. `CLIAppShell` has two paths: local `Slash Commands` and runtime `Agent Commands`.
-3. HTTP clients call `mash-api`, which exposes interaction/runtime routes and observability routes.
-4. Interaction/runtime routes call the primary `MashAgentClient`, which talks to `MashAgentServer` over HTTP/SSE.
-5. `MashAgentHost` owns both primary and subagent runtime stacks.
-6. Telemetry events are emitted to JSONL and exposed via `mash-api` telemetry endpoints (and optional UI).
-
 ## Core Modules
 
 This section covers `mash` framework modules only.
