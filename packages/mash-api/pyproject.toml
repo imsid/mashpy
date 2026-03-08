@@ -1,0 +1,30 @@
+[project]
+name = "mash-api"
+version = "0.1.0"
+description = "OpenAPI service package for Mash applications"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Proprietary"}
+authors = [{ name = "imsid" }]
+dependencies = [
+  "mashpy>=0.1.2",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "httpx>=0.27.0",
+]
+
+[project.scripts]
+mash-api = "mash_api.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mash_api*"]

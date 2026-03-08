@@ -36,7 +36,7 @@ export default function App() {
       try {
         const [healthResponse, logsResponse] = await Promise.all([
           fetch(`${API_BASE}/health`),
-          fetch(`${API_BASE}/logs?limit=${DEFAULT_LIMIT}`)
+          fetch(`${API_BASE}/telemetry/events?limit=${DEFAULT_LIMIT}`)
         ]);
         const healthPayload = await healthResponse.json().catch(() => ({}));
         const logsPayload = await logsResponse.json().catch(() => ({}));
@@ -54,7 +54,9 @@ export default function App() {
         }
 
         setHealth({
-          memorySearchAvailable: Boolean(healthData?.memory?.search_available)
+          memorySearchAvailable: Boolean(
+            healthData?.observability?.memory?.search_available ?? healthData?.memory?.search_available
+          )
         });
         setEvents(Array.isArray(logsData.events) ? logsData.events : []);
         setLogPath(logsData.path || '');
@@ -72,7 +74,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const stream = new EventSource(`${API_BASE}/stream`);
+    const stream = new EventSource(`${API_BASE}/telemetry/events/stream`);
     stream.onopen = () => setStatus({ connected: true, error: null });
     stream.onerror = () => setStatus({ connected: false, error: 'stream disconnected' });
     stream.onmessage = (message) => {
@@ -257,7 +259,7 @@ export default function App() {
     setSelectedSearchTurnId(null);
 
     try {
-      const response = await fetch(`${API_BASE}/search?${params.toString()}`);
+      const response = await fetch(`${API_BASE}/telemetry/memory/search?${params.toString()}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(apiErrorMessage(payload, `Search failed (${response.status})`));
@@ -411,7 +413,7 @@ export default function App() {
                 </h2>
                 <p className="mt-2 text-xs text-slate-500">
                   {!health.memorySearchAvailable
-                    ? 'Memory search unavailable (start telemetry with --memory-db)'
+                    ? 'Memory search unavailable (start mash-api with --memory-db)'
                     : selectedSessionAppId
                     ? `App ${selectedSessionAppId}`
                     : 'Select a session with app_id to search memory'}

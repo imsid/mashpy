@@ -1,4 +1,7 @@
-"""Telemetry API server and optional observer UI integration."""
+"""Deprecated telemetry module.
+
+Use the standalone `mash-api` package for runtime and observability APIs.
+"""
 
 from .ui_loader import UIResolution, resolve_ui_resolution
 

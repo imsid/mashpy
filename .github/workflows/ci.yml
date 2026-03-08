@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test-core:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -35,7 +35,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run framework tests
-        run: uv run pytest src/mash
+        run: uv run pytest tests/mash
 
       - name: Build artifacts
         run: uv build
@@ -43,12 +43,72 @@ jobs:
       - name: Check package metadata
         run: uvx twine check dist/*
 
-      - name: CLI smoke test
-        run: uv run mash --version
-
       - name: Upload dist artifacts
         if: ${{ matrix.python-version == '3.11' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-dist-${{ github.sha }}
           path: dist/*
+
+  test-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen --extra dev --extra cli
+
+      - name: Run CLI package tests
+        run: uv run pytest packages/mash-cli/tests/mash_cli
+
+      - name: Build mash-cli artifacts
+        run: |
+          cd packages/mash-cli
+          uv build
+
+      - name: Check mash-cli package metadata
+        run: uvx twine check packages/mash-cli/dist/*
+
+      - name: CLI smoke test
+        run: uv run mash --version
+
+  test-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen --extra dev --extra api
+
+      - name: Run mash-api package tests
+        run: uv run pytest packages/mash-api/tests/mash_api
+
+      - name: Build mash-api artifacts
+        run: |
+          cd packages/mash-api
+          uv build
+
+      - name: Check mash-api package metadata
+        run: uvx twine check packages/mash-api/dist/*

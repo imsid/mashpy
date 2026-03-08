@@ -2,7 +2,7 @@
 
 Platform for building CLI-native agent applications.
 
-MashPy gives you reusable pieces for interactive agent CLIs: a REPL, slash commands, memory, an LLM think/act loop, skills, runtime tools, `BashTool`, MCP integration, and telemetry.
+MashPy is delivered as four offerings that work together: the `mash` framework runtime, `mash-cli` for interactive shell UX, `mash-api` for HTTP/OpenAPI serving, and `mash-telemetry-web` for optional observer UI assets.
 
 ## Install
 
@@ -16,6 +16,18 @@ Or with `uv`:
 uv add mashpy
 ```
 
+Install CLI package:
+
+```bash
+pip install mash-cli
+# or
+pip install "mashpy[cli]"
+# or
+uv add mash-cli
+# or
+uv add "mashpy[cli]"
+```
+
 Optional telemetry observer UI package:
 
 ```bash
@@ -24,105 +36,151 @@ pip install "mashpy[telemetry-web]"
 uv add "mashpy[telemetry-web]"
 ```
 
-Validate the installation:
+Optional API server package:
+
+```bash
+pip install mash-api
+# or
+pip install "mashpy[api]"
+# or
+uv add mash-api
+# or
+uv add "mashpy[api]"
+```
+
+Validate the CLI installation:
 
 ```bash
 mash --version
 ```
 
-The PyPI package is framework-only and ships the `mash` library plus a thin `mash` CLI for install validation.
+The `mashpy` package is framework-only. The `mash` command is provided by `mash-cli`.
+`mash.telemetry` entrypoint has been removed; use `mash-api` for HTTP APIs.
 
 ## What MashPy Does
 
-Each line typed in a Mash app follows one of two paths:
+MashPy provides four offerings:
 
-1. Slash command path (`/help`, `/session`, `/prefs`, `/app_data`, etc.): command handlers run immediately in the CLI.
-2. Agent path (normal message): Mash builds context, runs the agent loop, executes tools, and persists/logs the turn.
+1. `mash` (from `mashpy`)
+   - Framework/runtime for agents: orchestration, memory, tools, skills, MCP, and logging.
+2. `mash-cli`
+   - Interactive shell package (`CLIAppShell`, slash commands, REPL) and the `mash` terminal command.
+3. `mash-api`
+   - FastAPI/OpenAPI package for serving runtime interaction and observability HTTP endpoints.
+4. `mash-telemetry-web`
+   - Optional static web UI assets that can be used by API observers.
+
+In interactive usage with `mash-cli`, each input line follows one of two paths:
+
+1. Slash command path:
+   - local commands (`/help`, `/exit`, `/clear`) run entirely in `mash-cli`.
+   - runtime commands (`/session`, `/prefs`, `/app_data`, `/history`, `/compact`) call `MashAgentClient` control APIs.
+2. Agent path (normal message): `mash-cli` sends the message to `MashAgentClient`, then `MashAgentServer` builds context, runs the agent loop, executes tools, and persists/logs the turn.
 
 This lets you combine deterministic CLI controls with model-driven tool execution in one interface.
+`mash-cli` (`CLIAppShell`) owns user interaction. `mashpy` (`MashAgentServer`) owns agent execution.
 
-## High-Level Flow
+## System Architecture
+
+High-level view of how CLI and API users enter the system, how the primary agent can invoke subagents, and how telemetry is captured.
 
 ```mermaid
-flowchart LR
-    U[User]
+flowchart TB
+    U1[CLI User]
+    U2[API User]
 
-    subgraph MashApp[MashApp CLI]
-        REPL[REPL]
-        CMD[Commands]
-        AGENT[Agent]
+    subgraph ENTRY[Entry Points]
+        CLI[CLI Layer]
+        API[API Layer]
     end
 
-    subgraph RUNTIME[Runtime Layer]
-        LOOP[Agent Loop]
-        SKILLS[Skills]
-        RT[Runtime Tools]
-        BASH[BashTool]
-        MCP[Remote MCP Tools]
-        LLM[LLM Provider]
+    subgraph HOST[MashAgentHost]
+        P[Primary Agent]
+        S[Subagent]
     end
 
-    subgraph TELEMETRY[Telemetry]
-        LOG[Command Telemetry Events]
-        TEL[Telemetry Server + Web UI]
-        AGENT_LOG[Agent Telemetry Events]
+    subgraph OBS[Telemetry]
+        LOG[Event Logger / JSONL]
+        UI[Observer UI]
     end
 
-    subgraph MEMORY[Memory]
-        MEM[Memory Store]
-        SEARCH[Conversation History]
-        PREFS[Preferences]
-        APPD[App Data]
-    end
-    
-    U --> REPL
-    REPL --> CMD
-    REPL --> AGENT
+    U1 --> CLI
+    U2 --> API
 
-    AGENT --> LOOP
+    CLI --> HOST
+    API --> HOST
+    P --> S
+
+    P --> OBS
+    S --> OBS
+    API --> OBS
+    LOG --> UI
+```
+
+**Agent Runtime**
+
+Shared runtime structure used by both the primary agent and any subagent.
+
+```mermaid
+flowchart TB
+    CLIENT[MashAgentClient]
+    SERVER[MashAgentServer]
+    LOOP[Agent Loop]
+    TOOLS[Tools / Skills / MCP / Bash]
+    STORE[(Memory Store)]
+    LLM[LLM Provider]
+
+    CLIENT --> SERVER
+    SERVER --> LOOP
+    LOOP --> TOOLS
+    LOOP <--> STORE
     LOOP <--> LLM
-    LOOP --> SKILLS
-    LOOP --> RT
-    LOOP --> BASH
-    LOOP --> MCP
+```
 
-    RT <--> MEMORY
-    SEARCH --> MEM
-    PREFS --> MEM
-    APPD --> MEM
+**Subagent Invocation Flow**
 
-    RUNTIME --> TELEMETRY
-    CMD --> TELEMETRY
-    LOG --> TEL
-    AGENT_LOG --> TEL
+Runtime sequence showing how the primary agent delegates work to a subagent and incorporates the result.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Entry as CLI/API Layer
+    participant P as Primary Agent
+    participant S as Subagent
+    participant T as Telemetry
+
+    User->>Entry: Send request
+    Entry->>P: Start agent run
+    P->>T: Log run start
+    P->>P: Reason / use tools
+    P->>S: Invoke subagent
+    S->>T: Log subagent run
+    S-->>P: Return result
+    P->>T: Log final result
+    P-->>Entry: Final response
+    Entry-->>User: Response
 ```
 
 How to read this diagram:
 
-1. `REPL` receives user input and routes slash commands to `Commands`.
-2. Non-command messages go through `Agent` into the `Agent Loop`.
-3. The `Agent Loop` can call local `Runtime Tools`, `BashTool`, `Remote MCP Tools` and `Skills`.
-4. State is persisted in the `Memory Store`. This includes Conversation history, User preferences and App data
-5. Command, agent, and MCP events are written as JSONL and visualized in telemetry.
+1. `REPL` runs `CLIAppShell`.
+2. `CLIAppShell` has two paths: local `Slash Commands` and runtime `Agent Commands`.
+3. HTTP clients call `mash-api`, which exposes interaction/runtime routes and observability routes.
+4. Interaction/runtime routes call the primary `MashAgentClient`, which talks to `MashAgentServer` over HTTP/SSE.
+5. `MashAgentHost` owns both primary and subagent runtime stacks.
+6. Telemetry events are emitted to JSONL and exposed via `mash-api` telemetry endpoints (and optional UI).
 
 ## Core Modules
 
-### REPL
+This section covers `mash` framework modules only.
 
-The REPL handles interactive input, command auto-completion, and history persistence. It is the entrypoint UX for every Mash app session.
+### Core (`mash.core`)
 
-### Commands
+Agent configuration and think/act loop primitives (`Agent`, provider interfaces, context/response types).
 
-Slash commands provide deterministic control without involving the model. `MashApp` registers these built-ins out of the box:
+### Runtime (`mash.runtime`)
 
-- `/help` (`/h`, `/?`) - list available slash commands.
-- `/exit` (`/quit`, `/q`) - exit the application.
-- `/clear` (`/cls`) - clear terminal output.
-- `/session` - show app name, session id, model, max steps, and session token total.
-- `/prefs` - view preferences, or `set`/`clear` persistent preferences.
-- `/app_data` - `list`, `get`, `set`, or `delete` app-scoped JSON data.
-- `/history [limit]` - print saved conversation turns (optionally capped).
-- `/compact` - summarize conversation into a checkpoint turn.
+Host/client/server orchestration for app execution (`MashAgentHost`, `MashAgentClient`, `MashAgentServer`, app definitions).
 
 ### Memory Store
 
@@ -138,7 +196,7 @@ Skills are discoverable instructions stored in local `SKILL.md` files and regist
 
 ### Runtime Tools
 
-`MashApp` auto-registers runtime tools for memory access (enabled by default):
+`MashAgentServer` auto-registers runtime tools for memory access (enabled by default):
 
 - `search_conversations` - Search conversation history at session or app scope.
 - `get_full_turn_message` - Fetch full user and assistant messages for one or more turns.
@@ -157,60 +215,53 @@ Skills are discoverable instructions stored in local `SKILL.md` files and regist
 
 `MCPManager` manages remote MCP server connections, optional tool allowlists, and tool invocation. Remote MCP tools are adapted into normal Mash tools so the agent can call them like local tools.
 
-### Telemetry
+### Logging Backend (`mash.logging`)
 
 `EventLogger` writes structured JSONL events for commands, LLM calls, agent steps, MCP activity, and memory-search stages.
-
-Telemetry now uses a versioned API contract under `/api/v1`:
-
-- `GET /api/v1/health` - server/runtime capability status
-- `GET /api/v1/logs` - log snapshot (`limit` optional, max 20000)
-- `GET /api/v1/stream` - live SSE tail
-- `GET /api/v1/search` - memory search (requires `--memory-db`)
-  - `q` required query DSL (for example `@user:billing issue`)
-  - `app_id` required app scope
-  - `session_id` optional session scope
-  - `limit` optional result limit (max 50)
-
-Start telemetry API-only mode:
-
-```bash
-python -m mash.telemetry \
-  --log /path/to/events.jsonl \
-  --ui off
-```
-
-Enable memory search by also passing your memory DB:
-
-```bash
-python -m mash.telemetry \
-  --log /path/to/events.jsonl \
-  --memory-db /path/to/memory.db
-```
-
-Run the optional generic observer UI at `/`:
-
-```bash
-python -m mash.telemetry --log /path/to/events.jsonl --ui auto
-```
-
-`--ui` modes:
-
-- `auto` (default): serve UI if optional `mash-telemetry-web` package is installed
-- `on`: require UI package and fail startup if unavailable
-- `off`: API-only mode
-
-Default API endpoints (`--host 127.0.0.1 --port 8765`):
-
-- Health: `http://127.0.0.1:8765/api/v1/health`
-- Logs: `http://127.0.0.1:8765/api/v1/logs`
-- Stream: `http://127.0.0.1:8765/api/v1/stream`
-- Search: `http://127.0.0.1:8765/api/v1/search`
 
 
 ## How to Write a New App
 
-Build apps by subclassing `AbstractMashApp` and implementing its required hooks:
+Use one `MashRuntimeDefinition` as the source of truth, then compose it into either a CLI app (`mash-cli`) or an API app (`mash-api`).
+
+### Quickstart (CLI + API + Telemetry Web)
+
+1. Build one `MashRuntimeDefinition` (example below in this section).
+2. Run it as a CLI app:
+```bash
+uv run --extra cli python -m examples.simple_app
+```
+3. Run it as an API app:
+```bash
+uv run --extra api python -m examples.api_app --port 8000
+```
+4. Start telemetry web against that API:
+```bash
+cd src/mash/telemetry/web
+npm run dev
+```
+5. Open:
+- API docs: `http://127.0.0.1:8000/docs`
+- Telemetry UI: `http://127.0.0.1:5173`
+
+Minimal `api_app.py` shape:
+
+```python
+from pathlib import Path
+
+from mash_api import MashAPIConfig, run_app
+
+from .app_definition import MyAppDefinition
+
+run_app(
+    MyAppDefinition(Path(".").resolve()),
+    config=MashAPIConfig(bind_host="127.0.0.1", bind_port=8000),
+)
+```
+
+### 1) Implement `MashRuntimeDefinition`
+
+Required methods:
 
 - `get_app_id()`
 - `build_store()`
@@ -222,182 +273,136 @@ Build apps by subclassing `AbstractMashApp` and implementing its required hooks:
 
 Optional hooks:
 
-- `register_commands()` for custom slash commands
-- `build_mcp_servers()` for startup MCP connections
-```python
-from mash.mcp import MCPServerConfig
+- `build_mcp_servers()`
+- `enable_runtime_tools()`
+- `on_startup(runtime)` / `on_shutdown(runtime)`
 
-def build_mcp_servers(self) -> list[MCPServerConfig]:
-    return [
-        MCPServerConfig(
-            name="github",
-            url="https://api.githubcopilot.com/mcp/",
-            description="GitHub MCP tools",
-            headers={"Authorization": "Bearer <token>"},
-            allowed_tools=["list_issues", "issue_read"],
-        )
-    ]
-```
-Mash connects to each configured server at startup, fetches tool definitions, and registers them as callable tools in the agent runtime.
-
-- `enable_runtime_tools()` to disable built-in memory/runtime tools
-- `on_startup()` / `on_shutdown()` for app lifecycle hooks
-
-### 1) Simple app
+Minimal shape:
 
 ```python
-import sys
 from pathlib import Path
 
-from mash.cli.app import AbstractMashApp
-from mash.cli.commands import Command
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider
 from mash.memory.store import MemoryStore, SQLiteStore
-from mash.skills.registry import SkillRegistry
-from mash.tools.bash import BashTool
-from mash.tools.registry import ToolRegistry
-
-APP_ID = "hello-mash"
-
-class HelloMashApp(AbstractMashApp):
-    def __init__(self) -> None:
-        self._root = Path(".").resolve()
-        super().__init__()
-
-    def get_app_id(self) -> str:
-        return APP_ID
-
-    def build_store(self) -> MemoryStore:
-        return SQLiteStore(self._root / ".mash" / "hello-mash.db")
-
-    def build_tools(self) -> ToolRegistry:
-        tools = ToolRegistry()
-        tools.register(BashTool(working_dir=str(self._root)))
-        return tools
-
-    def build_skills(self) -> SkillRegistry:
-        return SkillRegistry()
-
-    def build_llm(self) -> LLMProvider:
-        return AnthropicProvider(app_id=APP_ID)
-
-    def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(
-            app_id=APP_ID,
-            system_prompt="You are a concise CLI assistant.",
-            skills_enabled=False,
-        )
-
-    def get_log_destination(self) -> Path:
-        return self._root / ".mash" / "logs" / "hello-mash.jsonl"
-
-    def register_commands(self) -> None:
-        super().register_commands()
-        self.register_command(
-            Command(
-                name="ping",
-                help="Check app responsiveness",
-                handler=lambda ctx, _args: ctx.renderer.info("pong"),
-            )
-        )
-
-
-def main() -> int:
-    app = HelloMashApp()
-    try:
-        app.run()
-        return 0
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        app.cleanup()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-Run it:
-
-```bash
-python my_app.py
-```
-
-### 2) App with skills enabled
-
-Skill requirements:
-
-1. `location` must point to a folder containing `SKILL.md`.
-2. Set `skills_enabled=True` in `AgentConfig`.
-3. Register at least one skill in `SkillRegistry`.
-
-```python
-import sys
-from pathlib import Path
-
-from mash.cli.app import AbstractMashApp
-from mash.core.config import AgentConfig
-from mash.core.llm import AnthropicProvider, LLMProvider
-from mash.memory.store import MemoryStore, SQLiteStore
-from mash.skills.base import Skill
+from mash.runtime import MashRuntimeDefinition
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
-APP_ID = "hello-skills"
 
-
-class HelloSkillsApp(AbstractMashApp):
-    def __init__(self) -> None:
-        self._root = Path(".").resolve()
-        super().__init__()
+class MyAppDefinition(MashRuntimeDefinition):
+    def __init__(self, root: Path) -> None:
+        self.root = root
 
     def get_app_id(self) -> str:
-        return APP_ID
+        return "my-app"
 
     def build_store(self) -> MemoryStore:
-        return SQLiteStore(self._root / ".mash" / "hello-skills.db")
+        return SQLiteStore(self.root / ".mash" / "my-app.db")
 
     def build_tools(self) -> ToolRegistry:
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
-        skills = SkillRegistry()
-        skills.register(
-            Skill(
-                type="custom",
-                name="repo-audit",
-                description="Checklist for auditing a repository",
-                location=str((self._root / "skills" / "repo-audit").resolve()),
-            )
-        )
-        return skills
+        return SkillRegistry()
 
     def build_llm(self) -> LLMProvider:
-        return AnthropicProvider(app_id=APP_ID)
+        return AnthropicProvider(app_id="my-app", api_key="...")
 
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(
-            app_id=APP_ID,
-            system_prompt="You are a CLI agent that can load skills when needed.",
-            skills_enabled=True,
-        )
+        return AgentConfig(app_id="my-app", system_prompt="You are helpful.")
 
     def get_log_destination(self) -> Path:
-        return self._root / ".mash" / "logs" / "hello-skills.jsonl"
-
-
-def main() -> int:
-    app = HelloSkillsApp()
-    try:
-        app.run()
-        return 0
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        app.cleanup()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        return self.root / ".mash" / "logs" / "my-app.jsonl"
 ```
+
+### 2) CLI app design (`mash-cli`)
+
+Current pattern:
+
+1. Parse args (`--root`, app-specific flags).
+2. Build your definition.
+3. Create shell with `CLIAppShell.from_definition(...)`.
+4. Optionally register custom slash commands.
+5. `shell.run()` and always `shell.shutdown()` in `finally`.
+
+```python
+from mash_cli import CLIAppShell, Command
+
+definition = MyAppDefinition(root)
+shell = CLIAppShell.from_definition(definition)
+shell.register_command(
+    Command(name="workspace", help="Show workspace", handler=lambda ctx, _a: ctx.renderer.info(str(root)))
+)
+try:
+    shell.run()
+finally:
+    shell.shutdown()
+```
+
+For host-managed subagents, pass `subagents=[SubagentRegistration(...)]` to `CLIAppShell.from_definition(...)`.
+
+Reference examples:
+
+- `examples/simple_app.py`
+- `examples/command_app.py`
+- `examples/subagent_app.py`
+
+Run:
+
+```bash
+uv run --extra cli python -m examples.simple_app
+uv run --extra cli python -m examples.command_app
+uv run --extra cli python -m examples.subagent_app
+```
+
+### 3) API app design (`mash-api`)
+
+Current pattern:
+
+1. Reuse the same runtime definition.
+2. Call `run_app(definition, config=MashAPIConfig(...))`.
+3. Set `observability_memory_db_path` (or CLI `--memory-db`) if you want `/api/v1/telemetry/memory/search`.
+
+```python
+from mash_api import MashAPIConfig, run_app
+
+run_app(
+    MyAppDefinition(root),
+    config=MashAPIConfig(
+        bind_host="127.0.0.1",
+        bind_port=8000,
+        api_key=None,
+    ),
+)
+```
+
+Reference example:
+
+- `examples/api_app.py`
+
+Run:
+
+```bash
+uv run --extra api python -m examples.api_app --port 8000
+```
+
+OpenAPI/docs:
+
+- `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/openapi.json`
+
+### 4) Telemetry web with API app
+
+Start API first, then web UI:
+
+```bash
+uv run --extra api python -m examples.api_app --port 8000
+cd src/mash/telemetry/web
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`.
+The Vite proxy forwards `/api/*` to `http://127.0.0.1:8000`.
+
+If model responses should work end-to-end, set `ANTHROPIC_API_KEY` before running.

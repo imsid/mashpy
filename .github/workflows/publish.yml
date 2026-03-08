@@ -59,9 +59,19 @@ jobs:
                   "tag_patterns": [r"^v(?P<version>.+)$", r"^mashpy-v(?P<version>.+)$"],
               },
               {
+                  "package_name": "mash-cli",
+                  "package_dir": "packages/mash-cli",
+                  "tag_patterns": [r"^mash-cli-v(?P<version>.+)$"],
+              },
+              {
                   "package_name": "mash-telemetry-web",
                   "package_dir": "packages/mash-telemetry-web",
                   "tag_patterns": [r"^mash-telemetry-web-v(?P<version>.+)$"],
+              },
+              {
+                  "package_name": "mash-api",
+                  "package_dir": "packages/mash-api",
+                  "tag_patterns": [r"^mash-api-v(?P<version>.+)$"],
               },
           ]
 
@@ -82,7 +92,9 @@ jobs:
                   [
                       "v<version>",
                       "mashpy-v<version>",
+                      "mash-cli-v<version>",
                       "mash-telemetry-web-v<version>",
+                      "mash-api-v<version>",
                   ]
               )
               raise SystemExit(

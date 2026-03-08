@@ -1,7 +1,7 @@
 [project]
 name = "mashpy"
 version = "0.1.2"
-description = "Platform for building CLI-native agent applications."
+description = "Platform for building interactive agentic applications."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Proprietary"}
@@ -21,8 +21,6 @@ dependencies = [
   "mcp>=0.1.0",
   "openai>=1.57.4",
   "PyYAML>=6.0.2",
-  "prompt_toolkit>=3.0.36",
-  "rich>=13.7.1",
   "requests>=2.31.0",
   "tomli>=2.0.1; python_version < '3.11'",
 ]
@@ -32,17 +30,20 @@ Homepage = "https://github.com/imsid/mashpy"
 Documentation = "https://github.com/imsid/mashpy#readme"
 Repository = "https://github.com/imsid/mashpy"
 
-[project.scripts]
-mash = "mash.cli.main:main"
-
 [project.optional-dependencies]
 dev = [
   "build>=1.2.2",
   "pytest>=8.3.0",
   "twine>=6.1.0",
 ]
+cli = [
+  "mash-cli>=0.1.0",
+]
 telemetry-web = [
   "mash-telemetry-web>=0.1.0",
+]
+api = [
+  "mash-api>=0.1.0",
 ]
 
 [build-system]
@@ -55,4 +56,6 @@ include = ["mash*"]
 exclude = ["apps*"]
 
 [tool.uv.sources]
+mash-cli = { path = "packages/mash-cli" }
 mash-telemetry-web = { path = "packages/mash-telemetry-web" }
+mash-api = { path = "packages/mash-api" }
