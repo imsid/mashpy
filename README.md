@@ -7,55 +7,33 @@ MashPy is delivered as four offerings that work together: the `mash` framework r
 ## Install
 
 ```bash
-pip install mashpy
-```
-
-Or with `uv`:
-
-```bash
 uv add mashpy
 ```
 
-Install CLI package:
+Install API server package:
 
 ```bash
-pip install mash-cli
-# or
-pip install "mashpy[cli]"
-# or
-uv add mash-cli
-# or
-uv add "mashpy[cli]"
-```
-
-Optional telemetry observer UI package:
-
-```bash
-pip install "mashpy[telemetry-web]"
-# or
-uv add "mashpy[telemetry-web]"
-```
-
-Optional API server package:
-
-```bash
-pip install mash-api
-# or
-pip install "mashpy[api]"
-# or
 uv add mash-api
 # or
 uv add "mashpy[api]"
 ```
 
-Validate the CLI installation:
+Install CLI package:
 
 ```bash
+uv add mash-cli
+# or
+uv add "mashpy[cli]"
+
+# validate the CLI installation:
 mash --version
 ```
 
-The `mashpy` package is framework-only. The `mash` command is provided by `mash-cli`.
-`mash.telemetry` entrypoint has been removed; use `mash-api` for HTTP APIs.
+Install telemetry observer UI package (optional):
+
+```bash
+uv add "mashpy[telemetry-web]"
+```
 
 ## What MashPy Does
 
