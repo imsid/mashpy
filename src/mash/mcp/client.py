@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, TypeVar, Union
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -44,6 +44,7 @@ class RPCResponse:
 SamplingHandler = Callable[
     [Dict[str, Any]], Union[Dict[str, Any], Awaitable[Dict[str, Any]]]
 ]
+T = TypeVar("T")
 
 
 class MCPHTTPClient:
@@ -292,29 +293,61 @@ class MCPHTTPClient:
     def get_server_info(self) -> Dict[str, Any]:
         return self.server_info
 
+    def _run_awaitable(self, awaitable: Coroutine[Any, Any, T]) -> T:
+        """Run awaitable from sync call sites, even when an event loop is already running."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(awaitable)
+
+        result: dict[str, T] = {}
+        error: dict[str, BaseException] = {}
+        done = threading.Event()
+
+        def _runner() -> None:
+            try:
+                result["value"] = asyncio.run(awaitable)
+            except BaseException as exc:  # pragma: no cover - defensive
+                error["value"] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=_runner, name="MCP-AwaitableRunner", daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise
+        done.wait()
+
+        if "value" in error:
+            raise error["value"]
+        return result["value"]
+
     def list_tools(self) -> List[Dict[str, Any]]:
         response = self._make_request("tools/list")
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result.get("tools", [])
 
     def list_resources(self) -> List[Dict[str, Any]]:
         response = self._make_request("resources/list")
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result.get("resources", [])
 
     def list_resource_templates(self) -> List[Dict[str, Any]]:
         response = self._make_request("resources/templates/list")
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result.get("resourceTemplates", [])
 
     def list_prompts(self) -> List[Dict[str, Any]]:
         response = self._make_request("prompts/list")
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result.get("prompts", [])
 
     def read_resource(self, uri: str) -> Dict[str, Any]:
         response = self._make_request("resources/read", {"uri": uri})
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result
 
     def get_prompt(
@@ -323,7 +356,7 @@ class MCPHTTPClient:
         response = self._make_request(
             "prompts/get", {"name": name, "arguments": arguments or {}}
         )
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result
 
     def call_tool(
@@ -332,7 +365,7 @@ class MCPHTTPClient:
         response = self._make_request(
             "tools/call", {"name": tool_name, "arguments": arguments or {}}
         )
-        asyncio.run(self._handle_interactions(response))
+        self._run_awaitable(self._handle_interactions(response))
         return response.result
 
     # ------------------------------------------------------------------
@@ -376,7 +409,7 @@ class MCPHTTPClient:
                                 payload = "".join(buffer).strip()
                                 buffer = []
                                 if payload:
-                                    asyncio.run(self._handle_sse_payload(payload))
+                                    self._run_awaitable(self._handle_sse_payload(payload))
                             continue
                         if raw_line.startswith("data:"):
                             buffer.append(raw_line[5:].strip())

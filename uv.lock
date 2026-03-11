@@ -727,12 +727,12 @@ requires-dist = [
 
 [[package]]
 name = "mash-telemetry-web"
-version = "0.1.0"
+version = "0.1.1"
 source = { directory = "packages/mash-telemetry-web" }
 
 [[package]]
 name = "mashpy"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
