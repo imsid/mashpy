@@ -71,7 +71,7 @@ The normal execution path is:
 
 ```mermaid
 flowchart LR
-    A["App code (`AgentSpec`)"] --> B["`MashAgentHostBuilder`"]
+    A["`AgentSpec`"] --> B["`MashAgentHostBuilder`"]
     B --> C["`MashAgentHost`"]
     C --> D["`mash.api` host service"]
     D --> E["HTTP API + Telemetry UI"]
