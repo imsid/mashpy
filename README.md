@@ -2,13 +2,13 @@
 
 This repository is the development workspace for Mash.
 
-It contains three code surfaces:
+It contains three main components:
 
-- `mashpy`
-  The unified distribution.
+- `mash.runtime`
+  The managed runtime for an agent.
 - `mash.api`
   The self-hosted API server in `src/mash/api`.
-- `mash`
+- `mash.cli`
   The bundled CLI in `src/mash/cli`.
 
 
@@ -60,7 +60,7 @@ At a high level, `mashpy` is one distribution with three cooperating surfaces:
 - `mash.runtime`
   Host-side orchestration: `AgentSpec`, runtime servers, host/client wiring, request streaming, session storage, and subagent delegation.
 - `mash.api` and `mash.cli`
-  Operator-facing surfaces built on top of the runtime. `mash.api` exposes the FastAPI host service and telemetry UI; `mash.cli` is the remote client.
+  App facing surfaces built on top of the runtime. `mash.api` exposes the FastAPI host service and telemetry UI; `mash.cli` is the remote client.
 
 The normal execution path is:
 
@@ -70,12 +70,13 @@ The normal execution path is:
 4. `mash.cli` talks to that HTTP API as a remote client.
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["`AgentSpec`"] --> B["`MashAgentHostBuilder`"]
     B --> C["`MashAgentHost`"]
-    C --> D["`mash.api` host service"]
-    D --> E["HTTP API + Telemetry UI"]
-    F["`mash` CLI"] --> E
+    C --> D["`mash.api`"]
+    D --> E["HTTP API"]
+    D --> F["Telemetry UI"]
+    G["`mash.cli`"] --> E
 ```
 
 Persistence is runtime-level, not app-level. Each agent stores state under:
@@ -104,18 +105,25 @@ The core execution stack is:
 sequenceDiagram
     participant User
     participant API as mash.api
+    participant Host as MashAgentHost
+    participant Client as MashAgentClient
     participant Runtime as MashAgentServer
     participant Agent as mash.core.Agent
     participant Store as State Store
 
     User->>API: POST /api/v1/agents/{agent_id}/requests
-    API->>Runtime: submit_request(...)
+    API->>Host: get_client(agent_id)
+    Host-->>API: MashAgentClient
+    API->>Client: post_request(...) / stream(...)
+    Client->>Runtime: HTTP request + SSE stream
     Runtime->>Agent: process_user_message(...)
     Agent->>Agent: think -> act -> observe
     Agent-->>Runtime: Response + token_usage + trace_id
     Runtime->>Store: save_turn(...)
-    Runtime-->>API: request.completed
+    Runtime-->>Client: request.accepted / agent.trace / request.completed
+    Client-->>API: streamed runtime events
     API-->>User: SSE / final payload
+
 ```
 
 Important runtime properties:
@@ -131,7 +139,8 @@ Important runtime properties:
 The main SDK surface is:
 
 - `AgentSpec` in [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
-- `MashAgentHostBuilder` in [src/mash/runtime/host.py](src/mash/runtime/host.py)
+- `MashAgentHost` in [src/mash/runtime/host.py](src/mash/runtime/host.py)
+- `MashAgentClient` in [src/mash/runtime/client.py](src/mash/runtime/client.py)
 - `MashAgentServer` in [src/mash/runtime/server.py](src/mash/runtime/server.py)
 
 The intended app shape is:
@@ -165,8 +174,6 @@ def build_host():
     return MashAgentHostBuilder().primary(PrimaryAgent()).build()
 ```
 
-Storage path configuration does not belong in `AgentSpec`. Set `MASH_DATA_DIR` in the process environment.
-
 ## Subagent Invocation Flow
 
 Subagent delegation is host-managed, not a special local shortcut.
@@ -183,14 +190,18 @@ sequenceDiagram
     participant Tool as InvokeSubagentTool
     participant Host as MashAgentHost
     participant Client as MashAgentClient
-    participant Subagent as Subagent Runtime
+    participant Server as Subagent MashAgentServer
+    participant Subagent as Subagent mash.core.Agent
 
     Primary->>Tool: InvokeSubagent(agent_id, prompt, opts)
     Tool->>Host: get_client(agent_id)
     Host-->>Tool: MashAgentClient
     Tool->>Client: post_request(prompt, session_id=subagent_session_id)
-    Client->>Subagent: HTTP request
-    Subagent-->>Client: request.accepted / agent.trace / request.completed
+    Client->>Server: HTTP request + SSE stream
+    Server->>Subagent: process_user_message(...)
+    Subagent->>Subagent: think -> act -> observe
+    Subagent-->>Server: Response + token_usage + trace_id
+    Server-->>Client: request.accepted / agent.trace / request.completed
     Client-->>Tool: streamed events
     Tool-->>Primary: ToolResult(text + metadata)
 ```
