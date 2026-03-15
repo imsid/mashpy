@@ -274,6 +274,36 @@ class SQLiteStore(MemoryStore):
 
         return turns
 
+    def list_sessions(self, app_id: str) -> List[Dict[str, Any]]:
+        """List persisted sessions for one application."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT
+                    session_id,
+                    COUNT(*) AS turn_count,
+                    MAX(created_at) AS last_activity_at,
+                    MAX(session_total_tokens) AS session_total_tokens
+                FROM turns
+                WHERE app_id = ?
+                GROUP BY session_id
+                ORDER BY last_activity_at DESC, session_id ASC
+                """,
+                (app_id,),
+            ).fetchall()
+
+        sessions: List[Dict[str, Any]] = []
+        for session_id, turn_count, last_activity_at, session_total_tokens in rows:
+            sessions.append(
+                {
+                    "session_id": str(session_id),
+                    "turn_count": int(turn_count or 0),
+                    "last_activity_at": float(last_activity_at or 0.0),
+                    "session_total_tokens": int(session_total_tokens or 0),
+                }
+            )
+        return sessions
+
     def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],

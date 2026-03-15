@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import asdict
 from typing import Dict, Optional
 
 from ..core.config import SystemPrompt
 from ..tools.subagent import InvokeSubagentTool
 from .client import MashAgentClient
-from .definition import MashRuntimeDefinition
+from .spec import AgentSpec
 from .server import MashAgentServer
 from .types import SubAgentMetadata
 
@@ -16,7 +17,7 @@ from .types import SubAgentMetadata
 @dataclass(frozen=True)
 class _RegisteredAgent:
     agent_id: str
-    definition: MashRuntimeDefinition
+    definition: AgentSpec
     metadata: Optional[SubAgentMetadata]
     is_primary: bool
 
@@ -57,8 +58,8 @@ class MashAgentHost:
         self._agents: Dict[str, MashAgentServer] = {}
         self._clients: Dict[str, MashAgentClient] = {}
 
-    def register_primary(self, definition: MashRuntimeDefinition, *, agent_id: Optional[str] = None) -> str:
-        resolved_agent_id = (agent_id or definition.get_app_id()).strip()
+    def register_primary(self, definition: AgentSpec, *, agent_id: Optional[str] = None) -> str:
+        resolved_agent_id = (agent_id or definition.get_agent_id()).strip()
         if not resolved_agent_id:
             raise ValueError("agent_id is required")
         if resolved_agent_id in self._registered:
@@ -77,12 +78,12 @@ class MashAgentHost:
 
     def register_subagent(
         self,
-        definition: MashRuntimeDefinition,
+        definition: AgentSpec,
         *,
         agent_id: Optional[str] = None,
         metadata: SubAgentMetadata,
     ) -> str:
-        resolved_agent_id = (agent_id or definition.get_app_id()).strip()
+        resolved_agent_id = (agent_id or definition.get_agent_id()).strip()
         if not resolved_agent_id:
             raise ValueError("agent_id is required")
         if resolved_agent_id in self._registered:
@@ -103,7 +104,7 @@ class MashAgentHost:
             return
 
         for agent_id, registered in self._registered.items():
-            runtime = MashAgentServer.from_definition(registered.definition)
+            runtime = MashAgentServer.from_spec(registered.definition)
             base_url = runtime.start_http_server(agent_id=agent_id, host=self.bind_host, port=0)
             client = MashAgentClient(base_url, agent_id)
             self._agents[agent_id] = runtime
@@ -136,6 +137,7 @@ class MashAgentHost:
                 client_resolver=self.get_client,
                 primary_app_id=primary.agent.config.app_id,
                 primary_session_id_provider=primary.get_current_processing_session_id,
+                event_logger=primary.get_event_logger(),
             )
         )
 
@@ -153,6 +155,23 @@ class MashAgentHost:
 
     def list_agents(self) -> list[str]:
         return list(self._registered.keys())
+
+    def get_primary_agent_id(self) -> str:
+        if self._primary_agent_id is None:
+            raise ValueError("primary agent is not registered")
+        return self._primary_agent_id
+
+    def describe_agents(self) -> list[dict[str, object]]:
+        described: list[dict[str, object]] = []
+        for registered in self._registered.values():
+            described.append(
+                {
+                    "agent_id": registered.agent_id,
+                    "role": "primary" if registered.is_primary else "subagent",
+                    "metadata": asdict(registered.metadata) if registered.metadata is not None else None,
+                }
+            )
+        return described
 
     def close(self) -> None:
         for client in self._clients.values():
@@ -172,4 +191,39 @@ class MashAgentHost:
         self.close()
 
 
-__all__ = ["MashAgentHost", "build_subagent_prompt_block"]
+__all__ = ["MashAgentHost", "MashAgentHostBuilder", "build_subagent_prompt_block"]
+
+
+class MashAgentHostBuilder:
+    """Builder for composing one primary agent and optional subagents."""
+
+    def __init__(self) -> None:
+        self._primary: tuple[AgentSpec, str | None] | None = None
+        self._subagents: list[tuple[AgentSpec, SubAgentMetadata, str | None]] = []
+
+    def primary(self, spec: AgentSpec, *, agent_id: str | None = None) -> "MashAgentHostBuilder":
+        if self._primary is not None:
+            raise ValueError("primary agent is already configured")
+        self._primary = (spec, agent_id)
+        return self
+
+    def subagent(
+        self,
+        spec: AgentSpec,
+        *,
+        metadata: SubAgentMetadata,
+        agent_id: str | None = None,
+    ) -> "MashAgentHostBuilder":
+        self._subagents.append((spec, metadata, agent_id))
+        return self
+
+    def build(self, *, bind_host: str = "127.0.0.1") -> MashAgentHost:
+        if self._primary is None:
+            raise ValueError("primary agent is required")
+
+        host = MashAgentHost(bind_host=bind_host)
+        primary_spec, primary_agent_id = self._primary
+        host.register_primary(primary_spec, agent_id=primary_agent_id)
+        for spec, metadata, agent_id in self._subagents:
+            host.register_subagent(spec, metadata=metadata, agent_id=agent_id)
+        return host

@@ -1,0 +1,190 @@
+"""Remote HTTP client for Mash host deployments."""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Iterator, Optional
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
+
+import requests
+
+
+class MashHostClientError(RuntimeError):
+    """Raised when Mash host operations fail."""
+
+
+class MashHostClient:
+    """Thin client for interacting with a Mash host deployment."""
+
+    def __init__(self, base_url: str, *, api_key: str | None = None) -> None:
+        self.base_url = self._normalize_base_url(base_url)
+        self._session = requests.Session()
+        self._headers = {"Accept": "application/json, text/event-stream"}
+        if api_key:
+            self._headers["Authorization"] = f"Bearer {api_key}"
+
+    @staticmethod
+    def _normalize_base_url(base_url: str) -> str:
+        parts = urlsplit((base_url or "").strip())
+        path = parts.path.rstrip("/")
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+    def _url(self, path: str, *, query: dict[str, Any] | None = None) -> str:
+        if query:
+            return f"{self.base_url}{path}?{urlencode(query)}"
+        return f"{self.base_url}{path}"
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        stream: bool = False,
+    ) -> requests.Response:
+        headers = dict(self._headers)
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+        response = self._session.request(
+            method=method,
+            url=self._url(path, query=query),
+            headers=headers,
+            json=json_body,
+            stream=stream,
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            message = (
+                payload.get("error", {}).get("message")
+                if isinstance(payload, dict)
+                else None
+            ) or response.text
+            raise MashHostClientError(f"{method} {path} failed ({response.status_code}): {message}")
+        return response
+
+    def health(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/health")
+        return response.json()["data"]
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/agents")
+        payload = response.json()["data"]
+        agents = payload.get("agents")
+        if not isinstance(agents, list):
+            return []
+        return [agent for agent in agents if isinstance(agent, dict)]
+
+    def get_agent(self, agent_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/agents/{quote(agent_id, safe='')}")
+        return response.json()["data"]
+
+    def submit_request(
+        self,
+        agent_id: str,
+        *,
+        message: str,
+        session_id: str | None = None,
+        turn_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        response = self._request(
+            "POST",
+            f"/api/v1/agents/{quote(agent_id, safe='')}/requests",
+            json_body={
+                "message": message,
+                "session_id": session_id,
+                "turn_metadata": dict(turn_metadata or {}),
+            },
+        )
+        return str(response.json()["data"]["request_id"])
+
+    def stream_request(self, agent_id: str, request_id: str) -> Iterator[dict[str, Any]]:
+        with self._request(
+            "GET",
+            f"/api/v1/agents/{quote(agent_id, safe='')}/requests/{quote(request_id, safe='')}/events",
+            stream=True,
+        ) as response:
+            event_name: Optional[str] = None
+            data_lines: list[str] = []
+            for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+                if line is None:
+                    continue
+                stripped = line.strip()
+                if not stripped:
+                    if event_name and data_lines:
+                        raw = "\n".join(data_lines)
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            payload = {"raw": raw}
+                        yield {"event": event_name, "data": payload}
+                    event_name = None
+                    data_lines = []
+                    continue
+                if stripped.startswith(":"):
+                    continue
+                if stripped.startswith("event:"):
+                    event_name = stripped[6:].strip()
+                    continue
+                if stripped.startswith("data:"):
+                    data_lines.append(stripped[5:].strip())
+
+    def invoke(
+        self,
+        agent_id: str,
+        *,
+        message: str,
+        session_id: str | None = None,
+        turn_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request_id = self.submit_request(
+            agent_id,
+            message=message,
+            session_id=session_id,
+            turn_metadata=turn_metadata,
+        )
+        for event in self.stream_request(agent_id, request_id):
+            event_name = str(event.get("event") or "")
+            data = event.get("data")
+            if event_name == "request.completed":
+                if not isinstance(data, dict):
+                    raise MashHostClientError("request.completed payload is invalid")
+                return data
+            if event_name == "request.error":
+                if isinstance(data, dict) and isinstance(data.get("error"), str):
+                    raise MashHostClientError(data["error"])
+                raise MashHostClientError("remote request failed")
+        raise MashHostClientError("stream ended without a terminal event")
+
+    def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
+        response = self._request("GET", f"/api/v1/agents/{quote(agent_id, safe='')}/sessions")
+        sessions = response.json()["data"].get("sessions")
+        if not isinstance(sessions, list):
+            return []
+        return [session for session in sessions if isinstance(session, dict)]
+
+    def get_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            f"/api/v1/agents/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}",
+        )
+        return response.json()["data"]
+
+    def get_history(self, agent_id: str, session_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        query = {"limit": limit} if limit is not None else None
+        response = self._request(
+            "GET",
+            f"/api/v1/agents/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}/history",
+            query=query,
+        )
+        turns = response.json()["data"].get("turns")
+        if not isinstance(turns, list):
+            return []
+        return [turn for turn in turns if isinstance(turn, dict)]
+
+    def close(self) -> None:
+        self._session.close()

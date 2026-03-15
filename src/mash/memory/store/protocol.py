@@ -54,6 +54,13 @@ class MemoryStore(Protocol):
         """
         ...
 
+    def list_sessions(
+        self,
+        app_id: str,
+    ) -> List[Dict[str, Any]]:
+        """List persisted sessions for one application."""
+        ...
+
     def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],

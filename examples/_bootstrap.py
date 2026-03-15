@@ -7,6 +7,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+DEFAULT_LOCAL_DATA_DIR = ".mash-data"
+DEFAULT_CONTAINER_DATA_DIR = "/var/lib/mash"
+
 
 def load_example_env() -> None:
     """Load `.env` files commonly used with local examples."""

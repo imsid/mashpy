@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 from mash.runtime.session import derive_subagent_session_id
 from mash.tools.subagent import InvokeSubagentTool
@@ -14,37 +14,65 @@ class _FakeClient:
     def __init__(self) -> None:
         self.last_call: Optional[Dict[str, Any]] = None
         self._error: Optional[Exception] = None
+        self._request_id = "r1"
+        self._events: list[Dict[str, Any]] = [
+            {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
+            {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
+            {
+                "event": "request.completed",
+                "data": {
+                    "request_id": "r1",
+                    "status": "completed",
+                    "response": {"text": "client-ok", "metadata": {"source": "client"}},
+                },
+            },
+        ]
 
-    def invoke(
+    def post_request(
         self,
         message: str,
         *,
         session_id: Optional[str] = None,
         turn_metadata: Optional[Dict[str, Any]] = None,
-        timeout_ms: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> str:
         self.last_call = {
             "message": message,
             "session_id": session_id,
             "turn_metadata": turn_metadata,
-            "timeout_ms": timeout_ms,
         }
+        return self._request_id
+
+    def stream(
+        self,
+        request_id: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        if self.last_call is not None:
+            self.last_call["timeout"] = timeout
+            self.last_call["request_id"] = request_id
         if self._error:
             raise self._error
-        return {
-            "request_id": "r1",
-            "status": "completed",
-            "response": {"text": "client-ok", "metadata": {"source": "client"}},
-        }
+        yield from self._events
+
+
+class _RecordingEventLogger:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def emit(self, event: Any) -> None:
+        self.events.append(event)
 
 
 class InvokeSubagentToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = _FakeClient()
+        self.event_logger = _RecordingEventLogger()
         self.tool = InvokeSubagentTool(
             client_resolver=lambda _agent_id: self.client,
             primary_app_id="primary-app",
             primary_session_id="s1",
+            event_logger=self.event_logger,
         )
 
     def test_success_returns_json_payload(self) -> None:
@@ -69,6 +97,12 @@ class InvokeSubagentToolTests(unittest.TestCase):
         turn_metadata = self.client.last_call["turn_metadata"] or {}
         self.assertEqual(turn_metadata["primary_app_id"], "primary-app")
         self.assertEqual(turn_metadata["subagent_invoke_opts"]["x"], 1)
+        self.assertEqual(self.client.last_call["timeout"], 360.0)
+        streamed_event_types = [event.event_type for event in self.event_logger.events]
+        self.assertEqual(
+            streamed_event_types,
+            ["subagent.request.accepted", "subagent.request.started", "subagent.request.completed"],
+        )
 
     def test_error_returns_error_result(self) -> None:
         self.client._error = TimeoutError("timed out")
@@ -101,7 +135,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertEqual(payload["subagent_session_id"], expected_subagent_session_id)
         assert client.last_call is not None
         self.assertEqual(client.last_call["session_id"], expected_subagent_session_id)
-        self.assertEqual(client.last_call["timeout_ms"], 2500)
+        self.assertEqual(client.last_call["timeout"], 2.5)
         self.assertEqual(
             client.last_call["turn_metadata"]["primary_app_id"],  # type: ignore[index]
             "primary-app",

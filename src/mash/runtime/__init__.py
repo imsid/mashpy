@@ -1,18 +1,19 @@
 """Mash runtime package."""
 
 from .client import MashAgentClient, MashAgentClientError
-from .definition import MashRuntimeDefinition
+from .host import MashAgentHost, MashAgentHostBuilder
+from .spec import AgentSpec
 from .server import MashAgentServer
-from .host import MashAgentHost
 from .session import derive_subagent_session_id
 from .types import RuntimeTurnResult, SubAgentMetadata
 
 __all__ = [
-    "MashRuntimeDefinition",
+    "AgentSpec",
     "MashAgentServer",
     "MashAgentClient",
     "MashAgentClientError",
     "MashAgentHost",
+    "MashAgentHostBuilder",
     "RuntimeTurnResult",
     "SubAgentMetadata",
     "derive_subagent_session_id",

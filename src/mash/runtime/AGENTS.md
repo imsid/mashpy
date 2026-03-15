@@ -1,10 +1,10 @@
 # AGENTS Guide for `src/mash/runtime`
 
 ## Scope
-Runtime-side architecture for Mash apps: app definition contracts, server execution, HTTP transport, host/client orchestration, and cross-agent session behavior.
+Runtime-side architecture for Mash apps: agent spec contracts, server execution, HTTP transport, host/client orchestration, and cross-agent session behavior.
 
 ## Invariants
-- `MashRuntimeDefinition` is runtime-only and CLI-agnostic.
+- `AgentSpec` is runtime-only and transport-agnostic.
 - `MashAgentServer` owns agent execution state and lifecycle:
   - agent loop execution via `process_user_message(...)`
   - request queue + single worker (single-flight per server)
@@ -29,7 +29,7 @@ Runtime-side architecture for Mash apps: app definition contracts, server execut
 
 ## No-Legacy Rule
 - Do not reintroduce legacy IPC/subprocess subagent paths (`mash.ipc`, `serve_ipc`, router/worker wiring).
-- Do not add runtime hooks back into `MashRuntimeDefinition` for CLI command registration.
+- Do not add compatibility aliases for removed SDK types or constructors.
 
 ## Change Rules
 - Keep HTTP event contract stable (`request.accepted`, `request.started`, `agent.trace`, `request.completed`, `request.error`).

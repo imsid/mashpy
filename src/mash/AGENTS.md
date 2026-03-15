@@ -1,21 +1,21 @@
 # AGENTS Guide for `src/mash`
 
-This package is a framework for building agent-powered applications with a composed runtime model.
+This package is the Mash codebase root. The SDK/runtime remains the core layer, and the unified distribution also includes hosted API and CLI surfaces under `mash.api` and `mash.cli`.
 
 ## What Must Stay True
+- `AgentSpec` is the single-agent SDK contract.
+- `MashAgentHostBuilder` composes one primary agent and optional subagents into a `MashAgentHost`.
 - `MashAgentServer` wires the runtime (agent, tools, memory, logging, optional MCP).
-- Interactive shell ownership lives in the companion `mash-cli` package (`mash_cli.CLIAppShell`).
+- Hosted APIs live in `mash.api`; remote terminal UX lives in `mash.cli`.
 - `Agent` runs a think-act-observe loop and records trace/token metadata in response metadata.
 - Tool definitions exposed to the LLM must use Anthropic-compatible schema (`name`, `description`, `input_schema`).
 - Event logs are JSONL and remain machine-parseable (`LogEvent.to_dict()` output per line).
-- Runtime memory behavior stays deterministic: stored turns in order, summary checkpoints recognized by metadata type `summary_checkpoint`.
 
 ## Cross-Cutting Change Rules
-- Preserve command and tool names unless explicitly migrating.
-- If you change defaults (commands, runtime tools, config flags, telemetry output), update `README.md`.
+- Keep SDK, host service, and CLI responsibilities separate even though they now ship in one package.
+- If you change defaults or runtime contracts, update the top-level `README.md`.
 - Keep trace correlation intact: use `set_trace_id` / `get_trace_id` when emitting cross-component events.
-- Prefer additive changes over broad rewrites; modules are intentionally loosely coupled.
 
 ## Minimal Validation
 - `python -m compileall src/mash`
-- If runtime behavior changed, manually verify one end-to-end invoke path and one memory/logging path.
+- Verify one invoke path, one subagent path, and one session/history path.

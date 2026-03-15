@@ -149,6 +149,13 @@ class MashAgentClient:
             raise MashAgentClientError("session_info response must be an object")
         return result
 
+    def list_sessions(self) -> list[dict[str, Any]]:
+        payload = self._control_post("list_sessions")
+        sessions = payload.get("sessions")
+        if not isinstance(sessions, list):
+            return []
+        return [session for session in sessions if isinstance(session, dict)]
+
     def get_model(self) -> str:
         info = self.get_session_info()
         return str(info.get("model") or "")

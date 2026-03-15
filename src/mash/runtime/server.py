@@ -22,7 +22,7 @@ from ..core.context import Context, MessageRole
 from ..logging import AgentTraceEvent, CommandEvent, EventLogger, LLMEvent, LogEvent
 from ..memory.compaction import compact_conversation
 from ..tools.runtime import RuntimeToolBuilder
-from .definition import MashRuntimeDefinition
+from .spec import AgentSpec
 from .http import MashAgentHTTPHandler, MashAgentHTTPServer
 from .types import RuntimeTurnResult
 
@@ -57,13 +57,13 @@ class MashAgentServer:
 
     def __init__(
         self,
-        definition: MashRuntimeDefinition,
+        definition: AgentSpec,
         *,
         request_ttl_seconds: int = 3600,
         max_buffered_requests: int = 1000,
     ) -> None:
         self.definition = definition
-        self.app_id = definition.get_app_id()
+        self.app_id = definition.get_agent_id()
         self.default_session_id = str(uuid.uuid4())
         self.request_ttl_seconds = max(1, int(request_ttl_seconds))
         self.max_buffered_requests = max(10, int(max_buffered_requests))
@@ -80,7 +80,7 @@ class MashAgentServer:
         config = definition.build_agent_config()
         if config.app_id != self.app_id:
             raise ValueError(
-                "MashRuntimeDefinition.get_app_id() must match build_agent_config().app_id "
+                "AgentSpec.get_agent_id() must match build_agent_config().app_id "
                 f"(got {self.app_id!r} vs {config.app_id!r})"
             )
 
@@ -134,7 +134,7 @@ class MashAgentServer:
         definition.on_startup(self)
 
     @classmethod
-    def from_definition(cls, definition: MashRuntimeDefinition) -> "MashAgentServer":
+    def from_spec(cls, definition: AgentSpec) -> "MashAgentServer":
         return cls(definition)
 
     def configure_runtime_tools(self) -> None:
@@ -267,6 +267,12 @@ class MashAgentServer:
         """Return conversation history turns for the session."""
         return self.store.get_turns(session_id=session_id, limit=limit)
 
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Return persisted sessions for this agent."""
+        if not hasattr(self.store, "list_sessions"):
+            return []
+        return self.store.list_sessions(app_id=self.agent.config.app_id)
+
     def get_subagent_ids(self) -> list[str]:
         return list(self._subagent_ids)
 
@@ -280,7 +286,7 @@ class MashAgentServer:
                 continue
             seen.add(text)
             ordered.append(text)
-            self._subagent_ids = ordered
+        self._subagent_ids = ordered
 
     def set_system_prompt(self, prompt: SystemPrompt) -> None:
         self.system_prompt = prompt
@@ -306,6 +312,7 @@ class MashAgentServer:
                 raise ValueError("session_id must be a string")
             return {
                 "app_id": self.app_id,
+                "agent_id": self.app_id,
                 "session_id": session_id,
                 "primary_agent_id": self.app_id,
                 "subagent_ids": self.get_subagent_ids(),
@@ -313,6 +320,9 @@ class MashAgentServer:
                 "max_steps": self.get_max_steps(),
                 "session_total_tokens": self.get_session_total_tokens(session_id),
             }
+
+        if action_name == "list_sessions":
+            return {"sessions": self.list_sessions()}
 
         if action_name == "get_subagent_ids":
             return {"subagent_ids": self.get_subagent_ids()}
