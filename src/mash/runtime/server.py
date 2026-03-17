@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence
 
-from mash.core.config import ANTHROPIC_MODEL
 from mash.mcp.client import MCPClientError
 from mash.mcp.manager import MCPManager
 from mash.mcp.types import MCPServerConfig
@@ -22,8 +21,8 @@ from ..core.context import Context, MessageRole
 from ..logging import AgentTraceEvent, CommandEvent, EventLogger, LLMEvent, LogEvent
 from ..memory.compaction import compact_conversation
 from ..tools.runtime import RuntimeToolBuilder
-from .spec import AgentSpec
 from .http import MashAgentHTTPHandler, MashAgentHTTPServer
+from .spec import AgentSpec
 from .types import RuntimeTurnResult
 
 
@@ -122,7 +121,7 @@ class MashAgentServer:
         mcp_servers = definition.build_mcp_servers()
         if mcp_servers:
             self.mcp_manager = MCPManager(
-                default_model=ANTHROPIC_MODEL,
+                default_model=self.agent.llm.model,
                 event_logger=self.event_logger,
                 session_id=self.default_session_id,
                 app_id=self.agent.config.app_id,
@@ -141,7 +140,7 @@ class MashAgentServer:
         builder = RuntimeToolBuilder(
             store=self.store,
             app_id=self.agent.config.app_id,
-            session_id=self.default_session_id,
+            session_id_provider=self.get_current_processing_session_id,
             event_logger=self.event_logger,
         )
         for tool in builder.build_tools():
@@ -201,7 +200,7 @@ class MashAgentServer:
 
     def get_model(self) -> str:
         """Return the configured model name."""
-        return self.agent.config.model
+        return self.agent.llm.model
 
     def get_max_steps(self) -> int:
         """Return the configured max think/act steps."""
@@ -292,7 +291,9 @@ class MashAgentServer:
         self.system_prompt = prompt
         self.agent.config.system_prompt = prompt
 
-    def handle_control_request(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def handle_control_request(
+        self, action: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Handle runtime control actions used by HTTP clients."""
         action_name = action.strip()
         data = payload or {}
@@ -416,7 +417,9 @@ class MashAgentServer:
             try:
                 session_total_tokens_reset = int(reset_value)
             except (TypeError, ValueError) as exc:
-                raise ValueError("session_total_tokens_reset must be an integer") from exc
+                raise ValueError(
+                    "session_total_tokens_reset must be an integer"
+                ) from exc
 
             summary_text, turn_id = self.compact_session(
                 session_id,
@@ -471,9 +474,17 @@ class MashAgentServer:
                         if isinstance(raw_event.get("command_name"), str)
                         else None
                     ),
-                    args=raw_event["args"] if isinstance(raw_event.get("args"), str) else None,
+                    args=(
+                        raw_event["args"]
+                        if isinstance(raw_event.get("args"), str)
+                        else None
+                    ),
                     duration_ms=duration_ms,
-                    error=raw_event["error"] if isinstance(raw_event.get("error"), str) else None,
+                    error=(
+                        raw_event["error"]
+                        if isinstance(raw_event.get("error"), str)
+                        else None
+                    ),
                     trace_id=(
                         raw_event["trace_id"]
                         if isinstance(raw_event.get("trace_id"), str)
@@ -521,7 +532,6 @@ class MashAgentServer:
             llm=self.agent.llm,
             app_id=self.agent.config.app_id,
             session_id=target_session_id,
-            model=self.agent.config.model,
             max_tokens=self.agent.config.max_tokens,
             temperature=self.agent.config.compaction_temperature,
             turn_limit=self.agent.config.compaction_turn_limit,
@@ -544,10 +554,14 @@ class MashAgentServer:
 
                 if summary_index is not None:
                     tail_turns = turns[summary_index + 1 :]
-                    tail_turns = tail_turns[-self.agent.config.conversation_history_turns :]
+                    tail_turns = tail_turns[
+                        -self.agent.config.conversation_history_turns :
+                    ]
                     turns_to_include = [turns[summary_index]] + tail_turns
                 else:
-                    turns_to_include = turns[-self.agent.config.conversation_history_turns :]
+                    turns_to_include = turns[
+                        -self.agent.config.conversation_history_turns :
+                    ]
 
                 for turn in turns_to_include:
                     meta = turn.get("metadata") or {}
@@ -595,7 +609,16 @@ class MashAgentServer:
             target_session_id = self.default_session_id
 
         previous_session = getattr(self._tool_context, "session_id", None)
+        previous_agent_session = self.agent.get_event_logger_session_id()
+        llm_provider = self.agent.llm
+        previous_llm_session = llm_provider.get_event_logger_session_id()
         self._tool_context.session_id = target_session_id
+        self.agent.set_event_logger(self.event_logger, target_session_id)
+        llm_provider.set_event_logger(
+            self.event_logger,
+            target_session_id,
+            self.agent.config.app_id,
+        )
         try:
             compaction_summary_text: Optional[str] = None
             compaction_summary_turn_id: Optional[str] = None
@@ -603,10 +626,12 @@ class MashAgentServer:
             if self.agent.config.compaction_token_threshold > 0:
                 session_total_tokens = self.get_session_total_tokens(target_session_id)
                 if session_total_tokens >= self.agent.config.compaction_token_threshold:
-                    compaction_summary_text, compaction_summary_turn_id = self.compact_session(
-                        target_session_id,
-                        reason="auto",
-                        session_total_tokens_reset=0,
+                    compaction_summary_text, compaction_summary_turn_id = (
+                        self.compact_session(
+                            target_session_id,
+                            reason="auto",
+                            session_total_tokens_reset=0,
+                        )
                     )
                     if compaction_summary_text and self.event_logger:
                         self.event_logger.emit(
@@ -635,7 +660,9 @@ class MashAgentServer:
                 response_metadata.update(turn_metadata)
 
             total_tokens = self.compute_turn_tokens(response_metadata)
-            session_total_tokens = self.get_session_total_tokens(target_session_id) + total_tokens
+            session_total_tokens = (
+                self.get_session_total_tokens(target_session_id) + total_tokens
+            )
 
             trace_id = response_metadata.get("trace_id")
             self.store.save_turn(
@@ -657,6 +684,14 @@ class MashAgentServer:
                 session_total_tokens=session_total_tokens,
             )
         finally:
+            if previous_agent_session is not None:
+                self.agent.set_event_logger(self.event_logger, previous_agent_session)
+            if previous_llm_session is not None:
+                llm_provider.set_event_logger(
+                    self.event_logger,
+                    previous_llm_session,
+                    self.agent.config.app_id,
+                )
             if previous_session is None:
                 try:
                     del self._tool_context.session_id
@@ -836,7 +871,9 @@ class MashAgentServer:
                 with self._active_request_lock:
                     self._active_request_id = None
 
-    def _append_request_event(self, request_id: str, *, event: str, data: dict[str, Any]) -> None:
+    def _append_request_event(
+        self, request_id: str, *, event: str, data: dict[str, Any]
+    ) -> None:
         with self._request_lock:
             state = self._requests.get(request_id)
         if state is None:

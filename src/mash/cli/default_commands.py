@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mash.runtime import derive_subagent_session_id
+
 from .commands import Command
 
 
@@ -92,7 +94,38 @@ def register_default_commands(shell) -> None:
         if not args:
             ctx.renderer.error("Usage: /use <agent_id>")
             return
-        ctx.agent_id = args[0].strip()
+        target_agent_id = args[0].strip()
+        if not target_agent_id:
+            ctx.renderer.error("Usage: /use <agent_id>")
+            return
+
+        agents = ctx.client.list_agents()
+        roles = {
+            str(agent.get("agent_id") or "").strip(): str(agent.get("role") or "").strip()
+            for agent in agents
+            if str(agent.get("agent_id") or "").strip()
+        }
+        current_agent_id = ctx.agent_id
+        current_role = roles.get(current_agent_id)
+        target_role = roles.get(target_agent_id)
+
+        next_session_id = ctx.session_ids.get(target_agent_id)
+        if (
+            next_session_id is None
+            and current_role == "primary"
+            and target_role == "subagent"
+        ):
+            next_session_id = derive_subagent_session_id(
+                current_agent_id,
+                ctx.session_id,
+                target_agent_id,
+            )
+        if next_session_id is None:
+            next_session_id = ctx.session_id
+
+        ctx.agent_id = target_agent_id
+        ctx.session_id = next_session_id
+        ctx.session_ids[target_agent_id] = next_session_id
         ctx.renderer.info(f"Switched to agent: {ctx.agent_id}")
 
     shell.command_registry.register(

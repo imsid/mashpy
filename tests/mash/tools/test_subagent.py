@@ -92,6 +92,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertEqual(payload["primary_app_id"], "primary-app")
         self.assertEqual(payload["request_id"], "r1")
         self.assertEqual(payload["text"], "client-ok")
+        self.assertEqual(result.metadata["subagent_session_id"], expected_subagent_session_id)
         assert self.client.last_call is not None
         self.assertEqual(self.client.last_call["session_id"], expected_subagent_session_id)
         turn_metadata = self.client.last_call["turn_metadata"] or {}
@@ -102,6 +103,14 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertEqual(
             streamed_event_types,
             ["subagent.request.accepted", "subagent.request.started", "subagent.request.completed"],
+        )
+        self.assertEqual(
+            self.event_logger.events[0].payload["subagent_session_id"],
+            expected_subagent_session_id,
+        )
+        self.assertEqual(
+            self.event_logger.events[0].payload["primary_session_id"],
+            "s1",
         )
 
     def test_error_returns_error_result(self) -> None:
@@ -133,6 +142,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertEqual(payload["text"], "client-ok")
         self.assertEqual(payload["metadata"]["source"], "client")
         self.assertEqual(payload["subagent_session_id"], expected_subagent_session_id)
+        self.assertEqual(result.metadata["subagent_session_id"], expected_subagent_session_id)
         assert client.last_call is not None
         self.assertEqual(client.last_call["session_id"], expected_subagent_session_id)
         self.assertEqual(client.last_call["timeout"], 2.5)

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict
 
 from .render import RichRenderer
 from .client import MashHostClient
@@ -17,3 +18,4 @@ class CLIContext:
     session_id: str
     client: MashHostClient
     renderer: RichRenderer
+    session_ids: Dict[str, str] = field(default_factory=dict)

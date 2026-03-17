@@ -28,6 +28,7 @@ from .context import (
     ToolResult,
 )
 from .llm import LLMProvider
+from .llm.types import LLMRequest, LLMResponse, LLMToolDefinition
 
 if TYPE_CHECKING:
     from ..logging import EventLogger
@@ -80,6 +81,10 @@ class Agent:
         """
         self._event_logger = logger
         self._session_id = session_id
+
+    def get_event_logger_session_id(self) -> Optional[str]:
+        """Return the currently bound event-logger session ID."""
+        return self._session_id
 
     def set_chain_renderer(self, renderer: Any) -> None:
         """Set the chain of thought renderer for real-time visualization.
@@ -143,6 +148,7 @@ class Agent:
             if self._chain_renderer:
                 self._chain_renderer.start_trace(self._trace_id)
 
+            max_steps_exhausted = True
             for step in range(self.config.max_steps):
                 step_start = time.time()
 
@@ -152,6 +158,7 @@ class Agent:
                 # Check if we're done
                 if action.type == ActionType.FINISH:
                     context.mark_complete()
+                    max_steps_exhausted = False
                     break
 
                 # Act: execute the action
@@ -186,6 +193,17 @@ class Agent:
                     # Render step complete
                     if self._chain_renderer:
                         self._chain_renderer.on_step_complete(step_event)
+
+            if max_steps_exhausted and not context.is_complete:
+                context.metadata["stop_reason"] = "max_steps"
+                context.add_assistant_message(
+                    (
+                        f"Stopped after reaching the max step limit "
+                        f"({self.config.max_steps}) before finishing. "
+                        "Increase `max_steps` or narrow the task."
+                    ),
+                    stop_reason="max_steps",
+                )
 
             # Finish chain rendering
             if self._chain_renderer:
@@ -242,7 +260,7 @@ class Agent:
         # Get tool definitions with tool search support
         tool_defs = self._build_tool_definitions()
 
-        # Get messages for LLM
+        # Get messages for the provider-neutral request
         messages = context.get_messages_for_llm()
 
         # Log think start
@@ -263,8 +281,10 @@ class Agent:
 
         # Estimate tokens for compaction decision
         system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
-        tool_defs_tokens = sum(self._estimate_tokens_json(t) for t in tool_defs)
-        messages_tokens = sum(self._estimate_tokens_json(m) for m in messages)
+        tool_defs_tokens = sum(
+            self._estimate_tokens_json(t.to_debug_dict()) for t in tool_defs
+        )
+        messages_tokens = sum(self._estimate_tokens_json(m.to_dict()) for m in messages)
         estimated_total = system_prompt_tokens + tool_defs_tokens + messages_tokens
 
         # Get beta flags for LLM request
@@ -288,17 +308,17 @@ class Agent:
             )
             self._event_logger.emit(token_breakdown_event)
 
-        # Call LLM
-        response = self.llm.create_message(
-            model=self.config.model,
+        request = LLMRequest(
+            model=self.llm.model,
             system=system_prompt,
             messages=messages,
             tools=tool_defs,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
-            betas=betas,
             use_prompt_caching=self.config.prompt_caching_enabled,
+            provider_options={"betas": betas} if betas else {},
         )
+        response = self.llm.send(request)
         # Log LLM response for debugging
 
         if self._event_logger:
@@ -307,7 +327,7 @@ class Agent:
                     event_type="agent.llm.response",
                     app_id=self.config.app_id,
                     session_id=self._session_id,
-                    payload={"response": response},
+                    payload={"response": response.provider_response},
                 )
             )
 
@@ -316,10 +336,10 @@ class Agent:
 
         # Extract token usage for compaction tracking
         token_usage = None
-        if hasattr(response, "usage"):
+        if response.usage:
             token_usage = {
-                "input": getattr(response.usage, "input_tokens", None),
-                "output": getattr(response.usage, "output_tokens", None),
+                "input": response.usage.input_tokens,
+                "output": response.usage.output_tokens,
             }
         if token_usage:
             input_tokens = token_usage.get("input")
@@ -461,6 +481,7 @@ class Agent:
                         "content_preview": (
                             result.content[:200] if result.content else None
                         ),
+                        "metadata": dict(result.metadata or {}),
                     },
                 )
                 self._event_logger.emit(result_event)
@@ -506,13 +527,13 @@ class Agent:
         if action.type == ActionType.TOOL_CALL and results:
             # Add tool results to context in proper format
             tool_result_blocks = [result.to_dict() for result in results]
-            context.add_message(MessageRole.USER, tool_result_blocks)
+            context.add_message(MessageRole.TOOL, tool_result_blocks)
 
         return context
 
     def _parse_response_to_action(
         self,
-        response: Any,
+        response: LLMResponse,
         context: Context,
     ) -> Action:
         """Parse LLM response into an action and update context.
@@ -524,9 +545,10 @@ class Agent:
         Returns:
             Action to take based on the response.
         """
-        # Parse response
-        text, tool_calls, blocks = self.llm.parse_response(response)
-        stop_reason = getattr(response, "stop_reason", None)
+        text = response.text
+        tool_calls = response.tool_calls
+        blocks = [block.to_dict() for block in response.content_blocks]
+        stop_reason = response.stop_reason
 
         tool_calls, blocks = self._sanitize_tool_calls(
             tool_calls=tool_calls,
@@ -570,7 +592,7 @@ class Agent:
         """Filter or drop tool calls that are invalid or unsafe to execute."""
         if stop_reason == "max_tokens":
             filtered_blocks = [
-                block for block in blocks if block.get("type") != "tool_use"
+                block for block in blocks if block.get("type") != "tool_call"
             ]
             return [], filtered_blocks
 
@@ -591,7 +613,7 @@ class Agent:
         filtered_blocks = [
             block
             for block in blocks
-            if not (block.get("type") == "tool_use" and block.get("id") in invalid_ids)
+            if not (block.get("type") == "tool_call" and block.get("id") in invalid_ids)
         ]
         return valid_calls, filtered_blocks
 
@@ -643,14 +665,26 @@ class Agent:
 
         return self._signal_collector.collect(event)
 
-    def _build_tool_definitions(self) -> List[Dict[str, Any]]:
+    def _build_tool_definitions(self) -> List[LLMToolDefinition]:
         """Build tool definitions, optionally including tool search.
 
         Returns:
-            List of tool definitions in Anthropic format.
+            List of tool definitions in provider-neutral format.
         """
-        # Get base tool definitions
-        tool_defs = self.tools.to_llm_format()
+        raw_tool_defs = self.tools.to_llm_format()
+        tool_defs = [
+            LLMToolDefinition(
+                name=str(tool_def.get("name", "")),
+                description=str(tool_def.get("description", "")),
+                parameters_json_schema=tool_def.get("input_schema", {}),
+                metadata={
+                    key: value
+                    for key, value in tool_def.items()
+                    if key not in {"name", "description", "input_schema"}
+                },
+            )
+            for tool_def in raw_tool_defs
+        ]
 
         # Add tool search if enabled
         if self.config.tool_search_enabled:
@@ -667,15 +701,17 @@ class Agent:
             }
 
             for tool_def in tool_defs:
-                tool_name = tool_def.get("name", "")
+                tool_name = tool_def.name
                 # Only defer non-critical tools (e.g., MCP GitHub tools)
                 if tool_name not in critical_tools:
-                    tool_def["defer_loading"] = True
+                    tool_def.metadata["defer_loading"] = True
 
-            tool_search_def = {
-                "type": TOOL_SEARCH_TOOL_TYPE,
-                "name": TOOL_SEARCH_TOOL_NAME,
-            }
+            tool_search_def = LLMToolDefinition(
+                name=TOOL_SEARCH_TOOL_NAME,
+                description="Search available tools by name or description.",
+                parameters_json_schema={},
+                metadata={"type": TOOL_SEARCH_TOOL_TYPE},
+            )
             # Insert at beginning for priority
             # Note: tool_search_tool itself is NOT deferred - it's the discovery mechanism
             tool_defs.insert(0, tool_search_def)
@@ -685,8 +721,8 @@ class Agent:
             tool_sizes = []
             deferred_count = 0
             for tool_def in tool_defs:
-                tool_name = tool_def.get("name", "unknown")
-                is_deferred = tool_def.get("defer_loading", False)
+                tool_name = tool_def.name or "unknown"
+                is_deferred = tool_def.metadata.get("defer_loading", False)
 
                 if is_deferred:
                     # Deferred tools only send minimal metadata: name + defer_loading flag
@@ -695,7 +731,7 @@ class Agent:
                     deferred_count += 1
                 else:
                     # Non-deferred tools send full definition
-                    tool_tokens = self._estimate_tokens_json(tool_def)
+                    tool_tokens = self._estimate_tokens_json(tool_def.to_debug_dict())
 
                 tool_sizes.append(
                     {"name": tool_name, "tokens": tool_tokens, "deferred": is_deferred}

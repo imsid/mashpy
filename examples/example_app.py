@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Sequence
 
 from mash.api import MashHostConfig, run_host
 from mash.core.config import AgentConfig
-from mash.core.llm import AnthropicProvider, LLMProvider
+from mash.core.llm import (
+    AnthropicProvider,
+    LLMProvider,
+    OpenAIProvider,
+)
 from mash.runtime import (
     AgentSpec,
     MashAgentHost,
@@ -20,13 +25,20 @@ from mash.skills.registry import SkillRegistry
 from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 
-from ._bootstrap import load_example_env, require_anthropic_api_key
+from ._bootstrap import (
+    load_example_env,
+    require_anthropic_api_key,
+    require_openai_api_key,
+)
 
 PRIMARY_AGENT_ID = "primary"
 RESEARCH_AGENT_ID = "research"
 DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
 
+
 load_example_env()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
 
 class ResearchAgentSpec(AgentSpec):
@@ -59,6 +71,7 @@ class ResearchAgentSpec(AgentSpec):
     def build_llm(self) -> LLMProvider:
         return AnthropicProvider(
             app_id=RESEARCH_AGENT_ID,
+            model=ANTHROPIC_MODEL,
             api_key=require_anthropic_api_key(),
         )
 
@@ -69,7 +82,10 @@ class ResearchAgentSpec(AgentSpec):
                 "You are a repository research specialist. Gather evidence from the "
                 "workspace, summarize findings concisely, and cite specific facts. "
                 "If the prompt includes 'Working folder:', stay inside that folder "
-                "when using shell tools."
+                "when using shell tools. Prefer batching related reads into a single "
+                "bash command. Use at most 6 bash commands unless the user explicitly "
+                "asks for deep investigation. Once you have enough evidence, stop "
+                "calling tools and write the summary."
             ),
             skills_enabled=True,
         )
@@ -91,9 +107,10 @@ class PrimaryAgentSpec(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self) -> LLMProvider:
-        return AnthropicProvider(
+        return OpenAIProvider(
             app_id=PRIMARY_AGENT_ID,
-            api_key=require_anthropic_api_key(),
+            model=OPENAI_MODEL,
+            api_key=require_openai_api_key(),
         )
 
     def build_agent_config(self) -> AgentConfig:

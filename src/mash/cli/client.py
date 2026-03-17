@@ -8,6 +8,9 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
+DEFAULT_REQUEST_TIMEOUT = (10, 30)
+DEFAULT_STREAM_TIMEOUT = (10, None)
+
 
 class MashHostClientError(RuntimeError):
     """Raised when Mash host operations fail."""
@@ -42,6 +45,7 @@ class MashHostClient:
         query: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         stream: bool = False,
+        timeout: tuple[float, Optional[float]] | float | None = None,
     ) -> requests.Response:
         headers = dict(self._headers)
         if json_body is not None:
@@ -52,7 +56,7 @@ class MashHostClient:
             headers=headers,
             json=json_body,
             stream=stream,
-            timeout=30,
+            timeout=DEFAULT_STREAM_TIMEOUT if stream and timeout is None else (timeout or DEFAULT_REQUEST_TIMEOUT),
         )
         if response.status_code >= 400:
             try:

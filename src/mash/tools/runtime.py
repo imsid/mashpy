@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from ..logging import EventLogger
 from ..memory.search.service import MemorySearchService
@@ -28,23 +28,36 @@ class RuntimeToolBuilder:
         self,
         store: MemoryStore,
         app_id: str,
-        session_id: str,
         event_logger: EventLogger,
+        session_id: str | None = None,
+        session_id_provider: Callable[[], str] | None = None,
     ) -> None:
         """Initialize runtime tool builder.
 
         Args:
             store: Conversation store for persistence.
             app_id: Application ID for isolation.
-            session_id: Session ID for scoping.
+            session_id: Fixed session ID for compatibility with direct/unit usage.
+            session_id_provider: Callable returning the active session ID.
         """
         self._store = store
         self._app_id = app_id
-        self._session_id = session_id
+        if session_id_provider is not None:
+            self._session_id_provider = session_id_provider
+        elif session_id is not None:
+            self._session_id_provider = lambda: session_id
+        else:
+            raise ValueError("session_id or session_id_provider is required")
         self._search_service = MemorySearchService(
             store=store,
             event_logger=event_logger,
         )
+
+    def _session_id(self) -> str:
+        session_id = str(self._session_id_provider() or "").strip()
+        if not session_id:
+            raise ValueError("session_id is required")
+        return session_id
 
     def build_tools(self) -> List[Tool]:
         """Build runtime tools for this app and session."""
@@ -62,8 +75,9 @@ class RuntimeToolBuilder:
 
         def execute(args: Dict[str, Any]) -> ToolResult:
             limit = args.get("limit")
+            session_id = self._session_id()
             turns = self._store.get_turns(
-                session_id=self._session_id,
+                session_id=session_id,
                 limit=limit,
             )
             # Format as conversation messages
@@ -110,9 +124,10 @@ class RuntimeToolBuilder:
         """Tool to get user preferences."""
 
         def execute(_args: Dict[str, Any]) -> ToolResult:
+            session_id = self._session_id()
             preferences = self._store.get_preferences(
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=session_id,
             )
             if preferences is None:
                 return ToolResult(
@@ -159,7 +174,7 @@ class RuntimeToolBuilder:
             if scope not in {"session", "app"}:
                 return ToolResult.error("scope must be 'session' or 'app'")
 
-            search_session_id = self._session_id if scope == "session" else None
+            search_session_id = self._session_id() if scope == "session" else None
             try:
                 normalized_queries = self._normalize_search_queries(query)
                 results = self._search_with_prefixes(
@@ -390,7 +405,7 @@ class RuntimeToolBuilder:
                 )
             self._store.set_preferences(
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=self._session_id(),
                 preferences=preferences,
             )
             return ToolResult(
@@ -431,7 +446,7 @@ class RuntimeToolBuilder:
                 )
             value = self._store.get_app_data(
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=self._session_id(),
                 key=str(key),
             )
             if value is None:
@@ -483,7 +498,7 @@ class RuntimeToolBuilder:
                 )
             self._store.set_app_data(
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=self._session_id(),
                 key=str(key),
                 value=value,
             )
@@ -521,9 +536,10 @@ class RuntimeToolBuilder:
         """Tool to list all app-specific data."""
 
         def execute(_args: Dict[str, Any]) -> ToolResult:
+            session_id = self._session_id()
             data = self._store.list_app_data(
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=session_id,
             )
             if not data:
                 return ToolResult(
@@ -558,7 +574,7 @@ class RuntimeToolBuilder:
                 )
             deleted = self._store.delete_app_data(
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=self._session_id(),
                 key=str(key),
             )
             if deleted:

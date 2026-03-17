@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from .config import SystemPrompt
+from .llm.types import LLMMessage, coerce_content_blocks
 
 
 class MessageRole(str, Enum):
@@ -15,6 +16,7 @@ class MessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+    TOOL = "tool"
 
 
 class ActionType(str, Enum):
@@ -39,6 +41,18 @@ class Message:
             "role": self.role.value,
             "content": self.content,
         }
+
+    def to_llm_message(self) -> LLMMessage:
+        """Convert the stored message to a normalized LLM message."""
+        tool_call_id = self.metadata.get("tool_call_id")
+        if tool_call_id is not None:
+            tool_call_id = str(tool_call_id)
+        return LLMMessage(
+            role=self.role.value,
+            content=coerce_content_blocks(self.content),
+            tool_call_id=tool_call_id,
+            metadata=self.metadata.copy(),
+        )
 
 
 @dataclass
@@ -88,7 +102,7 @@ class ToolResult:
         """Convert to dictionary format."""
         return {
             "type": "tool_result",
-            "tool_use_id": self.tool_call_id,
+            "tool_call_id": self.tool_call_id,
             "content": self.content,
             "is_error": self.is_error,
         }
@@ -155,9 +169,9 @@ class Context:
         """Add an assistant message."""
         self.add_message(MessageRole.ASSISTANT, content, **metadata)
 
-    def get_messages_for_llm(self) -> List[Dict[str, Any]]:
-        """Get messages formatted for LLM API."""
-        return [msg.to_dict() for msg in self.messages]
+    def get_messages_for_llm(self) -> List[LLMMessage]:
+        """Get messages formatted for the provider-neutral LLM contract."""
+        return [msg.to_llm_message() for msg in self.messages]
 
     def mark_complete(self) -> None:
         """Mark the context as complete."""

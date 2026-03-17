@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Dict, List, Tuple
 
 from ..core.llm import LLMProvider
+from ..core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from .store import MemoryStore
 
 COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor.
@@ -29,7 +30,6 @@ def compact_conversation(
     llm: LLMProvider,
     app_id: str,
     session_id: str,
-    model: str,
     max_tokens: int,
     temperature: float,
     turn_limit: int,
@@ -76,18 +76,23 @@ def compact_conversation(
         return "", ""
 
     conversation_text = "\n".join(lines)
-    response = llm.create_message(
-        model=model,
-        system=COMPACTION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": conversation_text}],
-        tools=[],
-        max_tokens=max_tokens,
-        temperature=temperature,
-        betas=None,
-        use_prompt_caching=False,
+    response = llm.send(
+        LLMRequest(
+            model=llm.model,
+            system=COMPACTION_SYSTEM_PROMPT,
+            messages=[
+                LLMMessage(
+                    role="user",
+                    content=[LLMContentBlock.text(conversation_text)],
+                )
+            ],
+            tools=[],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            use_prompt_caching=False,
+        )
     )
-    summary_text, _, _ = llm.parse_response(response)
-    summary_text = summary_text.strip()
+    summary_text = response.text.strip()
 
     metadata: Dict[str, Any] = {
         "type": "summary_checkpoint",

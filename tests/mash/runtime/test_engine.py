@@ -7,12 +7,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from unittest.mock import patch
 
-from mash.core.config import AgentConfig, SystemPrompt
-from mash.core.context import Context, Response, ToolCall
+from mash.core.config import AgentConfig
+from mash.core.context import Context, Response
 from mash.core.llm import LLMProvider
+from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.runtime.spec import AgentSpec
 from mash.runtime.server import MashAgentServer
 from mash.skills.registry import SkillRegistry
@@ -20,31 +21,28 @@ from mash.tools.registry import ToolRegistry
 
 
 class _FakeLLMProvider(LLMProvider):
-    def create_message(
-        self,
-        *,
-        model: str,
-        system: SystemPrompt,
-        messages: List[Dict[str, Any]],
-        tools: List[Dict[str, Any]],
-        max_tokens: int,
-        temperature: float = 1.0,
-        betas: Optional[List[str]] = None,
-        use_prompt_caching: bool = True,
-    ) -> Any:
-        raise NotImplementedError
+    def __init__(self) -> None:
+        self.last_session_id: str | None = None
+        self.last_app_id: str | None = None
 
-    def parse_response(
-        self,
-        response: Any,
-    ) -> tuple[str, List[ToolCall], List[Dict[str, Any]]]:
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    def send(self, request: LLMRequest) -> LLMResponse:
+        del request
         raise NotImplementedError
 
     def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
+        del logger
+        self.last_session_id = session_id
+        self.last_app_id = app_id
 
     def set_trace_id(self, trace_id: Optional[str]) -> None:
         del trace_id
+
+    def get_event_logger_session_id(self) -> str | None:
+        return self.last_session_id
 
 
 class _BaseDefinition(AgentSpec):
@@ -138,6 +136,22 @@ class MashAgentServerTests(unittest.TestCase):
                 self.assertEqual(turns[-1]["agent_response"], "hello")
                 self.assertEqual(turns[-1]["metadata"]["token_usage"]["input"], 3)
 
+    def test_process_user_message_rebinds_active_session_for_agent_and_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                runtime = MashAgentServer.from_spec(_BaseDefinition(Path(tmp)))
+
+                def run_assertions(_context: Context) -> Response:
+                    self.assertEqual(runtime.agent._session_id, "s-1")
+                    self.assertEqual(runtime.agent.llm.last_session_id, "s-1")
+                    return Response(text="hello", context=Context(), metadata={})
+
+                with patch.object(runtime.agent, "run", side_effect=run_assertions):
+                    runtime.process_user_message("hi", session_id="s-1")
+
+                self.assertEqual(runtime.agent._session_id, runtime.default_session_id)
+                self.assertEqual(runtime.agent.llm.last_session_id, runtime.default_session_id)
+
     def test_process_user_message_returns_compaction_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
@@ -166,6 +180,24 @@ class MashAgentServerTests(unittest.TestCase):
                 runtime = MashAgentServer.from_spec(_BaseDefinition(Path(tmp)))
                 runtime.set_subagent_ids(["research", "", "analysis", "research", "  "])
                 self.assertEqual(runtime.get_subagent_ids(), ["research", "analysis"])
+
+    def test_runtime_tools_use_active_session_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                runtime = MashAgentServer.from_spec(_BaseDefinition(Path(tmp)))
+                runtime._tool_context.session_id = "s-42"
+                try:
+                    tool = runtime.agent.tools.get("set_user_preferences")
+                    self.assertIsNotNone(tool)
+                    result = tool.execute({"preferences": {"tone": "brief"}})  # type: ignore[union-attr]
+                    self.assertFalse(result.is_error)
+                finally:
+                    del runtime._tool_context.session_id
+
+                self.assertEqual(
+                    runtime.store.get_preferences(app_id=runtime.app_id, session_id="s-42"),
+                    {"tone": "brief"},
+                )
 
     def test_completed_request_replays_buffered_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

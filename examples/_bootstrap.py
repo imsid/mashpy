@@ -27,3 +27,14 @@ def require_anthropic_api_key() -> str:
         "ANTHROPIC_API_KEY is not set. Export it in your shell or add it to "
         "repo `.env` or `examples/.env`."
     )
+
+
+def require_openai_api_key() -> str:
+    """Return OPENAI_API_KEY or raise with an actionable setup error."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    raise RuntimeError(
+        "OPENAI_API_KEY is not set. Export it in your shell or add it to "
+        "repo `.env` or `examples/.env`."
+    )

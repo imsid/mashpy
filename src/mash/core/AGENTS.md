@@ -7,13 +7,12 @@ Core agent runtime: config, context data model, LLM provider adapter, and execut
 - `Agent.run()` must always clear trace context (`clear_trace_id`) in `finally`.
 - `Agent` response metadata should include `trace_id` and run-level token usage (`input`, `output`).
 - `think()` is the only place that calls the LLM; `act()` only executes tools; `observe()` only mutates context with results.
-- LLM response parsing must preserve Anthropic block semantics (`text`, `tool_use`, server/tool-result blocks).
+- LLM response parsing must preserve Mash-native block semantics (`text`, `tool_call`, `tool_result`) while allowing provider-specific extra blocks.
 - Tool call validation should reject missing required args before execution.
 
 ## Extension Points
 - Add config flags in `AgentConfig` and validate in `__post_init__`.
-- New model/provider support should implement `LLMProvider` and keep `parse_response()` contract:
-  `(assistant_text, tool_calls, content_blocks)`.
+- New model/provider support should implement `LLMProvider.send()` and normalize responses into `LLMResponse`.
 - Keep tool-search behavior isolated in `_build_tool_definitions()` and `_get_betas()`.
 
 ## Guardrails

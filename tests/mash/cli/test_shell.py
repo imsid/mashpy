@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from mash.cli.shell import MashRemoteShell, ShellTarget
+from mash.runtime import derive_subagent_session_id
 
 
 class _FakeClient:
@@ -96,12 +97,24 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         shell.command_registry.execute(shell.context, "/use research")
         self.assertEqual(shell.context.agent_id, "research")
+        self.assertEqual(
+            shell.context.session_id,
+            derive_subagent_session_id("primary", "s-1", "research"),
+        )
+
+    def test_use_command_restores_primary_session_after_switching_back(self) -> None:
+        shell = self._build_shell()
+        shell.command_registry.execute(shell.context, "/use research")
+        shell.command_registry.execute(shell.context, "/use primary")
+        self.assertEqual(shell.context.agent_id, "primary")
+        self.assertEqual(shell.context.session_id, "s-1")
 
     def test_handle_repl_message_renders_remote_response(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
         markdown.assert_called_once_with("echo: hello")
+        self.assertEqual(shell.context.session_ids["primary"], "s-1")
 
     def test_handle_repl_message_streams_chain_events(self) -> None:
         shell = self._build_shell()

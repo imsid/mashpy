@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
@@ -18,7 +17,6 @@ BASH_TOOL_NAME = "bash"
 TOOL_SEARCH_BETAS: List[str] = ["advanced-tool-use-2025-11-20"]
 
 load_dotenv()
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
 SystemPrompt = str | List[Dict[str, Any]]
 
@@ -29,11 +27,9 @@ class AgentConfig:
 
     app_id: str
     system_prompt: SystemPrompt
-    model: str = ANTHROPIC_MODEL
     max_steps: int = 30
     max_tokens: int = 4096
     temperature: float = 1.0
-    api_key: Optional[str] = None
     tool_search_enabled: bool = False
     skills_enabled: bool = False
     prompt_caching_enabled: bool = True

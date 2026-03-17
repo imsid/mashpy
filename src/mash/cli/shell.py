@@ -44,6 +44,7 @@ class MashRemoteShell:
             session_id=self.target.session_id,
             client=self.client,
             renderer=self.renderer,
+            session_ids={self.target.agent_id: self.target.session_id},
         )
         register_default_commands(self)
 
@@ -124,6 +125,11 @@ class MashRemoteShell:
 
         if final_payload is None:
             raise RuntimeError("stream ended without a terminal event")
+
+        final_session_id = str(final_payload.get("session_id") or "").strip()
+        if final_session_id:
+            ctx.session_id = final_session_id
+            ctx.session_ids[ctx.agent_id] = final_session_id
 
         response_payload = final_payload.get("response")
         if isinstance(response_payload, dict):

@@ -97,6 +97,7 @@ class InvokeSubagentTool:
         self,
         *,
         primary_session_id: str,
+        subagent_session_id: str,
         agent_id: str,
         request_id: str,
         event_name: str,
@@ -113,6 +114,8 @@ class InvokeSubagentTool:
                 trace_id=get_trace_id(),
                 payload={
                     "agent_id": agent_id,
+                    "primary_session_id": primary_session_id,
+                    "subagent_session_id": subagent_session_id,
                     "request_id": request_id,
                     "event": event_name,
                     "data": dict(data),
@@ -175,6 +178,7 @@ class InvokeSubagentTool:
                 if event_name:
                     self._emit_stream_event(
                         primary_session_id=primary_session_id,
+                        subagent_session_id=subagent_session_id,
                         agent_id=agent_id,
                         request_id=request_id,
                         event_name=event_name,
@@ -220,7 +224,13 @@ class InvokeSubagentTool:
             "metadata": metadata,
             "duration_ms": int((time.time() - started_at) * 1000),
         }
-        return ToolResult.success(json.dumps(payload, ensure_ascii=True))
+        return ToolResult.success(
+            json.dumps(payload, ensure_ascii=True),
+            agent_id=agent_id,
+            primary_session_id=primary_session_id,
+            subagent_session_id=subagent_session_id,
+            request_id=result.get("request_id"),
+        )
 
     def to_llm_format(self) -> Dict[str, Any]:
         return {

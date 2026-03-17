@@ -7,12 +7,13 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from unittest.mock import patch
 
-from mash.core.config import AgentConfig, SystemPrompt
-from mash.core.context import Context, Response, ToolCall
+from mash.core.config import AgentConfig
+from mash.core.context import Context, Response
 from mash.core.llm import LLMProvider
+from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.runtime import AgentSpec, MashAgentHost, MashAgentHostBuilder, SubAgentMetadata
 from mash.runtime.session import derive_subagent_session_id
 from mash.skills.registry import SkillRegistry
@@ -20,24 +21,12 @@ from mash.tools.registry import ToolRegistry
 
 
 class _FakeLLMProvider(LLMProvider):
-    def create_message(
-        self,
-        *,
-        model: str,
-        system: SystemPrompt,
-        messages: List[Dict[str, Any]],
-        tools: List[Dict[str, Any]],
-        max_tokens: int,
-        temperature: float = 1.0,
-        betas: Optional[List[str]] = None,
-        use_prompt_caching: bool = True,
-    ) -> Any:
-        raise NotImplementedError
+    @property
+    def model(self) -> str:
+        return "test-model"
 
-    def parse_response(
-        self,
-        response: Any,
-    ) -> tuple[str, List[ToolCall], List[Dict[str, Any]]]:
+    def send(self, request: LLMRequest) -> LLMResponse:
+        del request
         raise NotImplementedError
 
     def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
