@@ -95,12 +95,23 @@ class MasherAgentSpec(AgentSpec):
         *,
         target_app_id: str | None = None,
     ) -> None:
-        self.log_file = Path(log_file).expanduser()
+        self.log_file = self._resolve_log_file(log_file)
         self.target_app_id = (
             target_app_id.strip()
             if isinstance(target_app_id, str) and target_app_id.strip()
             else self.log_file.parent.parent.name
         )
+
+    @staticmethod
+    def _resolve_log_file(log_file: Union[str, Path]) -> Path:
+        path = Path(log_file).expanduser()
+        if path.is_absolute():
+            return path
+
+        data_root = os.getenv("MASH_DATA_DIR", "").strip()
+        if data_root:
+            return Path(data_root).expanduser() / path
+        return path
 
     def _build_target_store(self) -> SQLiteStore:
         return SQLiteStore(self.log_file.parent.parent / "state.db")
@@ -110,6 +121,7 @@ class MasherAgentSpec(AgentSpec):
 
     def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         target_store = self._build_target_store()
         runtime_tools = RuntimeToolBuilder(
             store=target_store,
