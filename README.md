@@ -16,7 +16,7 @@ It contains three main components:
 
 ```text
 src/mash/                  SDK, host API, and CLI
-examples/                  Canonical example app and example container
+pilot/                     Mash Pilot host built on Mash
 tests/                     Unified test suite
 Dockerfile                 Base image for Mash host deployments
 ```
@@ -237,20 +237,31 @@ Common contributor questions:
 - If you are changing telemetry behavior, remember there are two layers:
   the API routes in `mash.api`, and the bundled frontend assets under `src/mash/api/web`.
 
-## Running the canonical example
+## Mash Pilot
 
-The repo has one canonical example app in [examples/example_app.py](examples/example_app.py).
+[pilot/spec.py](pilot/spec.py) is the main in-repo agent app built on Mash.
 
-Set `MASH_DATA_DIR` in `examples/.env` before starting the app. Example:
+Pilot uses standard Mash building blocks:
+
+- `PilotSpec` is the primary `AgentSpec`.
+- `build_host()` composes the primary pilot plus module-specific copilots with `MashAgentHostBuilder`.
+- `mash.api` serves that host over HTTP.
+- `mash.cli` connects to it as a remote client.
+
+The Pilot host currently registers:
+
+- `pilot`: the primary codebase guide for shared Mash modules.
+- `cli-copilot`: specialist for `src/mash/cli`.
+- `api-copilot`: specialist for `src/mash/api`.
+- `mcp-copilot`: specialist for `src/mash/mcp`.
+
+Run Pilot from the activated repo environment:
 
 ```bash
-echo 'MASH_DATA_DIR=.mash' >> examples/.env
-```
+export OPENAI_API_KEY=...
+export MASH_DATA_DIR=.mash
 
-Start the example host from the activated repo environment:
-
-```bash
-python -m examples.example_app \
+python -m pilot.spec \
   --workspace-root /Users/sid/Projects/mashpy \
   --host 127.0.0.1 \
   --port 8000 \
@@ -260,23 +271,33 @@ python -m examples.example_app \
 Connect with the bundled CLI:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent pilot
 mash status
 mash agents
-mash repl --agent primary
+mash repl
 ```
 
 Open the built-in telemetry UI:
 
 - [http://127.0.0.1:8000/telemetry](http://127.0.0.1:8000/telemetry)
 
-The example app:
+Pilot is useful as both:
 
-- defines one primary agent
-- defines one research subagent
-- exposes `build_host()`
-- uses the same `MASH_DATA_DIR` storage contract as any real app
-- auto-loads env from repo `.env` and `examples/.env`
+- a real Mash app built on the same `AgentSpec` and `MashAgentHostBuilder` contracts exposed to users
+- the canonical reference for how to build a multi-agent Mash host with specialized subagents
+
+## Masher
+
+Masher is another agent built on Mash, implemented in [src/mash/agents/masher/spec.py](src/mash/agents/masher/spec.py).
+
+It is a built-in log-analysis specialist that uses the normal Mash runtime contracts:
+
+- `MasherAgentSpec` is a regular `AgentSpec`.
+- it uses Mash memory/store tools to resolve recent sessions and traces
+- it reads structured JSONL event logs
+- it can append normalized online-eval rows with `append_jsonl`
+
+Pilot enables Masher by default with `.enable_masher()`, but Masher can also be registered in any other Mash host that wants a log-analysis subagent.
 
 ## Running the host API directly
 
@@ -314,19 +335,20 @@ Build it:
 docker build -t mashpy/mash-host-base:latest .
 ```
 
-The example app image is defined in [examples/Dockerfile](examples/Dockerfile).
+The Pilot image is defined in [pilot/Dockerfile](pilot/Dockerfile).
 
 Build and run it:
 
 ```bash
-docker build -t mashpy/example-app:latest -f examples/Dockerfile .
+docker build -t mashpy/pilot:latest -f pilot/Dockerfile .
 docker run \
   -p 8000:8000 \
-  -e ANTHROPIC_API_KEY=... \
+  -e OPENAI_API_KEY=... \
+  -e MASH_HOST_APP=pilot.spec:build_host \
   -e MASH_API_KEY=secret \
   -e MASH_DATA_DIR=/var/lib/mash \
   -v $(pwd)/data:/var/lib/mash \
-  mashpy/example-app:latest
+  mashpy/pilot:latest
 ```
 
 The container contract is:
