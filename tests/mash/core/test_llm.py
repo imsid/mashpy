@@ -194,15 +194,15 @@ class LLMProviderContractTests(unittest.TestCase):
                 name="bash",
                 description="Run bash",
                 parameters_json_schema={"type": "object"},
-                metadata={"defer_loading": True},
+                metadata={"category": "shell"},
             )
         ]
 
         translated = provider._anthropic_tools(tools, use_prompt_caching=True)
 
         self.assertEqual(translated[0]["name"], "bash")
-        self.assertTrue(translated[0]["defer_loading"])
-        self.assertNotIn("cache_control", translated[0])
+        self.assertEqual(translated[0]["category"], "shell")
+        self.assertIn("cache_control", translated[0])
 
 
 if __name__ == "__main__":

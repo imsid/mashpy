@@ -11,13 +11,7 @@ from mash.skills.registry import SkillRegistry
 from mash.skills.tool import SkillTool
 
 from ..logging import AgentTraceEvent, DebugEvent, clear_trace_id, set_trace_id
-from .config import (
-    TOOL_SEARCH_BETAS,
-    TOOL_SEARCH_TOOL_NAME,
-    TOOL_SEARCH_TOOL_TYPE,
-    AgentConfig,
-    SystemPrompt,
-)
+from .config import AgentConfig, SystemPrompt
 from .context import (
     Action,
     ActionType,
@@ -257,7 +251,7 @@ class Agent:
         """
         think_start = time.time()
 
-        # Get tool definitions with tool search support
+        # Get tool definitions for the current registry.
         tool_defs = self._build_tool_definitions()
 
         # Get messages for the provider-neutral request
@@ -275,10 +269,6 @@ class Agent:
 
         system_prompt = context.system_prompt
 
-        # Add tool search guidance if enabled
-        # if self.config.tool_search_enabled:
-        # system_prompt = self._add_tool_search_guidance(system_prompt)
-
         # Estimate tokens for compaction decision
         system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
         tool_defs_tokens = sum(
@@ -286,9 +276,6 @@ class Agent:
         )
         messages_tokens = sum(self._estimate_tokens_json(m.to_dict()) for m in messages)
         estimated_total = system_prompt_tokens + tool_defs_tokens + messages_tokens
-
-        # Get beta flags for LLM request
-        betas = self._get_betas()
 
         # Log token usage breakdown for debugging
         if self._event_logger:
@@ -316,7 +303,6 @@ class Agent:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             use_prompt_caching=self.config.prompt_caching_enabled,
-            provider_options={"betas": betas} if betas else {},
         )
         response = self.llm.send(request)
         # Log LLM response for debugging
@@ -666,7 +652,7 @@ class Agent:
         return self._signal_collector.collect(event)
 
     def _build_tool_definitions(self) -> List[LLMToolDefinition]:
-        """Build tool definitions, optionally including tool search.
+        """Build tool definitions from the current tool registry.
 
         Returns:
             List of tool definitions in provider-neutral format.
@@ -686,56 +672,14 @@ class Agent:
             for tool_def in raw_tool_defs
         ]
 
-        # Add tool search if enabled
-        if self.config.tool_search_enabled:
-            # Mark tools for deferred loading, EXCEPT critical tools
-            # Critical tools (bash, runtime tools) need full definitions always available
-            critical_tools = {
-                "bash",  # Essential for local repo exploration
-                "search_conversations",
-                "get_full_turn_message",
-                "get_user_preferences",
-                "set_user_preferences",
-                "set_app_data",
-                "list_app_data",
-            }
-
-            for tool_def in tool_defs:
-                tool_name = tool_def.name
-                # Only defer non-critical tools (e.g., MCP GitHub tools)
-                if tool_name not in critical_tools:
-                    tool_def.metadata["defer_loading"] = True
-
-            tool_search_def = LLMToolDefinition(
-                name=TOOL_SEARCH_TOOL_NAME,
-                description="Search available tools by name or description.",
-                parameters_json_schema={},
-                metadata={"type": TOOL_SEARCH_TOOL_TYPE},
-            )
-            # Insert at beginning for priority
-            # Note: tool_search_tool itself is NOT deferred - it's the discovery mechanism
-            tool_defs.insert(0, tool_search_def)
-
         # Log per-tool token usage for debugging
         if self._event_logger:
             tool_sizes = []
-            deferred_count = 0
             for tool_def in tool_defs:
                 tool_name = tool_def.name or "unknown"
-                is_deferred = tool_def.metadata.get("defer_loading", False)
+                tool_tokens = self._estimate_tokens_json(tool_def.to_debug_dict())
 
-                if is_deferred:
-                    # Deferred tools only send minimal metadata: name + defer_loading flag
-                    # Estimate: ~15-20 tokens per deferred tool (name + boolean)
-                    tool_tokens = 20
-                    deferred_count += 1
-                else:
-                    # Non-deferred tools send full definition
-                    tool_tokens = self._estimate_tokens_json(tool_def.to_debug_dict())
-
-                tool_sizes.append(
-                    {"name": tool_name, "tokens": tool_tokens, "deferred": is_deferred}
-                )
+                tool_sizes.append({"name": tool_name, "tokens": tool_tokens})
 
             # Sort by token count and log top tools
             tool_sizes.sort(key=lambda x: x["tokens"], reverse=True)
@@ -749,13 +693,10 @@ class Agent:
                     payload={
                         "trace_id": self._trace_id,
                         "tool_count": len(tool_defs),
-                        "deferred_tool_count": deferred_count,
-                        "non_deferred_tool_count": len(tool_defs) - deferred_count,
                         "total_tool_tokens": total_tool_tokens,
                         "avg_tokens_per_tool": (
                             total_tool_tokens // len(tool_defs) if tool_defs else 0
                         ),
-                        "tool_search_enabled": self.config.tool_search_enabled,
                         "top_10_largest_tools": tool_sizes[:10],
                         "all_tool_sizes": tool_sizes,
                     },
@@ -763,42 +704,6 @@ class Agent:
             )
 
         return tool_defs
-
-    def _get_betas(self) -> Optional[List[str]]:
-        """Get beta flags for LLM request.
-
-        Returns:
-            List of beta feature flags, or None if tool search is disabled.
-        """
-        betas: List[str] = []
-        if self.config.tool_search_enabled:
-            betas.extend(TOOL_SEARCH_BETAS)
-        return betas
-
-    def _add_tool_search_guidance(self, system_prompt: SystemPrompt) -> SystemPrompt:
-        """Add tool search guidance to system prompt.
-
-        Args:
-            system_prompt: Original system prompt.
-
-        Returns:
-            System prompt with tool search guidance appended.
-        """
-
-        tool_search_guidance = f"""
-
-TOOL DISCOVERY:
-You have access to {TOOL_SEARCH_TOOL_NAME} for discovering tools by name or description when you are unsure what to call. Use {TOOL_SEARCH_TOOL_NAME} if you are not confident about the right tool name.
-"""
-        if isinstance(system_prompt, list):
-            return system_prompt + [
-                {
-                    "type": "text",
-                    "text": tool_search_guidance,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
-        return f"{system_prompt}\n{tool_search_guidance}"
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for text.

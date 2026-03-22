@@ -7,15 +7,6 @@ from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
-# Tool search feature constants
-TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_bm25_20251119"
-TOOL_SEARCH_TOOL_NAME = "tool_search_tool_bm25"
-CODE_EXEC_TOOL_TYPE = "code_execution_20250825"
-CODE_EXEC_TOOL_NAME = "code_execution"
-BASH_TOOL_TYPE = "bash_20250124"
-BASH_TOOL_NAME = "bash"
-TOOL_SEARCH_BETAS: List[str] = ["advanced-tool-use-2025-11-20"]
-
 load_dotenv()
 
 SystemPrompt = str | List[Dict[str, Any]]
@@ -30,7 +21,6 @@ class AgentConfig:
     max_steps: int = 30
     max_tokens: int = 4096
     temperature: float = 1.0
-    tool_search_enabled: bool = False
     skills_enabled: bool = False
     prompt_caching_enabled: bool = True
     conversation_history_turns: int = 3

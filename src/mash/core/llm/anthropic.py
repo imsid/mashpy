@@ -174,11 +174,10 @@ class AnthropicProvider(BaseLLMProvider):
 
         if use_prompt_caching and translated:
             last_tool = translated[-1]
-            if not last_tool.get("defer_loading", False):
-                translated[-1] = {
-                    **last_tool,
-                    "cache_control": {"type": "ephemeral"},
-                }
+            translated[-1] = {
+                **last_tool,
+                "cache_control": {"type": "ephemeral"},
+            }
         return translated
 
     def _anthropic_messages(self, request: LLMRequest) -> List[Dict[str, Any]]:

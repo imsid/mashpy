@@ -105,7 +105,7 @@ class MasherTests(unittest.TestCase):
     def test_spec_registers_store_tools_bash_jsonl_tool_and_eval_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                spec = MasherAgentSpec(log_file=".mash/primary/logs/events.jsonl")
+                spec = MasherAgentSpec(log_file="primary/logs/events.jsonl")
 
                 tools = spec.build_tools()
                 skills = spec.build_skills()
@@ -125,6 +125,21 @@ class MasherTests(unittest.TestCase):
                 self.assertIn("get_latest_session", prompt)
                 self.assertIn("get_trace_logs", prompt)
                 self.assertEqual(spec.build_agent_config().max_steps, 6)
+
+    def test_relative_data_dir_resolves_once_for_primary_and_masher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_cwd = Path.cwd()
+            os.chdir(tmp)
+            try:
+                with patch.dict(os.environ, {"MASH_DATA_DIR": ".mash"}, clear=False):
+                    primary = _PrimarySpec()
+                    expected = (Path(tmp) / ".mash" / "primary" / "logs" / "events.jsonl").resolve()
+                    self.assertEqual(primary.get_log_destination(), expected)
+
+                    spec = MasherAgentSpec(log_file=primary.get_log_destination())
+                    self.assertEqual(spec.log_file, expected)
+            finally:
+                os.chdir(previous_cwd)
 
     def test_store_tools_resolve_latest_session_and_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

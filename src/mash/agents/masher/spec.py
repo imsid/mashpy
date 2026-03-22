@@ -108,10 +108,7 @@ class MasherAgentSpec(AgentSpec):
         if path.is_absolute():
             return path
 
-        data_root = os.getenv("MASH_DATA_DIR", "").strip()
-        if data_root:
-            return Path(data_root).expanduser() / path
-        return path
+        return AgentSpec.get_data_root() / path
 
     def _build_target_store(self) -> SQLiteStore:
         return SQLiteStore(self.log_file.parent.parent / "state.db")

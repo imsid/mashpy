@@ -24,6 +24,18 @@ class AgentSpec(ABC):
 
     DEFAULT_DATA_ROOT = Path("/var/lib/mash")
 
+    @classmethod
+    def get_data_root(cls) -> Path:
+        """Return the resolved persistent data root for this process."""
+        raw_value = os.getenv("MASH_DATA_DIR", "").strip()
+        if not raw_value:
+            return cls.DEFAULT_DATA_ROOT
+
+        data_root = Path(raw_value).expanduser()
+        if data_root.is_absolute():
+            return data_root.resolve()
+        return (Path.cwd() / data_root).resolve()
+
     @abstractmethod
     def get_agent_id(self) -> str:
         """Return the stable agent id used for storage, routing, and logs."""
@@ -62,9 +74,7 @@ class AgentSpec(ABC):
 
     def get_agent_data_dir(self) -> Path:
         """Return the agent-specific persistent data directory."""
-        raw_value = os.getenv("MASH_DATA_DIR", "").strip()
-        data_root = Path(raw_value).expanduser() if raw_value else self.DEFAULT_DATA_ROOT
-        return data_root / self.get_agent_id()
+        return self.get_data_root() / self.get_agent_id()
 
     def build_mcp_servers(self) -> List[MCPServerConfig]:
         """Build typed MCP server configs for the agent."""

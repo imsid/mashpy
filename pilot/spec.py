@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 
 from mash.api import MashHostConfig, run_host
 from mash.core.config import AgentConfig
-from mash.core.llm import LLMProvider, OpenAIProvider
+from mash.core.llm import LLMProvider
+from mash.core.llm.anthropic import AnthropicProvider
 from mash.runtime import (
     AgentSpec,
     MashAgentHost,
@@ -50,16 +51,6 @@ MCP_DOC_ROOTS = ("src/mash/mcp",)
 def _load_pilot_env() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     load_dotenv(repo_root / "pilot" / ".env")
-
-
-def _require_openai_api_key() -> str:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if api_key:
-        return api_key
-    raise RuntimeError(
-        "OPENAI_API_KEY is not set. Export it in your shell or add it to "
-        "repo `.env` or `pilot/.env`."
-    )
 
 
 def _scope_doc_paths(
@@ -107,6 +98,9 @@ def _cached_docs_for_scope(
 
 _load_pilot_env()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
 class _BaseCopilotSpec(AgentSpec):
@@ -117,10 +111,17 @@ class _BaseCopilotSpec(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self) -> LLMProvider:
+        """
         return OpenAIProvider(
             app_id=self.get_agent_id(),
             model=OPENAI_MODEL,
-            api_key=_require_openai_api_key(),
+            api_key=OPENAI_API_KEY,
+        )
+        """
+        return AnthropicProvider(
+            app_id=self.get_agent_id(),
+            model=ANTHROPIC_MODEL,
+            api_key=ANTHROPIC_API_KEY,
         )
 
     def enable_runtime_tools(self) -> bool:
