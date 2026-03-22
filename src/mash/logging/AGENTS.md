@@ -1,18 +1,15 @@
 # AGENTS Guide for `src/mash/logging`
 
-## Scope
-Structured event schema and JSONL event logger.
+## What Must Stay True
+- Event logs remain machine-parseable JSONL.
+- Trace IDs continue to flow through the trace context helpers.
+- Logging stays usable from core, runtime, API, and tool layers.
 
-## Invariants
-- Event dataclasses are immutable (`frozen=True`) and serialize via `to_dict()`.
-- Logger writes exactly one JSON object per line.
-- Event fields should stay stable for downstream telemetry tooling (`event_type`, `event_class`, `app_id`, `session_id`, `ts`, `payload`).
+## Change Rules
+- Keep event definitions centralized here rather than spreading ad hoc log payloads across the codebase.
+- Preserve field stability where tests, tooling, or built-in agents rely on those event shapes.
+- If trace or event payload formats change, update the affected integrations together.
 
-## Adding Events
-- Prefer extending existing event classes where possible.
-- Keep added fields optional unless universally available.
-- Avoid non-serializable payload values.
-
-## Trace Context
-- Trace ID propagation uses thread-local helpers in `trace_context.py`.
-- Any new async/threaded logging path should explicitly manage trace context.
+## Minimal Validation
+- `python -m compileall src/mash/logging`
+- Verify one event emission path and one trace propagation path.

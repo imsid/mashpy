@@ -7,14 +7,20 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import patch
 
 from mash.core.config import AgentConfig
 from mash.core.context import Context, Response
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
-from mash.runtime import AgentSpec, MashAgentHost, MashAgentHostBuilder, SubAgentMetadata
+from mash.runtime import (
+    AgentSpec,
+    MashAgentClientError,
+    MashAgentHost,
+    MashAgentHostBuilder,
+    SubAgentMetadata,
+)
 from mash.runtime.session import derive_subagent_session_id
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
@@ -188,6 +194,77 @@ class MashAgentHostIntegrationTests(unittest.TestCase):
                     self.assertEqual(turns[-1]["user_message"], "analyze")
                     self.assertEqual(turns[-1]["metadata"]["primary_app_id"], "primary-app")
                     self.assertEqual(turns[-1]["metadata"]["primary_session_id"], primary.get_default_session_id())
+                finally:
+                    host.close()
+
+    def test_client_invoke_raises_when_stream_ends_without_terminal_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                host = MashAgentHost()
+                host.register_primary(_Definition(root, app_id="primary"), agent_id="primary")
+                host.start()
+                try:
+                    client = host.get_client("primary")
+                    with patch.object(
+                        client,
+                        "stream",
+                        return_value=iter([{"event": "request.accepted", "data": {"request_id": "r1"}}]),
+                    ):
+                        with self.assertRaises(MashAgentClientError) as exc:
+                            client.invoke("hello", session_id="s-1")
+                    self.assertNotIn("timed out", str(exc.exception).lower())
+                finally:
+                    host.close()
+
+    def test_invoke_subagent_tool_returns_structured_terminal_error_without_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                host = MashAgentHost()
+                host.register_primary(_Definition(root, app_id="primary-app"), agent_id="primary")
+                host.register_subagent(
+                    _Definition(root, app_id="research-app"),
+                    agent_id="research",
+                    metadata=_metadata(),
+                )
+                host.start()
+                try:
+                    primary = host.get_agent("primary")
+                    research = host.get_agent("research")
+                    tool = primary.agent.tools.get("InvokeSubagent")
+                    self.assertIsNotNone(tool)
+
+                    context_error = RuntimeError(
+                        "Error code: 400 - {'error': {'message': 'Your input exceeds the context window of this model.', 'code': 'context_length_exceeded'}}"
+                    )
+                    with patch.object(research.agent, "run", side_effect=context_error):
+                        result = tool.execute(  # type: ignore[union-attr]
+                            {"agent_id": "research", "prompt": "analyze", "opts": {"timeout_ms": 1500}}
+                        )
+
+                    self.assertTrue(result.is_error)
+                    payload = json.loads(result.content)
+                    self.assertEqual(payload["agent_id"], "research")
+                    self.assertEqual(payload["primary_session_id"], primary.get_default_session_id())
+                    self.assertEqual(payload["error_code"], "context_length_exceeded")
+                    self.assertFalse(payload["retryable"])
+                    self.assertEqual(payload["error_source"], "subagent")
+                    self.assertNotIn("timed out", payload["error"].lower())
+
+                    request_id = payload["request_id"]
+                    client = host.get_client("research")
+                    events = []
+                    for event in client.stream(request_id, timeout=5):
+                        events.append(event)
+                        if event.get("event") in {"request.completed", "request.error"}:
+                            break
+                    self.assertEqual(
+                        [event["event"] for event in events],
+                        ["request.accepted", "request.started", "request.error"],
+                    )
+                    self.assertEqual(events[-1]["data"]["error_code"], "context_length_exceeded")
+                    self.assertFalse(events[-1]["data"]["retryable"])
                 finally:
                     host.close()
 

@@ -87,7 +87,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
         )
         payload = json.loads(result.content)
         self.assertEqual(payload["agent_id"], "research")
-        self.assertEqual(payload["session_id"], "s1")
+        self.assertEqual(payload["primary_session_id"], "s1")
         self.assertEqual(payload["subagent_session_id"], expected_subagent_session_id)
         self.assertEqual(payload["primary_app_id"], "primary-app")
         self.assertEqual(payload["request_id"], "r1")
@@ -119,7 +119,61 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertTrue(result.is_error)
         payload = json.loads(result.content)
         self.assertEqual(payload["agent_id"], "research")
+        self.assertEqual(payload["primary_session_id"], "s1")
+        self.assertEqual(payload["error_source"], "timeout")
         self.assertIn("timed out", payload["error"])
+
+    def test_request_error_returns_structured_payload(self) -> None:
+        self.client._events = [
+            {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
+            {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
+            {
+                "event": "request.error",
+                "data": {
+                    "request_id": "r1",
+                    "status": "error",
+                    "error": "Error code: 400 - {'error': {'code': 'context_length_exceeded'}}",
+                    "error_code": "context_length_exceeded",
+                    "retryable": False,
+                },
+            },
+        ]
+
+        result = self.tool.execute({"agent_id": "research", "prompt": "hello"})
+
+        self.assertTrue(result.is_error)
+        payload = json.loads(result.content)
+        self.assertEqual(payload["agent_id"], "research")
+        self.assertEqual(payload["primary_session_id"], "s1")
+        self.assertEqual(payload["request_id"], "r1")
+        self.assertEqual(payload["error_code"], "context_length_exceeded")
+        self.assertFalse(payload["retryable"])
+        self.assertEqual(payload["error_source"], "subagent")
+        self.assertNotIn("timed out", payload["error"].lower())
+
+    def test_max_step_limit_response_is_treated_as_error(self) -> None:
+        self.client._events = [
+            {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
+            {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
+            {
+                "event": "request.completed",
+                "data": {
+                    "request_id": "r1",
+                    "status": "completed",
+                    "response": {
+                        "text": "Stopped after reaching the max step limit (30) before finishing.",
+                        "metadata": {},
+                    },
+                },
+            },
+        ]
+
+        result = self.tool.execute({"agent_id": "research", "prompt": "hello"})
+
+        self.assertTrue(result.is_error)
+        payload = json.loads(result.content)
+        self.assertEqual(payload["error_source"], "subagent_response")
+        self.assertEqual(payload["error_code"], "max_steps_exceeded")
 
     def test_client_mode_invokes_resolved_client(self) -> None:
         client = _FakeClient()

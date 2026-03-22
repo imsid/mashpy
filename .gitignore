@@ -68,3 +68,6 @@ yarn.lock
 pnpm-lock.yaml
 dist/
 *.tsbuildinfo
+
+# Mash
+.mash

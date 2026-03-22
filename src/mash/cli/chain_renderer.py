@@ -23,6 +23,7 @@ class ChainOfThoughtRenderer:
         """
         self._console = console or Console()
         self._current_trace_id: Optional[str] = None
+        self._current_trace_label: Optional[str] = None
         self._current_step: int = 0
         self._steps: List[Dict[str, Any]] = []
         self._live: Optional[Live] = None
@@ -36,20 +37,27 @@ class ChainOfThoughtRenderer:
         """Disable rendering."""
         self._enabled = False
 
-    def start_trace(self, trace_id: Optional[str]) -> None:
+    def start_trace(self, trace_id: Optional[str], label: Optional[str] = None) -> None:
         """Start a new execution trace.
 
         Args:
             trace_id: Unique trace identifier.
+            label: Optional trace label shown in the renderer.
         """
         if not self._enabled:
             return
         if not trace_id:
             return
+        if self._current_trace_id and self._current_trace_id != trace_id and self._steps:
+            self._render_summary()
         self._current_trace_id = trace_id
+        self._current_trace_label = label
         self._current_step = 0
         self._steps = []
-        self._console.print("\n[bold cyan]Agent Execution Started[/bold cyan]")
+        title = "Agent Execution Started"
+        if label:
+            title = f"{label} Execution Started"
+        self._console.print(f"\n[bold cyan]{title}[/bold cyan]")
 
     def on_think_complete(self, event: AgentTraceEvent) -> None:
         """Handle think complete event.
@@ -62,7 +70,10 @@ class ChainOfThoughtRenderer:
 
         # Start new trace if needed
         if event.trace_id != self._current_trace_id:
-            self.start_trace(event.trace_id)
+            trace_label = None
+            if hasattr(event, "payload") and event.payload:
+                trace_label = event.payload.get("trace_label")
+            self.start_trace(event.trace_id, label=trace_label)
 
         # Extract tool_calls_detail from payload if available
         tool_calls_detail = None
@@ -133,6 +144,7 @@ class ChainOfThoughtRenderer:
         if self._steps:
             self._render_summary()
         self._current_trace_id = None
+        self._current_trace_label = None
         self._steps = []
 
     def _render_think(self, step: Dict[str, Any]) -> None:
@@ -243,7 +255,8 @@ class ChainOfThoughtRenderer:
                 tool_calls.extend(step["tool_calls"])
 
         summary = Text()
-        summary.append("\nAgent Execution Complete: ", style="bold green")
+        label = self._current_trace_label or "Agent"
+        summary.append(f"\n{label} Execution Complete: ", style="bold green")
         summary.append(f"{total_steps} steps, ", style="dim")
         summary.append(f"{len(tool_calls)} tools, ", style="dim")
         summary.append(f"{total_tokens:,} tokens, ", style="dim")

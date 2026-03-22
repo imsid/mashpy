@@ -70,8 +70,9 @@ class OpenAIProvider(BaseLLMProvider):
             "instructions": self._openai_instructions(request.system),
             "input": self._openai_input(request),
             "max_output_tokens": request.max_tokens,
-            "temperature": request.temperature,
         }
+        if self._supports_temperature():
+            params["temperature"] = request.temperature
         tools = self._openai_tools(request.tools)
         if tools:
             params["tools"] = tools
@@ -118,6 +119,10 @@ class OpenAIProvider(BaseLLMProvider):
             raise ValueError(
                 f"OpenAIProvider cannot use an Anthropic model, got {model!r}."
             )
+
+    def _supports_temperature(self) -> bool:
+        normalized = self.model.strip().lower()
+        return not normalized.startswith("gpt-5")
 
     def _openai_instructions(self, system: Any) -> Optional[str]:
         if not system:

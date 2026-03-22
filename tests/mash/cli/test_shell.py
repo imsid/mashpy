@@ -41,6 +41,35 @@ class _FakeClient:
         yield {
             "event": "agent.trace",
             "data": {
+                "event_type": "subagent.request.started",
+                "payload": {
+                    "agent_id": "research",
+                    "data": {"request_id": "sub-1"},
+                },
+            },
+        }
+        yield {
+            "event": "agent.trace",
+            "data": {
+                "event_type": "subagent.agent.trace",
+                "payload": {
+                    "agent_id": "research",
+                    "data": {
+                        "event_type": "agent.think.complete",
+                        "trace_id": "trace-sub-1",
+                        "step_id": 0,
+                        "duration_ms": 7,
+                        "action_type": "tool_call",
+                        "tool_calls": ["bash"],
+                        "token_usage": {"input": 1, "output": 1},
+                        "payload": {"assistant_text": "checking cli flow"},
+                    },
+                },
+            },
+        }
+        yield {
+            "event": "agent.trace",
+            "data": {
                 "event_type": "agent.think.complete",
                 "trace_id": "trace-1",
                 "step_id": 0,
@@ -62,6 +91,16 @@ class _FakeClient:
                 "tool_calls": [],
                 "token_usage": {"input": 2, "output": 1},
                 "payload": {},
+            },
+        }
+        yield {
+            "event": "agent.trace",
+            "data": {
+                "event_type": "subagent.request.completed",
+                "payload": {
+                    "agent_id": "research",
+                    "data": {"status": "completed"},
+                },
             },
         }
         yield {
@@ -122,6 +161,13 @@ class MashRemoteShellTests(unittest.TestCase):
             with patch.object(shell.chain_renderer, "on_step_complete") as step_complete:
                 with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
                     shell.handle_repl_message(shell.context, "hello")
-        think_complete.assert_called_once()
+        self.assertEqual(think_complete.call_count, 2)
         step_complete.assert_called_once()
         finish_trace.assert_called_once()
+
+    def test_handle_repl_message_renders_subagent_lifecycle(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.renderer, "info") as info:
+            shell.handle_repl_message(shell.context, "hello")
+        info.assert_any_call("Subagent research started")
+        info.assert_any_call("Subagent research completed")

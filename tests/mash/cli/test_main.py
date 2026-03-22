@@ -12,7 +12,9 @@ def test_build_parser_accepts_sessions_subcommand() -> None:
 
 def test_build_parser_accepts_host_serve_subcommand() -> None:
     parser = build_parser()
-    args = parser.parse_args(["host", "serve", "--host-app", "examples.example_app:build_host"])
+    args = parser.parse_args(
+        ["host", "serve", "--host-app", "copilot.spec:build_host"]
+    )
     assert args.command == "host"
     assert args.host_command == "serve"
-    assert args.host_app == "examples.example_app:build_host"
+    assert args.host_app == "copilot.spec:build_host"

@@ -1,25 +1,15 @@
 # AGENTS Guide for `src/mash/mcp`
 
-## Scope
-MCP transport + orchestration: HTTP client, host, server wrapper, and multi-server manager.
+## What Must Stay True
+- MCP client, server, manager, and configuration behavior stay in this package.
+- MCP types remain the canonical typed surface for protocol configuration.
+- Runtime and tool integrations should consume MCP behavior through this module boundary.
 
-## Invariants
-- MCP HTTP init flow requires:
-  1) `initialize`
-  2) session header capture (`MCP-Session-ID`)
-  3) `notifications/initialized`
-- URL normalization must preserve the `/mcp/` endpoint expectation.
-- Manager/server APIs should fail clearly when disconnected.
+## Change Rules
+- Keep MCP-specific logic in `mash.mcp`; avoid leaking protocol details into unrelated modules.
+- Preserve configuration contracts used by host/runtime code.
+- If MCP behavior changes, update the module docs and targeted tests together.
 
-## Tool Routing
-- `MCPManager.get_flattened_tools()` prefixes tool names and stores original server metadata.
-- `MCPServer.allowed_tools` is a whitelist; keep checks strict in `list_tools()` and `call_tool()`.
-
-## Interactions
-- Sampling requests are handled by `Host` via OpenAI chat completions.
-- Elicitation requests are interactive and currently use terminal input.
-- Preserve async boundaries in client interaction handlers.
-
-## Logging
-- Emit `MCPEvent` for connect/call/result/error paths.
-- Use `get_trace_id()` to correlate MCP events with agent traces.
+## Minimal Validation
+- `python -m compileall src/mash/mcp`
+- Verify one manager/config path and one client or server path.

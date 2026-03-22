@@ -245,6 +245,28 @@ class MashAgentServerTests(unittest.TestCase):
                 finally:
                     runtime.shutdown()
 
+    def test_request_error_marks_stream_done_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                runtime = MashAgentServer.from_spec(_BaseDefinition(Path(tmp)))
+                try:
+                    with patch.object(runtime, "process_user_message", side_effect=RuntimeError("boom")):
+                        accepted = runtime.submit_request(message="hi", session_id="s1")
+                        request_id = str(accepted["request_id"])
+                        events = self._collect_request_events(runtime, request_id)
+
+                    self.assertEqual(events[-1]["event"], "request.error")
+                    replayed, cursor, done = runtime.stream_request_events(
+                        request_id,
+                        cursor=len(events),
+                        wait_timeout=0.0,
+                    )
+                    self.assertEqual(replayed, [])
+                    self.assertEqual(cursor, len(events))
+                    self.assertTrue(done)
+                finally:
+                    runtime.shutdown()
+
     def test_requests_are_single_flight_serialized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):

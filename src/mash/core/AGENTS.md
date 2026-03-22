@@ -1,21 +1,16 @@
 # AGENTS Guide for `src/mash/core`
 
-## Scope
-Core agent runtime: config, context data model, LLM provider adapter, and execution loop.
+## What Must Stay True
+- `Agent` remains the core single-agent execution loop.
+- `AgentConfig` is the primary configuration contract for agent behavior.
+- LLM provider interfaces and provider-specific integrations stay under `core.llm`.
+- Core types remain reusable across local runtimes, hosted APIs, and built-in agents.
 
-## Invariants
-- `Agent.run()` must always clear trace context (`clear_trace_id`) in `finally`.
-- `Agent` response metadata should include `trace_id` and run-level token usage (`input`, `output`).
-- `think()` is the only place that calls the LLM; `act()` only executes tools; `observe()` only mutates context with results.
-- LLM response parsing must preserve Mash-native block semantics (`text`, `tool_call`, `tool_result`) while allowing provider-specific extra blocks.
-- Tool call validation should reject missing required args before execution.
+## Change Rules
+- Keep `core` generic; do not mix in API, CLI, or subagent-host policy.
+- Preserve tool-call schema behavior and response metadata relied on by downstream runtime code.
+- If core execution defaults change, update downstream docs and tests that depend on that behavior.
 
-## Extension Points
-- Add config flags in `AgentConfig` and validate in `__post_init__`.
-- New model/provider support should implement `LLMProvider.send()` and normalize responses into `LLMResponse`.
-- Keep tool-search behavior isolated in `_build_tool_definitions()` and `_get_betas()`.
-
-## Guardrails
-- Do not mix UI/renderer formatting logic into runtime decisions.
-- Keep stop-reason handling explicit (`end_turn` vs `max_tokens`).
-- Preserve structured debug events when changing token estimation or tool def generation.
+## Minimal Validation
+- `python -m compileall src/mash/core`
+- Verify one direct invoke path and one tool-call path.

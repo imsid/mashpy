@@ -83,6 +83,9 @@ class MashRemoteShell:
 
     def _render_trace_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
+        if event_type.startswith("subagent."):
+            self._render_subagent_event(payload)
+            return
         if event_type == "agent.think.complete":
             self.chain_renderer.on_think_complete(self._build_trace_event(payload))
             return
@@ -94,6 +97,32 @@ class MashRemoteShell:
             return
         if event_type == "llm.request.complete":
             self.chain_renderer.on_llm_request_complete(self._build_llm_event(payload))
+
+    def _render_subagent_event(self, payload: dict[str, Any]) -> None:
+        event_type = str(payload.get("event_type") or "")
+        agent_id = str(payload.get("payload", {}).get("agent_id") or "subagent")
+        nested = payload.get("payload", {}).get("data")
+        trace_label = f"Subagent {agent_id}"
+
+        if event_type == "subagent.agent.trace" and isinstance(nested, dict):
+            nested_payload = dict(nested)
+            child_payload = dict(nested_payload.get("payload") or {})
+            child_payload["trace_label"] = trace_label
+            nested_payload["payload"] = child_payload
+            self._render_trace_event(nested_payload)
+            return
+
+        if event_type == "subagent.request.started":
+            self.renderer.info(f"{trace_label} started")
+            return
+
+        if event_type == "subagent.request.completed":
+            self.renderer.info(f"{trace_label} completed")
+            return
+
+        if event_type == "subagent.request.error":
+            error = payload.get("payload", {}).get("data", {}).get("error")
+            self.renderer.error(f"{trace_label} error: {error or 'request failed'}")
 
     def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
         request_id = self.client.submit_request(

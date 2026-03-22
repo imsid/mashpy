@@ -61,6 +61,30 @@ class MemoryStore(Protocol):
         """List persisted sessions for one application."""
         ...
 
+    def get_latest_session(
+        self,
+        app_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent persisted session for one application."""
+        ...
+
+    def get_latest_trace(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent trace for a session in one application."""
+        ...
+
+    def list_recent_traces(
+        self,
+        app_id: str,
+        session_id: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """List recent traces for a session in one application."""
+        ...
+
     def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],

@@ -21,6 +21,7 @@ from ..core.context import Context, MessageRole
 from ..logging import AgentTraceEvent, CommandEvent, EventLogger, LLMEvent, LogEvent
 from ..memory.compaction import compact_conversation
 from ..tools.runtime import RuntimeToolBuilder
+from .errors import classify_error
 from .http import MashAgentHTTPHandler, MashAgentHTTPServer
 from .spec import AgentSpec
 from .types import RuntimeTurnResult
@@ -855,6 +856,7 @@ class MashAgentServer:
                     },
                 )
             except Exception as exc:  # pragma: no cover - defensive
+                error_payload = classify_error(exc)
                 self._append_request_event(
                     state.request_id,
                     event="request.error",
@@ -863,7 +865,7 @@ class MashAgentServer:
                         "agent_id": self.app_id,
                         "status": "error",
                         "session_id": state.session_id,
-                        "error": str(exc),
+                        **error_payload,
                     },
                 )
             finally:

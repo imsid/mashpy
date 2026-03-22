@@ -7,10 +7,12 @@ import time
 from typing import Any, Callable, Dict, Iterator, Optional, Protocol
 
 from ..logging import AgentTraceEvent, get_trace_id
+from ..runtime.errors import classify_error
 from ..runtime.session import derive_subagent_session_id
 from .base import ToolResult
 
 DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
+MAX_STEP_LIMIT_PREFIX = "Stopped after reaching the max step limit"
 
 
 class SupportsSubagentStream(Protocol):
@@ -123,6 +125,70 @@ class InvokeSubagentTool:
             )
         )
 
+    def _error_result(
+        self,
+        *,
+        agent_id: str,
+        primary_session_id: str,
+        subagent_session_id: str,
+        started_at: float,
+        request_id: Optional[str],
+        error: object,
+        error_source: str,
+    ) -> ToolResult:
+        payload = {
+            "agent_id": agent_id,
+            "primary_session_id": primary_session_id,
+            "subagent_session_id": subagent_session_id,
+            "request_id": request_id,
+            "error_source": error_source,
+            "duration_ms": int((time.time() - started_at) * 1000),
+            **classify_error(error),
+        }
+        return ToolResult.error(
+            json.dumps(payload, ensure_ascii=True),
+            agent_id=agent_id,
+            primary_session_id=primary_session_id,
+            subagent_session_id=subagent_session_id,
+            request_id=request_id,
+            error_source=error_source,
+            error_code=payload.get("error_code"),
+            retryable=payload.get("retryable"),
+        )
+
+    def _response_error_result(
+        self,
+        *,
+        agent_id: str,
+        primary_session_id: str,
+        subagent_session_id: str,
+        started_at: float,
+        request_id: Optional[str],
+        error: str,
+        error_code: str,
+    ) -> ToolResult:
+        payload = {
+            "agent_id": agent_id,
+            "primary_session_id": primary_session_id,
+            "subagent_session_id": subagent_session_id,
+            "request_id": request_id,
+            "error_source": "subagent_response",
+            "error_code": error_code,
+            "retryable": False,
+            "duration_ms": int((time.time() - started_at) * 1000),
+            "error": error,
+        }
+        return ToolResult.error(
+            json.dumps(payload, ensure_ascii=True),
+            agent_id=agent_id,
+            primary_session_id=primary_session_id,
+            subagent_session_id=subagent_session_id,
+            request_id=request_id,
+            error_source="subagent_response",
+            error_code=error_code,
+            retryable=False,
+        )
+
     def execute(self, args: Dict[str, Any]) -> ToolResult:
         agent_id = str(args.get("agent_id", "")).strip()
         prompt = str(args.get("prompt", "")).strip()
@@ -144,6 +210,7 @@ class InvokeSubagentTool:
         )
 
         started_at = time.time()
+        request_id: Optional[str] = None
         try:
             timeout_ms: Optional[int] = DEFAULT_SUBAGENT_TIMEOUT_MS
             timeout_value = opts.get("timeout_ms")
@@ -189,13 +256,33 @@ class InvokeSubagentTool:
                     result = data
                     break
                 if event_name == "request.error":
-                    error_message = str(data.get("error") or "request failed")
-                    raise RuntimeError(error_message)
+                    error_payload = classify_error(data.get("error") or "request failed")
+                    if data.get("error_code") is not None:
+                        error_payload["error_code"] = data.get("error_code")
+                    if data.get("retryable") is not None:
+                        error_payload["retryable"] = data.get("retryable")
+                    raise RuntimeError(
+                        json.dumps(
+                            {
+                                "request_id": data.get("request_id", request_id),
+                                **error_payload,
+                            },
+                            ensure_ascii=True,
+                        )
+                    )
                 if timeout_seconds is not None and time.time() - started_at > timeout_seconds:
                     raise TimeoutError("agent invoke timed out")
 
             if result is None:
-                raise RuntimeError("subagent stream ended without a terminal event")
+                return self._error_result(
+                    agent_id=agent_id,
+                    primary_session_id=primary_session_id,
+                    subagent_session_id=subagent_session_id,
+                    started_at=started_at,
+                    request_id=request_id,
+                    error="subagent stream ended without a terminal event",
+                    error_source="stream",
+                )
 
             response = result.get("response")
             if isinstance(response, dict):
@@ -204,19 +291,52 @@ class InvokeSubagentTool:
             else:
                 text = result.get("text", "")
                 metadata = result.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
         except Exception as exc:
-            payload = {
-                "agent_id": agent_id,
-                "session_id": primary_session_id,
-                "primary_app_id": self._primary_app_id,
-                "error": str(exc),
-                "duration_ms": int((time.time() - started_at) * 1000),
-            }
-            return ToolResult.error(json.dumps(payload, ensure_ascii=True))
+            if isinstance(exc, RuntimeError):
+                try:
+                    parsed = json.loads(str(exc))
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict) and "error" in parsed:
+                    payload = {
+                        "agent_id": agent_id,
+                        "primary_session_id": primary_session_id,
+                        "subagent_session_id": subagent_session_id,
+                        "request_id": parsed.get("request_id", request_id),
+                        "error_source": "subagent",
+                        "duration_ms": int((time.time() - started_at) * 1000),
+                        **classify_error(parsed.get("error")),
+                    }
+                    if parsed.get("error_code") is not None:
+                        payload["error_code"] = parsed.get("error_code")
+                    if parsed.get("retryable") is not None:
+                        payload["retryable"] = parsed.get("retryable")
+                    return ToolResult.error(
+                        json.dumps(payload, ensure_ascii=True),
+                        agent_id=agent_id,
+                        primary_session_id=primary_session_id,
+                        subagent_session_id=subagent_session_id,
+                        request_id=payload.get("request_id"),
+                        error_source="subagent",
+                        error_code=payload.get("error_code"),
+                        retryable=payload.get("retryable"),
+                    )
+
+            return self._error_result(
+                agent_id=agent_id,
+                primary_session_id=primary_session_id,
+                subagent_session_id=subagent_session_id,
+                started_at=started_at,
+                request_id=request_id,
+                error=exc,
+                error_source="timeout" if isinstance(exc, TimeoutError) else "subagent",
+            )
 
         payload = {
             "agent_id": agent_id,
-            "session_id": primary_session_id,
+            "primary_session_id": primary_session_id,
             "subagent_session_id": subagent_session_id,
             "primary_app_id": self._primary_app_id,
             "request_id": result.get("request_id"),
@@ -224,6 +344,27 @@ class InvokeSubagentTool:
             "metadata": metadata,
             "duration_ms": int((time.time() - started_at) * 1000),
         }
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            return self._response_error_result(
+                agent_id=agent_id,
+                primary_session_id=primary_session_id,
+                subagent_session_id=subagent_session_id,
+                started_at=started_at,
+                request_id=result.get("request_id"),
+                error="subagent returned an empty response",
+                error_code="empty_response",
+            )
+        if normalized_text.startswith(MAX_STEP_LIMIT_PREFIX):
+            return self._response_error_result(
+                agent_id=agent_id,
+                primary_session_id=primary_session_id,
+                subagent_session_id=subagent_session_id,
+                started_at=started_at,
+                request_id=result.get("request_id"),
+                error=normalized_text,
+                error_code="max_steps_exceeded",
+            )
         return ToolResult.success(
             json.dumps(payload, ensure_ascii=True),
             agent_id=agent_id,

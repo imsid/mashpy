@@ -1,2 +1,0 @@
-"""Runnable Mash SDK examples."""
-

@@ -5,17 +5,16 @@ This package is the Mash codebase root. The SDK/runtime remains the core layer, 
 ## What Must Stay True
 - `AgentSpec` is the single-agent SDK contract.
 - `MashAgentHostBuilder` composes one primary agent and optional subagents into a `MashAgentHost`.
-- `MashAgentServer` wires the runtime (agent, tools, memory, logging, optional MCP).
+- `MashAgentServer` wires the runtime, tools, memory, logging, and optional MCP integrations.
 - Hosted APIs live in `mash.api`; remote terminal UX lives in `mash.cli`.
-- `Agent` runs a think-act-observe loop and records trace/token metadata in response metadata.
-- Tool definitions exposed to the LLM must use Anthropic-compatible schema (`name`, `description`, `input_schema`).
-- Event logs are JSONL and remain machine-parseable (`LogEvent.to_dict()` output per line).
+- Tool definitions exposed to the model keep the expected schema contract.
+- Event logs remain machine-parseable JSONL.
 
 ## Cross-Cutting Change Rules
-- Keep SDK, host service, and CLI responsibilities separate even though they now ship in one package.
-- If you change defaults or runtime contracts, update the top-level `README.md`.
-- Keep trace correlation intact: use `set_trace_id` / `get_trace_id` when emitting cross-component events.
+- Keep core SDK/runtime concerns separate from API and CLI surfaces.
+- If public exports, runtime defaults, or host contracts change, update the top-level repo docs and affected module docs.
+- Preserve trace correlation when emitting events across runtime, tools, logging, and hosted surfaces.
 
 ## Minimal Validation
 - `python -m compileall src/mash`
-- Verify one invoke path, one subagent path, and one session/history path.
+- Verify one direct invoke path, one subagent path, and one session/history path.

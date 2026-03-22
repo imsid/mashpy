@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, Optional
 
 from ..core.config import SystemPrompt
 from ..tools.subagent import InvokeSubagentTool
 from .client import MashAgentClient
-from .spec import AgentSpec
 from .server import MashAgentServer
+from .spec import AgentSpec
 from .types import SubAgentMetadata
 
 
@@ -40,7 +39,9 @@ def build_subagent_prompt_block(
         lines.append(f"- {agent_id} | {meta.display_name}: {meta.description}")
         lines.append(f"  Capabilities: {capabilities}")
         lines.append(f"  Guidance: {meta.usage_guidance}")
-    lines.append("When delegating, choose the best subagent id and pass a concise task prompt.")
+    lines.append(
+        "When delegating, choose the best subagent id and pass a concise task prompt."
+    )
     guidance = "\n".join(lines)
 
     if isinstance(base_prompt, list):
@@ -58,7 +59,9 @@ class MashAgentHost:
         self._agents: Dict[str, MashAgentServer] = {}
         self._clients: Dict[str, MashAgentClient] = {}
 
-    def register_primary(self, definition: AgentSpec, *, agent_id: Optional[str] = None) -> str:
+    def register_primary(
+        self, definition: AgentSpec, *, agent_id: Optional[str] = None
+    ) -> str:
         resolved_agent_id = (agent_id or definition.get_agent_id()).strip()
         if not resolved_agent_id:
             raise ValueError("agent_id is required")
@@ -105,7 +108,9 @@ class MashAgentHost:
 
         for agent_id, registered in self._registered.items():
             runtime = MashAgentServer.from_spec(registered.definition)
-            base_url = runtime.start_http_server(agent_id=agent_id, host=self.bind_host, port=0)
+            base_url = runtime.start_http_server(
+                agent_id=agent_id, host=self.bind_host, port=0
+            )
             client = MashAgentClient(base_url, agent_id)
             self._agents[agent_id] = runtime
             self._clients[agent_id] = client
@@ -168,7 +173,11 @@ class MashAgentHost:
                 {
                     "agent_id": registered.agent_id,
                     "role": "primary" if registered.is_primary else "subagent",
-                    "metadata": asdict(registered.metadata) if registered.metadata is not None else None,
+                    "metadata": (
+                        asdict(registered.metadata)
+                        if registered.metadata is not None
+                        else None
+                    ),
                 }
             )
         return described
@@ -200,11 +209,18 @@ class MashAgentHostBuilder:
     def __init__(self) -> None:
         self._primary: tuple[AgentSpec, str | None] | None = None
         self._subagents: list[tuple[AgentSpec, SubAgentMetadata, str | None]] = []
+        self._masher_enabled = False
 
-    def primary(self, spec: AgentSpec, *, agent_id: str | None = None) -> "MashAgentHostBuilder":
+    def primary(
+        self, spec: AgentSpec, *, agent_id: str | None = None
+    ) -> "MashAgentHostBuilder":
         if self._primary is not None:
             raise ValueError("primary agent is already configured")
         self._primary = (spec, agent_id)
+        return self
+
+    def enable_masher(self, enabled: bool = True) -> "MashAgentHostBuilder":
+        self._masher_enabled = bool(enabled)
         return self
 
     def subagent(
@@ -226,4 +242,16 @@ class MashAgentHostBuilder:
         host.register_primary(primary_spec, agent_id=primary_agent_id)
         for spec, metadata, agent_id in self._subagents:
             host.register_subagent(spec, metadata=metadata, agent_id=agent_id)
+        if self._masher_enabled:
+            from ..agents.masher import MasherAgentSpec, build_masher_metadata
+
+            masher_log_file = primary_spec.get_log_destination()
+            primary_app_id = primary_spec.build_agent_config().app_id
+            host.register_subagent(
+                MasherAgentSpec(
+                    log_file=masher_log_file,
+                    target_app_id=primary_app_id,
+                ),
+                metadata=build_masher_metadata(),
+            )
         return host

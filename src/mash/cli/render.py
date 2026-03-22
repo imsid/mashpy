@@ -62,7 +62,10 @@ class RichRenderer:
                 "muted": "dim",
             }
         )
-        self._console = console or Console(theme=theme, soft_wrap=True)
+        # Rich panels and tables should own wrapping/layout. Enabling console-level
+        # soft wrapping lets the terminal wrap rendered box lines after layout,
+        # which can visually clip bordered output at narrow widths.
+        self._console = console or Console(theme=theme)
 
     @property
     def console(self) -> Console:

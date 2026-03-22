@@ -304,6 +304,82 @@ class SQLiteStore(MemoryStore):
             )
         return sessions
 
+    def get_latest_session(self, app_id: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent persisted session for one application."""
+        sessions = self.list_sessions(app_id=app_id)
+        if not sessions:
+            return None
+        return sessions[0]
+
+    def get_latest_trace(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent trace for a session in one application."""
+        traces = self.list_recent_traces(
+            app_id=app_id,
+            session_id=session_id,
+            limit=1,
+        )
+        if not traces:
+            return None
+        return traces[0]
+
+    def list_recent_traces(
+        self,
+        app_id: str,
+        session_id: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """List recent traces for a session in one application."""
+        normalized_limit = max(1, int(limit))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT
+                    turn_id,
+                    session_id,
+                    user_message,
+                    agent_response,
+                    metadata,
+                    created_at
+                FROM turns
+                WHERE app_id = ? AND session_id = ?
+                ORDER BY created_at DESC, turn_id DESC
+                LIMIT ?
+                """,
+                (app_id, session_id, normalized_limit),
+            ).fetchall()
+
+        traces: List[Dict[str, Any]] = []
+        for (
+            turn_id,
+            found_session_id,
+            user_message,
+            agent_response,
+            metadata_json,
+            created_at,
+        ) in rows:
+            try:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+            except json.JSONDecodeError:
+                metadata = {}
+
+            traces.append(
+                {
+                    "trace_id": str(turn_id),
+                    "session_id": str(found_session_id),
+                    "user_message": "" if user_message is None else str(user_message),
+                    "agent_response": (
+                        "" if agent_response is None else str(agent_response)
+                    ),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                    "created_at": float(created_at or 0.0),
+                }
+            )
+        return traces
+
     def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],

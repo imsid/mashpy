@@ -70,6 +70,141 @@ class RuntimeToolBuilder:
             self._build_set_app_data_tool(),
         ]
 
+    def build_get_latest_session_tool(self) -> Tool:
+        """Build a deterministic tool for selecting the latest session."""
+
+        def execute(_args: Dict[str, Any]) -> ToolResult:
+            session = self._store.get_latest_session(app_id=self._app_id)
+            if session is None:
+                return ToolResult.error("no sessions found for this app")
+            return ToolResult(
+                content=json.dumps(session, indent=2),
+                is_error=False,
+            )
+
+        return FunctionTool(
+            name="get_latest_session",
+            description=(
+                "Return the most recent session for the target app from the runtime "
+                "store. Use this to resolve which session to inspect before fetching logs."
+            ),
+            parameters={"type": "object", "properties": {}},
+            _executor=execute,
+        )
+
+    def build_get_latest_trace_tool(self) -> Tool:
+        """Build a deterministic tool for selecting the latest trace in a session."""
+
+        def execute(args: Dict[str, Any]) -> ToolResult:
+            raw_session_id = args.get("session_id")
+            if raw_session_id is None:
+                latest_session = self._store.get_latest_session(app_id=self._app_id)
+                if latest_session is None:
+                    return ToolResult.error("no sessions found for this app")
+                session_id = str(latest_session["session_id"])
+            elif isinstance(raw_session_id, str) and raw_session_id.strip():
+                session_id = raw_session_id.strip()
+            else:
+                return ToolResult.error(
+                    "session_id must be a non-empty string if provided"
+                )
+
+            trace = self._store.get_latest_trace(
+                app_id=self._app_id,
+                session_id=session_id,
+            )
+            if trace is None:
+                return ToolResult.error(f"no traces found for session: {session_id}")
+            return ToolResult(
+                content=json.dumps(trace, indent=2),
+                is_error=False,
+            )
+
+        return FunctionTool(
+            name="get_latest_trace",
+            description=(
+                "Return the latest trace in a session from the runtime store. If "
+                "session_id is omitted, resolve the latest session first."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional explicit session id. If omitted, the latest "
+                            "session is resolved first."
+                        ),
+                    },
+                },
+            },
+            _executor=execute,
+        )
+
+    def build_list_recent_traces_tool(self) -> Tool:
+        """Build a deterministic tool for listing recent traces in a session."""
+
+        def execute(args: Dict[str, Any]) -> ToolResult:
+            raw_session_id = args.get("session_id")
+            raw_limit = args.get("limit", 5)
+            if raw_session_id is None:
+                latest_session = self._store.get_latest_session(app_id=self._app_id)
+                if latest_session is None:
+                    return ToolResult.error("no sessions found for this app")
+                session_id = str(latest_session["session_id"])
+            elif isinstance(raw_session_id, str) and raw_session_id.strip():
+                session_id = raw_session_id.strip()
+            else:
+                return ToolResult.error(
+                    "session_id must be a non-empty string if provided"
+                )
+
+            try:
+                limit = max(1, int(raw_limit))
+            except (TypeError, ValueError):
+                return ToolResult.error("limit must be an integer")
+
+            traces = self._store.list_recent_traces(
+                app_id=self._app_id,
+                session_id=session_id,
+                limit=limit,
+            )
+            payload = {
+                "session_id": session_id,
+                "limit": limit,
+                "traces": traces,
+            }
+            return ToolResult(
+                content=json.dumps(payload, indent=2),
+                is_error=False,
+            )
+
+        return FunctionTool(
+            name="list_recent_traces",
+            description=(
+                "List recent traces in a session from the runtime store. If session_id "
+                "is omitted, resolve the latest session first."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional explicit session id. If omitted, the latest "
+                            "session is resolved first."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of traces to return (default: 5).",
+                        "default": 5,
+                    },
+                },
+            },
+            _executor=execute,
+        )
+
     def _build_get_conversation_tool(self) -> Tool:
         """Tool to get conversation history."""
 
