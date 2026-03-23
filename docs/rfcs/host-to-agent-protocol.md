@@ -99,7 +99,7 @@ At a high level, H2A standardizes three communication standards:
 
 ### 4.1 User Application To Host
 
-The user application talks to a host-facing surface that accepts request submission and exposes streamed request events.
+The user application talks to a host that accepts request submission and exposes streamed request events.
 
 ### 4.2 Host To Client
 
@@ -108,16 +108,6 @@ The host resolves `agent_id` to the associated client and uses that client to cr
 ### 4.3 Client To Agent
 
 The client talks directly to the per-agent runtime endpoint that accepts HTTP requests and emits SSE events.
-
-### 4.4 H2A Core
-
-The H2A Core consists of:
-
-- host-facing request submission and event streaming
-- host resolution of `agent_id` to one client
-- client submission and streaming against one agent runtime
-- per-agent transport binding requirements
-- request lifecycle and error semantics
 
 ## 5. Lifecycle
 
