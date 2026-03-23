@@ -16,10 +16,15 @@ It contains three main components:
 
 ```text
 src/mash/                  SDK, host API, and CLI
+docs/rfcs/                Protocol and design RFCs
 pilot/                     Mash Pilot host built on Mash
 tests/                     Unified test suite
 Dockerfile                 Base image for Mash host deployments
 ```
+
+## RFCs
+
+- [Host-to-Agent Protocol (H2A)](/Users/sid/Projects/mashpy/docs/rfcs/host-to-agent-protocol.md)
 
 ## Mental model
 
