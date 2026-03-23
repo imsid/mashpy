@@ -16,8 +16,6 @@ The protocol semantics are defined independently of any specific transport. This
 
 H2A assumes a user-facing application interacts with a host, and the host acts as the bridge to one or more agents. H2A therefore standardizes the host-facing surface that user applications and orchestration layers depend on, rather than agent internals or tool interoperability.
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in RFC 2119 and RFC 8174.
-
 ## 2. Goals, Non-Goals, And Positioning
 
 ### 2.1 Goals
