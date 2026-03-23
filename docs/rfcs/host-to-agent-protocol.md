@@ -23,11 +23,10 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 ### 2.1 Goals
 
 - Define a deterministic host-to-agent request lifecycle.
-- Define canonical protocol objects and event envelopes.
-- Standardize a host-facing state model for preferences and application data.
+- Define canonical request and event envelopes.
 - Allow multiple transport bindings while preserving one protocol core.
 - Support host-managed deployments that expose one or more agents behind one host.
-- Leave room for agent-to-agent extensions without making them part of the core topology.
+- Leave room for future extensions without making them part of the core topology.
 
 ### 2.2 Non-Goals
 
@@ -39,9 +38,9 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ### 2.3 Positioning
 
-H2A is complementary to MCP. MCP is primarily concerned with tool, resource, and context interoperability between AI applications and external systems. H2A is concerned with host-to-agent execution, lifecycle, and host-managed state.
+H2A is complementary to MCP. MCP is primarily concerned with tool, resource, and context interoperability between AI applications and external systems. H2A is concerned with host-to-agent execution, lifecycle, and transport semantics.
 
-H2A is adjacent to agent-to-agent protocols such as A2A. H2A is host-to-agent first. Agent-to-agent delegation MAY be layered on top of H2A through an extension profile, but that is not the primary v1 topology.
+H2A is adjacent to agent-to-agent protocols such as A2A. H2A is host-to-agent first. Agent-to-agent delegation MAY be layered on top of H2A in future revisions, but that is not the primary v1 topology.
 
 ## 3. Architecture And Conformance
 
@@ -60,11 +59,11 @@ H2A is host-centric in v1:
 
 - A host MAY expose one agent or many agents.
 - A user application SHOULD address the host, not agents directly.
-- A host SHOULD maintain a registry of available clients for the agents it exposes.
 - A host MUST expose stable `agent_id` values for addressable agents.
 - Each addressable agent MUST have an associated client.
+- A host MUST be able to resolve `agent_id` to the associated client.
 - A host-facing client MUST target exactly one agent at a time.
-- Agent-to-agent relationships are out of core scope and belong to an extension profile.
+- Agent-to-agent relationships are out of core scope.
 
 In a typical deployment:
 
@@ -84,85 +83,80 @@ flowchart TD
     C2 --> A2["Agent B Runtime Endpoint"]
     A1 --> E1["Agent Execution Loop"]
     A2 --> E2["Agent Execution Loop"]
-    A1 --> S1["Agent A State Store"]
-    A2 --> S2["Agent B State Store"]
 ```
 
-### 3.3 Conformance Classes
+### 3.3 Conformance
 
-An implementation claiming H2A conformance MUST implement:
+An implementation claiming H2A conformance MUST implement the H2A request flow defined by this specification and at least one supported transport binding.
 
-- the H2A Core
-- the Required Host State profile
-- at least one transport binding
-
-A host implementation MAY embed transport servers internally, but H2A conformance is defined in terms of hosts, agents, clients, and protocol behavior rather than a separate server role.
-
-Optional profiles MAY be implemented independently unless this specification states otherwise.
+H2A conformance is defined in terms of hosts, agents, clients, and protocol behavior rather than a separate server role. A host MAY embed transport servers internally.
 
 ## 4. Protocol Structure
 
-### 4.1 H2A Core
+At a high level, H2A standardizes three communication standards:
+
+- `User Application -> Host`
+- `Host -> Client`
+- `Client -> Agent`
+
+### 4.1 User Application To Host
+
+The user application talks to a host-facing surface that accepts request submission and exposes streamed request events.
+
+### 4.2 Host To Client
+
+The host resolves `agent_id` to the associated client and uses that client to create requests and consume request streams for one agent.
+
+### 4.3 Client To Agent
+
+The client talks directly to the per-agent runtime endpoint that accepts HTTP requests and emits SSE events.
+
+### 4.4 H2A Core
 
 The H2A Core consists of:
 
-- host-exposed agent discovery
-- client resolution
-- session descriptors and session scope
-- request submission
-- event streaming
-- request lifecycle semantics
-- control operations
-- error taxonomy
-- transport binding requirements
-
-### 4.2 Required Host State Profile
-
-The Required Host State profile consists of:
-
-- `preferences/get`
-- `preferences/set`
-- `appdata/list`
-- `appdata/get`
-- `appdata/set`
-- `appdata/delete`
-
-This profile is mandatory because H2A standardizes the host-facing surface used by user applications, and host-managed state is part of that surface.
-
-### 4.3 Optional Profiles
-
-This specification defines the following optional profiles:
-
-- History profile
-- Compaction profile
-- Topology profile
-- Agent-to-Agent extension profile
+- host-facing request submission and event streaming
+- host resolution of `agent_id` to one client
+- client submission and streaming against one agent runtime
+- per-agent transport binding requirements
+- request lifecycle and error semantics
 
 ## 5. Lifecycle
 
-H2A defines five lifecycle phases.
+H2A request flow proceeds through the three communication standards in sequence.
 
-### 5.1 Discovery
+### 5.1 User Application To Host
 
-The host discovers or exposes the set of available agents and associated clients before request execution begins.
+The user application submits work to the host using a host-facing request operation such as `submit_request`.
 
-### 5.2 Client Resolution
+The host-facing submission includes:
+
+- `agent_id`
+- `message`
+- optional `session_id`
+
+The host returns a host-facing request identifier after the downstream agent request has been accepted.
+
+After submission, the user application consumes the resulting lifecycle from the host using a host-facing stream operation such as `stream_request_events`.
+
+### 5.2 Host To Client
 
 The host resolves the requested `agent_id` to the associated client before request submission begins.
 
-### 5.3 Request Submission And Session Resolution
-
-The host submits a request to the resolved agent client using:
+The host submits a request to the resolved client using:
 
 - `message`
 - optional `session_id`
-- optional `turn_metadata`
 
-If `session_id` is omitted or empty, the target agent resolves the request into its default session before execution begins. The agent returns a `request.accepted` payload containing `request_id`, `agent_id`, `session_id`, and `status`.
+### 5.3 Client To Agent
 
-### 5.4 Runtime Execution And Event Streaming
+The client turns the host request into a transport request for exactly one agent runtime.
 
-After acceptance, the runtime executes the request and exposes request lifecycle state through a streamed event sequence.
+If `session_id` is omitted or empty, the agent runtime resolves the request into its default session before execution begins. The runtime returns a `request.accepted` payload containing `request_id`, `agent_id`, `session_id`, and `status`.
+
+### 5.4 Agent Execution And Streaming
+
+After acceptance, the runtime executes the request and exposes request lifecycle state through a streamed event sequence. The client consumes those events and the host relays them back to the user application.
 
 Illustrative request flow:
 
@@ -171,21 +165,23 @@ sequenceDiagram
     participant App as User Application
     participant Host
     participant Client as Agent Client
-    participant Runtime as Agent Runtime
+    participant Server as Agent Server
     participant Store as State Store
 
-    App->>Host: Submit message, session_id, turn_metadata
+    App->>Host: submit_request(agent_id, message, session_id)
     Host->>Host: Resolve agent_id to associated client
-    Host->>Client: Create request
-    Client->>Runtime: POST request
-    Runtime-->>Client: request.accepted
+    Host->>Client: post_request(message, session_id)
+    Client->>Server: POST /agents/{agent_id}/requests
+    Server-->>Client: request.accepted
     Client-->>Host: request.accepted
-    Host-->>App: request.accepted
-    Runtime->>Runtime: Execute request
-    Runtime->>Store: Persist turn state
-    Runtime-->>Client: request.started / agent.trace / request.completed
+    Host-->>App: request_id
+    App->>Host: stream_request_events(agent_id, request_id)
+    Host-->>App: SSE request.accepted
+    Server->>Server: Execute request
+    Server->>Store: Persist turn state
+    Server-->>Client: request.started / agent.trace / request.completed
     Client-->>Host: Stream events
-    Host-->>App: Stream events or final result
+    Host-->>App: SSE request.started / agent.trace / request.completed
 ```
 
 ### 5.5 Completion And Retention
@@ -194,482 +190,129 @@ Request execution ends with exactly one terminal event: `request.completed` or `
 
 The current runtime retains accepted requests and buffered events for an implementation-defined time window. The runtime binding guarantees live streaming of request events, but does not currently define a separate retained request resource or replay API.
 
-## 6. Runtime Objects
+## 6. Host To Client Interaction
 
-This section defines the runtime objects currently exposed by H2A. These objects are grounded in the existing host, client, server, and HTTP transport contracts.
+This section defines the second communication standard: `Host -> Client`.
 
-### 6.1 AgentRecord
+At this layer, H2A centers interaction on two operations:
 
-Required fields:
+- `post_request`
+- `stream`
 
-- `agent_id: string`
-- `role: string`
-- `metadata: object | null`
+These two operations are sufficient for a host to submit work to one agent and observe the resulting lifecycle until completion.
 
-Example:
+### 6.1 `post_request`
 
-```json
-{
-  "agent_id": "planner",
-  "role": "primary",
-  "metadata": null
-}
-```
+`post_request` creates one asynchronous request for one agent.
 
-For subagents, `metadata` MAY include:
-
-- `display_name`
-- `description`
-- `capabilities`
-- `usage_guidance`
-
-### 6.2 DefaultSessionIdResult
-
-Returned by the default-session control operation.
-
-```json
-{
-  "default_session_id": "sess_123"
-}
-```
-
-### 6.3 SessionInfo
-
-Returned by the session-info control operation.
-
-Required fields:
-
-- `app_id: string`
-- `agent_id: string`
-- `session_id: string`
-- `primary_agent_id: string`
-- `subagent_ids: array<string>`
-- `model: string`
-- `max_steps: integer`
-- `session_total_tokens: integer`
-
-Example:
-
-```json
-{
-  "app_id": "planner",
-  "agent_id": "planner",
-  "session_id": "sess_123",
-  "primary_agent_id": "planner",
-  "subagent_ids": [
-    "research"
-  ],
-  "model": "gpt-5.4",
-  "max_steps": 32,
-  "session_total_tokens": 14820
-}
-```
-
-### 6.4 SessionsListResult
-
-Returned by the session-list control operation.
-
-```json
-{
-  "sessions": [
-    {
-      "session_id": "sess_123"
-    }
-  ]
-}
-```
-
-The current runtime does not define a stricter schema for session list entries beyond returning an array of objects.
-
-### 6.5 SubmitRequest
-
-`SubmitRequest` is the runtime request body accepted by the request submission endpoint.
-
-Required field:
+Inputs:
 
 - `message: string`
+- optional `session_id: string`
 
-Optional fields:
+Rules:
 
+- The client MUST submit `post_request` as an HTTP `POST`.
+- The request body MUST be a JSON object.
+- `message` MUST be present and MUST be a non-empty string.
+- `session_id` MAY be omitted.
+- If `session_id` is omitted or empty, the agent runtime MUST resolve the request into its default session before execution begins.
+
+The server response MUST be `202 Accepted` with a JSON object containing:
+
+- `request_id: string`
+- `agent_id: string`
 - `session_id: string`
-- `turn_metadata: object`
+- `status: "accepted"`
 
 Example:
 
 ```json
 {
-  "message": "Plan a release for the next sprint.",
-  "session_id": "sess_123",
-  "turn_metadata": {
-    "source": "web"
-  }
+  "message": "Plan the next release.",
+  "session_id": "sess_123"
 }
 ```
 
-### 6.6 RequestAccepted
-
-Required fields:
-
-- `request_id`
-- `agent_id`
-- `session_id`
-- `status`
-
-Example:
+Accepted response:
 
 ```json
 {
   "request_id": "req_123",
   "agent_id": "planner",
-  "status": "accepted",
-  "session_id": "sess_123"
+  "session_id": "sess_123",
+  "status": "accepted"
 }
 ```
 
-### 6.7 StreamEvent
+### 6.2 `stream`
 
-The client exposes streamed request events as objects with:
+`stream` consumes the event stream for one previously accepted request.
 
-- `event: string`
-- `data: object`
+Inputs:
 
-Example:
-
-```json
-{
-  "event": "request.started",
-  "data": {
-    "request_id": "req_123",
-    "agent_id": "planner",
-    "session_id": "sess_123",
-    "status": "started"
-  }
-}
-```
-
-### 6.8 RequestStarted
-
-`RequestStarted` appears in the `data` field of a `StreamEvent` whose `event` is `request.started`.
-
-Required fields:
-
-- `request_id`
-- `agent_id`
-- `session_id`
-- `status`
-
-### 6.9 RequestCompleted
-
-`RequestCompleted` appears in the `data` field of a `StreamEvent` whose `event` is `request.completed`.
-
-Required fields:
-
-- `request_id`
-- `agent_id`
-- `session_id`
-- `status`
-- `response: object`
-- `session_total_tokens: integer`
-
-Optional fields:
-
-- `compaction_summary_text`
-- `compaction_summary_turn_id`
-
-The `response` object includes:
-
-- `text`
-- `signals`
-- `metadata`
-
-### 6.10 RequestError
-
-`RequestError` appears in the `data` field of a `StreamEvent` whose `event` is `request.error`.
-
-Required fields:
-
-- `request_id`
-- `agent_id`
-- `session_id`
-- `status`
-- `error`
-
-Optional fields:
-
-- `error_code`
-- `retryable`
-
-### 6.11 AgentTrace
-
-`AgentTrace` appears in the `data` field of a `StreamEvent` whose `event` is `agent.trace`.
-
-The current runtime emits one of two trace payload shapes:
-
-- agent trace payloads with fields such as `event_type`, `trace_id`, `step_id`, `duration_ms`, `action_type`, `tool_calls`, `token_usage`, and `payload`
-- LLM trace payloads with fields such as `event_type`, `trace_id`, `provider`, `model`, `duration_ms`, `input_tokens`, `output_tokens`, `total_tokens`, `finish_reason`, `error`, `tools`, and `betas`
-
-### 6.12 ControlRequest
-
-The control endpoint accepts:
-
-- `action: string`
-- `payload: object`
-
-Example:
-
-```json
-{
-  "action": "get_session_info",
-  "payload": {
-    "session_id": "sess_123"
-  }
-}
-```
-
-### 6.13 ControlResult
-
-The control endpoint returns an object whose shape depends on `action`.
-
-Current runtime result shapes include:
-
-- `{"default_session_id": "..."}`
-- `{"sessions": [...]}`
-- `{"subagent_ids": [...]}`
-- `{"preferences": {...} | null}`
-- `{"items": [...]}`
-- `{"value": ...}`
-- `{"deleted": true | false}`
-- `{"turns": [...]}`
-- `{"summary_text": "...", "turn_id": "..."}`
-- `{"ok": true}`
-
-### 6.14 HistoryTurn
-
-`HistoryTurn` belongs to the optional History profile and is returned inside `{"turns": [...]}`.
-
-The current runtime stores history turns as dictionaries. Common fields include:
-
-- `turn_id`
-- `session_id`
-- `user_message`
-- `agent_response`
-- `signals`
-- `metadata`
-- `session_total_tokens`
-
-## 7. Core Operations
-
-Operation names in this section are logical names, not route names.
-
-### 7.1 Host And Agent Discovery
-
-The current runtime model assumes the host already knows its registered agents and associated clients.
-
-Hosts MAY expose higher-level discovery APIs, but the per-agent runtime transport defined here does not currently standardize a separate discovery or initialization object.
-
-### 7.2 Agent Operations
-
-- `agents/list`
-- `agents/get`
-
-`agents/list` SHOULD return `AgentRecord` objects when the host exposes discovery.
-
-`agents/get` SHOULD return one `AgentRecord` when the host exposes discovery.
-
-### 7.3 Session Operations
-
-- `sessions/get_default`
-- `sessions/get_info`
-- `sessions/list`
-
-`sessions/get_default` returns `DefaultSessionIdResult`.
-
-`sessions/get_info` returns `SessionInfo`.
-
-`sessions/list` returns `SessionsListResult`.
-
-### 7.4 Request Operations
-
-- `requests/create`
-- `requests/stream`
-
-`requests/create`:
-
-- MUST accept `SubmitRequest`
-- MUST return `RequestAccepted`
-
-`requests/stream` MUST stream `StreamEvent` items for one request.
-
-The current runtime does not define a separate `requests/get` resource or a `requests/cancel` operation.
-
-### 7.5 Control Operations
-
-The current runtime exposes non-request operations through a control action endpoint whose request body is `ControlRequest`.
-
-Defined action names include:
-
-- `get_default_session_id`
-- `get_session_info`
-- `list_sessions`
-- `get_subagent_ids`
-- `set_subagent_ids`
-- `get_latest_preferences`
-- `get_preferences`
-- `set_preferences`
-- `list_app_data`
-- `get_app_data`
-- `set_app_data`
-- `delete_app_data`
-- `get_history_turns`
-- `compact_session`
-- `emit_command_event`
-
-## 8. Request Lifecycle
-
-H2A defines the following runtime lifecycle:
-
-`request.accepted -> request.started -> zero or more agent.trace -> request.completed | request.error`
+- `request_id: string`
 
 Rules:
 
-- `request.accepted` MUST be the first event recorded for an accepted request.
-- `request.started` MUST NOT occur before `request.accepted`.
-- `agent.trace` MAY occur zero or more times after `request.started`.
-- `request.completed` and `request.error` are mutually exclusive terminal events.
-- A request MUST NOT emit additional protocol events after a terminal event.
+- The client MUST open `stream` as an HTTP `GET` against the request stream endpoint for that `request_id`.
+- The server MUST respond with `200 OK` and `Content-Type: text/event-stream` when the request exists.
+- Each event MUST be encoded as an SSE event with `event:` and `data:` lines.
+- The `data:` payload MUST be a JSON object.
+- The client MUST yield events in the order received.
+- The stream terminates after exactly one terminal event: `request.completed` or `request.error`.
 
-Event mapping:
+Example SSE frame:
 
-- `request.accepted` carries a `RequestAccepted` payload.
-- `request.started` carries a `RequestStarted` payload.
-- `request.completed` carries a `RequestCompleted` payload.
-- `request.error` carries a `RequestError` payload.
-- `agent.trace` carries an `AgentTrace` payload.
+```text
+event: request.started
+data: {"request_id":"req_123","agent_id":"planner","session_id":"sess_123","status":"started"}
+```
 
-## 9. Eventing And Retention
+### 6.3 Client Contract
 
-### 9.1 Event Types
+For one addressable agent:
 
-Core event types:
+- one client MUST target exactly one `agent_id`
+- one client MUST use exactly one base URL for that agent server
+- `post_request` and `stream` together form the complete asynchronous request contract
 
-- `request.accepted`
-- `request.started`
-- `request.completed`
-- `request.error`
-- `agent.trace`
-
-Bindings MAY define additional non-terminal events, but the current runtime only standardizes the event types above.
-
-### 9.2 Ordering
-
-- Events MUST be delivered in the order they are appended to the request buffer.
-- Terminal events MUST be the final protocol events for a request.
-- The client-visible stream event object is always `{"event": ..., "data": ...}`.
-
-### 9.3 Replay And Resume
-
-The current runtime buffers events internally and supports cursor-based access inside the server runtime, but the HTTP plus SSE binding does not currently define a client-facing replay or resume mechanism.
-
-### 9.4 Retention
-
-Accepted requests and buffered events MAY expire according to host-defined retention policy.
-
-## 10. Cancellation And Future Request Controls
-
-The current runtime does not define request cancellation, request idempotency, or a separate retained request descriptor resource.
-
-Future revisions MAY add:
+H2A v1 does not define:
 
 - request cancellation
-- request retrieval
-- replay or resume semantics
-- idempotent submission semantics
+- request replay or resume
+- idempotent request submission
 
-## 11. Required Host State Profile
+## 7. Client To Agent HTTP Server
 
-### 11.1 Model
+This section defines the third communication standard: `Client -> Agent`.
 
-The Required Host State profile standardizes host-managed state that user applications commonly need.
+Each agent is exposed by one HTTP server that handles request creation and request event streaming.
 
-This state is session-authoritative within the host surface:
+### 7.1 Endpoint Shape
 
-- preferences are authoritative host-managed user or session settings for the session scope
-- app data is authoritative host-managed application state stored for the session scope
+The HTTP plus SSE binding defines these endpoints for one agent:
 
-This profile does not define how an agent internally consumes that state.
+- `POST /agents/{agent_id}/requests`
+- `GET /agents/{agent_id}/requests/{request_id}`
 
-### 11.2 Preference Operations
+Equivalent route shapes are permitted if they preserve the same semantics.
 
-- `preferences/get_latest`
-- `preferences/get`
-- `preferences/set`
+### 7.2 POST Handling
 
-`preferences/get_latest` returns:
+For `POST /agents/{agent_id}/requests`, the server MUST:
 
-- `{"preferences": {...}}`
-- or `{"preferences": null}`
+1. match the route for the target `agent_id`
+2. read the request body as JSON
+3. reject non-object JSON bodies
+4. validate that `message` is a non-empty string
+5. validate that `session_id`, if present, is a string
+6. call the runtime request-submission operation
+7. return `202 Accepted` with the accepted payload
 
-`preferences/get` returns the current preference record for a session.
+Validation failures MUST return a JSON error object.
 
-`preferences/set` MUST replace or merge preferences according to host-documented semantics. Hosts SHOULD document whether writes are replace or merge semantics. If not documented, they MUST be replace semantics.
-
-### 11.3 App Data Operations
-
-- `appdata/list`
-- `appdata/get`
-- `appdata/set`
-- `appdata/delete`
-
-App data values MAY be arbitrary structured values encodable by the binding.
-
-## 12. Optional Profiles
-
-### 12.1 History Profile
-
-The History profile defines:
-
-- `history/list`
-
-`history/list`:
-
-- MUST return `{"turns": [...]}` where each entry is a `HistoryTurn`
-- MUST support `session_id`
-- MAY support `limit`
-
-The current runtime does not define pagination or richer history item kinds at the protocol layer.
-
-### 12.2 Compaction Profile
-
-The Compaction profile defines `sessions/compact`, which returns:
-
-- `{"summary_text": string | null, "turn_id": string | null}`
-
-### 12.3 Topology Profile
-
-The Topology profile defines:
-
-- `topology/get`
-
-This profile MAY expose:
-
-- host-managed relationships between agents
-- routing metadata
-- visibility rules for user applications
-
-### 12.4 Agent-to-Agent Extension Profile
-
-The Agent-to-Agent extension profile MAY:
-
-- treat a calling agent as a host for the duration of a delegated request
-- correlate parent and child request IDs
-- define delegated cancellation semantics
-- define derived subordinate session behavior
-
-## 13. Error Model
-
-The current runtime uses two error shapes.
-
-Transport and validation errors are returned as:
+Example transport error:
 
 ```json
 {
@@ -680,135 +323,90 @@ Transport and validation errors are returned as:
 }
 ```
 
-Terminal request execution errors are returned inside `request.error` events as:
+### 7.3 GET Handling
+
+For `GET /agents/{agent_id}/requests/{request_id}`, the server MUST:
+
+1. validate the route and extract `request_id`
+2. reject missing or unknown request ids
+3. establish an SSE response with `Content-Type: text/event-stream`
+4. fetch buffered request events from the runtime in order
+5. write each event as one SSE frame
+6. stop after the runtime reports completion or the client disconnects
+
+If no new events are available and the request is not yet complete, the server MAY emit SSE keep-alive comments.
+
+### 7.4 Runtime Requirements Behind The Server
+
+The runtime attached to one agent HTTP server MUST provide:
+
+- request submission
+- request existence checks
+- ordered event streaming for one request
+
+The server/runtime boundary MUST preserve request ordering and terminal-event semantics.
+
+## 8. Per-Agent HTTP Runtime Binding
+
+H2A is per-agent at the transport boundary.
+
+### 8.1 One Server Per Agent
+
+- Each addressable agent MUST be exposed through its own HTTP server instance or an equivalent per-agent endpoint surface.
+- Each server instance MUST bind exactly one runtime and exactly one `agent_id`.
+- A host with multiple agents MUST maintain one client per agent server.
+
+### 8.2 Server Startup
+
+When an agent runtime starts its HTTP server:
+
+- it MUST bind a host and port
+- it MUST associate the bound server with exactly one `agent_id`
+- it MUST return a base URL that clients can use for subsequent `post_request` and `stream` calls
+
+If the server is already running, implementations SHOULD return the existing base URL rather than rebinding a new listener.
+
+### 8.3 Binding Summary
+
+The resulting interaction model is:
+
+1. the host resolves `agent_id` to the associated client
+2. the client calls `post_request`
+3. the per-agent HTTP server accepts the request
+4. the client calls `stream`
+5. the per-agent HTTP server streams the lifecycle for that request
+
+## 9. Error Model
+
+Transport and validation errors MUST be returned as JSON objects of the form:
 
 ```json
 {
-  "request_id": "req_123",
-  "agent_id": "planner",
-  "status": "error",
-  "session_id": "sess_123",
-  "error": "request failed",
-  "error_code": "context_length_exceeded",
-  "retryable": false
+  "error": {
+    "code": "INVALID_REQUEST",
+    "message": "message is required"
+  }
 }
 ```
 
-Current runtime HTTP errors use uppercase codes such as:
+Request execution failures after acceptance MUST be emitted as `request.error` events rather than converted into a different HTTP response.
 
-- `INVALID_REQUEST`
-- `INVALID_JSON`
-- `ROUTE_NOT_FOUND`
-- `REQUEST_NOT_FOUND`
+Recommended HTTP status codes:
 
-## 14. Transport Bindings
+- `200 OK` for successful stream establishment
+- `202 Accepted` for successful request submission
+- `400 Bad Request` for validation failures
+- `404 Not Found` for unknown routes or request ids
+- `500 Internal Server Error` for unexpected transport failures
 
-### 14.1 Binding Requirements
-
-Every binding MUST define:
-
-- operation addressing
-- request and response encoding
-- event stream encoding
-- error mapping
-
-A binding specification SHOULD describe:
-
-- how one agent is exposed over that binding
-- how an associated client interacts with that agent for request submission, control operations, and streaming
-
-### 14.2 HTTP Plus SSE Binding
-
-This document defines HTTP plus SSE as the first standard binding.
-
-In the HTTP plus SSE binding:
-
-- one agent is exposed over HTTP endpoints and SSE event streams
-- the associated client invokes those endpoints for exactly that agent
-- the host selects and uses the appropriate client for the target `agent_id`
-
-#### 14.2.1 Endpoint Shape
-
-- `POST /agents/{agent_id}/control`
-- `GET /agents/{agent_id}/control?action=...`
-- `POST /agents/{agent_id}/requests`
-- `GET /agents/{agent_id}/requests/{request_id}`
-
-Equivalent shapes are permitted if they preserve H2A semantics.
-
-#### 14.2.2 Submission And Streaming
-
-For HTTP:
-
-- `requests/create` returns `202 Accepted` with a `RequestAccepted` payload
-- the request stream is fetched by `GET /agents/{agent_id}/requests/{request_id}`
-- the stream emits `request.accepted`, `request.started`, zero or more `agent.trace`, and one terminal event
-
-#### 14.2.3 SSE Encoding
-
-Each SSE event MUST be encoded using:
-
-```text
-event: <event-name>
-data: <json-object>
-```
-
-The JSON payload in `data` is the event `data` object from `StreamEvent`.
-
-Bindings MAY emit keep-alive comments.
-
-#### 14.2.4 HTTP Status Codes
-
-Recommended status codes:
-
-- `200 OK` for successful control operations and stream establishment
-- `202 Accepted` for asynchronous request submission
-- `400 Bad Request` for validation errors
-- `401 Unauthorized` for missing authentication
-- `403 Forbidden` for denied authorization
-- `404 Not Found` for unknown agent, request, or route
-- `500 Internal Server Error` for unexpected failures
-
-## 15. Security And Trust Considerations
-
-Implementations SHOULD:
-
-- authenticate user applications and hosts appropriately for the deployment model
-- authorize access at least at the agent and session scope
-- validate all identifiers and content parts
-- enforce request size and stream duration limits
-- rate limit abusive clients
-- avoid leaking internal stack traces in protocol errors
-- log security-relevant failures
-
-If topology, history, preferences, or app data are exposed, hosts SHOULD make that exposure configurable.
-
-## 16. Related Protocols
+## 10. Related Protocols
 
 This section is informative.
 
-### 16.1 MCP
+### 10.1 MCP
 
-MCP is complementary to H2A. MCP focuses on tools, resources, prompts, and external context interoperability and includes explicit initialization and capability negotiation. H2A focuses on host-to-agent execution, lifecycle, and host-facing state.
+MCP is complementary to H2A. MCP focuses on tools, resources, prompts, and external context interoperability and includes explicit initialization and capability negotiation. H2A focuses on host-to-agent execution, lifecycle, and transport semantics.
 
-### 16.2 A2A
+### 10.2 A2A
 
 Google A2A is the closest adjacent public protocol. It emphasizes agent-to-agent communication, task lifecycle, structured messages, artifacts, and long-running execution. H2A is narrower and host-to-agent first.
-
-### 16.3 OpenAI Public APIs
-
-OpenAI publicly exposes related primitives, including typed streaming events, persistent conversation state, and multi-agent SDK patterns. H2A adopts similar concerns at the interoperability layer, but does not assume a vendor-specific runtime model.
-
-### 16.4 Anthropic Public APIs
-
-Anthropic publicly points to MCP as its main interoperability standard in this area. H2A therefore positions itself as complementary to MCP rather than parallel to an existing Anthropic host-to-agent standard.
-
-## 17. Implementation Notes
-
-The following are compatible implementation choices, not protocol requirements:
-
-- single-flight execution with an internal queue
-- bounded request retention
-- event fan-out to durable logs and live streams
-- host-local session summaries
-- transport-specific optimizations that preserve H2A semantics
