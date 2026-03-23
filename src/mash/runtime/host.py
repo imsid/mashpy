@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Dict, Optional
 
-from ..agents.masher import MasherAgentSpec, build_masher_metadata
 from ..core.config import SystemPrompt
 from ..tools.subagent import InvokeSubagentTool
 from .client import MashAgentClient
@@ -244,6 +243,7 @@ class MashAgentHostBuilder:
         for spec, metadata, agent_id in self._subagents:
             host.register_subagent(spec, metadata=metadata, agent_id=agent_id)
         if self._masher_enabled:
+            from ..agents.masher import MasherAgentSpec, build_masher_metadata
 
             masher_log_file = primary_spec.get_log_destination()
             primary_app_id = primary_spec.build_agent_config().app_id

@@ -24,7 +24,7 @@ Dockerfile                 Base image for Mash host deployments
 
 ## RFCs
 
-- [Host-to-Agent Protocol (H2A)](/Users/sid/Projects/mashpy/docs/rfcs/host-to-agent-protocol.md)
+- [Host-to-Agent Protocol (H2A)](docs/rfcs/host-to-agent-protocol.md)
 
 ## Mental model
 
