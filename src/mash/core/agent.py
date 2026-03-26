@@ -61,6 +61,7 @@ class Agent:
         self._trace_id: Optional[str] = None
         self._chain_renderer: Optional[Any] = None  # ChainOfThoughtRenderer
         self._run_token_usage: Dict[str, int] = {"input": 0, "output": 0}
+        self._trace_tool_usage: Dict[str, Dict[str, int]] = {}
 
     def set_signal_collector(self, collector: SignalCollector) -> None:
         """Set the signal collector for automatic signal collection."""
@@ -105,6 +106,7 @@ class Agent:
 
         # Reset per-run token usage accumulator
         self._run_token_usage = {"input": 0, "output": 0}
+        self._trace_tool_usage = {}
 
         # Set trace ID on LLM provider for event correlation
         if hasattr(self.llm, "set_trace_id"):
@@ -151,6 +153,8 @@ class Agent:
 
                 # Check if we're done
                 if action.type == ActionType.FINISH:
+                    if self._signal_collector:
+                        context.signals.update(self._collect_signals(context, action, []))
                     context.mark_complete()
                     max_steps_exhausted = False
                     break
@@ -160,11 +164,6 @@ class Agent:
 
                 # Observe: update context with results
                 context = self.observe(context, action, results)
-
-                # Collect signals (automatic)
-                if self._signal_collector:
-                    signals = self._collect_signals(context, action, results)
-                    context.signals.update(signals)
 
                 # Log step completion
                 if self._event_logger:
@@ -448,6 +447,8 @@ class Agent:
                 )
                 self._event_logger.emit(tool_call_event)
 
+            self._increment_trace_tool_invocation(tool_call.name)
+
             # Execute the tool
             result = tool.execute(tool_call.arguments)
 
@@ -647,6 +648,7 @@ class Agent:
             "context": context,
             "action": action,
             "results": results,
+            "tool_usage": self._get_trace_tool_usage(),
         }
 
         return self._signal_collector.collect(event)
@@ -658,8 +660,10 @@ class Agent:
             List of tool definitions in provider-neutral format.
         """
         raw_tool_defs = self.tools.to_llm_format()
-        tool_defs = [
-            LLMToolDefinition(
+        tool_defs: List[LLMToolDefinition] = []
+        tool_sizes = []
+        for tool_def in raw_tool_defs:
+            normalized = LLMToolDefinition(
                 name=str(tool_def.get("name", "")),
                 description=str(tool_def.get("description", "")),
                 parameters_json_schema=tool_def.get("input_schema", {}),
@@ -669,18 +673,14 @@ class Agent:
                     if key not in {"name", "description", "input_schema"}
                 },
             )
-            for tool_def in raw_tool_defs
-        ]
+            tool_defs.append(normalized)
+            tool_name = normalized.name or "unknown"
+            tool_tokens = self._estimate_tokens_json(normalized.to_debug_dict())
+            self._remember_trace_tool(tool_name, tool_tokens)
+            tool_sizes.append({"name": tool_name, "tokens": tool_tokens})
 
         # Log per-tool token usage for debugging
         if self._event_logger:
-            tool_sizes = []
-            for tool_def in tool_defs:
-                tool_name = tool_def.name or "unknown"
-                tool_tokens = self._estimate_tokens_json(tool_def.to_debug_dict())
-
-                tool_sizes.append({"name": tool_name, "tokens": tool_tokens})
-
             # Sort by token count and log top tools
             tool_sizes.sort(key=lambda x: x["tokens"], reverse=True)
             total_tool_tokens = sum(t["tokens"] for t in tool_sizes)
@@ -704,6 +704,38 @@ class Agent:
             )
 
         return tool_defs
+
+    def _remember_trace_tool(self, tool_name: str, tool_tokens: int) -> None:
+        """Track one available tool for the current trace."""
+        entry = self._trace_tool_usage.get(tool_name)
+        if entry is None:
+            self._trace_tool_usage[tool_name] = {
+                "tokens": max(0, int(tool_tokens)),
+                "invocations": 0,
+            }
+            return
+        entry["tokens"] = max(entry["tokens"], int(tool_tokens))
+
+    def _increment_trace_tool_invocation(self, tool_name: str) -> None:
+        """Increment the invocation count for one tool in the current trace."""
+        cleaned_name = str(tool_name or "").strip()
+        if not cleaned_name:
+            return
+        entry = self._trace_tool_usage.get(cleaned_name)
+        if entry is None:
+            self._trace_tool_usage[cleaned_name] = {"tokens": 0, "invocations": 1}
+            return
+        entry["invocations"] += 1
+
+    def _get_trace_tool_usage(self) -> Dict[str, Dict[str, int]]:
+        """Return a copy of the accumulated per-tool trace usage."""
+        return {
+            name: {
+                "tokens": int(entry.get("tokens", 0)),
+                "invocations": int(entry.get("invocations", 0)),
+            }
+            for name, entry in self._trace_tool_usage.items()
+        }
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for text.

@@ -40,21 +40,23 @@ Main readers:
 - `keyword_search()` via join from the FTS table
 
 ### `signals`
-Numeric signal values attached to turns.
+JSON-backed signal payloads attached to turns.
 
 Columns:
 - `turn_id TEXT NOT NULL`
+- `session_id TEXT NOT NULL`
+- `app_id TEXT NOT NULL DEFAULT 'default'`
 - `signal_name TEXT NOT NULL`
-- `signal_value REAL NOT NULL`
+- `signal_value TEXT NOT NULL`
 
 Constraints:
 - `PRIMARY KEY (turn_id, signal_name)`
 - `FOREIGN KEY (turn_id) REFERENCES turns(turn_id)`
 
 What it stores:
-- Zero or more numeric signals per turn.
-- Only numeric/coercible signal values are written by `save_turn()`.
-- Non-numeric signal values are ignored rather than serialized.
+- Zero or more signals per turn.
+- `save_turn()` serializes each signal payload with JSON.
+- Signal payloads can be numbers, strings, arrays, objects, booleans, or null.
 
 Main readers:
 - `_get_signals_for_turn()`

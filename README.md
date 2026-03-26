@@ -79,9 +79,8 @@ flowchart TD
     A["`AgentSpec`"] --> B["`MashAgentHostBuilder`"]
     B --> C["`MashAgentHost`"]
     C --> D["`mash.api`"]
-    D --> E["HTTP API"]
-    D --> F["Telemetry UI"]
-    G["`mash.cli`"] --> E
+    G["`mash.cli`"] --> D
+    D --> F["MashAgent"]
 ```
 
 Persistence is runtime-level, not app-level. Each agent stores state under:
@@ -125,6 +124,7 @@ sequenceDiagram
     Agent->>Agent: think -> act -> observe
     Agent-->>Runtime: Response + token_usage + trace_id
     Runtime->>Store: save_turn(...)
+    Runtime->>Store: collect_signals(...)
     Runtime-->>Client: request.accepted / agent.trace / request.completed
     Client-->>API: streamed runtime events
     API-->>User: SSE / final payload

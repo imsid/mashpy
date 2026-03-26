@@ -25,7 +25,9 @@ class SignalCollector:
             name: Signal name (e.g., "user_continued", "response_time").
             collector: Function that extracts the signal value from an event.
                        Should take a dict with keys: context, action, results.
-                       Should return a numeric value or None.
+                       Should return a value or None. Non-numeric values can still
+                       be surfaced in live responses, but numeric values are the
+                       only ones persisted in the SQLite signals table.
 
         Example:
             ```python
@@ -100,3 +102,53 @@ class SignalCollector:
     def __contains__(self, name: str) -> bool:
         """Check if a signal is registered."""
         return name in self._collectors
+
+
+def collect_unused_tools(event: Dict[str, Any]) -> list[str]:
+    """Return sorted tool names offered to the model but never called."""
+    tool_usage = event.get("tool_usage")
+    if not isinstance(tool_usage, dict):
+        return []
+
+    unused = []
+    for name, entry in tool_usage.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            invocations = int(entry.get("invocations", 0))
+        except (TypeError, ValueError):
+            invocations = 0
+        if invocations == 0:
+            unused.append(str(name))
+    return sorted(unused)
+
+
+def collect_unused_tool_tokens(event: Dict[str, Any]) -> int:
+    """Return the summed token estimate for tools never called."""
+    tool_usage = event.get("tool_usage")
+    if not isinstance(tool_usage, dict):
+        return 0
+
+    total = 0
+    for entry in tool_usage.values():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            invocations = int(entry.get("invocations", 0))
+        except (TypeError, ValueError):
+            invocations = 0
+        if invocations != 0:
+            continue
+        try:
+            total += int(entry.get("tokens", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def build_default_signal_collector() -> SignalCollector:
+    """Build the default signal collector used by hosted runtimes."""
+    collector = SignalCollector()
+    collector.register_signal("unused_tools", collect_unused_tools)
+    collector.register_signal("unused_tool_tokens", collect_unused_tool_tokens)
+    return collector

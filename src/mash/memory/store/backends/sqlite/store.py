@@ -48,13 +48,14 @@ class SQLiteStore(MemoryStore):
                 """
             )
 
-            # Signals table
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS signals (
                     turn_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    app_id TEXT NOT NULL DEFAULT 'default',
                     signal_name TEXT NOT NULL,
-                    signal_value REAL NOT NULL,
+                    signal_value TEXT NOT NULL,
                     PRIMARY KEY (turn_id, signal_name),
                     FOREIGN KEY (turn_id) REFERENCES turns(turn_id)
                 )
@@ -97,6 +98,12 @@ class SQLiteStore(MemoryStore):
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_name ON signals(signal_name)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signals_app_session ON signals(app_id, session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signals_app_name ON signals(app_id, signal_name)"
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_app_data_session ON app_data(app_id, session_id)"
@@ -194,19 +201,25 @@ class SQLiteStore(MemoryStore):
 
             # Save signals
             for signal_name, signal_value in signals.items():
-                try:
-                    # Convert to float
-                    value = float(signal_value)
-                    self._conn.execute(
-                        """
-                        INSERT INTO signals (turn_id, signal_name, signal_value)
-                        VALUES (?, ?, ?)
-                        """,
-                        (turn_id, signal_name, value),
+                self._conn.execute(
+                    """
+                    INSERT INTO signals (
+                        turn_id,
+                        session_id,
+                        app_id,
+                        signal_name,
+                        signal_value
                     )
-                except (ValueError, TypeError):
-                    # Skip non-numeric signals
-                    pass
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        turn_id,
+                        session_id,
+                        app_id,
+                        signal_name,
+                        json.dumps(signal_value),
+                    ),
+                )
 
             self._conn.commit()
 
@@ -433,7 +446,7 @@ class SQLiteStore(MemoryStore):
         results = [by_key[key] for key in requested_keys if key in by_key]
         return results or None
 
-    def _get_signals_for_turn(self, turn_id: str) -> Dict[str, float]:
+    def _get_signals_for_turn(self, turn_id: str) -> Dict[str, Any]:
         """Get signals for a specific turn."""
         with self._lock:
             rows = self._conn.execute(
@@ -445,7 +458,13 @@ class SQLiteStore(MemoryStore):
                 (turn_id,),
             ).fetchall()
 
-        return {name: value for name, value in rows}
+        signals: Dict[str, Any] = {}
+        for name, value_json in rows:
+            try:
+                signals[str(name)] = json.loads(value_json)
+            except json.JSONDecodeError:
+                signals[str(name)] = value_json
+        return signals
 
     def keyword_search(
         self,

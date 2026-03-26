@@ -20,6 +20,7 @@ from ..core.config import SystemPrompt
 from ..core.context import Context, MessageRole
 from ..logging import AgentTraceEvent, CommandEvent, EventLogger, LLMEvent, LogEvent
 from ..memory.compaction import compact_conversation
+from ..memory.signals import build_default_signal_collector
 from ..tools.runtime import RuntimeToolBuilder
 from .errors import classify_error
 from .http import MashAgentHTTPHandler, MashAgentHTTPServer
@@ -85,6 +86,7 @@ class MashAgentServer:
             )
 
         self.agent = Agent(llm=llm, tools=self.tools, skills=self.skills, config=config)
+        self.agent.set_signal_collector(build_default_signal_collector())
         self.system_prompt: SystemPrompt = self.agent.config.system_prompt
 
         self._active_request_id: Optional[str] = None

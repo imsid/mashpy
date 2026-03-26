@@ -7,16 +7,17 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import patch
 
 from mash.core.config import AgentConfig
-from mash.core.context import Context, Response
+from mash.core.context import Context, Response, ToolCall
 from mash.core.llm import LLMProvider
-from mash.core.llm.types import LLMRequest, LLMResponse
+from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
 from mash.runtime.spec import AgentSpec
 from mash.runtime.server import MashAgentServer
 from mash.skills.registry import SkillRegistry
+from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
 
 
@@ -74,6 +75,93 @@ class _BaseDefinition(AgentSpec):
     def on_shutdown(self, runtime: MashAgentServer) -> None:
         del runtime
         self.shutdown_called = True
+
+
+class _ToolSignalsLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    def send(self, request: LLMRequest) -> LLMResponse:
+        del request
+        self._call_count += 1
+        if self._call_count == 1:
+            return LLMResponse(
+                text="Need one tool.",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="used_tool",
+                        arguments={},
+                    )
+                ],
+                content_blocks=[
+                    LLMContentBlock.text("Need one tool."),
+                    LLMContentBlock.tool_call(
+                        tool_call_id="call-1",
+                        name="used_tool",
+                        arguments={},
+                    ),
+                ],
+                stop_reason="tool_call",
+                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+            )
+
+        return LLMResponse(
+            text="Done.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("Done.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _SignalsDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+        super().__init__(root, app_id=app_id)
+        self.provider = _ToolSignalsLLMProvider()
+
+    def build_tools(self) -> ToolRegistry:
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="used_tool",
+                description="Tool that will be called.",
+                parameters={"type": "object", "properties": {}},
+                _executor=lambda args: ToolResult.success("used"),
+            )
+        )
+        tools.register(
+            FunctionTool(
+                name="unused_tool",
+                description="Tool that will remain unused.",
+                parameters={"type": "object", "properties": {}},
+                _executor=lambda args: ToolResult.success("unused"),
+            )
+        )
+        return tools
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=self.app_id,
+            system_prompt="You are a test app.",
+            max_steps=3,
+        )
+
+    def enable_runtime_tools(self) -> bool:
+        return False
 
 
 class _MismatchedDefinition(_BaseDefinition):
@@ -173,6 +261,41 @@ class MashAgentServerTests(unittest.TestCase):
 
                 self.assertEqual(result.compaction_summary_text, "summary text")
                 self.assertEqual(result.compaction_summary_turn_id, "summary-turn")
+
+    def test_process_user_message_persists_unused_tool_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                runtime = MashAgentServer.from_spec(_SignalsDefinition(Path(tmp)))
+                try:
+                    result = runtime.process_user_message("hi", session_id="s-tools")
+
+                    self.assertEqual(
+                        result.response.signals["unused_tools"],
+                        ["unused_tool"],
+                    )
+                    self.assertGreater(
+                        int(result.response.signals["unused_tool_tokens"]),
+                        0,
+                    )
+
+                    turns = runtime.store.get_turns(session_id="s-tools", limit=1)
+                    self.assertEqual(len(turns), 1)
+                    stored_turn = turns[0]
+                    self.assertNotIn("tool_usage", stored_turn["metadata"])
+                    self.assertGreater(
+                        int(stored_turn["signals"]["unused_tool_tokens"]),
+                        0,
+                    )
+
+                    latest_trace = runtime.store.get_latest_trace(
+                        app_id=runtime.app_id,
+                        session_id="s-tools",
+                    )
+                    self.assertIsNotNone(latest_trace)
+                    assert latest_trace is not None
+                    self.assertNotIn("tool_usage", latest_trace["metadata"])
+                finally:
+                    runtime.shutdown()
 
     def test_set_subagent_ids_deduplicates_and_ignores_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
