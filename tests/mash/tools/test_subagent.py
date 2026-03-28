@@ -6,6 +6,7 @@ import json
 import unittest
 from typing import Any, Dict, Iterator, Optional
 
+from mash.logging import clear_trace_id, set_trace_id
 from mash.runtime.session import derive_subagent_session_id
 from mash.tools.subagent import InvokeSubagentTool
 
@@ -66,6 +67,7 @@ class _RecordingEventLogger:
 
 class InvokeSubagentToolTests(unittest.TestCase):
     def setUp(self) -> None:
+        clear_trace_id()
         self.client = _FakeClient()
         self.event_logger = _RecordingEventLogger()
         self.tool = InvokeSubagentTool(
@@ -75,7 +77,11 @@ class InvokeSubagentToolTests(unittest.TestCase):
             event_logger=self.event_logger,
         )
 
+    def tearDown(self) -> None:
+        clear_trace_id()
+
     def test_success_returns_json_payload(self) -> None:
+        set_trace_id("trace-primary")
         result = self.tool.execute(
             {"agent_id": "research", "prompt": "Summarize issue", "opts": {"x": 1}}
         )
@@ -112,6 +118,14 @@ class InvokeSubagentToolTests(unittest.TestCase):
             self.event_logger.events[0].payload["primary_session_id"],
             "s1",
         )
+
+    def test_success_without_active_trace_skips_stream_event_logging(self) -> None:
+        result = self.tool.execute(
+            {"agent_id": "research", "prompt": "Summarize issue", "opts": {"x": 1}}
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(self.event_logger.events, [])
 
     def test_error_returns_error_result(self) -> None:
         self.client._error = TimeoutError("timed out")

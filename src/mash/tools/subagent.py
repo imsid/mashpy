@@ -107,23 +107,30 @@ class InvokeSubagentTool:
     ) -> None:
         if self._event_logger is None:
             return
+        trace_id = get_trace_id()
+        if not trace_id:
+            return
 
-        self._event_logger.emit(
-            AgentTraceEvent(
-                event_type=f"subagent.{event_name}",
-                app_id=self._primary_app_id,
-                session_id=primary_session_id,
-                trace_id=get_trace_id(),
-                payload={
-                    "agent_id": agent_id,
-                    "primary_session_id": primary_session_id,
-                    "subagent_session_id": subagent_session_id,
-                    "request_id": request_id,
-                    "event": event_name,
-                    "data": dict(data),
-                },
+        try:
+            self._event_logger.emit(
+                AgentTraceEvent(
+                    event_type=f"subagent.{event_name}",
+                    app_id=self._primary_app_id,
+                    session_id=primary_session_id,
+                    trace_id=trace_id,
+                    payload={
+                        "agent_id": agent_id,
+                        "primary_session_id": primary_session_id,
+                        "subagent_session_id": subagent_session_id,
+                        "request_id": request_id,
+                        "event": event_name,
+                        "data": dict(data),
+                    },
+                )
             )
-        )
+        except Exception:
+            # Subagent telemetry should never change tool behavior.
+            return
 
     def _error_result(
         self,
