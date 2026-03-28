@@ -42,7 +42,12 @@ Persistence is runtime-level, not app-level.
 Mash stores agent state under:
 
 - `<MASH_DATA_DIR>/<agent_id>/state.db`
-- `<MASH_DATA_DIR>/<agent_id>/logs/events.jsonl`
+
+`state.db` is the single per-agent SQLite store. It contains:
+
+- conversation turns and signals
+- preferences and app data
+- structured runtime logs in the `logs` table
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 
@@ -86,7 +91,9 @@ flowchart TD
 Persistence is runtime-level, not app-level. Each agent stores state under:
 
 - `<MASH_DATA_DIR>/<agent_id>/state.db`
-- `<MASH_DATA_DIR>/<agent_id>/logs/events.jsonl`
+
+Structured runtime events are stored inside that SQLite database in the `logs`
+table rather than in a separate JSONL file.
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 
@@ -137,7 +144,7 @@ Important runtime properties:
 - Request lifecycle is streamed over SSE using stable event names:
   `request.accepted`, `request.started`, `agent.trace`, `request.completed`, `request.error`.
 - Token accounting is session-scoped inside each runtime. `session_total_tokens` is computed from saved turn metadata and persisted with each turn.
-- Runtime logs are written to JSONL and also fanned out as live events for telemetry and remote clients.
+- Runtime logs are persisted in each agent's `MemoryStore` and also fanned out as live events for telemetry and remote clients.
 
 ## Working on the SDK
 
@@ -299,7 +306,7 @@ It is a built-in log-analysis specialist that uses the normal Mash runtime contr
 
 - `MasherAgentSpec` is a regular `AgentSpec`.
 - it uses Mash memory/store tools to resolve recent sessions and traces
-- it reads structured JSONL event logs
+- it reads structured event rows from the target agent's `MemoryStore`
 - it can append normalized online-eval rows with `append_jsonl`
 
 Pilot enables Masher by default with `.enable_masher()`, but Masher can also be registered in any other Mash host that wants a log-analysis subagent.

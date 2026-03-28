@@ -18,7 +18,14 @@ from mash.tools.mcp import MCPToolAdapter
 from ..core.agent import Agent
 from ..core.config import SystemPrompt
 from ..core.context import Context, MessageRole
-from ..logging import AgentTraceEvent, CommandEvent, EventLogger, LLMEvent, LogEvent
+from ..logging import (
+    AgentTraceEvent,
+    CommandEvent,
+    DebugEvent,
+    EventLogger,
+    LLMEvent,
+    LogEvent,
+)
 from ..memory.compaction import compact_conversation
 from ..memory.signals import build_default_signal_collector
 from ..tools.runtime import RuntimeToolBuilder
@@ -42,10 +49,10 @@ class _RequestState:
 
 
 class _EventMultiplexer(EventLogger):
-    """Fan-out logger that writes to disk and notifies a callback."""
+    """Fan-out logger that writes to storage and notifies a callback."""
 
-    def __init__(self, destination: Path, callback: Callable[[LogEvent], None]) -> None:
-        super().__init__(destination)
+    def __init__(self, store: Any, callback: Callable[[LogEvent], None]) -> None:
+        super().__init__(store)
         self._callback = callback
 
     def emit(self, event: LogEvent) -> None:
@@ -108,7 +115,7 @@ class MashAgentServer:
         self._http_thread: Optional[threading.Thread] = None
 
         self.event_logger = _EventMultiplexer(
-            definition.get_log_destination(),
+            self.store,
             self._handle_runtime_event,
         )
         self.agent.set_event_logger(self.event_logger, self.default_session_id)
@@ -638,11 +645,10 @@ class MashAgentServer:
                     )
                     if compaction_summary_text and self.event_logger:
                         self.event_logger.emit(
-                            AgentTraceEvent(
+                            DebugEvent(
                                 event_type="agent.compaction",
                                 app_id=self.agent.config.app_id,
                                 session_id=target_session_id,
-                                trace_id=None,
                                 payload={
                                     "reason": "auto",
                                     "summary_turn_id": compaction_summary_turn_id,

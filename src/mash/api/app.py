@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -134,9 +133,9 @@ def _get_client(request: Request, agent_id: str) -> MashAgentClient:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
 
-def _get_agent_log_path(host: MashAgentHost, agent_id: str) -> Path:
+def _get_agent_store_path(host: MashAgentHost, agent_id: str) -> Path:
     agent = host.get_agent(agent_id)
-    return agent.definition.get_log_destination().expanduser().resolve()
+    return (agent.definition.get_agent_data_dir() / "state.db").expanduser().resolve()
 
 
 def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> FastAPI:
@@ -150,9 +149,10 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         search_service: Optional[MemorySearchService] = None
         observability_memory_db_path = resolved_config.resolved_memory_db_path()
         if resolved_config.enable_observability and observability_memory_db_path is not None:
+            primary_agent = host.get_agent(host.get_primary_agent_id())
             search_service = MemorySearchService(
                 SQLiteStore(observability_memory_db_path),
-                event_logger=EventLogger(_get_agent_log_path(host, host.get_primary_agent_id())),
+                event_logger=EventLogger(primary_agent.store),
                 retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
                 fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
             )
@@ -426,32 +426,23 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
         try:
-            log_path = _get_agent_log_path(state.host, agent_id)
+            agent = state.host.get_agent(agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
-        if not log_path.exists():
-            raise APIError(
-                code="LOG_FILE_NOT_FOUND",
-                message="log file not found",
-                status_code=404,
-                details={"path": str(log_path)},
-            )
 
         resolved_limit = _parse_limit(limit, default=state.default_events_limit, max_value=20000)
-        events: list[dict[str, Any]] = []
-        with log_path.open("r", encoding="utf-8") as handle:
-            lines = handle.readlines()
-        for raw in lines[-resolved_limit:]:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                events.append(payload)
-        return _success({"events": events, "path": str(log_path), "agent_id": agent_id, "limit": resolved_limit})
+        events = [
+            _strip_log_cursor(item)
+            for item in agent.store.get_logs(app_id=agent_id, limit=resolved_limit)
+        ]
+        return _success(
+            {
+                "events": events,
+                "path": str(_get_agent_store_path(state.host, agent_id)),
+                "agent_id": agent_id,
+                "limit": resolved_limit,
+            }
+        )
 
     @api.get("/telemetry/events/stream")
     async def stream_observability_events(request: Request, agent_id: str) -> StreamingResponse:
@@ -460,36 +451,35 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
         try:
-            log_path = _get_agent_log_path(state.host, agent_id)
+            agent = state.host.get_agent(agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
-        if not log_path.exists():
-            raise APIError(
-                code="LOG_FILE_NOT_FOUND",
-                message="log file not found",
-                status_code=404,
-                details={"path": str(log_path)},
-            )
 
         async def _generate() -> AsyncIterator[str]:
-            with log_path.open("r", encoding="utf-8") as handle:
-                handle.seek(0, os.SEEK_END)
-                while True:
-                    if await request.is_disconnected():
-                        break
-                    line = handle.readline()
-                    if not line:
-                        yield ": keep-alive\n\n"
-                        await asyncio.sleep(0.25)
-                        continue
-                    payload = line.strip()
-                    if not payload:
-                        continue
+            latest = agent.store.get_logs(app_id=agent_id, limit=1)
+            last_seen = 0
+            if latest:
+                try:
+                    last_seen = int(latest[-1].get("log_id") or 0)
+                except (TypeError, ValueError):
+                    last_seen = 0
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                events = agent.store.get_logs(app_id=agent_id, after_log_id=last_seen)
+                if not events:
+                    yield ": keep-alive\n\n"
+                    await asyncio.sleep(0.25)
+                    continue
+                for event in events:
                     try:
-                        json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    yield _build_observability_sse_payload(payload)
+                        last_seen = max(last_seen, int(event.get("log_id") or 0))
+                    except (TypeError, ValueError):
+                        pass
+                    yield _build_observability_sse_payload(
+                        json.dumps(_strip_log_cursor(event), ensure_ascii=True)
+                    )
 
         return StreamingResponse(
             _generate(),
@@ -578,3 +568,9 @@ def run_host(host: MashAgentHost, *, config: MashHostConfig | None = None) -> No
     resolved_config = config or MashHostConfig()
     app = create_app(host, config=resolved_config)
     uvicorn.run(app, host=resolved_config.bind_host, port=resolved_config.bind_port)
+
+
+def _strip_log_cursor(event: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(event)
+    sanitized.pop("log_id", None)
+    return sanitized

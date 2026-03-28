@@ -199,18 +199,26 @@ def test_telemetry_ui_bootstraps_auth_cookie() -> None:
 def test_telemetry_events_filter_by_agent() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        log_dir = root / "primary" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "events.jsonl").write_text(
-            json.dumps({"event_type": "agent.run"}) + "\n",
-            encoding="utf-8",
-        )
         with _build_test_client(root) as client:
+            runtime = client.app.state.runtime_state.host.get_agent("primary")
+            runtime.store.save_logs(
+                [
+                    {
+                        "app_id": "primary",
+                        "session_id": "s-1",
+                        "trace_id": "trace-1",
+                        "event_class": "AgentTraceEvent",
+                        "event_type": "agent.run.start",
+                        "created_at": 1.0,
+                        "payload": {"payload": {}},
+                    }
+                ]
+            )
             events = client.get("/api/v1/telemetry/events?agent_id=primary")
             assert events.status_code == 200
             payload = events.json()["data"]
-            assert payload["events"][0]["event_type"] == "agent.run"
-
+            assert payload["events"][0]["event_type"] == "agent.run.start"
+            assert payload["path"].endswith("/primary/state.db")
 
 def test_missing_telemetry_assets_fail_fast() -> None:
     with patch("mash.api.app.mount_telemetry_ui", side_effect=RuntimeError("missing telemetry assets")):

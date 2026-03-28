@@ -1,6 +1,6 @@
 # Memory Store
 
-`src/mash/memory/store` defines the backend-agnostic storage contract used by runtime memory, session persistence, preferences, app data, and memory-search retrieval.
+`src/mash/memory/store` defines the backend-agnostic storage contract used by runtime memory, session persistence, preferences, app data, structured event logging, and memory-search retrieval.
 
 ## What This Package Exposes
 - `MemoryStore`: protocol contract that all storage backends must implement.
@@ -23,6 +23,46 @@ Current backend status:
 - Semantic search is part of the protocol, but `SQLiteStore.semantic_search()` currently raises `NotImplementedError`.
 
 ## Protocol Methods
+
+### Structured Logs
+
+`save_logs(logs) -> None`
+- Persists one or more structured log rows.
+- Required per-row inputs:
+  - `app_id`
+  - `session_id`
+  - `trace_id`
+  - `event_class`
+  - `event_type`
+  - `created_at`
+  - `payload`
+
+`get_logs(app_id, session_id=None, trace_id=None, limit=None, after_log_id=None) -> list[dict]`
+- Returns reconstructed public event records for one app scope.
+- Expected shape per item:
+  - `event_type`
+  - `ts`
+  - `app_id`
+  - `session_id`
+  - `event_class`
+  - `payload`
+  - class-specific top-level fields such as `trace_id`, `duration_ms`, `model`, `tool_calls`, `metadata`
+- Notes:
+  - SQLite uses an internal autoincrement `id` for cursoring and returns it as `log_id`.
+  - API/tool callers strip `log_id` before returning events to users.
+
+`list_recent_log_traces(app_id, session_id, limit=5) -> list[dict]`
+- Returns recent trace summaries grouped from the `logs` table.
+- Expected shape per item:
+  - `trace_id`
+  - `session_id`
+  - `app_id`
+  - `started_at`
+  - `last_event_at`
+  - `event_count`
+
+`get_latest_log_trace(app_id, session_id) -> dict | None`
+- Convenience wrapper over `list_recent_log_traces(..., limit=1)`.
 
 ### Turn Persistence
 
@@ -165,5 +205,7 @@ Expected payload shape:
 ## SQLite-Specific Notes
 - Thread safety is enforced with a store-level lock around DB operations.
 - `trace_id` is persisted as the canonical `turn_id`.
+- Structured runtime events are persisted in the `logs` table inside the same `state.db` database file.
+- The `logs` table uses an internal autoincrement `id` for stable ordering and streaming cursors.
 - FTS index rows are rebuilt automatically if the main `turns` table has data but the FTS table is empty.
 - Database files are created on demand; parent directories are also created automatically.

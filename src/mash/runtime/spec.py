@@ -64,13 +64,9 @@ class AgentSpec(ABC):
     def build_agent_config(self) -> AgentConfig:
         """Construct the agent runtime configuration."""
 
-    def get_log_destination(self) -> Path:
-        """Return the path for structured event logs.
-
-        By default, Mash writes JSONL event logs at:
-        `<data_root>/<agent_id>/logs/events.jsonl`
-        """
-        return self.get_agent_data_dir() / "logs" / "events.jsonl"
+    def get_log_destination(self) -> MemoryStore:
+        """Return the MemoryStore used for structured event persistence."""
+        return self.build_store()
 
     def get_agent_data_dir(self) -> Path:
         """Return the agent-specific persistent data directory."""

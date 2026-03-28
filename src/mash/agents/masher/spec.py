@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Union
 
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider
 from mash.logging import EventLogger
-from mash.memory.store import SQLiteStore
+from mash.memory.store import MemoryStore
 from mash.runtime.spec import AgentSpec
 from mash.runtime.types import SubAgentMetadata
 from mash.skills.base import Skill
@@ -18,14 +17,19 @@ from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 from mash.tools.runtime import RuntimeToolBuilder
 
-from .tool import AppendJsonlTool, GetTraceLogsTool
+from .tool import (
+    AppendJsonlTool,
+    GetLatestTraceTool,
+    GetTraceLogsTool,
+    ListRecentTracesTool,
+)
 
 MASHER_AGENT_ID = "masher"
 
 _PROMPT_TEMPLATE = """You are Masher, Mash's built-in log analysis specialist.
 
-Configured log file:
-- {log_file}
+Configured event store:
+- {store_path}
 
 Your roles:
 1. Analyze structured Mash event logs and answer questions about agent performance.
@@ -42,8 +46,8 @@ Structured event schema:
   - command.* for command lifecycle events
 
 When analyzing performance:
-- The configured log file above is the source of truth for analysis unless the prompt explicitly says otherwise.
-- Treat the delegated prompt as a free-form question about that log file.
+- The configured event store above is the source of truth for analysis unless the prompt explicitly says otherwise.
+- Treat the delegated prompt as a free-form question about that event store.
 - First resolve the target session or trace with deterministic store tools.
 - Use `get_latest_session` for questions about the most recent session.
 - Use `get_latest_trace` to select the latest trace within a session.
@@ -54,13 +58,13 @@ When analyzing performance:
 - Infer any needed metrics from the raw session records returned by the tool.
 - Use bash only as a fallback when the deterministic store tools or raw log tool are insufficient.
 - Keep bash reads small with rg, tail, head, sed, or context flags.
-- Do not dump the whole log file.
-- Inspect only the configured log file and nearby eval files unless the prompt asks otherwise.
+- Do not dump the whole event store.
+- Inspect only the configured event store and nearby eval files unless the prompt asks otherwise.
 
 When creating eval records:
 - This is curation only. Do not perform or claim evaluation results.
 - Use session_id and trace_id together as the unique run key.
-- Include the source log path, app_id, session_id, trace_id, user prompt, assistant response,
+- Include the source store path, app_id, session_id, trace_id, user prompt, assistant response,
   tools_called, step_count, and token usage when present.
 - Use append_jsonl to write JSONL output.
 """
@@ -77,7 +81,7 @@ def build_masher_metadata() -> SubAgentMetadata:
         ],
         usage_guidance=(
             "Use for Mash log analysis or eval-record curation against the host-"
-            "configured log file. Ask free-form questions about that log. For "
+            "configured event store. Ask free-form questions about that store. For "
             "analysis, Masher should first resolve the target session or trace "
             "with its deterministic store tools, then fetch raw log events, and "
             "only fall back to bash when needed. Use opts only for invocation "
@@ -91,46 +95,46 @@ class MasherAgentSpec(AgentSpec):
 
     def __init__(
         self,
-        log_file: Union[str, Path],
+        log_store: MemoryStore,
         *,
         target_app_id: str | None = None,
     ) -> None:
-        self.log_file = self._resolve_log_file(log_file)
+        self.log_store = log_store
         self.target_app_id = (
             target_app_id.strip()
             if isinstance(target_app_id, str) and target_app_id.strip()
-            else self.log_file.parent.parent.name
+            else "primary"
         )
+        self.store_path = (
+            AgentSpec.get_data_root() / self.target_app_id / "state.db"
+        ).resolve()
 
-    @staticmethod
-    def _resolve_log_file(log_file: Union[str, Path]) -> Path:
-        path = Path(log_file).expanduser()
-        if path.is_absolute():
-            return path
-
-        return AgentSpec.get_data_root() / path
-
-    def _build_target_store(self) -> SQLiteStore:
-        return SQLiteStore(self.log_file.parent.parent / "state.db")
+    def _build_target_store(self) -> MemoryStore:
+        return self.log_store
 
     def get_agent_id(self) -> str:
         return MASHER_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         target_store = self._build_target_store()
         runtime_tools = RuntimeToolBuilder(
             store=target_store,
             app_id=self.target_app_id,
-            event_logger=EventLogger(self.get_log_destination()),
+            event_logger=EventLogger(target_store),
             session_id=MASHER_AGENT_ID,
         )
         tools.register(runtime_tools.build_get_latest_session_tool())
-        tools.register(runtime_tools.build_get_latest_trace_tool())
-        tools.register(runtime_tools.build_list_recent_traces_tool())
-        tools.register(GetTraceLogsTool(log_file=self.log_file))
-        tools.register(BashTool(working_dir=str(self.log_file.parent)))
+        tools.register(GetLatestTraceTool(target_store, app_id=self.target_app_id))
+        tools.register(ListRecentTracesTool(target_store, app_id=self.target_app_id))
+        tools.register(
+            GetTraceLogsTool(
+                target_store,
+                app_id=self.target_app_id,
+                store_path=self.store_path,
+            )
+        )
+        tools.register(BashTool(working_dir=str(self.store_path.parent)))
         tools.register(AppendJsonlTool())
         return tools
 
@@ -141,7 +145,7 @@ class MasherAgentSpec(AgentSpec):
             Skill(
                 type="custom",
                 name="online-eval-curation",
-                description="Build normalized online eval JSONL rows from Mash log files.",
+                description="Build normalized online eval JSONL rows from Mash event stores.",
                 location=str(skill_dir),
             )
         )
@@ -170,7 +174,7 @@ class MasherAgentSpec(AgentSpec):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
             app_id=MASHER_AGENT_ID,
-            system_prompt=_PROMPT_TEMPLATE.format(log_file=str(self.log_file)),
+            system_prompt=_PROMPT_TEMPLATE.format(store_path=str(self.store_path)),
             skills_enabled=True,
             max_steps=6,
         )

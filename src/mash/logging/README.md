@@ -4,12 +4,12 @@
 
 ## What This Package Does
 - Defines the structured event payloads emitted across the system.
-- Implements the JSONL event logger used by hosted agents.
+- Implements the `MemoryStore`-backed event logger used by hosted agents.
 - Provides helpers for creating and propagating trace IDs across agent, tool, and host boundaries.
 
 ## Main Components
 - `events.py`: structured event types used across Mash.
-- `logger.py`: JSONL event logger implementation.
+- `logger.py`: `MemoryStore`-backed event logger implementation.
 - `trace_context.py`: trace ID helpers.
 
 ## Role In The System
@@ -17,8 +17,9 @@
 - Event shapes should remain machine-readable and stable enough for downstream inspection and tests.
 
 ## Logged Event Stream
-- `EventLogger` writes one JSON object per line (`.jsonl`).
-- The log file is append-only; downstream readers should treat each line as an independent event record.
+- `EventLogger` persists structured events through `MemoryStore.save_logs(...)`.
+- In the default SQLite backend, events live in the agent's `<MASH_DATA_DIR>/<agent_id>/state.db` `logs` table.
+- Downstream readers should treat each stored row as an independent event record.
 - Every record includes an `event_type` string and an `event_class` discriminator.
 - The concrete event classes currently written are:
   - `CommandEvent`
@@ -49,6 +50,11 @@ Base field notes:
 - `session_id`: conversation or runtime session when available.
 - `event_class`: one of the concrete dataclass names above.
 - `payload`: event-specific structured data. This is often empty for lifecycle-only events and populated for previews, token breakdowns, or custom metadata.
+
+Storage notes:
+- SQLite stores the common envelope in top-level `logs` columns:
+  `app_id`, `session_id`, `trace_id`, `event_class`, `event_type`, `created_at`.
+- Remaining event fields are stored in the row's JSON `payload` column and reconstructed back into the current public event shape on reads.
 
 ## Lightweight Schema By Event Class
 
@@ -242,3 +248,4 @@ Typical metadata:
 - Expect sparse records: many top-level optional fields are `null`.
 - Expect richer details in `payload` and class-specific `metadata`.
 - `trace_id`, `session_id`, and `query_id` are the main correlation keys across related events.
+- For storage-level debugging, inspect the agent's `state.db` `logs` table rather than looking for a standalone JSONL log file.

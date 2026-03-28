@@ -6,6 +6,204 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+_ENVELOPE_FIELDS = frozenset({"event_type", "ts", "app_id", "session_id", "event_class"})
+_CLASS_FIELDS: dict[str, tuple[str, ...]] = {
+    "CommandEvent": ("command_name", "args", "duration_ms", "error", "trace_id"),
+    "AgentTraceEvent": (
+        "trace_id",
+        "step_id",
+        "duration_ms",
+        "action_type",
+        "tool_calls",
+        "skill_calls",
+        "token_usage",
+    ),
+    "MCPEvent": (
+        "server_name",
+        "server_url",
+        "tool_name",
+        "duration_ms",
+        "error",
+        "metadata",
+        "trace_id",
+    ),
+    "LLMEvent": (
+        "provider",
+        "model",
+        "duration_ms",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "finish_reason",
+        "error",
+        "metadata",
+        "trace_id",
+        "tools",
+        "betas",
+    ),
+    "MemorySearchEvent": (
+        "query_id",
+        "level",
+        "stage",
+        "duration_ms",
+        "error",
+        "metadata",
+    ),
+    "DebugEvent": (
+        "message",
+        "exception_type",
+        "exception_message",
+        "stack_trace",
+        "context",
+    ),
+}
+
+
+def _normalized_payload(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _require_text(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is required")
+    return value.strip()
+
+
+def _require_present(value: Any, field_name: str) -> None:
+    if value is None:
+        raise ValueError(f"{field_name} is required")
+
+
+def _require_payload_text(payload: Dict[str, Any], field_name: str) -> None:
+    _require_text(payload.get(field_name), f"payload.{field_name}")
+
+
+def _validate_log_event(raw: Dict[str, Any]) -> None:
+    event_type = _require_text(raw.get("event_type"), "event_type")
+    _require_text(raw.get("app_id"), "app_id")
+    _require_text(raw.get("event_class"), "event_class")
+
+    try:
+        float(raw.get("ts"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ts is required") from exc
+
+    event_class = str(raw.get("event_class"))
+    nested_payload = _normalized_payload(raw.get("payload"))
+
+    if event_class == "AgentTraceEvent":
+        _require_text(raw.get("trace_id"), "trace_id")
+    elif event_class == "LLMEvent":
+        _require_text(raw.get("trace_id"), "trace_id")
+        _require_text(raw.get("provider"), "provider")
+        _require_text(raw.get("model"), "model")
+    elif event_class == "MemorySearchEvent":
+        _require_text(raw.get("query_id"), "query_id")
+        _require_text(raw.get("level"), "level")
+        _require_text(raw.get("stage"), "stage")
+    elif event_class == "CommandEvent" and event_type.startswith("command."):
+        _require_text(raw.get("command_name"), "command_name")
+    elif event_class == "MCPEvent":
+        _require_text(raw.get("server_name"), "server_name")
+
+    if event_type == "agent.step.complete":
+        _require_present(raw.get("step_id"), "step_id")
+        _require_present(raw.get("duration_ms"), "duration_ms")
+        _require_text(raw.get("action_type"), "action_type")
+    elif event_type in {"agent.think.complete", "agent.act.complete"}:
+        _require_present(raw.get("duration_ms"), "duration_ms")
+        _require_text(raw.get("action_type"), "action_type")
+    elif event_type == "agent.tool.call":
+        _require_payload_text(nested_payload, "tool_name")
+        _require_payload_text(nested_payload, "tool_call_id")
+    elif event_type == "agent.tool.result":
+        _require_payload_text(nested_payload, "tool_name")
+        _require_payload_text(nested_payload, "tool_call_id")
+        if "is_error" not in nested_payload:
+            raise ValueError("payload.is_error is required")
+    elif event_type in {"llm.request.complete", "llm.request.error"}:
+        _require_present(raw.get("duration_ms"), "duration_ms")
+        if event_type == "llm.request.error":
+            _require_text(raw.get("error"), "error")
+    elif event_type.startswith("memory.search.") and event_type.endswith(".error"):
+        _require_text(raw.get("error"), "error")
+
+
+def normalize_log_event(event: "LogEvent") -> Dict[str, Any]:
+    """Validate one event and convert it to a persisted log record."""
+    raw = event.to_dict()
+    _validate_log_event(raw)
+
+    event_class = str(raw["event_class"])
+    raw_payload = _normalized_payload(raw.get("payload"))
+    trace_id_value = raw.get("trace_id")
+    trace_id = trace_id_value.strip() if isinstance(trace_id_value, str) and trace_id_value.strip() else None
+
+    payload: Dict[str, Any] = {"payload": raw_payload}
+    for field_name in _CLASS_FIELDS.get(event_class, ()):
+        if field_name == "trace_id":
+            continue
+        value = raw.get(field_name)
+        if value is not None:
+            payload[field_name] = value
+
+    known_fields = _ENVELOPE_FIELDS.union(_CLASS_FIELDS.get(event_class, ()))
+    for field_name, value in raw.items():
+        if field_name in known_fields or field_name == "payload":
+            continue
+        if value is not None:
+            payload[field_name] = value
+
+    return {
+        "app_id": str(raw["app_id"]),
+        "session_id": raw.get("session_id"),
+        "trace_id": trace_id,
+        "event_class": event_class,
+        "event_type": str(raw["event_type"]),
+        "created_at": float(raw["ts"]),
+        "payload": payload,
+    }
+
+
+def inflate_logged_event(
+    *,
+    log_id: Optional[int],
+    app_id: str,
+    session_id: Optional[str],
+    trace_id: Optional[str],
+    event_class: str,
+    event_type: str,
+    created_at: float,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reconstruct the public event shape from a stored DB row."""
+    restored: Dict[str, Any] = {
+        "event_type": event_type,
+        "ts": float(created_at),
+        "app_id": app_id,
+        "session_id": session_id,
+        "event_class": event_class,
+        "payload": _normalized_payload(payload.get("payload")),
+    }
+    if log_id is not None:
+        restored["log_id"] = int(log_id)
+
+    for field_name in _CLASS_FIELDS.get(event_class, ()):
+        if field_name == "trace_id":
+            restored[field_name] = trace_id
+        else:
+            restored[field_name] = payload.get(field_name)
+
+    known_fields = set(_CLASS_FIELDS.get(event_class, ()))
+    for field_name, value in payload.items():
+        if field_name == "payload" or field_name in known_fields:
+            continue
+        restored[field_name] = value
+
+    return restored
+
 
 @dataclass(frozen=True)
 class LogEvent:

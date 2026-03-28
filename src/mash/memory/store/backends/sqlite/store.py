@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
 from ...protocol import MemoryStore
 
@@ -89,6 +90,21 @@ class SQLiteStore(MemoryStore):
                 """
             )
 
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_id TEXT NOT NULL,
+                    session_id TEXT,
+                    trace_id TEXT,
+                    event_class TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+
             # Indexes for faster queries
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id)"
@@ -107,6 +123,15 @@ class SQLiteStore(MemoryStore):
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_app_data_session ON app_data(app_id, session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logs_app_id ON logs(app_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logs_session_id ON logs(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON logs(trace_id)"
             )
 
             try:
@@ -139,6 +164,202 @@ class SQLiteStore(MemoryStore):
                 self._rebuild_turns_fts_index_locked()
 
             self._conn.commit()
+
+    def save_logs(self, logs: List[Dict[str, Any]]) -> None:
+        """Persist one or more structured log records."""
+        if not logs:
+            return
+
+        rows: List[tuple[Any, ...]] = []
+        for log in logs:
+            payload = log.get("payload")
+            rows.append(
+                (
+                    str(log["app_id"]),
+                    log.get("session_id"),
+                    log.get("trace_id"),
+                    str(log["event_class"]),
+                    str(log["event_type"]),
+                    float(log["created_at"]),
+                    json.dumps(payload if isinstance(payload, dict) else {}, default=str),
+                )
+            )
+
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO logs (
+                    app_id,
+                    session_id,
+                    trace_id,
+                    event_class,
+                    event_type,
+                    created_at,
+                    payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            self._conn.commit()
+
+    def get_logs(
+        self,
+        app_id: str,
+        session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        after_log_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return structured log records for one app/session/trace scope."""
+        params: List[Any] = [app_id]
+        filters = ["app_id = ?"]
+
+        if session_id is not None:
+            filters.append("session_id = ?")
+            params.append(session_id)
+        if trace_id is not None:
+            filters.append("trace_id = ?")
+            params.append(trace_id)
+        if after_log_id is not None:
+            filters.append("id > ?")
+            params.append(int(after_log_id))
+
+        where_clause = " AND ".join(filters)
+        normalized_limit = None if limit is None else max(0, int(limit))
+        if normalized_limit == 0:
+            return []
+
+        if after_log_id is None and normalized_limit is not None:
+            sql = f"""
+                SELECT
+                    id,
+                    app_id,
+                    session_id,
+                    trace_id,
+                    event_class,
+                    event_type,
+                    created_at,
+                    payload
+                FROM logs
+                WHERE {where_clause}
+                ORDER BY id DESC
+                LIMIT ?
+            """
+            params.append(normalized_limit)
+            reverse_results = True
+        else:
+            sql = f"""
+                SELECT
+                    id,
+                    app_id,
+                    session_id,
+                    trace_id,
+                    event_class,
+                    event_type,
+                    created_at,
+                    payload
+                FROM logs
+                WHERE {where_clause}
+                ORDER BY id ASC
+            """
+            if normalized_limit is not None:
+                sql += "\nLIMIT ?"
+                params.append(normalized_limit)
+            reverse_results = False
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        if reverse_results:
+            rows = list(reversed(rows))
+
+        events: List[Dict[str, Any]] = []
+        for (
+            log_id,
+            found_app_id,
+            found_session_id,
+            found_trace_id,
+            event_class,
+            event_type,
+            created_at,
+            payload_json,
+        ) in rows:
+            events.append(
+                inflate_logged_event(
+                    log_id=int(log_id),
+                    app_id=str(found_app_id),
+                    session_id=None if found_session_id is None else str(found_session_id),
+                    trace_id=None if found_trace_id is None else str(found_trace_id),
+                    event_class=str(event_class),
+                    event_type=str(event_type),
+                    created_at=float(created_at or 0.0),
+                    payload=self._load_json_dict(payload_json),
+                )
+            )
+        return events
+
+    def get_latest_log_trace(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the latest trace summary from persisted logs."""
+        traces = self.list_recent_log_traces(app_id=app_id, session_id=session_id, limit=1)
+        if not traces:
+            return None
+        return traces[0]
+
+    def list_recent_log_traces(
+        self,
+        app_id: str,
+        session_id: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """List recent trace summaries from persisted logs."""
+        normalized_limit = max(1, int(limit))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT
+                    trace_id,
+                    session_id,
+                    app_id,
+                    MIN(created_at) AS started_at,
+                    MAX(created_at) AS last_event_at,
+                    COUNT(*) AS event_count
+                FROM logs
+                WHERE app_id = ?
+                  AND session_id = ?
+                  AND trace_id IS NOT NULL
+                  AND TRIM(trace_id) != ''
+                GROUP BY app_id, session_id, trace_id
+                ORDER BY last_event_at DESC, started_at DESC, trace_id DESC
+                LIMIT ?
+                """,
+                (app_id, session_id, normalized_limit),
+            ).fetchall()
+
+        traces: List[Dict[str, Any]] = []
+        for (
+            found_trace_id,
+            found_session_id,
+            found_app_id,
+            started_at,
+            last_event_at,
+            event_count,
+        ) in rows:
+            traces.append(
+                {
+                    "trace_id": str(found_trace_id),
+                    "session_id": str(found_session_id),
+                    "app_id": str(found_app_id),
+                    "started_at": float(started_at or 0.0),
+                    "last_event_at": float(last_event_at or 0.0),
+                    "event_count": int(event_count or 0),
+                }
+            )
+        return traces
 
     def save_turn(
         self,
@@ -445,6 +666,16 @@ class SQLiteStore(MemoryStore):
 
         results = [by_key[key] for key in requested_keys if key in by_key]
         return results or None
+
+    @staticmethod
+    def _load_json_dict(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, str):
+            return {}
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
 
     def _get_signals_for_turn(self, turn_id: str) -> Dict[str, Any]:
         """Get signals for a specific turn."""

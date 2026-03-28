@@ -67,11 +67,10 @@ class _PrimarySpec(AgentSpec):
 class MasherTests(unittest.TestCase):
     def _build_target_files(self, tmp: str) -> tuple[Path, SQLiteStore]:
         data_dir = Path(tmp) / "primary"
-        logs_dir = data_dir / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        log_path = logs_dir / "events.jsonl"
-        store = SQLiteStore(data_dir / "state.db")
-        return log_path, store
+        data_dir.mkdir(parents=True, exist_ok=True)
+        store_path = data_dir / "state.db"
+        store = SQLiteStore(store_path)
+        return store_path, store
 
     def _save_turn(
         self,
@@ -94,6 +93,31 @@ class MasherTests(unittest.TestCase):
             metadata={"trace_id": trace_id},
         )
 
+    def _save_trace_log(
+        self,
+        store: SQLiteStore,
+        *,
+        session_id: str,
+        trace_id: str,
+        event_type: str = "agent.run.start",
+        app_id: str = "primary",
+        created_at: float = 1.0,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        store.save_logs(
+            [
+                {
+                    "app_id": app_id,
+                    "session_id": session_id,
+                    "trace_id": trace_id,
+                    "event_class": "AgentTraceEvent",
+                    "event_type": event_type,
+                    "created_at": created_at,
+                    "payload": {"payload": payload or {}},
+                }
+            ]
+        )
+
     def test_builder_enable_masher_false_leaves_builder_unchanged(self) -> None:
         host = MashAgentHostBuilder().primary(_PrimarySpec()).enable_masher(False).build()
         try:
@@ -105,7 +129,10 @@ class MasherTests(unittest.TestCase):
     def test_spec_registers_store_tools_bash_jsonl_tool_and_eval_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                spec = MasherAgentSpec(log_file="primary/logs/events.jsonl")
+                spec = MasherAgentSpec(
+                    log_store=SQLiteStore(Path(tmp) / "primary" / "state.db"),
+                    target_app_id="primary",
+                )
 
                 tools = spec.build_tools()
                 skills = spec.build_skills()
@@ -133,23 +160,29 @@ class MasherTests(unittest.TestCase):
             try:
                 with patch.dict(os.environ, {"MASH_DATA_DIR": ".mash"}, clear=False):
                     primary = _PrimarySpec()
-                    expected = (Path(tmp) / ".mash" / "primary" / "logs" / "events.jsonl").resolve()
-                    self.assertEqual(primary.get_log_destination(), expected)
+                    expected = (Path(tmp) / ".mash" / "primary" / "state.db").resolve()
+                    self.assertIsInstance(primary.get_log_destination(), SQLiteStore)
 
-                    spec = MasherAgentSpec(log_file=primary.get_log_destination())
-                    self.assertEqual(spec.log_file, expected)
+                    spec = MasherAgentSpec(
+                        log_store=primary.get_log_destination(),
+                        target_app_id="primary",
+                    )
+                    self.assertEqual(spec.store_path, expected)
             finally:
                 os.chdir(previous_cwd)
 
     def test_store_tools_resolve_latest_session_and_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_path, store = self._build_target_files(tmp)
+            _store_path, store = self._build_target_files(tmp)
             self._save_turn(store, trace_id="t-1", session_id="s-1")
             self._save_turn(store, trace_id="t-2a", session_id="s-2")
             self._save_turn(store, trace_id="t-2b", session_id="s-2")
+            self._save_trace_log(store, session_id="s-1", trace_id="t-1", created_at=1.0)
+            self._save_trace_log(store, session_id="s-2", trace_id="t-2a", created_at=2.0)
+            self._save_trace_log(store, session_id="s-2", trace_id="t-2b", created_at=3.0)
 
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                spec = MasherAgentSpec(log_file=log_path, target_app_id="primary")
+                spec = MasherAgentSpec(log_store=store, target_app_id="primary")
                 tools = spec.build_tools()
 
                 latest_session = tools.get("get_latest_session").execute({})
@@ -164,14 +197,18 @@ class MasherTests(unittest.TestCase):
 
     def test_list_recent_traces_defaults_to_latest_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_path, store = self._build_target_files(tmp)
+            _store_path, store = self._build_target_files(tmp)
             self._save_turn(store, trace_id="t-1", session_id="s-1")
             self._save_turn(store, trace_id="t-2a", session_id="s-2")
             self._save_turn(store, trace_id="t-2b", session_id="s-2")
             self._save_turn(store, trace_id="t-2c", session_id="s-2")
+            self._save_trace_log(store, session_id="s-1", trace_id="t-1", created_at=1.0)
+            self._save_trace_log(store, session_id="s-2", trace_id="t-2a", created_at=2.0)
+            self._save_trace_log(store, session_id="s-2", trace_id="t-2b", created_at=3.0)
+            self._save_trace_log(store, session_id="s-2", trace_id="t-2c", created_at=4.0)
 
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                spec = MasherAgentSpec(log_file=log_path, target_app_id="primary")
+                spec = MasherAgentSpec(log_store=store, target_app_id="primary")
                 result = spec.build_tools().get("list_recent_traces").execute(
                     {"limit": 2}
                 )
@@ -186,38 +223,49 @@ class MasherTests(unittest.TestCase):
 
     def test_get_trace_logs_returns_requested_trace_within_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_path, _store = self._build_target_files(tmp)
-            log_path.write_text(
-                "\n".join(
-                    [
-                        json.dumps(
-                            {
-                                "event_type": "agent.run.start",
-                                "session_id": "s-1",
-                                "trace_id": "t-1a",
+            store_path, store = self._build_target_files(tmp)
+            store.save_logs(
+                [
+                    {
+                        "app_id": "primary",
+                        "session_id": "s-1",
+                        "trace_id": "t-1a",
+                        "event_class": "AgentTraceEvent",
+                        "event_type": "agent.run.start",
+                        "created_at": 1.0,
+                        "payload": {"payload": {}},
+                    },
+                    {
+                        "app_id": "primary",
+                        "session_id": "s-1",
+                        "trace_id": "t-1a",
+                        "event_class": "AgentTraceEvent",
+                        "event_type": "agent.tool.call",
+                        "created_at": 2.0,
+                        "payload": {
+                            "payload": {
+                                "tool_name": "search_conversations",
+                                "tool_call_id": "call-1",
                             }
-                        ),
-                        json.dumps(
-                            {
-                                "event_type": "agent.tool.call",
-                                "session_id": "s-1",
-                                "trace_id": "t-1a",
-                            }
-                        ),
-                        json.dumps(
-                            {
-                                "event_type": "agent.run.start",
-                                "session_id": "s-1",
-                                "trace_id": "t-1b",
-                            }
-                        ),
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
+                        },
+                    },
+                    {
+                        "app_id": "primary",
+                        "session_id": "s-1",
+                        "trace_id": "t-1b",
+                        "event_class": "AgentTraceEvent",
+                        "event_type": "agent.run.start",
+                        "created_at": 3.0,
+                        "payload": {"payload": {}},
+                    },
+                ]
             )
 
-            tool = GetTraceLogsTool(log_path)
+            tool = GetTraceLogsTool(
+                store,
+                app_id="primary",
+                store_path=store_path,
+            )
             result = tool.execute({"session_id": "s-1", "trace_id": "t-1a"})
 
             self.assertFalse(result.is_error)
@@ -277,7 +325,7 @@ class MasherTests(unittest.TestCase):
                         self.assertIn("search_conversations", masher.agent.tools)
                         self.assertIn("Skill", masher.agent.tools)
                         self.assertIn(
-                            str(primary.definition.get_log_destination()),
+                            str(primary.definition.get_agent_data_dir() / "state.db"),
                             str(masher.agent.config.system_prompt),
                         )
                     finally:

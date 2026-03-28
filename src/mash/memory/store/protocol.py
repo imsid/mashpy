@@ -10,6 +10,41 @@ from ..search.types import SearchColumn
 class MemoryStore(Protocol):
     """Protocol for conversation storage."""
 
+    def save_logs(
+        self,
+        logs: List[Dict[str, Any]],
+    ) -> None:
+        """Persist one or more structured log records."""
+        ...
+
+    def get_logs(
+        self,
+        app_id: str,
+        session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        after_log_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return structured log records for one app/session/trace scope."""
+        ...
+
+    def get_latest_log_trace(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the latest trace summary from persisted logs."""
+        ...
+
+    def list_recent_log_traces(
+        self,
+        app_id: str,
+        session_id: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """List recent trace summaries from persisted logs."""
+        ...
+
     def save_turn(
         self,
         trace_id: str,
