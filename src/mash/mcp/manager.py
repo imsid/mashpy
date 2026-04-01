@@ -309,7 +309,7 @@ class MCPManager:
 
                 self._event_logger.emit(
                     MCPEvent(
-                        event_type="mcp.client.error",
+                        event_type="mcp.tool.error",
                         app_id=self._app_id,
                         session_id=self._session_id,
                         server_name=server_name,

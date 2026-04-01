@@ -25,7 +25,3 @@ class EventLogger:
     def emit(self, event: LogEvent) -> None:
         """Persist one structured event."""
         self._store.save_logs([normalize_log_event(event)])
-
-    def clear(self) -> None:
-        """Structured log clearing is not part of the MemoryStore contract."""
-        raise NotImplementedError("clearing structured logs is not supported")

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from typing import Optional
 
 from mash.core.agent import Agent
 from mash.core.config import AgentConfig
 from mash.core.context import Context, ToolCall
-from mash.core.llm import LLMProvider
+from mash.core.llm import BaseLLMProvider, LLMProvider
 from mash.core.llm.types import (
     LLMContentBlock,
     LLMRequest,
@@ -122,6 +123,26 @@ class _FinishImmediatelyLLMProvider(LLMProvider):
 
     def set_trace_id(self, trace_id: Optional[str]) -> None:
         del trace_id
+
+
+class _LoggingFinishLLMProvider(BaseLLMProvider):
+    provider_name = "test-provider"
+
+    def __init__(self) -> None:
+        super().__init__(app_id="test", model="test-model")
+
+    def send(self, request: LLMRequest) -> LLMResponse:
+        started_at = time.time()
+        self._emit_request_start(request)
+        response = LLMResponse(
+            text="Done immediately.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("Done immediately.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+        self._emit_request_complete(request, started_at=started_at, response=response)
+        return response
 
 
 class AgentLoopTests(unittest.TestCase):
@@ -270,6 +291,33 @@ class AgentLoopTests(unittest.TestCase):
 
         self.assertEqual(response.signals["unused_tools"], ["alpha_tool", "beta_tool"])
         self.assertGreater(int(response.signals["unused_tool_tokens"]), 0)
+
+    def test_run_emits_llm_and_agent_trace_events_without_removed_debug_events(self) -> None:
+        agent = Agent(
+            llm=_LoggingFinishLLMProvider(),
+            tools=ToolRegistry(),
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id="test",
+                system_prompt="You are a test agent.",
+                max_steps=1,
+            ),
+        )
+        logger = _RecordingEventLogger()
+        agent.set_event_logger(logger, session_id="s-1")
+        agent.llm.set_event_logger(logger, session_id="s-1", app_id="test")
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("just answer")
+
+        agent.run(context)
+
+        event_types = [event.event_type for event in logger.events]
+        self.assertIn("llm.request.start", event_types)
+        self.assertIn("llm.request.complete", event_types)
+        self.assertIn("agent.think.complete", event_types)
+        self.assertNotIn("agent.prompt.token_breakdown", event_types)
+        self.assertNotIn("agent.tools.token_breakdown", event_types)
+        self.assertNotIn("agent.llm.response", event_types)
 
 
 if __name__ == "__main__":

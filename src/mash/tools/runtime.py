@@ -277,9 +277,9 @@ class RuntimeToolBuilder:
         return FunctionTool(
             name="get_user_preferences",
             description=(
-                "Get stored user preferences for this session. "
-                "Preferences are persistent across conversations. "
-                "Check this at the start of conversations to maintain user context."
+                "Read the stored user preferences for the current session. "
+                "Use this before setting preferences if you need to see the "
+                "current session-scoped values."
             ),
             parameters={"type": "object", "properties": {}},
             _executor=execute,
@@ -340,15 +340,13 @@ class RuntimeToolBuilder:
         return FunctionTool(
             name="search_conversations",
             description=(
-                "Search conversation history for relevant prior turns. "
-                "Use scope='session' to search only the current conversation, "
-                "or scope='app' to search across all sessions for this app. "
-                "Prefix query with @user: to search only user messages "
-                "(useful for finding what the user asked for or stated), "
-                "or @agent: to search only agent responses "
-                "(useful for finding prior answers, explanations, or outputs). "
-                "If omitted, the tool searches both and merges ranked results. "
-                "Returns ranked results with turn IDs, session IDs, scores, and previews."
+                "Search stored conversation turns and return ranked previews plus "
+                "the session_id and turn_id needed to retrieve full messages. "
+                "Use scope='session' for the current session only, or scope='app' "
+                "to search across all sessions for this app. Prefix the query with "
+                "@user: to search only user messages or @agent: to search only "
+                "assistant messages. If no prefix is provided, the tool searches "
+                "both and merges the results."
             ),
             parameters={
                 "type": "object",
@@ -356,23 +354,24 @@ class RuntimeToolBuilder:
                     "query": {
                         "type": "string",
                         "description": (
-                            "Search query. Use @user:<text> to search user messages, "
-                            "@agent:<text> to search agent responses, or plain text "
-                            "to search both and merge results."
+                            "Text to search for. Use @user:<text> to search only "
+                            "user messages, @agent:<text> to search only assistant "
+                            "messages, or plain text to search both."
                         ),
                     },
                     "limit": {
                         "type": "integer",
                         "description": (
-                            "Maximum number of results to return (default: 10)"
+                            "Maximum number of ranked matches to return "
+                            "(default: 10)."
                         ),
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["session", "app"],
                         "description": (
-                            "Search scope: current session only ('session') "
-                            "or all sessions in this app ('app')"
+                            "Search only the current session ('session') or all "
+                            "sessions for this app ('app')."
                         ),
                     },
                 },
@@ -489,10 +488,10 @@ class RuntimeToolBuilder:
         return FunctionTool(
             name="get_full_turn_message",
             description=(
-                "Fetch full user and assistant messages for one or more turns "
-                "using (session_id, turn_id) pairs, typically from "
-                "search_conversations results. Returns matched turns with the "
-                "full user_message and agent_response text for each result."
+                "Expand one or more search results into full turn text using "
+                "(session_id, turn_id) pairs. Use this after search_conversations "
+                "when the ranked preview is not enough and you need the complete "
+                "user_message and agent_response."
             ),
             parameters={
                 "type": "object",
@@ -500,8 +499,9 @@ class RuntimeToolBuilder:
                     "pairs": {
                         "type": "array",
                         "description": (
-                            "List of session/turn pairs from search_conversations "
-                            "results to expand into full messages"
+                            "List of (session_id, turn_id) pairs to expand into "
+                            "full turn messages, usually copied from "
+                            "search_conversations results."
                         ),
                         "items": {
                             "type": "object",
@@ -509,13 +509,13 @@ class RuntimeToolBuilder:
                                 "session_id": {
                                     "type": "string",
                                     "description": (
-                                        "Session ID from search_conversations results"
+                                        "The session_id for the turn to fetch."
                                     ),
                                 },
                                 "turn_id": {
                                     "type": "string",
                                     "description": (
-                                        "Turn ID from search_conversations results"
+                                        "The turn_id for the turn to fetch."
                                     ),
                                 },
                             },
@@ -551,17 +551,19 @@ class RuntimeToolBuilder:
         return FunctionTool(
             name="set_user_preferences",
             description=(
-                "Store user preferences for this session. "
-                "Use this to remember user settings, preferences, or context "
-                "that should persist across conversations (e.g., depth level, "
-                "code style, focus areas, language preferences)."
+                "Store user preferences for the current session. Use this for "
+                "user-specific settings or working preferences, such as response "
+                "style, depth, focus areas, or language."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "preferences": {
                         "type": "object",
-                        "description": "User preferences as JSON object",
+                        "description": (
+                            "A JSON object of user-specific settings for the "
+                            "current session."
+                        ),
                     },
                 },
                 "required": ["preferences"],
@@ -645,21 +647,25 @@ class RuntimeToolBuilder:
         return FunctionTool(
             name="set_app_data",
             description=(
-                "Store app-specific data by key. "
-                "Use this to persist information that should be available "
-                "in future conversations (e.g., discovered file locations, "
-                "identified patterns, user-specific configs, important facts). "
-                "This helps build up knowledge over time."
+                "Store session-scoped app data under a key. Use this for working "
+                "memory or extracted facts that are not user preferences, such as "
+                "discovered file paths, identifiers, or intermediate results."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "key": {
                         "type": "string",
-                        "description": "Data key (use as a tag/identifier)",
+                        "description": (
+                            "A key for the session-scoped app data entry, used as "
+                            "a stable tag or identifier."
+                        ),
                     },
                     "value": {
-                        "description": "Data value (any JSON-serializable type)",
+                        "description": (
+                            "The value to store for this key. Any JSON-serializable "
+                            "type is allowed."
+                        ),
                     },
                 },
                 "required": ["key", "value"],
@@ -689,9 +695,9 @@ class RuntimeToolBuilder:
         return FunctionTool(
             name="list_app_data",
             description=(
-                "List all app-specific data stored for this session. "
-                "Returns all keys and values previously saved with set_app_data. "
-                "Use this to see what information you've accumulated."
+                "List all app-data entries stored for the current session. Use "
+                "this to inspect the session-scoped working memory previously "
+                "saved with set_app_data."
             ),
             parameters={"type": "object", "properties": {}},
             _executor=execute,

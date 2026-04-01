@@ -159,19 +159,16 @@ Typical payload content:
 - `agent.tool.result`: `tool_name`, `tool_call_id`, `is_error`, `content_length`, `content_preview`, `metadata`
 - `agent.compaction`: `reason`, `summary_turn_id`, token-threshold details
 
-### Agent Debug And Token Introspection
-- `agent.prompt.token_breakdown`
-- `agent.tools.token_breakdown`
-- `agent.llm.response`
+### Mirrored Subagent Events
+- `subagent.request.accepted`
+- `subagent.request.started`
+- `subagent.request.completed`
+- `subagent.request.error`
+- `subagent.agent.trace`
 
 Notes:
-- These are emitted as `DebugEvent`, not `AgentTraceEvent`.
-- They are useful for prompt-size inspection and provider-response debugging.
-
-Typical payload content:
-- `agent.prompt.token_breakdown`: prompt, tool-definition, and message token estimates
-- `agent.tools.token_breakdown`: per-tool token estimates, deferred tool counts, largest tools
-- `agent.llm.response`: raw provider response snapshot
+- These are emitted as `AgentTraceEvent` records in the parent trace.
+- They mirror child runtime request-stream events so parent traces can correlate delegated work across sessions.
 
 ### LLM Provider Lifecycle
 - `llm.request.start`
@@ -200,6 +197,7 @@ Typical metadata:
 - `mcp.client.error`
 - `mcp.tool.call`
 - `mcp.tool.result`
+- `mcp.tool.error`
 
 Typical fields:
 - `server_name`

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from mash.skills.registry import SkillRegistry
 from mash.skills.tool import SkillTool
 
-from ..logging import AgentTraceEvent, DebugEvent, clear_trace_id, set_trace_id
+from ..logging import AgentTraceEvent, clear_trace_id, set_trace_id
 from .config import AgentConfig, SystemPrompt
 from .context import (
     Action,
@@ -268,32 +268,6 @@ class Agent:
 
         system_prompt = context.system_prompt
 
-        # Estimate tokens for compaction decision
-        system_prompt_tokens = self._estimate_system_prompt_tokens(system_prompt)
-        tool_defs_tokens = sum(
-            self._estimate_tokens_json(t.to_debug_dict()) for t in tool_defs
-        )
-        messages_tokens = sum(self._estimate_tokens_json(m.to_dict()) for m in messages)
-        estimated_total = system_prompt_tokens + tool_defs_tokens + messages_tokens
-
-        # Log token usage breakdown for debugging
-        if self._event_logger:
-            token_breakdown_event = DebugEvent(
-                event_type="agent.prompt.token_breakdown",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                payload={
-                    "trace_id": self._trace_id,
-                    "system_prompt_tokens": system_prompt_tokens,
-                    "tool_definitions_tokens": tool_defs_tokens,
-                    "tool_count": len(tool_defs),
-                    "messages_tokens": messages_tokens,
-                    "message_count": len(messages),
-                    "estimated_total_tokens": estimated_total,
-                },
-            )
-            self._event_logger.emit(token_breakdown_event)
-
         request = LLMRequest(
             model=self.llm.model,
             system=system_prompt,
@@ -304,17 +278,6 @@ class Agent:
             use_prompt_caching=self.config.prompt_caching_enabled,
         )
         response = self.llm.send(request)
-        # Log LLM response for debugging
-
-        if self._event_logger:
-            self._event_logger.emit(
-                DebugEvent(
-                    event_type="agent.llm.response",
-                    app_id=self.config.app_id,
-                    session_id=self._session_id,
-                    payload={"response": response.provider_response},
-                )
-            )
 
         # Parse response and update context
         action = self._parse_response_to_action(response, context)
@@ -661,7 +624,6 @@ class Agent:
         """
         raw_tool_defs = self.tools.to_llm_format()
         tool_defs: List[LLMToolDefinition] = []
-        tool_sizes = []
         for tool_def in raw_tool_defs:
             normalized = LLMToolDefinition(
                 name=str(tool_def.get("name", "")),
@@ -677,31 +639,6 @@ class Agent:
             tool_name = normalized.name or "unknown"
             tool_tokens = self._estimate_tokens_json(normalized.to_debug_dict())
             self._remember_trace_tool(tool_name, tool_tokens)
-            tool_sizes.append({"name": tool_name, "tokens": tool_tokens})
-
-        # Log per-tool token usage for debugging
-        if self._event_logger:
-            # Sort by token count and log top tools
-            tool_sizes.sort(key=lambda x: x["tokens"], reverse=True)
-            total_tool_tokens = sum(t["tokens"] for t in tool_sizes)
-
-            self._event_logger.emit(
-                DebugEvent(
-                    event_type="agent.tools.token_breakdown",
-                    app_id=self.config.app_id,
-                    session_id=self._session_id,
-                    payload={
-                        "trace_id": self._trace_id,
-                        "tool_count": len(tool_defs),
-                        "total_tool_tokens": total_tool_tokens,
-                        "avg_tokens_per_tool": (
-                            total_tool_tokens // len(tool_defs) if tool_defs else 0
-                        ),
-                        "top_10_largest_tools": tool_sizes[:10],
-                        "all_tool_sizes": tool_sizes,
-                    },
-                )
-            )
 
         return tool_defs
 

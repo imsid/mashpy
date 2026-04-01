@@ -360,5 +360,77 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
         )
 
 
+class RuntimeToolMetadataTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.builder = RuntimeToolBuilder(
+            store=FakeStore(),  # type: ignore[arg-type]
+            app_id="db",
+            session_id="s1",
+            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
+        )
+        self.builder._search_service = FakeSearchService()  # type: ignore[assignment]
+
+    def test_default_runtime_tool_order_is_unchanged(self) -> None:
+        tools = self.builder.build_tools()
+
+        self.assertEqual(
+            [tool.name for tool in tools],
+            [
+                "search_conversations",
+                "get_full_turn_message",
+                "get_user_preferences",
+                "set_user_preferences",
+                "list_app_data",
+                "set_app_data",
+            ],
+        )
+
+    def test_rewritten_descriptions_and_parameters_clarify_scope_and_usage(self) -> None:
+        tools = {tool.name: tool for tool in self.builder.build_tools()}
+
+        self.assertIn("current session", tools["get_user_preferences"].description)
+        self.assertIn("current session", tools["set_user_preferences"].description)
+        self.assertIn("session-scoped", tools["list_app_data"].description)
+        self.assertIn("session-scoped", tools["set_app_data"].description)
+
+        search_tool = tools["search_conversations"]
+        self.assertIn("ranked previews", search_tool.description)
+        self.assertIn("session_id and turn_id", search_tool.description)
+        self.assertIn(
+            "assistant messages",
+            search_tool.parameters["properties"]["query"]["description"],
+        )
+        self.assertIn(
+            "current session",
+            search_tool.parameters["properties"]["scope"]["description"],
+        )
+
+        turn_tool = tools["get_full_turn_message"]
+        self.assertIn("Expand", turn_tool.description)
+        self.assertIn("search_conversations", turn_tool.description)
+        self.assertIn(
+            "(session_id, turn_id) pairs",
+            turn_tool.parameters["properties"]["pairs"]["description"],
+        )
+
+        set_preferences_tool = tools["set_user_preferences"]
+        self.assertIn(
+            "current session",
+            set_preferences_tool.parameters["properties"]["preferences"][
+                "description"
+            ],
+        )
+
+        set_app_data_tool = tools["set_app_data"]
+        self.assertIn(
+            "session-scoped app data entry",
+            set_app_data_tool.parameters["properties"]["key"]["description"],
+        )
+        self.assertIn(
+            "JSON-serializable",
+            set_app_data_tool.parameters["properties"]["value"]["description"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

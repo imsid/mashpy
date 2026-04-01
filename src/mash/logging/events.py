@@ -85,8 +85,11 @@ def _validate_log_event(raw: Dict[str, Any]) -> None:
     _require_text(raw.get("app_id"), "app_id")
     _require_text(raw.get("event_class"), "event_class")
 
+    ts_value = raw.get("ts")
+    if ts_value is None:
+        raise ValueError("ts is required")
     try:
-        float(raw.get("ts"))
+        float(ts_value)
     except (TypeError, ValueError) as exc:
         raise ValueError("ts is required") from exc
 
@@ -123,6 +126,15 @@ def _validate_log_event(raw: Dict[str, Any]) -> None:
         _require_payload_text(nested_payload, "tool_call_id")
         if "is_error" not in nested_payload:
             raise ValueError("payload.is_error is required")
+    elif event_type == "mcp.tool.call":
+        _require_text(raw.get("tool_name"), "tool_name")
+    elif event_type == "mcp.tool.result":
+        _require_text(raw.get("tool_name"), "tool_name")
+        _require_present(raw.get("duration_ms"), "duration_ms")
+    elif event_type == "mcp.tool.error":
+        _require_text(raw.get("tool_name"), "tool_name")
+        _require_present(raw.get("duration_ms"), "duration_ms")
+        _require_text(raw.get("error"), "error")
     elif event_type in {"llm.request.complete", "llm.request.error"}:
         _require_present(raw.get("duration_ms"), "duration_ms")
         if event_type == "llm.request.error":
@@ -279,15 +291,19 @@ class CommandEvent(LogEvent):
 class AgentTraceEvent(LogEvent):
     """Structured event emitted during agent execution.
 
-    Tracks the agent's think-act-observe loop.
+    Tracks the agent's execution lifecycle and correlated subagent mirrors.
 
     Example event_types:
+    - "agent.run.start" - Agent execution started
+    - "agent.run.complete" - Agent execution finished
     - "agent.think.start" - Agent starting to think
     - "agent.think.complete" - Agent decided on action
-    - "agent.act.start" - Agent executing tools
     - "agent.act.complete" - Tools executed
-    - "agent.observe.complete" - Context updated with results
     - "agent.step.complete" - Full step completed
+    - "agent.tool.call" - Tool invoked
+    - "agent.tool.result" - Tool returned
+    - "subagent.request.*" - Mirrored child request lifecycle in the parent trace
+    - "subagent.agent.trace" - Mirrored child trace event in the parent trace
 
     Additional fields:
     - trace_id: Unique identifier for this execution trace
@@ -327,18 +343,16 @@ class AgentTraceEvent(LogEvent):
 class MCPEvent(LogEvent):
     """Event emitted for MCP client and host operations.
 
-    Tracks MCP server connections, tool calls, and sampling requests.
+    Tracks MCP server connections and MCP tool calls.
 
     Example event_types:
-    - "mcp.host.init" - Host initialized
     - "mcp.client.connect" - Connecting to MCP server
     - "mcp.client.connected" - Successfully connected
     - "mcp.client.disconnect" - Client disconnected
-    - "mcp.client.error" - Connection or execution error
+    - "mcp.client.error" - Client connection or lifecycle error
     - "mcp.tool.call" - Tool invoked via MCP
     - "mcp.tool.result" - Tool execution completed
-    - "mcp.sampling.request" - Sampling request from server
-    - "mcp.sampling.complete" - Sampling completed
+    - "mcp.tool.error" - Tool execution failed
 
     Additional fields:
     - server_name: MCP server identifier
@@ -379,16 +393,12 @@ class MCPEvent(LogEvent):
 class LLMEvent(LogEvent):
     """Event emitted for LLM provider operations.
 
-    Tracks LLM API calls, token usage, and responses.
+    Tracks LLM request lifecycle, token usage, and provider metadata.
 
     Example event_types:
     - "llm.request.start" - Starting LLM API call
     - "llm.request.complete" - LLM responded successfully
     - "llm.request.error" - LLM request failed
-    - "llm.stream.start" - Streaming response started
-    - "llm.stream.chunk" - Received stream chunk
-    - "llm.stream.complete" - Streaming completed
-    - "llm.skill.create" - Create skill completed
 
     Additional fields:
     - provider: LLM provider name (e.g., "anthropic", "openai")
@@ -456,10 +466,17 @@ class MemorySearchEvent(LogEvent):
     Example event_types:
     - "memory.search.start"
     - "memory.search.parse.complete"
+    - "memory.search.parse.error"
     - "memory.search.retrieval.complete"
+    - "memory.search.retrieval.error"
     - "memory.search.rerank.complete"
+    - "memory.search.rerank.error"
     - "memory.search.complete"
-    - "memory.search.error"
+
+    Notes:
+    - `memory.search.start` and `memory.search.complete` are service-level events.
+    - Errors are emitted at the stage that failed, not as one top-level
+      `memory.search.error` event.
     """
 
     query_id: Optional[str] = None

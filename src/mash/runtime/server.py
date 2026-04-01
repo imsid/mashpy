@@ -7,7 +7,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from mash.mcp.client import MCPClientError
