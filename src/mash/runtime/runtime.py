@@ -223,38 +223,40 @@ class MashAgentRuntime:
         manager = self.mcp_manager
         try:
             for server in mcp_servers:
-                manager.add_server(
-                    name=server.name,
-                    url=server.url,
-                    description=server.description,
-                    headers=server.headers,
-                    allowed_tools=server.allowed_tools,
-                    auto_connect=True,
-                )
-                mcp_tools = manager.get_flattened_tools(prefix="mcp_")
-                for mcp_tool in mcp_tools:
-                    server_name = mcp_tool.get("metadata", {}).get("server")
-                    original_name = mcp_tool.get("metadata", {}).get("original_name")
-                    if not server_name or not original_name:
-                        continue
-
-                    def make_executor(srv_name: str, tool_name: str):
-                        def executor(args):
-                            try:
-                                result = manager.call_tool(srv_name, tool_name, args)
-                                return extract_mcp_text(result)
-                            except Exception as exc:  # pragma: no cover
-                                return f"Error: {exc}"
-
-                        return executor
-
-                    adapter = MCPToolAdapter.from_mcp_tool(
-                        mcp_tool=mcp_tool,
-                        executor=make_executor(server_name, original_name),
-                        prefix="",
+                if manager.get_server(server.name) is None:
+                    manager.add_server(
+                        name=server.name,
+                        url=server.url,
+                        description=server.description,
+                        headers=server.headers,
+                        allowed_tools=server.allowed_tools,
+                        auto_connect=True,
                     )
-                    if adapter.name not in agent.tools:
-                        agent.tools.register(adapter)
+
+            mcp_tools = manager.get_flattened_tools(prefix="mcp_")
+            for mcp_tool in mcp_tools:
+                server_name = mcp_tool.get("metadata", {}).get("server")
+                original_name = mcp_tool.get("metadata", {}).get("original_name")
+                if not server_name or not original_name:
+                    continue
+
+                def make_executor(srv_name: str, tool_name: str):
+                    def executor(args):
+                        try:
+                            result = manager.call_tool(srv_name, tool_name, args)
+                            return extract_mcp_text(result)
+                        except Exception as exc:  # pragma: no cover
+                            return f"Error: {exc}"
+
+                    return executor
+
+                adapter = MCPToolAdapter.from_mcp_tool(
+                    mcp_tool=mcp_tool,
+                    executor=make_executor(server_name, original_name),
+                    prefix="",
+                )
+                if adapter.name not in agent.tools:
+                    agent.tools.register(adapter)
         except MCPClientError:
             return
 

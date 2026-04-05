@@ -15,6 +15,7 @@ from mash.core.config import AgentConfig
 from mash.core.context import Context, Response, ToolCall
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
+from mash.mcp.types import MCPServerConfig
 from mash.runtime.spec import AgentSpec
 from mash.runtime.runtime import MashAgentRuntime
 from mash.skills.registry import SkillRegistry
@@ -171,6 +172,30 @@ class _SignalsDefinition(_BaseDefinition):
         return False
 
 
+class _FakeMCPClient:
+    def list_tools(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "search",
+                "description": "Search remote data.",
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+        ]
+
+    def close(self) -> None:
+        return None
+
+
+class _MCPDefinition(_BaseDefinition):
+    def build_mcp_servers(self) -> list[MCPServerConfig]:
+        return [
+            MCPServerConfig(
+                name="github",
+                url="https://example.test/mcp",
+            )
+        ]
+
+
 class _MismatchedDefinition(_BaseDefinition):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(app_id="different-app-id", system_prompt="Mismatch")
@@ -308,6 +333,40 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("tool_usage", latest_trace["metadata"])
                 finally:
                     await runtime.shutdown()
+
+    async def test_process_user_message_reuses_existing_mcp_server_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                with patch(
+                    "mash.mcp.host.Host.get_client",
+                    return_value=_FakeMCPClient(),
+                ) as get_client:
+                    with patch("mash.mcp.manager.MCPManager._emit_event", return_value=None):
+                        runtime = MashAgentRuntime.from_spec(_MCPDefinition(Path(tmp)))
+                        try:
+                            original_add_server = runtime.mcp_manager.add_server
+
+                            def fail_on_duplicate_registration(*args, **kwargs):
+                                raise AssertionError("configure_remote_tools should not re-add existing servers")
+
+                            runtime.mcp_manager.add_server = fail_on_duplicate_registration  # type: ignore[method-assign]
+
+                            def assert_remote_tool_present(agent, _context: Context) -> Response:
+                                self.assertIn("mcp_github_search", agent.tools)
+                                return Response(text="ok", context=Context(), metadata={})
+
+                            with patch.object(runtime, "_run_agent", side_effect=assert_remote_tool_present):
+                                first = await runtime.process_user_message("first")
+                                second = await runtime.process_user_message("second")
+
+                            self.assertEqual(first.response.text, "ok")
+                            self.assertEqual(second.response.text, "ok")
+                            self.assertEqual(runtime.mcp_manager.list_servers(), ["github"])
+                            self.assertEqual(get_client.call_count, 1)
+                        finally:
+                            if runtime.mcp_manager is not None:
+                                runtime.mcp_manager.add_server = original_add_server  # type: ignore[method-assign]
+                            await runtime.shutdown()
 
     def test_set_subagent_ids_deduplicates_and_ignores_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
