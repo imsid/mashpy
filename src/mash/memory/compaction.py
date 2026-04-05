@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 from ..core.llm import LLMProvider
 from ..core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
+from ..logging import bound_trace_id
 from .store import MemoryStore
 
 COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor.
@@ -75,23 +76,31 @@ async def compact_conversation(
     if not lines:
         return "", ""
 
+    trace_id = str(uuid.uuid4())
     conversation_text = "\n".join(lines)
-    response = await llm.send(
-        LLMRequest(
-            model=llm.model,
-            system=COMPACTION_SYSTEM_PROMPT,
-            messages=[
-                LLMMessage(
-                    role="user",
-                    content=[LLMContentBlock.text(conversation_text)],
+    if hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(trace_id)
+    try:
+        with bound_trace_id(trace_id):
+            response = await llm.send(
+                LLMRequest(
+                    model=llm.model,
+                    system=COMPACTION_SYSTEM_PROMPT,
+                    messages=[
+                        LLMMessage(
+                            role="user",
+                            content=[LLMContentBlock.text(conversation_text)],
+                        )
+                    ],
+                    tools=[],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    use_prompt_caching=False,
                 )
-            ],
-            tools=[],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            use_prompt_caching=False,
-        )
-    )
+            )
+    finally:
+        if hasattr(llm, "set_trace_id"):
+            llm.set_trace_id(None)
     summary_text = response.text.strip()
 
     metadata: Dict[str, Any] = {
@@ -102,7 +111,6 @@ async def compact_conversation(
         "app_id": app_id,
         "token_usage": {"input": 0, "output": 0},
     }
-    trace_id = str(uuid.uuid4())
     turn_id = await store.save_turn(
         trace_id=trace_id,
         session_id=session_id,

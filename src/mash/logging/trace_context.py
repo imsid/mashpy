@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import contextvars
-from typing import Optional
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 _trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_trace_id",
@@ -24,3 +25,13 @@ def get_trace_id() -> Optional[str]:
 def clear_trace_id() -> None:
     """Clear the trace ID for the current task context."""
     _trace_id.set(None)
+
+
+@contextmanager
+def bound_trace_id(trace_id: Optional[str]) -> Iterator[None]:
+    """Temporarily bind a trace ID for the current task context."""
+    token = _trace_id.set(trace_id)
+    try:
+        yield
+    finally:
+        _trace_id.reset(token)

@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from mash.core.config import AgentConfig
 from mash.core.context import Context, Response, ToolCall
-from mash.core.llm import LLMProvider
+from mash.core.llm import BaseLLMProvider, LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
 from mash.mcp.types import MCPServerConfig
 from mash.runtime.spec import AgentSpec
@@ -201,6 +201,48 @@ class _MismatchedDefinition(_BaseDefinition):
         return AgentConfig(app_id="different-app-id", system_prompt="Mismatch")
 
 
+class _CompactionLoggingLLMProvider(BaseLLMProvider):
+    provider_name = "test-provider"
+
+    def __init__(self, *, app_id: str) -> None:
+        super().__init__(app_id=app_id, model="test-model")
+        self.trace_ids_set: list[str | None] = []
+        self.trace_id_during_send: str | None = None
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        self.trace_ids_set.append(trace_id)
+        super().set_trace_id(trace_id)
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        started_at = time.time()
+        self.trace_id_during_send = self._trace_id
+        await self._emit_request_start(request)
+        response = LLMResponse(
+            text="Summary:\n- compacted",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("Summary:\n- compacted")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=5, output_tokens=2, total_tokens=7),
+        )
+        await self._emit_request_complete(
+            request,
+            started_at=started_at,
+            response=response,
+        )
+        return response
+
+
+class _CompactionLoggingDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+        super().__init__(root, app_id=app_id)
+        self.last_built_llm: _CompactionLoggingLLMProvider | None = None
+
+    def build_llm(self) -> LLMProvider:
+        llm = _CompactionLoggingLLMProvider(app_id=self.app_id)
+        self.last_built_llm = llm
+        return llm
+
+
 class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def _collect_request_events(
         self,
@@ -298,6 +340,53 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.compaction_summary_text, "summary text")
                 self.assertEqual(result.compaction_summary_turn_id, "summary-turn")
                 await runtime.shutdown()
+
+    async def test_compact_session_assigns_trace_id_before_llm_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                definition = _CompactionLoggingDefinition(Path(tmp))
+                runtime = MashAgentRuntime.from_spec(definition)
+                try:
+                    await runtime.store.save_turn(
+                        trace_id="turn-1",
+                        session_id="s-compact",
+                        app_id=runtime.app_id,
+                        user_message="hello",
+                        agent_response="world",
+                        signals={},
+                        session_total_tokens=4,
+                        metadata={},
+                    )
+
+                    summary_text, turn_id = await runtime.compact_session("s-compact")
+
+                    self.assertEqual(summary_text, "Summary:\n- compacted")
+                    self.assertIsNotNone(turn_id)
+
+                    llm = definition.last_built_llm
+                    self.assertIsNotNone(llm)
+                    assert llm is not None
+                    self.assertIsNotNone(llm.trace_id_during_send)
+                    self.assertEqual(llm.trace_ids_set[0], llm.trace_id_during_send)
+
+                    logs = await runtime.store.get_logs(
+                        app_id=runtime.app_id,
+                        session_id="s-compact",
+                    )
+                    llm_logs = [
+                        event for event in logs if event["event_class"] == "LLMEvent"
+                    ]
+                    self.assertEqual(
+                        [event["event_type"] for event in llm_logs],
+                        ["llm.request.start", "llm.request.complete"],
+                    )
+                    self.assertEqual(
+                        {event["trace_id"] for event in llm_logs},
+                        {llm.trace_id_during_send},
+                    )
+                    self.assertEqual(turn_id, llm.trace_id_during_send)
+                finally:
+                    await runtime.shutdown()
 
     async def test_process_user_message_persists_unused_tool_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
