@@ -7,12 +7,12 @@ import unittest
 from mash.memory.store import SQLiteStore
 
 
-class SQLiteStoreTurnLookupTests(unittest.TestCase):
+class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = SQLiteStore(":memory:")
         self._turn_counter = 0
 
-    def _save_turn(
+    async def _save_turn(
         self,
         *,
         session_id: str,
@@ -22,7 +22,7 @@ class SQLiteStoreTurnLookupTests(unittest.TestCase):
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
-        self.store.save_turn(
+        await self.store.save_turn(
             trace_id=turn_id,
             session_id=session_id,
             app_id=app_id,
@@ -33,14 +33,14 @@ class SQLiteStoreTurnLookupTests(unittest.TestCase):
         )
         return turn_id
 
-    def test_get_turn_by_ids_returns_full_turn_for_exact_pair(self) -> None:
-        turn_id = self._save_turn(
+    async def test_get_turn_by_ids_returns_full_turn_for_exact_pair(self) -> None:
+        turn_id = await self._save_turn(
             session_id="s1",
             user_message="hello user",
             agent_response="hello agent",
         )
 
-        turns = self.store.get_turn_by_ids(
+        turns = await self.store.get_turn_by_ids(
             [{"session_id": "s1", "turn_id": turn_id}]
         )
 
@@ -52,40 +52,40 @@ class SQLiteStoreTurnLookupTests(unittest.TestCase):
         self.assertEqual(turns[0]["user_message"], "hello user")
         self.assertEqual(turns[0]["agent_response"], "hello agent")
 
-    def test_get_turn_by_ids_returns_none_for_wrong_session(self) -> None:
-        turn_id = self._save_turn(
+    async def test_get_turn_by_ids_returns_none_for_wrong_session(self) -> None:
+        turn_id = await self._save_turn(
             session_id="s1",
             user_message="hello user",
             agent_response="hello agent",
         )
 
-        turns = self.store.get_turn_by_ids(
+        turns = await self.store.get_turn_by_ids(
             [{"session_id": "s2", "turn_id": turn_id}]
         )
 
         self.assertIsNone(turns)
 
-    def test_get_turn_by_ids_returns_none_for_unknown_turn(self) -> None:
-        self._save_turn(
+    async def test_get_turn_by_ids_returns_none_for_unknown_turn(self) -> None:
+        await self._save_turn(
             session_id="s1",
             user_message="hello user",
             agent_response="hello agent",
         )
 
-        turns = self.store.get_turn_by_ids(
+        turns = await self.store.get_turn_by_ids(
             [{"session_id": "s1", "turn_id": "unknown-turn"}]
         )
 
         self.assertIsNone(turns)
 
-    def test_get_turn_by_ids_preserves_exact_text_content(self) -> None:
-        turn_id = self._save_turn(
+    async def test_get_turn_by_ids_preserves_exact_text_content(self) -> None:
+        turn_id = await self._save_turn(
             session_id="s1",
             user_message="line1\nline2\tuser",
             agent_response='lineA\nlineB "quoted"',
         )
 
-        turns = self.store.get_turn_by_ids(
+        turns = await self.store.get_turn_by_ids(
             [{"session_id": "s1", "turn_id": turn_id}]
         )
 
@@ -94,19 +94,21 @@ class SQLiteStoreTurnLookupTests(unittest.TestCase):
         self.assertEqual(turns[0]["user_message"], "line1\nline2\tuser")
         self.assertEqual(turns[0]["agent_response"], 'lineA\nlineB "quoted"')
 
-    def test_get_turn_by_ids_returns_multiple_turns_in_request_order(self) -> None:
-        turn_1 = self._save_turn(
+    async def test_get_turn_by_ids_returns_multiple_turns_in_request_order(
+        self,
+    ) -> None:
+        turn_1 = await self._save_turn(
             session_id="s1",
             user_message="first user",
             agent_response="first agent",
         )
-        turn_2 = self._save_turn(
+        turn_2 = await self._save_turn(
             session_id="s2",
             user_message="second user",
             agent_response="second agent",
         )
 
-        turns = self.store.get_turn_by_ids(
+        turns = await self.store.get_turn_by_ids(
             [
                 {"session_id": "s2", "turn_id": turn_2},
                 {"session_id": "s1", "turn_id": turn_1},
@@ -120,14 +122,16 @@ class SQLiteStoreTurnLookupTests(unittest.TestCase):
             [("s2", turn_2), ("s1", turn_1)],
         )
 
-    def test_get_turn_by_ids_omits_missing_pairs_and_returns_found_matches(self) -> None:
-        turn_1 = self._save_turn(
+    async def test_get_turn_by_ids_omits_missing_pairs_and_returns_found_matches(
+        self,
+    ) -> None:
+        turn_1 = await self._save_turn(
             session_id="s1",
             user_message="first user",
             agent_response="first agent",
         )
 
-        turns = self.store.get_turn_by_ids(
+        turns = await self.store.get_turn_by_ids(
             [
                 {"session_id": "s1", "turn_id": turn_1},
                 {"session_id": "s1", "turn_id": "missing"},

@@ -9,13 +9,13 @@ from mash.logging import AgentTraceEvent, EventLogger, LLMEvent
 from mash.memory.store import SQLiteStore
 
 
-class SQLiteStoreLogTests(unittest.TestCase):
+class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = SQLiteStore(":memory:")
         self.logger = EventLogger(self.store)
 
-    def test_save_and_get_logs_reconstruct_public_event_shape(self) -> None:
-        self.logger.emit(
+    async def test_save_and_get_logs_reconstruct_public_event_shape(self) -> None:
+        await self.logger.emit(
             AgentTraceEvent(
                 event_type="agent.run.start",
                 app_id="primary",
@@ -26,7 +26,7 @@ class SQLiteStoreLogTests(unittest.TestCase):
             )
         )
 
-        events = self.store.get_logs(app_id="primary", session_id="session-1")
+        events = await self.store.get_logs(app_id="primary", session_id="session-1")
 
         self.assertEqual(len(events), 1)
         event = events[0]
@@ -40,8 +40,8 @@ class SQLiteStoreLogTests(unittest.TestCase):
         self.assertIsNone(event["duration_ms"])
         self.assertIn("log_id", event)
 
-    def test_stored_payload_omits_none_fields(self) -> None:
-        self.logger.emit(
+    async def test_stored_payload_omits_none_fields(self) -> None:
+        await self.logger.emit(
             AgentTraceEvent(
                 event_type="agent.run.start",
                 app_id="primary",
@@ -52,7 +52,11 @@ class SQLiteStoreLogTests(unittest.TestCase):
             )
         )
 
-        payload_json = self.store._conn.execute("SELECT payload FROM logs").fetchone()[0]
+        assert self.store._conn is not None
+        cursor = await self.store._conn.execute("SELECT payload FROM logs")
+        row = await cursor.fetchone()
+        assert row is not None
+        payload_json = row[0]
         payload = json.loads(payload_json)
 
         self.assertEqual(payload["payload"], {})
@@ -60,8 +64,8 @@ class SQLiteStoreLogTests(unittest.TestCase):
         self.assertNotIn("duration_ms", payload)
         self.assertNotIn("action_type", payload)
 
-    def test_latest_and_recent_log_traces_use_log_table(self) -> None:
-        self.store.save_logs(
+    async def test_latest_and_recent_log_traces_use_log_table(self) -> None:
+        await self.store.save_logs(
             [
                 {
                     "app_id": "primary",
@@ -93,16 +97,23 @@ class SQLiteStoreLogTests(unittest.TestCase):
             ]
         )
 
-        latest = self.store.get_latest_log_trace(app_id="primary", session_id="session-1")
-        recent = self.store.list_recent_log_traces(app_id="primary", session_id="session-1", limit=2)
+        latest = await self.store.get_latest_log_trace(
+            app_id="primary",
+            session_id="session-1",
+        )
+        recent = await self.store.list_recent_log_traces(
+            app_id="primary",
+            session_id="session-1",
+            limit=2,
+        )
 
         assert latest is not None
         self.assertEqual(latest["trace_id"], "trace-2")
         self.assertEqual(latest["event_count"], 2)
         self.assertEqual([item["trace_id"] for item in recent], ["trace-2", "trace-1"])
 
-    def test_get_logs_supports_cursoring_with_after_log_id(self) -> None:
-        self.store.save_logs(
+    async def test_get_logs_supports_cursoring_with_after_log_id(self) -> None:
+        await self.store.save_logs(
             [
                 {
                     "app_id": "primary",
@@ -125,15 +136,18 @@ class SQLiteStoreLogTests(unittest.TestCase):
             ]
         )
 
-        initial = self.store.get_logs(app_id="primary")
+        initial = await self.store.get_logs(app_id="primary")
         assert initial
-        tail = self.store.get_logs(app_id="primary", after_log_id=int(initial[0]["log_id"]))
+        tail = await self.store.get_logs(
+            app_id="primary",
+            after_log_id=int(initial[0]["log_id"]),
+        )
 
         self.assertEqual([item["event_type"] for item in tail], ["agent.run.complete"])
 
-    def test_agent_trace_logging_requires_trace_id(self) -> None:
+    async def test_agent_trace_logging_requires_trace_id(self) -> None:
         with self.assertRaises(ValueError):
-            self.logger.emit(
+            await self.logger.emit(
                 AgentTraceEvent(
                     event_type="agent.run.start",
                     app_id="primary",
@@ -142,9 +156,9 @@ class SQLiteStoreLogTests(unittest.TestCase):
                 )
             )
 
-    def test_llm_logging_requires_trace_id_provider_and_model(self) -> None:
+    async def test_llm_logging_requires_trace_id_provider_and_model(self) -> None:
         with self.assertRaises(ValueError):
-            self.logger.emit(
+            await self.logger.emit(
                 LLMEvent(
                     event_type="llm.request.start",
                     app_id="primary",

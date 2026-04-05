@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 
 from mash.core.context import ToolCall
@@ -16,15 +16,17 @@ from mash.core.llm.types import (
 )
 
 
-class LLMProviderContractTests(unittest.TestCase):
-    def test_openai_send_omits_temperature_for_gpt5_models(self) -> None:
+class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_send_omits_temperature_for_gpt5_models(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-5"
         provider._app_id = "test"
-        provider._client = SimpleNamespace(responses=SimpleNamespace(create=Mock()))
-        provider._emit_request_start = Mock()
-        provider._emit_request_complete = Mock()
-        provider._emit_request_error = Mock()
+        provider._client = SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock())
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(text="", tool_calls=[], provider_metadata={})
         )
@@ -37,19 +39,21 @@ class LLMProviderContractTests(unittest.TestCase):
             temperature=0.2,
         )
 
-        provider.send(request)
+        await provider.send(request)
 
         call_kwargs = provider._client.responses.create.call_args.kwargs
         self.assertNotIn("temperature", call_kwargs)
 
-    def test_openai_send_keeps_temperature_for_non_gpt5_models(self) -> None:
+    async def test_openai_send_keeps_temperature_for_non_gpt5_models(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-4.1"
         provider._app_id = "test"
-        provider._client = SimpleNamespace(responses=SimpleNamespace(create=Mock()))
-        provider._emit_request_start = Mock()
-        provider._emit_request_complete = Mock()
-        provider._emit_request_error = Mock()
+        provider._client = SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock())
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(text="", tool_calls=[], provider_metadata={})
         )
@@ -62,7 +66,7 @@ class LLMProviderContractTests(unittest.TestCase):
             temperature=0.2,
         )
 
-        provider.send(request)
+        await provider.send(request)
 
         call_kwargs = provider._client.responses.create.call_args.kwargs
         self.assertEqual(call_kwargs["temperature"], 0.2)

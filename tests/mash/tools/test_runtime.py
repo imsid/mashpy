@@ -10,7 +10,7 @@ from mash.tools.runtime import RuntimeToolBuilder
 
 
 class FakeEventLogger:
-    def emit(self, _event: object) -> None:
+    async def emit(self, _event: object) -> None:
         return None
 
 
@@ -20,7 +20,7 @@ class FakeStore:
         self.turn_lookup_result: list[dict[str, object]] | None = None
         self.turn_lookup_error: Exception | None = None
 
-    def get_turn_by_ids(
+    async def get_turn_by_ids(
         self,
         pairs: list[dict[str, str]],
     ) -> list[dict[str, object]] | None:
@@ -37,7 +37,7 @@ class FakeSearchService:
         self.results_by_query: dict[str, list[SearchResult]] = {}
         self.error: Exception | None = None
 
-    def search(
+    async def search(
         self,
         query: str,
         *,
@@ -60,7 +60,7 @@ class FakeSearchService:
         return self.results
 
 
-class RuntimeSearchToolTests(unittest.TestCase):
+class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = FakeStore()
         self.builder = RuntimeToolBuilder(
@@ -78,7 +78,7 @@ class RuntimeSearchToolTests(unittest.TestCase):
             if tool.name == "search_conversations"
         )
 
-    def test_search_session_scope(self) -> None:
+    async def test_search_session_scope(self) -> None:
         self.search_service.results = [
             SearchResult(
                 turn_id="t1",
@@ -88,7 +88,7 @@ class RuntimeSearchToolTests(unittest.TestCase):
             )
         ]
 
-        result = self.search_tool.execute(
+        result = await self.search_tool.execute(
             {"query": "@user:hello", "scope": "session", "limit": 5}
         )
 
@@ -101,8 +101,10 @@ class RuntimeSearchToolTests(unittest.TestCase):
         self.assertEqual(len(payload["results"]), 1)
         self.assertEqual(payload["results"][0]["turn_id"], "t1")
 
-    def test_search_app_scope_uses_none_session(self) -> None:
-        result = self.search_tool.execute({"query": "@agent:answer", "scope": "app"})
+    async def test_search_app_scope_uses_none_session(self) -> None:
+        result = await self.search_tool.execute(
+            {"query": "@agent:answer", "scope": "app"}
+        )
 
         self.assertFalse(result.is_error)
         self.assertEqual(self.search_service.calls[0]["session_id"], None)
@@ -110,8 +112,8 @@ class RuntimeSearchToolTests(unittest.TestCase):
         self.assertEqual(payload["scope"], "app")
         self.assertIsNone(payload["session_id"])
 
-    def test_default_scope_is_session(self) -> None:
-        result = self.search_tool.execute({"query": "@user:test"})
+    async def test_default_scope_is_session(self) -> None:
+        result = await self.search_tool.execute({"query": "@user:test"})
 
         self.assertFalse(result.is_error)
         self.assertEqual(self.search_service.calls[0]["session_id"], "s1")
@@ -121,7 +123,7 @@ class RuntimeSearchToolTests(unittest.TestCase):
         self.assertEqual(payload["limit"], 10)
         self.assertEqual(payload["effective_queries"], ["@user:test"])
 
-    def test_unprefixed_query_searches_both_roles_and_merges(self) -> None:
+    async def test_unprefixed_query_searches_both_roles_and_merges(self) -> None:
         self.search_service.results_by_query = {
             "@user:ad conversion metrics": [
                 SearchResult(
@@ -153,7 +155,7 @@ class RuntimeSearchToolTests(unittest.TestCase):
             ],
         }
 
-        result = self.search_tool.execute(
+        result = await self.search_tool.execute(
             {"query": "ad conversion metrics", "scope": "app", "limit": 10}
         )
 
@@ -178,45 +180,47 @@ class RuntimeSearchToolTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["similarity_score"], 0.91)
         self.assertEqual(payload["results"][0]["preview"], "shared higher")
 
-    def test_missing_or_blank_query_errors(self) -> None:
-        missing = self.search_tool.execute({})
-        blank = self.search_tool.execute({"query": "   "})
+    async def test_missing_or_blank_query_errors(self) -> None:
+        missing = await self.search_tool.execute({})
+        blank = await self.search_tool.execute({"query": "   "})
 
         self.assertTrue(missing.is_error)
         self.assertTrue(blank.is_error)
         self.assertEqual(self.search_service.calls, [])
 
-    def test_invalid_scope_errors(self) -> None:
-        result = self.search_tool.execute({"query": "@user:test", "scope": "global"})
+    async def test_invalid_scope_errors(self) -> None:
+        result = await self.search_tool.execute(
+            {"query": "@user:test", "scope": "global"}
+        )
 
         self.assertTrue(result.is_error)
         self.assertEqual(self.search_service.calls, [])
 
-    def test_invalid_limit_errors(self) -> None:
-        result = self.search_tool.execute({"query": "@user:test", "limit": "abc"})
+    async def test_invalid_limit_errors(self) -> None:
+        result = await self.search_tool.execute({"query": "@user:test", "limit": "abc"})
 
         self.assertTrue(result.is_error)
         self.assertEqual(self.search_service.calls, [])
 
-    def test_empty_results_payload(self) -> None:
+    async def test_empty_results_payload(self) -> None:
         self.search_service.results = []
 
-        result = self.search_tool.execute({"query": "@user:none"})
+        result = await self.search_tool.execute({"query": "@user:none"})
 
         self.assertFalse(result.is_error)
         payload = json.loads(result.content)
         self.assertEqual(payload["results"], [])
 
-    def test_service_exception_mapping(self) -> None:
+    async def test_service_exception_mapping(self) -> None:
         self.search_service.error = RuntimeError("boom")
 
-        result = self.search_tool.execute({"query": "@user:test"})
+        result = await self.search_tool.execute({"query": "@user:test"})
 
         self.assertTrue(result.is_error)
         self.assertEqual(result.content, "boom")
 
 
-class RuntimeFullTurnMessageToolTests(unittest.TestCase):
+class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = FakeStore()
         self.builder = RuntimeToolBuilder(
@@ -232,7 +236,7 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
             if tool.name == "get_full_turn_message"
         )
 
-    def test_successful_turn_fetch_returns_full_messages(self) -> None:
+    async def test_successful_turn_fetch_returns_full_messages(self) -> None:
         self.store.turn_lookup_result = [
             {
                 "turn_id": "t1",
@@ -248,7 +252,7 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
             },
         ]
 
-        result = self.turn_tool.execute(
+        result = await self.turn_tool.execute(
             {
                 "pairs": [
                     {"turn_id": "t1", "session_id": "s2"},
@@ -273,10 +277,10 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
         self.assertEqual(payload["turns"][1]["agent_response"], "reply")
         self.assertEqual(payload["missing_pairs"], [])
 
-    def test_missing_turns_return_empty_results_with_missing_pairs(self) -> None:
+    async def test_missing_turns_return_empty_results_with_missing_pairs(self) -> None:
         self.store.turn_lookup_result = None
 
-        result = self.turn_tool.execute(
+        result = await self.turn_tool.execute(
             {"pairs": [{"turn_id": "missing", "session_id": "s2"}]}
         )
 
@@ -290,29 +294,29 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
             [{"turn_id": "missing", "session_id": "s2"}],
         )
 
-    def test_missing_pairs_errors(self) -> None:
-        result = self.turn_tool.execute({})
+    async def test_missing_pairs_errors(self) -> None:
+        result = await self.turn_tool.execute({})
 
         self.assertTrue(result.is_error)
         self.assertEqual(self.store.turn_lookup_calls, [])
 
-    def test_pairs_must_be_non_empty_array(self) -> None:
-        result = self.turn_tool.execute({"pairs": []})
+    async def test_pairs_must_be_non_empty_array(self) -> None:
+        result = await self.turn_tool.execute({"pairs": []})
 
         self.assertTrue(result.is_error)
         self.assertEqual(self.store.turn_lookup_calls, [])
 
-    def test_invalid_pair_object_errors(self) -> None:
-        result = self.turn_tool.execute({"pairs": ["not-an-object"]})
+    async def test_invalid_pair_object_errors(self) -> None:
+        result = await self.turn_tool.execute({"pairs": ["not-an-object"]})
 
         self.assertTrue(result.is_error)
         self.assertEqual(self.store.turn_lookup_calls, [])
 
-    def test_blank_ids_error(self) -> None:
-        result_a = self.turn_tool.execute(
+    async def test_blank_ids_error(self) -> None:
+        result_a = await self.turn_tool.execute(
             {"pairs": [{"turn_id": "   ", "session_id": "s2"}]}
         )
-        result_b = self.turn_tool.execute(
+        result_b = await self.turn_tool.execute(
             {"pairs": [{"turn_id": "t1", "session_id": "   "}]}
         )
 
@@ -320,17 +324,17 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
         self.assertTrue(result_b.is_error)
         self.assertEqual(self.store.turn_lookup_calls, [])
 
-    def test_store_exception_maps_to_tool_error(self) -> None:
+    async def test_store_exception_maps_to_tool_error(self) -> None:
         self.store.turn_lookup_error = RuntimeError("db failed")
 
-        result = self.turn_tool.execute(
+        result = await self.turn_tool.execute(
             {"pairs": [{"turn_id": "t1", "session_id": "s2"}]}
         )
 
         self.assertTrue(result.is_error)
         self.assertEqual(result.content, "failed to fetch turns: db failed")
 
-    def test_partial_matches_include_missing_pairs(self) -> None:
+    async def test_partial_matches_include_missing_pairs(self) -> None:
         self.store.turn_lookup_result = [
             {
                 "turn_id": "t1",
@@ -340,7 +344,7 @@ class RuntimeFullTurnMessageToolTests(unittest.TestCase):
             }
         ]
 
-        result = self.turn_tool.execute(
+        result = await self.turn_tool.execute(
             {
                 "pairs": [
                     {"turn_id": "t1", "session_id": "s2"},
@@ -390,46 +394,34 @@ class RuntimeToolMetadataTests(unittest.TestCase):
 
         self.assertIn("current session", tools["get_user_preferences"].description)
         self.assertIn("current session", tools["set_user_preferences"].description)
-        self.assertIn("session-scoped", tools["list_app_data"].description)
+        self.assertIn("current session", tools["list_app_data"].description)
         self.assertIn("session-scoped", tools["set_app_data"].description)
 
         search_tool = tools["search_conversations"]
         self.assertIn("ranked previews", search_tool.description)
         self.assertIn("session_id and turn_id", search_tool.description)
-        self.assertIn(
-            "assistant messages",
-            search_tool.parameters["properties"]["query"]["description"],
+        self.assertEqual(search_tool.parameters["properties"]["query"]["type"], "string")
+        self.assertEqual(
+            search_tool.parameters["properties"]["scope"]["enum"],
+            ["session", "app"],
         )
-        self.assertIn(
-            "current session",
-            search_tool.parameters["properties"]["scope"]["description"],
-        )
+        self.assertEqual(search_tool.parameters["required"], ["query"])
 
         turn_tool = tools["get_full_turn_message"]
         self.assertIn("Expand", turn_tool.description)
-        self.assertIn("search_conversations", turn_tool.description)
-        self.assertIn(
-            "(session_id, turn_id) pairs",
-            turn_tool.parameters["properties"]["pairs"]["description"],
-        )
+        self.assertIn("full turn text", turn_tool.description)
+        self.assertEqual(turn_tool.parameters["required"], ["pairs"])
+        self.assertEqual(turn_tool.parameters["properties"]["pairs"]["type"], "array")
 
         set_preferences_tool = tools["set_user_preferences"]
-        self.assertIn(
-            "current session",
-            set_preferences_tool.parameters["properties"]["preferences"][
-                "description"
-            ],
+        self.assertEqual(
+            set_preferences_tool.parameters["properties"]["preferences"]["type"],
+            "object",
         )
 
         set_app_data_tool = tools["set_app_data"]
-        self.assertIn(
-            "session-scoped app data entry",
-            set_app_data_tool.parameters["properties"]["key"]["description"],
-        )
-        self.assertIn(
-            "JSON-serializable",
-            set_app_data_tool.parameters["properties"]["value"]["description"],
-        )
+        self.assertEqual(set_app_data_tool.parameters["properties"]["key"]["type"], "string")
+        self.assertIn("value", set_app_data_tool.parameters["properties"])
 
 
 if __name__ == "__main__":

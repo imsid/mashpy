@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from mash.logging import clear_trace_id, set_trace_id
 from mash.runtime.session import derive_subagent_session_id
@@ -29,7 +30,7 @@ class _FakeClient:
             },
         ]
 
-    def post_request(
+    async def post_request(
         self,
         message: str,
         *,
@@ -43,29 +44,31 @@ class _FakeClient:
         }
         return self._request_id
 
-    def stream_response(
+    async def stream_response(
         self,
         request_id: str,
         *,
         timeout: Optional[float] = None,
-    ) -> Iterator[Dict[str, Any]]:
+    ) -> AsyncIterator[Dict[str, Any]]:
         if self.last_call is not None:
             self.last_call["timeout"] = timeout
             self.last_call["request_id"] = request_id
         if self._error:
             raise self._error
-        yield from self._events
+        for event in self._events:
+            await asyncio.sleep(0)
+            yield event
 
 
 class _RecordingEventLogger:
     def __init__(self) -> None:
         self.events: list[Any] = []
 
-    def emit(self, event: Any) -> None:
+    async def emit(self, event: Any) -> None:
         self.events.append(event)
 
 
-class InvokeSubagentToolTests(unittest.TestCase):
+class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         clear_trace_id()
         self.client = _FakeClient()
@@ -80,9 +83,9 @@ class InvokeSubagentToolTests(unittest.TestCase):
     def tearDown(self) -> None:
         clear_trace_id()
 
-    def test_success_returns_json_payload(self) -> None:
+    async def test_success_returns_json_payload(self) -> None:
         set_trace_id("trace-primary")
-        result = self.tool.execute(
+        result = await self.tool.execute(
             {"agent_id": "research", "prompt": "Summarize issue", "opts": {"x": 1}}
         )
         self.assertFalse(result.is_error)
@@ -119,17 +122,17 @@ class InvokeSubagentToolTests(unittest.TestCase):
             "s1",
         )
 
-    def test_success_without_active_trace_skips_stream_event_logging(self) -> None:
-        result = self.tool.execute(
+    async def test_success_without_active_trace_skips_stream_event_logging(self) -> None:
+        result = await self.tool.execute(
             {"agent_id": "research", "prompt": "Summarize issue", "opts": {"x": 1}}
         )
 
         self.assertFalse(result.is_error)
         self.assertEqual(self.event_logger.events, [])
 
-    def test_error_returns_error_result(self) -> None:
+    async def test_error_returns_error_result(self) -> None:
         self.client._error = TimeoutError("timed out")
-        result = self.tool.execute({"agent_id": "research", "prompt": "hello"})
+        result = await self.tool.execute({"agent_id": "research", "prompt": "hello"})
         self.assertTrue(result.is_error)
         payload = json.loads(result.content)
         self.assertEqual(payload["agent_id"], "research")
@@ -137,7 +140,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertEqual(payload["error_source"], "timeout")
         self.assertIn("timed out", payload["error"])
 
-    def test_request_error_returns_structured_payload(self) -> None:
+    async def test_request_error_returns_structured_payload(self) -> None:
         self.client._events = [
             {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
             {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
@@ -153,7 +156,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
             },
         ]
 
-        result = self.tool.execute({"agent_id": "research", "prompt": "hello"})
+        result = await self.tool.execute({"agent_id": "research", "prompt": "hello"})
 
         self.assertTrue(result.is_error)
         payload = json.loads(result.content)
@@ -165,7 +168,7 @@ class InvokeSubagentToolTests(unittest.TestCase):
         self.assertEqual(payload["error_source"], "subagent")
         self.assertNotIn("timed out", payload["error"].lower())
 
-    def test_max_step_limit_response_is_treated_as_error(self) -> None:
+    async def test_max_step_limit_response_is_treated_as_error(self) -> None:
         self.client._events = [
             {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
             {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
@@ -182,21 +185,21 @@ class InvokeSubagentToolTests(unittest.TestCase):
             },
         ]
 
-        result = self.tool.execute({"agent_id": "research", "prompt": "hello"})
+        result = await self.tool.execute({"agent_id": "research", "prompt": "hello"})
 
         self.assertTrue(result.is_error)
         payload = json.loads(result.content)
         self.assertEqual(payload["error_source"], "subagent_response")
         self.assertEqual(payload["error_code"], "max_steps_exceeded")
 
-    def test_client_mode_invokes_resolved_client(self) -> None:
+    async def test_client_mode_invokes_resolved_client(self) -> None:
         client = _FakeClient()
         tool = InvokeSubagentTool(
             client_resolver=lambda _agent_id: client,
             primary_app_id="primary-app",
             primary_session_id_provider=lambda: "s2",
         )
-        result = tool.execute(
+        result = await tool.execute(
             {"agent_id": "research", "prompt": "Summarize issue", "opts": {"timeout_ms": 2500}}
         )
         self.assertFalse(result.is_error)

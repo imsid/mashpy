@@ -28,7 +28,7 @@ class _LoopingLLMProvider(LLMProvider):
     def model(self) -> str:
         return "test-model"
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         return LLMResponse(
             text="Let me inspect one more thing.",
@@ -56,7 +56,7 @@ class _RecordingEventLogger:
     def __init__(self) -> None:
         self.events = []
 
-    def emit(self, event) -> None:
+    async def emit(self, event) -> None:
         self.events.append(event)
 
 
@@ -69,7 +69,7 @@ class _ToolThenFinishLLMProvider(LLMProvider):
     def model(self) -> str:
         return "test-model"
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
         self._call_count += 1
         if self._call_count == 1:
@@ -108,7 +108,7 @@ class _FinishImmediatelyLLMProvider(LLMProvider):
     def model(self) -> str:
         return "test-model"
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         return LLMResponse(
             text="Done immediately.",
@@ -131,9 +131,9 @@ class _LoggingFinishLLMProvider(BaseLLMProvider):
     def __init__(self) -> None:
         super().__init__(app_id="test", model="test-model")
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         started_at = time.time()
-        self._emit_request_start(request)
+        await self._emit_request_start(request)
         response = LLMResponse(
             text="Done immediately.",
             tool_calls=[],
@@ -141,19 +141,28 @@ class _LoggingFinishLLMProvider(BaseLLMProvider):
             stop_reason="end_turn",
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
-        self._emit_request_complete(request, started_at=started_at, response=response)
+        await self._emit_request_complete(
+            request,
+            started_at=started_at,
+            response=response,
+        )
         return response
 
 
-class AgentLoopTests(unittest.TestCase):
-    def test_run_returns_explicit_max_step_message_when_tool_loop_exhausts(self) -> None:
+class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_returns_explicit_max_step_message_when_tool_loop_exhausts(
+        self,
+    ) -> None:
+        async def noop(_args) -> ToolResult:
+            return ToolResult.success("ok")
+
         tools = ToolRegistry()
         tools.register(
             FunctionTool(
                 name="noop",
                 description="No-op tool",
                 parameters={"type": "object", "properties": {}},
-                _executor=lambda args: ToolResult.success("ok"),
+                _executor=noop,
             )
         )
         agent = Agent(
@@ -169,22 +178,25 @@ class AgentLoopTests(unittest.TestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("do the thing")
 
-        response = agent.run(context)
+        response = await agent.run(context)
 
         self.assertIn("max step limit", response.text)
         self.assertEqual(response.metadata["stop_reason"], "max_steps")
 
-    def test_tool_result_trace_preserves_structured_metadata(self) -> None:
+    async def test_tool_result_trace_preserves_structured_metadata(self) -> None:
+        async def noop(_args) -> ToolResult:
+            return ToolResult.success(
+                "ok",
+                subagent_session_id="subagent:research:abc123",
+            )
+
         tools = ToolRegistry()
         tools.register(
             FunctionTool(
                 name="noop",
                 description="No-op tool",
                 parameters={"type": "object", "properties": {}},
-                _executor=lambda args: ToolResult.success(
-                    "ok",
-                    subagent_session_id="subagent:research:abc123",
-                ),
+                _executor=noop,
             )
         )
         agent = Agent(
@@ -202,7 +214,7 @@ class AgentLoopTests(unittest.TestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("do the thing")
 
-        agent.run(context)
+        await agent.run(context)
 
         result_events = [event for event in logger.events if event.event_type == "agent.tool.result"]
         self.assertEqual(len(result_events), 1)
@@ -211,15 +223,22 @@ class AgentLoopTests(unittest.TestCase):
             "subagent:research:abc123",
         )
 
-    def test_run_collects_unused_tool_signals_for_trace(self) -> None:
+    async def test_run_collects_unused_tool_signals_for_trace(self) -> None:
         provider = _ToolThenFinishLLMProvider()
+
+        async def used_tool(_args) -> ToolResult:
+            return ToolResult.success("used")
+
+        async def unused_tool(_args) -> ToolResult:
+            return ToolResult.success("unused")
+
         tools = ToolRegistry()
         tools.register(
             FunctionTool(
                 name="used_tool",
                 description="Tool that will be called.",
                 parameters={"type": "object", "properties": {}},
-                _executor=lambda args: ToolResult.success("used"),
+                _executor=used_tool,
             )
         )
         tools.register(
@@ -227,7 +246,7 @@ class AgentLoopTests(unittest.TestCase):
                 name="unused_tool",
                 description="Tool that will remain unused.",
                 parameters={"type": "object", "properties": {}},
-                _executor=lambda args: ToolResult.success("unused"),
+                _executor=unused_tool,
             )
         )
         agent = Agent(
@@ -244,7 +263,7 @@ class AgentLoopTests(unittest.TestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("use the tool")
 
-        response = agent.run(context)
+        response = await agent.run(context)
 
         self.assertEqual(response.signals["unused_tools"], ["unused_tool"])
         first_request = provider.requests[0]
@@ -255,14 +274,22 @@ class AgentLoopTests(unittest.TestCase):
         expected_tokens = int(base_estimate * 1.05)
         self.assertEqual(response.signals["unused_tool_tokens"], expected_tokens)
 
-    def test_run_collects_unused_tool_signals_when_trace_finishes_immediately(self) -> None:
+    async def test_run_collects_unused_tool_signals_when_trace_finishes_immediately(
+        self,
+    ) -> None:
+        async def alpha_tool(_args) -> ToolResult:
+            return ToolResult.success("alpha")
+
+        async def beta_tool(_args) -> ToolResult:
+            return ToolResult.success("beta")
+
         tools = ToolRegistry()
         tools.register(
             FunctionTool(
                 name="alpha_tool",
                 description="Unused alpha tool.",
                 parameters={"type": "object", "properties": {}},
-                _executor=lambda args: ToolResult.success("alpha"),
+                _executor=alpha_tool,
             )
         )
         tools.register(
@@ -270,7 +297,7 @@ class AgentLoopTests(unittest.TestCase):
                 name="beta_tool",
                 description="Unused beta tool.",
                 parameters={"type": "object", "properties": {}},
-                _executor=lambda args: ToolResult.success("beta"),
+                _executor=beta_tool,
             )
         )
         agent = Agent(
@@ -287,12 +314,14 @@ class AgentLoopTests(unittest.TestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("just answer")
 
-        response = agent.run(context)
+        response = await agent.run(context)
 
         self.assertEqual(response.signals["unused_tools"], ["alpha_tool", "beta_tool"])
         self.assertGreater(int(response.signals["unused_tool_tokens"]), 0)
 
-    def test_run_emits_llm_and_agent_trace_events_without_removed_debug_events(self) -> None:
+    async def test_run_emits_llm_and_agent_trace_events_without_removed_debug_events(
+        self,
+    ) -> None:
         agent = Agent(
             llm=_LoggingFinishLLMProvider(),
             tools=ToolRegistry(),
@@ -309,7 +338,7 @@ class AgentLoopTests(unittest.TestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("just answer")
 
-        agent.run(context)
+        await agent.run(context)
 
         event_types = [event.event_type for event in logger.events]
         self.assertIn("llm.request.start", event_types)
