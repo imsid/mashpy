@@ -89,7 +89,7 @@ class Agent:
         """
         self._chain_renderer = renderer
 
-    def run(self, context: Context) -> Response:
+    async def run(self, context: Context) -> Response:
         """Execute the agent loop.
 
         Args:
@@ -137,7 +137,7 @@ class Agent:
                 trace_id=self._trace_id,
                 payload={"user_message": user_message},
             )
-            self._event_logger.emit(start_event)
+            await self._event_logger.emit(start_event)
 
         try:
             # Start chain rendering
@@ -149,7 +149,7 @@ class Agent:
                 step_start = time.time()
 
                 # Think: decide what to do next
-                action = self.think(context)
+                action = await self.think(context)
 
                 # Check if we're done
                 if action.type == ActionType.FINISH:
@@ -160,7 +160,7 @@ class Agent:
                     break
 
                 # Act: execute the action
-                results = self.act(action)
+                results = await self.act(action)
 
                 # Observe: update context with results
                 context = self.observe(context, action, results)
@@ -181,7 +181,7 @@ class Agent:
                             else None
                         ),
                     )
-                    self._event_logger.emit(step_event)
+                    await self._event_logger.emit(step_event)
 
                     # Render step complete
                     if self._chain_renderer:
@@ -230,7 +230,7 @@ class Agent:
                     trace_id=self._trace_id,
                     payload={"assistant_response": assistant_response},
                 )
-                self._event_logger.emit(complete_event)
+                await self._event_logger.emit(complete_event)
 
             context.metadata["trace_id"] = self._trace_id
             context.metadata["token_usage"] = dict(self._run_token_usage)
@@ -239,7 +239,7 @@ class Agent:
             # Always clear trace ID when execution completes
             clear_trace_id()
 
-    def think(self, context: Context) -> Action:
+    async def think(self, context: Context) -> Action:
         """Decide what action to take.
 
         Args:
@@ -264,7 +264,7 @@ class Agent:
                 session_id=self._session_id,
                 trace_id=self._trace_id,
             )
-            self._event_logger.emit(think_start_event)
+            await self._event_logger.emit(think_start_event)
 
         system_prompt = context.system_prompt
 
@@ -277,7 +277,7 @@ class Agent:
             temperature=self.config.temperature,
             use_prompt_caching=self.config.prompt_caching_enabled,
         )
-        response = self.llm.send(request)
+        response = await self.llm.send(request)
 
         # Parse response and update context
         action = self._parse_response_to_action(response, context)
@@ -329,7 +329,7 @@ class Agent:
                 token_usage=token_usage,
                 payload=payload,
             )
-            self._event_logger.emit(think_event)
+            await self._event_logger.emit(think_event)
 
             # Render thinking
             if self._chain_renderer:
@@ -337,7 +337,7 @@ class Agent:
 
         return action
 
-    def act(self, action: Action) -> List[ToolResult]:
+    async def act(self, action: Action) -> List[ToolResult]:
         """Execute an action.
 
         Args:
@@ -352,7 +352,7 @@ class Agent:
         act_start = time.time()
         results: List[ToolResult] = []
         for tool_call in action.tool_calls:
-            result = self._execute_single_tool(tool_call)
+            result = await self._execute_single_tool(tool_call)
             results.append(result)
 
         # Log act completion
@@ -368,7 +368,7 @@ class Agent:
                     [tc.name for tc in action.tool_calls] if action.tool_calls else None
                 ),
             )
-            self._event_logger.emit(act_event)
+            await self._event_logger.emit(act_event)
 
             # Render action
             if self._chain_renderer:
@@ -376,7 +376,7 @@ class Agent:
 
         return results
 
-    def _execute_single_tool(self, tool_call: Any) -> ToolResult:
+    async def _execute_single_tool(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call with error handling.
 
         Args:
@@ -408,12 +408,12 @@ class Agent:
                         "tool_arguments": tool_call.arguments,
                     },
                 )
-                self._event_logger.emit(tool_call_event)
+                await self._event_logger.emit(tool_call_event)
 
             self._increment_trace_tool_invocation(tool_call.name)
 
             # Execute the tool
-            result = tool.execute(tool_call.arguments)
+            result = await tool.execute(tool_call.arguments)
 
             # Log tool result
             if self._event_logger:
@@ -434,7 +434,7 @@ class Agent:
                         "metadata": dict(result.metadata or {}),
                     },
                 )
-                self._event_logger.emit(result_event)
+                await self._event_logger.emit(result_event)
 
             return ToolResult(
                 tool_call_id=tool_call.id,

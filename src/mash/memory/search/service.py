@@ -44,7 +44,7 @@ class MemorySearchService:
         self._reranker = reranker or WeightedFusionReranker(fusion_weights)
         self._event_logger = event_logger
 
-    def search(
+    async def search(
         self,
         query: str,
         *,
@@ -57,7 +57,7 @@ class MemorySearchService:
         overall_start = time.time()
         normalized_limit = max(0, int(limit))
         if normalized_limit <= 0:
-            self._emit_search_event(
+            await self._emit_search_event(
                 event_type="memory.search.complete",
                 app_id=app_id,
                 session_id=session_id,
@@ -73,14 +73,14 @@ class MemorySearchService:
             )
             return []
 
-        parsed_query = self._parser.parse(
+        parsed_query = await self._parser.parse(
             query,
             event_logger=self._event_logger,
             query_id=query_id,
             app_id=app_id,
             session_id=session_id,
         )
-        self._emit_search_event(
+        await self._emit_search_event(
             event_type="memory.search.start",
             app_id=app_id,
             session_id=session_id,
@@ -96,7 +96,7 @@ class MemorySearchService:
             },
         )
 
-        retrieved = self._retrieval_orchestrator.retrieve(
+        retrieved = await self._retrieval_orchestrator.retrieve(
             parsed_query,
             limit=normalized_limit,
             session_id=session_id,
@@ -104,7 +104,7 @@ class MemorySearchService:
             event_logger=self._event_logger,
             query_id=query_id,
         )
-        fused_hits = self._reranker.rerank(
+        fused_hits = await self._reranker.rerank(
             keyword_hits=retrieved.keyword_hits,
             semantic_hits=retrieved.semantic_hits,
             event_logger=self._event_logger,
@@ -122,7 +122,7 @@ class MemorySearchService:
             )
             for hit in fused_hits[:normalized_limit]
         ]
-        self._emit_search_event(
+        await self._emit_search_event(
             event_type="memory.search.complete",
             app_id=app_id,
             session_id=session_id,
@@ -137,7 +137,7 @@ class MemorySearchService:
         )
         return results
 
-    def _emit_search_event(
+    async def _emit_search_event(
         self,
         *,
         event_type: str,
@@ -152,7 +152,7 @@ class MemorySearchService:
     ) -> None:
         if self._event_logger is None:
             return
-        self._event_logger.emit(
+        await self._event_logger.emit(
             MemorySearchEvent(
                 event_type=event_type,
                 app_id=app_id,

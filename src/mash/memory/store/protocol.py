@@ -1,4 +1,4 @@
-"""Backend-agnostic memory store protocol."""
+"""Backend-agnostic async memory store protocol."""
 
 from __future__ import annotations
 
@@ -8,16 +8,24 @@ from ..search.types import SearchColumn
 
 
 class MemoryStore(Protocol):
-    """Protocol for conversation storage."""
+    """Async protocol for conversation storage."""
 
-    def save_logs(
+    async def open(self) -> None:
+        """Initialize backend resources."""
+        ...
+
+    async def close(self) -> None:
+        """Close backend resources."""
+        ...
+
+    async def save_logs(
         self,
         logs: List[Dict[str, Any]],
     ) -> None:
         """Persist one or more structured log records."""
         ...
 
-    def get_logs(
+    async def get_logs(
         self,
         app_id: str,
         session_id: Optional[str] = None,
@@ -28,7 +36,7 @@ class MemoryStore(Protocol):
         """Return structured log records for one app/session/trace scope."""
         ...
 
-    def get_latest_log_trace(
+    async def get_latest_log_trace(
         self,
         app_id: str,
         session_id: str,
@@ -36,7 +44,7 @@ class MemoryStore(Protocol):
         """Return the latest trace summary from persisted logs."""
         ...
 
-    def list_recent_log_traces(
+    async def list_recent_log_traces(
         self,
         app_id: str,
         session_id: str,
@@ -45,7 +53,7 @@ class MemoryStore(Protocol):
         """List recent trace summaries from persisted logs."""
         ...
 
-    def save_turn(
+    async def save_turn(
         self,
         trace_id: str,
         session_id: str,
@@ -56,54 +64,32 @@ class MemoryStore(Protocol):
         session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Save a conversation turn with signals.
-
-        Args:
-            trace_id: Trace ID for this turn (used as turn_id).
-            session_id: Session identifier.
-            user_message: User's message.
-            agent_response: Agent's response.
-            signals: Collected signals for this turn.
-            session_total_tokens: Total tokens used in this session after this turn.
-            metadata: Optional metadata.
-            app_id: Optional application identifier for app-scoped search/filtering.
-
-        Returns:
-            Turn ID.
-        """
+        """Save a conversation turn with signals."""
         ...
 
-    def get_turns(
+    async def get_turns(
         self,
         session_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Get conversation turns for a session.
-
-        Args:
-            session_id: Session identifier.
-            limit: Maximum number of turns to return.
-
-        Returns:
-            List of turns.
-        """
+        """Get conversation turns for a session."""
         ...
 
-    def list_sessions(
+    async def list_sessions(
         self,
         app_id: str,
     ) -> List[Dict[str, Any]]:
         """List persisted sessions for one application."""
         ...
 
-    def get_latest_session(
+    async def get_latest_session(
         self,
         app_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Return the most recent persisted session for one application."""
         ...
 
-    def get_latest_trace(
+    async def get_latest_trace(
         self,
         app_id: str,
         session_id: str,
@@ -111,7 +97,7 @@ class MemoryStore(Protocol):
         """Return the most recent trace for a session in one application."""
         ...
 
-    def list_recent_traces(
+    async def list_recent_traces(
         self,
         app_id: str,
         session_id: str,
@@ -120,22 +106,14 @@ class MemoryStore(Protocol):
         """List recent traces for a session in one application."""
         ...
 
-    def get_turn_by_ids(
+    async def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],
     ) -> Optional[List[Dict[str, Any]]]:
-        """Get turns by exact session/turn identifier pairs in one lookup.
-
-        Args:
-            pairs: List of {"session_id", "turn_id"} pairs to fetch.
-
-        Returns:
-            List of dictionaries with full turn text (at least user_message and
-            agent_response) for found pairs, or None if no pairs are found.
-        """
+        """Get turns by exact session/turn identifier pairs in one lookup."""
         ...
 
-    def keyword_search(
+    async def keyword_search(
         self,
         column: SearchColumn,
         query_term: str,
@@ -143,15 +121,10 @@ class MemoryStore(Protocol):
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search turns by keyword in a single column.
-
-        Returns:
-            List of hits ordered by descending score in [0, 1].
-            Each hit must include: turn_id, session_id, score, preview.
-        """
+        """Search turns by keyword in a single column."""
         ...
 
-    def semantic_search(
+    async def semantic_search(
         self,
         column: SearchColumn,
         query_term: str,
@@ -160,124 +133,65 @@ class MemoryStore(Protocol):
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search turns semantically in a single column.
-
-        Returns:
-            List of hits ordered by descending score in [0, 1].
-            Each hit must include: turn_id, session_id, score, preview.
-        """
+        """Search turns semantically in a single column."""
         ...
 
-    def get_preferences(
+    async def get_preferences(
         self,
         app_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Get user preferences for app and session.
-
-        Args:
-            app_id: Application identifier.
-            session_id: Session identifier.
-
-        Returns:
-            User preferences as dictionary, or None if not set.
-        """
+        """Get user preferences for app and session."""
         ...
 
-    def get_latest_preferences(
+    async def get_latest_preferences(
         self,
         app_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Get latest user preferences for app.
-
-        Args:
-            app_id: Application identifier.
-
-        Returns:
-            User preferences as dictionary, or None if not set.
-        """
+        """Get latest user preferences for app."""
         ...
 
-    def set_preferences(
+    async def set_preferences(
         self,
         app_id: str,
         session_id: str,
         preferences: Dict[str, Any],
     ) -> None:
-        """Set user preferences for app and session.
-
-        Args:
-            app_id: Application identifier.
-            session_id: Session identifier.
-            preferences: User preferences dictionary.
-        """
+        """Set user preferences for app and session."""
         ...
 
-    def get_app_data(
+    async def get_app_data(
         self,
         app_id: str,
         session_id: str,
         key: str,
     ) -> Optional[Any]:
-        """Get app-specific data by key.
-
-        Args:
-            app_id: Application identifier.
-            session_id: Session identifier.
-            key: Data key.
-
-        Returns:
-            Data value, or None if key doesn't exist.
-        """
+        """Get app-specific data by key."""
         ...
 
-    def set_app_data(
+    async def set_app_data(
         self,
         app_id: str,
         session_id: str,
         key: str,
         value: Any,
     ) -> None:
-        """Set app-specific data by key.
-
-        Args:
-            app_id: Application identifier.
-            session_id: Session identifier.
-            key: Data key.
-            value: Data value (must be JSON-serializable).
-        """
+        """Set app-specific data by key."""
         ...
 
-    def list_app_data(
+    async def list_app_data(
         self,
         app_id: str,
         session_id: str,
     ) -> List[Dict[str, Any]]:
-        """List all app-specific data for session.
-
-        Args:
-            app_id: Application identifier.
-            session_id: Session identifier.
-
-        Returns:
-            List of dictionaries with 'key', 'value', and 'updated_at' fields.
-        """
+        """List all app-specific data for session."""
         ...
 
-    def delete_app_data(
+    async def delete_app_data(
         self,
         app_id: str,
         session_id: str,
         key: str,
     ) -> bool:
-        """Delete app-specific data by key.
-
-        Args:
-            app_id: Application identifier.
-            session_id: Session identifier.
-            key: Data key.
-
-        Returns:
-            True if data was deleted, False if key didn't exist.
-        """
+        """Delete app-specific data by key."""
         ...

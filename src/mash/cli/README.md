@@ -51,7 +51,7 @@ Notes
 - `/exit`: leave the shell.
 - `/clear`: clear the terminal renderer.
 - `/status`: show deployment, current agent, and session state.
-- `/agents`: list agents exposed by the host.
+- `/agent`: list agents exposed by the host.
 - `/session`: show the current remote session details.
 - `/sessions`: list sessions for the current agent.
 - `/history [limit]`: show conversation history for the current session.

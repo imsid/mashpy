@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from .base import BaseLLMProvider
 from .types import (
@@ -48,7 +48,7 @@ class AnthropicProvider(BaseLLMProvider):
             session_id=session_id,
         )
         self._validate_model(self.model)
-        if Anthropic is None:
+        if AsyncAnthropic is None:
             raise RuntimeError(
                 "Anthropic client is not installed. Install `anthropic` to use this provider."
             )
@@ -58,7 +58,7 @@ class AnthropicProvider(BaseLLMProvider):
                 "Anthropic API key is required. Set ANTHROPIC_API_KEY or pass api_key."
             )
         try:
-            self._client = Anthropic(api_key=resolved_api_key)
+            self._client = AsyncAnthropic(api_key=resolved_api_key)
         except Exception as exc:
             raise RuntimeError(
                 "Failed to initialize Anthropic client. Check your API key."
@@ -67,7 +67,7 @@ class AnthropicProvider(BaseLLMProvider):
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(beta_flags=True, server_tools=True)
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
 
         request_start = time.time()
         betas = self._request_betas(request)
@@ -92,25 +92,25 @@ class AnthropicProvider(BaseLLMProvider):
         if tools:
             params["tools"] = tools
 
-        self._emit_request_start(
+        await self._emit_request_start(
             request,
             payload={"messages": params["messages"], "tools": params.get("tools", [])},
         )
 
         try:
             if betas:
-                raw_response = self._client.beta.messages.create(**params, betas=betas)
+                raw_response = await self._client.beta.messages.create(**params, betas=betas)
             else:
-                raw_response = self._client.messages.create(**params)
+                raw_response = await self._client.messages.create(**params)
             response = self._parse_anthropic_response(raw_response)
-            self._emit_request_complete(
+            await self._emit_request_complete(
                 request,
                 started_at=request_start,
                 response=response,
             )
             return response
         except Exception as exc:
-            self._emit_request_error(request, started_at=request_start, error=exc)
+            await self._emit_request_error(request, started_at=request_start, error=exc)
             raise
 
     def _get_cache_threshold(self, model: str) -> int:

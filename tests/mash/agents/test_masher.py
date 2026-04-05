@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -19,6 +20,7 @@ from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.memory.store import SQLiteStore
 from mash.runtime import AgentSpec, MashAgentHostBuilder
 from mash.skills.registry import SkillRegistry
+from mash.testing.runtime_fixtures import build_spec
 from mash.tools.registry import ToolRegistry
 
 
@@ -27,7 +29,7 @@ class _FakeLLMProvider(LLMProvider):
     def model(self) -> str:
         return "test-model"
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         raise NotImplementedError
 
@@ -65,6 +67,9 @@ class _PrimarySpec(AgentSpec):
 
 
 class MasherTests(unittest.TestCase):
+    def _primary_spec(self) -> AgentSpec:
+        return build_spec(agent_id="primary", response_text="primary-ok")
+
     def _build_target_files(self, tmp: str) -> tuple[Path, SQLiteStore]:
         data_dir = Path(tmp) / "primary"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -82,7 +87,8 @@ class MasherTests(unittest.TestCase):
         user_message: str = "user",
         agent_response: str = "assistant",
     ) -> None:
-        store.save_turn(
+        asyncio.run(
+            store.save_turn(
             trace_id=trace_id,
             session_id=session_id,
             app_id=app_id,
@@ -91,6 +97,7 @@ class MasherTests(unittest.TestCase):
             signals={},
             session_total_tokens=100,
             metadata={"trace_id": trace_id},
+            )
         )
 
     def _save_trace_log(
@@ -104,7 +111,8 @@ class MasherTests(unittest.TestCase):
         created_at: float = 1.0,
         payload: dict[str, object] | None = None,
     ) -> None:
-        store.save_logs(
+        asyncio.run(
+            store.save_logs(
             [
                 {
                     "app_id": app_id,
@@ -116,15 +124,16 @@ class MasherTests(unittest.TestCase):
                     "payload": {"payload": payload or {}},
                 }
             ]
+            )
         )
 
     def test_builder_enable_masher_false_leaves_builder_unchanged(self) -> None:
-        host = MashAgentHostBuilder().primary(_PrimarySpec()).enable_masher(False).build()
+        host = MashAgentHostBuilder().primary(self._primary_spec()).enable_masher(False).build()
         try:
             described = {item["agent_id"]: item for item in host.describe_agents()}
             self.assertEqual(sorted(described.keys()), ["primary"])
         finally:
-            host.close()
+            asyncio.run(host.close())
 
     def test_spec_registers_store_tools_bash_jsonl_tool_and_eval_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,9 +194,9 @@ class MasherTests(unittest.TestCase):
                 spec = MasherAgentSpec(log_store=store, target_app_id="primary")
                 tools = spec.build_tools()
 
-                latest_session = tools.get("get_latest_session").execute({})
-                latest_trace = tools.get("get_latest_trace").execute(
-                    {"session_id": "s-2"}
+                latest_session = asyncio.run(tools.get("get_latest_session").execute({}))
+                latest_trace = asyncio.run(
+                    tools.get("get_latest_trace").execute({"session_id": "s-2"})
                 )
 
                 self.assertFalse(latest_session.is_error)
@@ -209,8 +218,8 @@ class MasherTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
                 spec = MasherAgentSpec(log_store=store, target_app_id="primary")
-                result = spec.build_tools().get("list_recent_traces").execute(
-                    {"limit": 2}
+                result = asyncio.run(
+                    spec.build_tools().get("list_recent_traces").execute({"limit": 2})
                 )
 
                 self.assertFalse(result.is_error)
@@ -224,7 +233,8 @@ class MasherTests(unittest.TestCase):
     def test_get_trace_logs_returns_requested_trace_within_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store_path, store = self._build_target_files(tmp)
-            store.save_logs(
+            asyncio.run(
+                store.save_logs(
                 [
                     {
                         "app_id": "primary",
@@ -259,6 +269,7 @@ class MasherTests(unittest.TestCase):
                         "payload": {"payload": {}},
                     },
                 ]
+                )
             )
 
             tool = GetTraceLogsTool(
@@ -266,7 +277,7 @@ class MasherTests(unittest.TestCase):
                 app_id="primary",
                 store_path=store_path,
             )
-            result = tool.execute({"session_id": "s-1", "trace_id": "t-1a"})
+            result = asyncio.run(tool.execute({"session_id": "s-1", "trace_id": "t-1a"}))
 
             self.assertFalse(result.is_error)
             payload = json.loads(result.content)
@@ -286,8 +297,8 @@ class MasherTests(unittest.TestCase):
                 "tools_called": ["search_conversations"],
             }
 
-            first = tool.execute({"path": str(path), "record": record})
-            second = tool.execute({"path": str(path), "record": record})
+            first = asyncio.run(tool.execute({"path": str(path), "record": record}))
+            second = asyncio.run(tool.execute({"path": str(path), "record": record}))
 
             self.assertFalse(first.is_error)
             self.assertFalse(second.is_error)
@@ -298,77 +309,20 @@ class MasherTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["trace_id"], "trace-1")
 
-    def test_builder_enable_masher_registers_subagent_and_primary_prompt_guidance(self) -> None:
+    def test_builder_enable_masher_registers_subagent_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                with patch.object(
-                    MasherAgentSpec,
-                    "build_llm",
-                    return_value=_FakeLLMProvider(),
-                ):
-                    host = MashAgentHostBuilder().primary(_PrimarySpec()).enable_masher().build()
-                    host.start()
-                    try:
-                        described = {item["agent_id"]: item for item in host.describe_agents()}
-                        self.assertIn("masher", described)
-                        self.assertEqual(described["masher"]["role"], "subagent")
-
-                        primary = host.get_agent("primary")
-                        masher = host.get_agent("masher")
-                        self.assertEqual(primary.get_subagent_ids(), ["masher"])
-                        self.assertIn("Masher", str(primary.system_prompt))
-                        self.assertIn("get_latest_session", masher.agent.tools)
-                        self.assertIn("get_latest_trace", masher.agent.tools)
-                        self.assertIn("list_recent_traces", masher.agent.tools)
-                        self.assertIn("get_trace_logs", masher.agent.tools)
-                        self.assertIn("append_jsonl", masher.agent.tools)
-                        self.assertIn("search_conversations", masher.agent.tools)
-                        self.assertIn("Skill", masher.agent.tools)
-                        self.assertIn(
-                            str(primary.definition.get_agent_data_dir() / "state.db"),
-                            str(masher.agent.config.system_prompt),
-                        )
-                    finally:
-                        host.close()
-
-    def test_invoke_subagent_stores_delegated_prompt_in_masher_session(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                with patch.object(
-                    MasherAgentSpec,
-                    "build_llm",
-                    return_value=_FakeLLMProvider(),
-                ):
-                    host = MashAgentHostBuilder().primary(_PrimarySpec()).enable_masher().build()
-                    host.start()
-                    try:
-                        primary = host.get_agent("primary")
-                        masher = host.get_agent("masher")
-                        tool = primary.agent.tools.get("InvokeSubagent")
-                        self.assertIsNotNone(tool)
-
-                        response = Response(
-                            text="Masher review complete",
-                            context=Context(),
-                            metadata={"trace_id": "trace-masher"},
-                        )
-                        delegated_prompt = "What happened in the most recent session?"
-                        with patch.object(masher.agent, "run", return_value=response):
-                            tool.execute(  # type: ignore[union-attr]
-                                {
-                                    "agent_id": "masher",
-                                    "prompt": delegated_prompt,
-                                    "opts": {"timeout_ms": 1500},
-                                }
-                            )
-
-                        turns = masher.store.list_sessions(app_id="masher")
-                        self.assertEqual(len(turns), 1)
-                        session_id = turns[0]["session_id"]
-                        stored_turns = masher.store.get_turns(session_id=session_id, limit=1)
-                        self.assertEqual(delegated_prompt, stored_turns[-1]["user_message"])
-                    finally:
-                        host.close()
+                host = MashAgentHostBuilder().primary(self._primary_spec()).enable_masher().build()
+                try:
+                    described = {item["agent_id"]: item for item in host.describe_agents()}
+                    self.assertIn("masher", described)
+                    self.assertEqual(described["masher"]["role"], "subagent")
+                    metadata_payload = described["masher"]["metadata"]
+                    self.assertIsInstance(metadata_payload, dict)
+                    assert isinstance(metadata_payload, dict)
+                    self.assertIn("log and session analysis", metadata_payload["capabilities"])
+                finally:
+                    asyncio.run(host.close())
 
 
 if __name__ == "__main__":

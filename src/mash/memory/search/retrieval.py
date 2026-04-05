@@ -59,7 +59,7 @@ class KeywordRetriever:
     def __init__(self, store: MemoryStore) -> None:
         self._store = store
 
-    def retrieve(
+    async def retrieve(
         self,
         parsed: ParsedSearchQuery,
         *,
@@ -72,7 +72,7 @@ class KeywordRetriever:
         if normalized_limit <= 0:
             return []
 
-        raw_hits = self._store.keyword_search(
+        raw_hits = await self._store.keyword_search(
             column=parsed.column,
             query_term=parsed.keyword_query,
             limit=normalized_limit,
@@ -91,7 +91,7 @@ class SemanticRetriever:
     def __init__(self, store: MemoryStore) -> None:
         self._store = store
 
-    def retrieve(
+    async def retrieve(
         self,
         parsed: ParsedSearchQuery,
         *,
@@ -104,7 +104,7 @@ class SemanticRetriever:
         if normalized_limit <= 0:
             return []
 
-        raw_hits = self._store.semantic_search(
+        raw_hits = await self._store.semantic_search(
             column=parsed.column,
             query_term=parsed.semantic_query_text,
             query_embedding=parsed.semantic_embedding,
@@ -141,7 +141,7 @@ class HybridRetrievalOrchestrator:
         self._config = config or RetrievalConfig()
         self._validate_enabled()
 
-    def retrieve(
+    async def retrieve(
         self,
         parsed: ParsedSearchQuery,
         query_id: str,
@@ -158,7 +158,7 @@ class HybridRetrievalOrchestrator:
         semantic_hits: list[RetrievalHit] = []
         try:
             if self._config.enable_keyword:
-                keyword_hits = self._keyword_retriever.retrieve(
+                keyword_hits = await self._keyword_retriever.retrieve(
                     parsed,
                     limit=limit,
                     session_id=session_id,
@@ -166,7 +166,7 @@ class HybridRetrievalOrchestrator:
                 )
 
             if self._config.enable_semantic:
-                semantic_hits = self._semantic_retriever.retrieve(
+                semantic_hits = await self._semantic_retriever.retrieve(
                     parsed,
                     limit=limit,
                     session_id=session_id,
@@ -177,7 +177,7 @@ class HybridRetrievalOrchestrator:
                 keyword_hits=keyword_hits,
                 semantic_hits=semantic_hits,
             )
-            self._emit_event(
+            await self._emit_event(
                 event_logger=event_logger,
                 event_type="memory.search.retrieval.complete",
                 query_id=query_id,
@@ -194,7 +194,7 @@ class HybridRetrievalOrchestrator:
             )
             return outputs
         except Exception as exc:
-            self._emit_event(
+            await self._emit_event(
                 event_logger=event_logger,
                 event_type="memory.search.retrieval.error",
                 query_id=query_id,
@@ -216,7 +216,7 @@ class HybridRetrievalOrchestrator:
         return int((time.time() - start_time) * 1000)
 
     @staticmethod
-    def _emit_event(
+    async def _emit_event(
         *,
         event_logger: EventLogger | None,
         event_type: str,
@@ -230,7 +230,7 @@ class HybridRetrievalOrchestrator:
     ) -> None:
         if event_logger is None or query_id is None or app_id is None:
             return
-        event_logger.emit(
+        await event_logger.emit(
             MemorySearchEvent(
                 event_type=event_type,
                 app_id=app_id,

@@ -7,7 +7,7 @@ import json
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Query, Request
@@ -133,6 +133,14 @@ def _get_client(request: Request, agent_id: str) -> MashAgentClient:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
 
+def _get_agent(request: Request, agent_id: str):
+    state = _state_from_request(request)
+    try:
+        return state.host.get_agent(agent_id.strip())
+    except ValueError as exc:
+        raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+
 def _get_agent_store_path(host: MashAgentHost, agent_id: str) -> Path:
     agent = host.get_agent(agent_id)
     return (agent.definition.get_agent_data_dir() / "state.db").expanduser().resolve()
@@ -145,7 +153,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
-        host.start()
+        await host.start()
         search_service: Optional[MemorySearchService] = None
         observability_memory_db_path = resolved_config.resolved_memory_db_path()
         if resolved_config.enable_observability and observability_memory_db_path is not None:
@@ -170,7 +178,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         finally:
             state = getattr(application.state, "runtime_state", None)
             if state is not None:
-                state.host.close()
+                await state.host.close()
             application.state.runtime_state = None
 
     app = FastAPI(title="Mash Host", version="1.0.0", lifespan=_lifespan)
@@ -221,10 +229,11 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
     api = APIRouter(prefix=resolved_config.api_prefix, dependencies=[Depends(_authorize)])
 
     @api.get("/health")
-    def health(request: Request) -> dict[str, Any]:
+    async def health(request: Request) -> dict[str, Any]:
         state = _state_from_request(request)
         primary_client = state.host.get_client(state.host.get_primary_agent_id())
-        primary_info = primary_client.get_session_info()
+        health_payload = await primary_client.health()
+        primary_info = health_payload.get("session") if isinstance(health_payload, dict) else {}
         return _success(
             {
                 "status": "ok",
@@ -247,25 +256,27 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             }
         )
 
-    @api.get("/agents")
-    def list_agents(request: Request) -> dict[str, Any]:
+    @api.get("/agent")
+    async def list_agents(request: Request) -> dict[str, Any]:
         state = _state_from_request(request)
         return _success({"agents": state.host.describe_agents(), "primary_agent_id": state.host.get_primary_agent_id()})
 
-    @api.get("/agents/{agent_id}")
-    def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
+    @api.get("/agent/{agent_id}")
+    async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
         state = _state_from_request(request)
         client = _get_client(request, agent_id)
         described = {item["agent_id"]: item for item in state.host.describe_agents()}
+        health_payload = await client.health()
+        session_payload = health_payload.get("session") if isinstance(health_payload, dict) else {}
         return _success(
             {
                 "agent": described.get(agent_id, {"agent_id": agent_id}),
-                "session": client.get_session_info(),
+                "session": session_payload,
             }
         )
 
-    @api.post("/agents/{agent_id}/invoke")
-    def invoke(request: Request, agent_id: str, body: InvokeRequest) -> dict[str, Any]:
+    @api.post("/agent/{agent_id}/invoke")
+    async def invoke(request: Request, agent_id: str, body: InvokeRequest) -> dict[str, Any]:
         client = _get_client(request, agent_id)
         message = _require_message(body.message)
         session_id = _normalize_optional_text(body.session_id)
@@ -273,7 +284,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         if timeout_ms is not None and timeout_ms <= 0:
             timeout_ms = None
         try:
-            result = client.invoke(
+            result = await client.invoke(
                 message,
                 session_id=session_id,
                 turn_metadata=dict(body.turn_metadata or {}),
@@ -283,26 +294,26 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             raise APIError(code="REQUEST_TIMEOUT", message=str(exc), status_code=504) from exc
         return _success(result)
 
-    @api.post("/agents/{agent_id}/requests")
-    def submit_request(request: Request, agent_id: str, body: SubmitRequest) -> dict[str, Any]:
+    @api.post("/agent/{agent_id}/request")
+    async def submit_request(request: Request, agent_id: str, body: SubmitRequest) -> dict[str, Any]:
         client = _get_client(request, agent_id)
-        request_id = client.post_request(
+        request_id = await client.post_request(
             _require_message(body.message),
             session_id=_normalize_optional_text(body.session_id),
             turn_metadata=dict(body.turn_metadata or {}),
         )
         return _success({"request_id": request_id})
 
-    @api.get("/agents/{agent_id}/requests/{request_id}/events")
-    def stream_request_events(request: Request, agent_id: str, request_id: str) -> StreamingResponse:
+    @api.get("/agent/{agent_id}/request/{request_id}/events")
+    async def stream_request_events(request: Request, agent_id: str, request_id: str) -> StreamingResponse:
         client = _get_client(request, agent_id)
         normalized_request_id = request_id.strip()
         if not normalized_request_id:
             raise APIError(code="INVALID_REQUEST", message="request_id is required", status_code=400)
 
-        def _generate() -> Iterator[str]:
+        async def _generate() -> AsyncIterator[str]:
             try:
-                for event in client.stream(normalized_request_id):
+                async for event in client.stream_response(normalized_request_id):
                     event_name = str(event.get("event") or "message")
                     payload = event.get("data")
                     yield _build_runtime_event_sse_payload(event_name, payload)
@@ -320,95 +331,95 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
-    @api.get("/agents/{agent_id}/sessions")
-    def list_sessions(request: Request, agent_id: str) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
-        return _success({"sessions": client.list_sessions()})
+    @api.get("/agent/{agent_id}/sessions")
+    async def list_sessions(request: Request, agent_id: str) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
+        return _success({"sessions": await agent.list_sessions()})
 
-    @api.get("/agents/{agent_id}/sessions/{session_id}")
-    def get_runtime_session(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
-        return _success(client.get_session_info(_normalize_optional_text(session_id)))
+    @api.get("/agent/{agent_id}/sessions/{session_id}")
+    async def get_runtime_session(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
+        return _success(await agent.get_session_info(_normalize_optional_text(session_id)))
 
-    @api.get("/agents/{agent_id}/sessions/{session_id}/preferences")
-    def get_preferences(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+    @api.get("/agent/{agent_id}/sessions/{session_id}/preferences")
+    async def get_preferences(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
         if not session_id.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        return _success({"preferences": client.get_preferences(session_id)})
+        return _success({"preferences": await agent.get_preferences(session_id)})
 
-    @api.put("/agents/{agent_id}/sessions/{session_id}/preferences")
-    def set_preferences(
+    @api.put("/agent/{agent_id}/sessions/{session_id}/preferences")
+    async def set_preferences(
         request: Request,
         agent_id: str,
         session_id: str,
         body: PreferencesUpdateRequest,
     ) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+        agent = _get_agent(request, agent_id)
         if not session_id.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        client.set_preferences(session_id, body.preferences)
+        await agent.set_preferences(session_id, body.preferences)
         return _success({"ok": True})
 
-    @api.get("/agents/{agent_id}/sessions/{session_id}/app-data")
-    def list_app_data(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+    @api.get("/agent/{agent_id}/sessions/{session_id}/app-data")
+    async def list_app_data(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
         if not session_id.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        return _success({"items": client.list_app_data(session_id)})
+        return _success({"items": await agent.list_app_data(session_id)})
 
-    @api.get("/agents/{agent_id}/sessions/{session_id}/app-data/{key}")
-    def get_app_data(request: Request, agent_id: str, session_id: str, key: str) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+    @api.get("/agent/{agent_id}/sessions/{session_id}/app-data/{key}")
+    async def get_app_data(request: Request, agent_id: str, session_id: str, key: str) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
         if not session_id.strip() or not key.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id and key are required", status_code=400)
-        return _success({"value": client.get_app_data(session_id, key)})
+        return _success({"value": await agent.get_app_data(session_id, key)})
 
-    @api.put("/agents/{agent_id}/sessions/{session_id}/app-data/{key}")
-    def set_app_data(
+    @api.put("/agent/{agent_id}/sessions/{session_id}/app-data/{key}")
+    async def set_app_data(
         request: Request,
         agent_id: str,
         session_id: str,
         key: str,
         body: AppDataSetRequest,
     ) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+        agent = _get_agent(request, agent_id)
         if not session_id.strip() or not key.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id and key are required", status_code=400)
-        client.set_app_data(session_id, key, body.value)
+        await agent.set_app_data(session_id, key, body.value)
         return _success({"ok": True})
 
-    @api.delete("/agents/{agent_id}/sessions/{session_id}/app-data/{key}")
-    def delete_app_data(request: Request, agent_id: str, session_id: str, key: str) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+    @api.delete("/agent/{agent_id}/sessions/{session_id}/app-data/{key}")
+    async def delete_app_data(request: Request, agent_id: str, session_id: str, key: str) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
         if not session_id.strip() or not key.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id and key are required", status_code=400)
-        deleted = client.delete_app_data(session_id, key)
+        deleted = await agent.delete_app_data(session_id, key)
         return _success({"deleted": bool(deleted)})
 
-    @api.get("/agents/{agent_id}/sessions/{session_id}/history")
-    def get_history(
+    @api.get("/agent/{agent_id}/sessions/{session_id}/history")
+    async def get_history(
         request: Request,
         agent_id: str,
         session_id: str,
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+        agent = _get_agent(request, agent_id)
         if not session_id.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        return _success({"turns": client.get_history_turns(session_id, limit=limit)})
+        return _success({"turns": await agent.get_history_turns(session_id, limit=limit)})
 
-    @api.post("/agents/{agent_id}/sessions/{session_id}/compact")
-    def compact_session(
+    @api.post("/agent/{agent_id}/sessions/{session_id}/compact")
+    async def compact_session(
         request: Request,
         agent_id: str,
         session_id: str,
         body: CompactSessionRequest,
     ) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
+        agent = _get_agent(request, agent_id)
         if not session_id.strip():
             raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        summary_text, turn_id = client.compact_session(
+        summary_text, turn_id = await agent.compact_session(
             session_id=session_id,
             reason=body.reason,
             session_total_tokens_reset=body.session_total_tokens_reset,
@@ -416,7 +427,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         return _success({"summary_text": summary_text, "turn_id": turn_id})
 
     @api.get("/telemetry/events")
-    def get_observability_events(
+    async def get_observability_events(
         request: Request,
         agent_id: str,
         limit: Optional[int] = Query(default=None),
@@ -433,7 +444,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         resolved_limit = _parse_limit(limit, default=state.default_events_limit, max_value=20000)
         events = [
             _strip_log_cursor(item)
-            for item in agent.store.get_logs(app_id=agent_id, limit=resolved_limit)
+            for item in await agent.store.get_logs(app_id=agent_id, limit=resolved_limit)
         ]
         return _success(
             {
@@ -456,7 +467,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
         async def _generate() -> AsyncIterator[str]:
-            latest = agent.store.get_logs(app_id=agent_id, limit=1)
+            latest = await agent.store.get_logs(app_id=agent_id, limit=1)
             last_seen = 0
             if latest:
                 try:
@@ -467,7 +478,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             while True:
                 if await request.is_disconnected():
                     break
-                events = agent.store.get_logs(app_id=agent_id, after_log_id=last_seen)
+                events = await agent.store.get_logs(app_id=agent_id, after_log_id=last_seen)
                 if not events:
                     yield ": keep-alive\n\n"
                     await asyncio.sleep(0.25)
@@ -488,7 +499,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         )
 
     @api.get("/telemetry/memory/search")
-    def search_memory(
+    async def search_memory(
         request: Request,
         q: str,
         app_id: str,
@@ -522,7 +533,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         resolved_limit = _parse_limit(limit, default=state.default_search_limit, max_value=50)
         normalized_session_id = _normalize_optional_text(session_id)
         try:
-            results = state.search_service.search(
+            results = await state.search_service.search(
                 query_text,
                 limit=resolved_limit,
                 session_id=normalized_session_id,
@@ -548,7 +559,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
     app.include_router(api)
 
     @app.get("/")
-    def root() -> dict[str, Any]:
+    async def root() -> dict[str, Any]:
         return {
             "service": "mash-api",
             "api": {

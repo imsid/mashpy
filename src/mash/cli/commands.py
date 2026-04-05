@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Protocol
@@ -17,7 +19,7 @@ CommandHandler = Callable[["CLIContext", List[str]], None]
 class SupportsCommandEventLogger(Protocol):
     """Minimal command-event logger interface."""
 
-    def emit(self, event: CommandEvent) -> None:
+    def emit(self, event: CommandEvent) -> object:
         """Emit one command event."""
 
 
@@ -52,6 +54,19 @@ class CommandRegistry:
         self._event_logger = event_logger
         self._session_id = session_id
         self._app_id = app_id
+
+    def _emit_event(self, event: CommandEvent) -> None:
+        if self._event_logger is None:
+            return
+        result = self._event_logger.emit(event)
+        if not inspect.isawaitable(result):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(result)
+        else:
+            loop.create_task(result)
 
     def register(self, command: Command) -> None:
         """Register a command.
@@ -147,8 +162,7 @@ class CommandRegistry:
 
         # Log command start
         if self._event_logger:
-
-            self._event_logger.emit(
+            self._emit_event(
                 CommandEvent(
                     event_type="command.start",
                     app_id=self._app_id,
@@ -163,8 +177,7 @@ class CommandRegistry:
 
             # Log command completion
             if self._event_logger:
-
-                self._event_logger.emit(
+                self._emit_event(
                     CommandEvent(
                         event_type="command.complete",
                         app_id=self._app_id,
@@ -178,8 +191,7 @@ class CommandRegistry:
 
             # Log command error
             if self._event_logger:
-
-                self._event_logger.emit(
+                self._emit_event(
                     CommandEvent(
                         event_type="command.error",
                         app_id=self._app_id,

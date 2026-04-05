@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
-from typing import Any, Callable, Dict, Iterator, Optional, Protocol
+from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
 from ..logging import AgentTraceEvent, get_trace_id
 from ..runtime.errors import classify_error
@@ -18,7 +19,7 @@ MAX_STEP_LIMIT_PREFIX = "Stopped after reaching the max step limit"
 class SupportsSubagentStream(Protocol):
     """Client protocol for host-managed subagent request streaming."""
 
-    def post_request(
+    async def post_request(
         self,
         message: str,
         *,
@@ -27,19 +28,19 @@ class SupportsSubagentStream(Protocol):
     ) -> str:
         """Submit one subagent request and return its request id."""
 
-    def stream(
+    def stream_response(
         self,
         request_id: str,
         *,
         timeout: Optional[float] = None,
-    ) -> Iterator[Dict[str, Any]]:
+    ) -> AsyncIterator[Dict[str, Any]]:
         """Yield streamed request events for a submitted subagent request."""
 
 
 class SupportsEventEmit(Protocol):
     """Event logger protocol used for forwarding subagent stream events."""
 
-    def emit(self, event: AgentTraceEvent) -> None:
+    async def emit(self, event: AgentTraceEvent) -> None:
         """Emit one trace event."""
 
 
@@ -95,7 +96,7 @@ class InvokeSubagentTool:
         else:
             raise ValueError("primary_session_id or primary_session_id_provider is required")
 
-    def _emit_stream_event(
+    async def _emit_stream_event(
         self,
         *,
         primary_session_id: str,
@@ -112,7 +113,7 @@ class InvokeSubagentTool:
             return
 
         try:
-            self._event_logger.emit(
+            await self._event_logger.emit(
                 AgentTraceEvent(
                     event_type=f"subagent.{event_name}",
                     app_id=self._primary_app_id,
@@ -196,7 +197,7 @@ class InvokeSubagentTool:
             retryable=False,
         )
 
-    def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
         agent_id = str(args.get("agent_id", "")).strip()
         prompt = str(args.get("prompt", "")).strip()
         opts = args.get("opts") or {}
@@ -230,55 +231,65 @@ class InvokeSubagentTool:
                     timeout_ms = DEFAULT_SUBAGENT_TIMEOUT_MS
 
             client = self._client_resolver(agent_id)
-            request_id = client.post_request(
-                prompt,
-                session_id=subagent_session_id,
-                turn_metadata={
-                    "primary_session_id": primary_session_id,
-                    "primary_app_id": self._primary_app_id,
-                    "subagent_id": agent_id,
-                    "subagent_invoke_opts": dict(opts),
-                },
-            )
-            timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
+            if not callable(getattr(client, "post_request", None)):
+                raise RuntimeError("subagent client does not support request submission")
+            if not callable(getattr(client, "stream_response", None)):
+                raise RuntimeError("subagent client does not support request streaming")
 
-            result: Optional[Dict[str, Any]] = None
-            for event in client.stream(request_id, timeout=timeout_seconds):
-                event_name = str(event.get("event") or "")
-                data = event.get("data")
-                if not isinstance(data, dict):
-                    data = {}
+            async def _invoke() -> Dict[str, Any] | None:
+                nonlocal request_id
+                request_id = await client.post_request(
+                    prompt,
+                    session_id=subagent_session_id,
+                    turn_metadata={
+                        "primary_session_id": primary_session_id,
+                        "primary_app_id": self._primary_app_id,
+                        "subagent_id": agent_id,
+                        "subagent_invoke_opts": dict(opts),
+                    },
+                )
+                timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
 
-                if event_name:
-                    self._emit_stream_event(
-                        primary_session_id=primary_session_id,
-                        subagent_session_id=subagent_session_id,
-                        agent_id=agent_id,
-                        request_id=request_id,
-                        event_name=event_name,
-                        data=data,
-                    )
+                result: Optional[Dict[str, Any]] = None
+                async for event in client.stream_response(request_id, timeout=timeout_seconds):
+                    event_name = str(event.get("event") or "")
+                    data = event.get("data")
+                    if not isinstance(data, dict):
+                        data = {}
 
-                if event_name == "request.completed":
-                    result = data
-                    break
-                if event_name == "request.error":
-                    error_payload = classify_error(data.get("error") or "request failed")
-                    if data.get("error_code") is not None:
-                        error_payload["error_code"] = data.get("error_code")
-                    if data.get("retryable") is not None:
-                        error_payload["retryable"] = data.get("retryable")
-                    raise RuntimeError(
-                        json.dumps(
-                            {
-                                "request_id": data.get("request_id", request_id),
-                                **error_payload,
-                            },
-                            ensure_ascii=True,
+                    if event_name:
+                        await self._emit_stream_event(
+                            primary_session_id=primary_session_id,
+                            subagent_session_id=subagent_session_id,
+                            agent_id=agent_id,
+                            request_id=request_id,
+                            event_name=event_name,
+                            data=data,
                         )
-                    )
-                if timeout_seconds is not None and time.time() - started_at > timeout_seconds:
-                    raise TimeoutError("agent invoke timed out")
+
+                    if event_name == "request.completed":
+                        result = data
+                        break
+                    if event_name == "request.error":
+                        error_payload = classify_error(data.get("error") or "request failed")
+                        if data.get("error_code") is not None:
+                            error_payload["error_code"] = data.get("error_code")
+                        if data.get("retryable") is not None:
+                            error_payload["retryable"] = data.get("retryable")
+                        raise RuntimeError(
+                            json.dumps(
+                                {
+                                    "request_id": data.get("request_id", request_id),
+                                    **error_payload,
+                                },
+                                ensure_ascii=True,
+                            )
+                        )
+                    if timeout_seconds is not None and time.time() - started_at > timeout_seconds:
+                        raise TimeoutError("agent invoke timed out")
+                return result
+
+            result = await _invoke()
 
             if result is None:
                 return self._error_result(

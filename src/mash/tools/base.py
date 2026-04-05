@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Protocol
 
@@ -32,7 +33,7 @@ class Tool(Protocol):
     description: str
     parameters: Dict[str, Any]  # JSON schema
 
-    def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given arguments.
 
         Args:
@@ -59,11 +60,11 @@ class FunctionTool:
     name: str
     description: str
     parameters: Dict[str, Any]
-    _executor: Callable[[Dict[str, Any]], ToolResult]
+    _executor: Callable[[Dict[str, Any]], Awaitable[ToolResult]]
 
-    def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given arguments."""
-        return self._executor(args)
+        return await self._executor(args)
 
     def to_llm_format(self) -> Dict[str, Any]:
         """Convert tool definition to LLM API format."""

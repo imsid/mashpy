@@ -40,3 +40,12 @@ class SubAgentMetadata:
         for capability in self.capabilities:
             if not str(capability).strip():
                 raise ValueError("subagent metadata capabilities must be non-empty")
+
+
+@dataclass(frozen=True)
+class SubagentEndpoint:
+    """Resolved host endpoint data for one subagent runtime."""
+
+    agent_id: str
+    base_url: str
+    metadata: SubAgentMetadata

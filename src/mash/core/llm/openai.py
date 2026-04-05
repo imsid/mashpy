@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from .base import BaseLLMProvider
 from .types import (
@@ -43,7 +43,7 @@ class OpenAIProvider(BaseLLMProvider):
             session_id=session_id,
         )
         self._validate_model(self.model)
-        if OpenAI is None:
+        if AsyncOpenAI is None:
             raise RuntimeError(
                 "OpenAI client is not installed. Install `openai` to use this provider."
             )
@@ -53,7 +53,7 @@ class OpenAIProvider(BaseLLMProvider):
                 "OpenAI API key is required. Set OPENAI_API_KEY or pass api_key."
             )
         try:
-            self._client = OpenAI(api_key=resolved_api_key)
+            self._client = AsyncOpenAI(api_key=resolved_api_key)
         except Exception as exc:
             raise RuntimeError(
                 "Failed to initialize OpenAI client. Check your API key."
@@ -62,7 +62,7 @@ class OpenAIProvider(BaseLLMProvider):
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(reasoning_controls=True)
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
 
         request_start = time.time()
         params: Dict[str, Any] = {
@@ -89,21 +89,21 @@ class OpenAIProvider(BaseLLMProvider):
                 continue
             params[key] = value
 
-        self._emit_request_start(
+        await self._emit_request_start(
             request,
             payload={"input": params["input"], "tools": params.get("tools", [])},
         )
         try:
-            raw_response = self._client.responses.create(**params)
+            raw_response = await self._client.responses.create(**params)
             response = self._parse_openai_response(raw_response)
-            self._emit_request_complete(
+            await self._emit_request_complete(
                 request,
                 started_at=request_start,
                 response=response,
             )
             return response
         except Exception as exc:
-            self._emit_request_error(request, started_at=request_start, error=exc)
+            await self._emit_request_error(request, started_at=request_start, error=exc)
             raise
 
     def _openai_prompt_cache_key(self, request: LLMRequest) -> str:

@@ -1,12 +1,4 @@
-"""Runtime tools for agent memory and preferences.
-
-These tools are automatically available to all Mash agents and provide:
-- Conversation memory access
-- User preference storage
-- App-specific data persistence
-
-All tools are app-scoped for clean isolation between applications.
-"""
+"""Runtime tools for agent memory and preferences."""
 
 from __future__ import annotations
 
@@ -32,14 +24,6 @@ class RuntimeToolBuilder:
         session_id: str | None = None,
         session_id_provider: Callable[[], str] | None = None,
     ) -> None:
-        """Initialize runtime tool builder.
-
-        Args:
-            store: Conversation store for persistence.
-            app_id: Application ID for isolation.
-            session_id: Fixed session ID for compatibility with direct/unit usage.
-            session_id_provider: Callable returning the active session ID.
-        """
         self._store = store
         self._app_id = app_id
         if session_id_provider is not None:
@@ -48,10 +32,7 @@ class RuntimeToolBuilder:
             self._session_id_provider = lambda: session_id
         else:
             raise ValueError("session_id or session_id_provider is required")
-        self._search_service = MemorySearchService(
-            store=store,
-            event_logger=event_logger,
-        )
+        self._search_service = MemorySearchService(store=store, event_logger=event_logger)
 
     def _session_id(self) -> str:
         session_id = str(self._session_id_provider() or "").strip()
@@ -60,7 +41,6 @@ class RuntimeToolBuilder:
         return session_id
 
     def build_tools(self) -> List[Tool]:
-        """Build runtime tools for this app and session."""
         return [
             self._build_search_conversations_tool(),
             self._build_get_full_turn_message_tool(),
@@ -71,16 +51,11 @@ class RuntimeToolBuilder:
         ]
 
     def build_get_latest_session_tool(self) -> Tool:
-        """Build a deterministic tool for selecting the latest session."""
-
-        def execute(_args: Dict[str, Any]) -> ToolResult:
-            session = self._store.get_latest_session(app_id=self._app_id)
+        async def execute(_args: Dict[str, Any]) -> ToolResult:
+            session = await self._store.get_latest_session(app_id=self._app_id)
             if session is None:
                 return ToolResult.error("no sessions found for this app")
-            return ToolResult(
-                content=json.dumps(session, indent=2),
-                is_error=False,
-            )
+            return ToolResult(content=json.dumps(session, indent=2), is_error=False)
 
         return FunctionTool(
             name="get_latest_session",
@@ -93,32 +68,25 @@ class RuntimeToolBuilder:
         )
 
     def build_get_latest_trace_tool(self) -> Tool:
-        """Build a deterministic tool for selecting the latest trace in a session."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             raw_session_id = args.get("session_id")
             if raw_session_id is None:
-                latest_session = self._store.get_latest_session(app_id=self._app_id)
+                latest_session = await self._store.get_latest_session(app_id=self._app_id)
                 if latest_session is None:
                     return ToolResult.error("no sessions found for this app")
                 session_id = str(latest_session["session_id"])
             elif isinstance(raw_session_id, str) and raw_session_id.strip():
                 session_id = raw_session_id.strip()
             else:
-                return ToolResult.error(
-                    "session_id must be a non-empty string if provided"
-                )
+                return ToolResult.error("session_id must be a non-empty string if provided")
 
-            trace = self._store.get_latest_trace(
+            trace = await self._store.get_latest_trace(
                 app_id=self._app_id,
                 session_id=session_id,
             )
             if trace is None:
                 return ToolResult.error(f"no traces found for session: {session_id}")
-            return ToolResult(
-                content=json.dumps(trace, indent=2),
-                is_error=False,
-            )
+            return ToolResult(content=json.dumps(trace, indent=2), is_error=False)
 
         return FunctionTool(
             name="get_latest_trace",
@@ -126,58 +94,36 @@ class RuntimeToolBuilder:
                 "Return the latest trace in a session from the runtime store. If "
                 "session_id is omitted, resolve the latest session first."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": (
-                            "Optional explicit session id. If omitted, the latest "
-                            "session is resolved first."
-                        ),
-                    },
-                },
-            },
+            parameters={"type": "object", "properties": {"session_id": {"type": "string"}}},
             _executor=execute,
         )
 
     def build_list_recent_traces_tool(self) -> Tool:
-        """Build a deterministic tool for listing recent traces in a session."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             raw_session_id = args.get("session_id")
             raw_limit = args.get("limit", 5)
             if raw_session_id is None:
-                latest_session = self._store.get_latest_session(app_id=self._app_id)
+                latest_session = await self._store.get_latest_session(app_id=self._app_id)
                 if latest_session is None:
                     return ToolResult.error("no sessions found for this app")
                 session_id = str(latest_session["session_id"])
             elif isinstance(raw_session_id, str) and raw_session_id.strip():
                 session_id = raw_session_id.strip()
             else:
-                return ToolResult.error(
-                    "session_id must be a non-empty string if provided"
-                )
+                return ToolResult.error("session_id must be a non-empty string if provided")
 
             try:
                 limit = max(1, int(raw_limit))
             except (TypeError, ValueError):
                 return ToolResult.error("limit must be an integer")
 
-            traces = self._store.list_recent_traces(
+            traces = await self._store.list_recent_traces(
                 app_id=self._app_id,
                 session_id=session_id,
                 limit=limit,
             )
-            payload = {
-                "session_id": session_id,
-                "limit": limit,
-                "traces": traces,
-            }
-            return ToolResult(
-                content=json.dumps(payload, indent=2),
-                is_error=False,
-            )
+            payload = {"session_id": session_id, "limit": limit, "traces": traces}
+            return ToolResult(content=json.dumps(payload, indent=2), is_error=False)
 
         return FunctionTool(
             name="list_recent_traces",
@@ -188,112 +134,54 @@ class RuntimeToolBuilder:
             parameters={
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": (
-                            "Optional explicit session id. If omitted, the latest "
-                            "session is resolved first."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of traces to return (default: 5).",
-                        "default": 5,
-                    },
+                    "session_id": {"type": "string"},
+                    "limit": {"type": "integer", "default": 5},
                 },
             },
             _executor=execute,
         )
 
     def _build_get_conversation_tool(self) -> Tool:
-        """Tool to get conversation history."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
-            limit = args.get("limit")
-            session_id = self._session_id()
-            turns = self._store.get_turns(
-                session_id=session_id,
-                limit=limit,
+        async def execute(args: Dict[str, Any]) -> ToolResult:
+            turns = await self._store.get_turns(
+                session_id=self._session_id(),
+                limit=args.get("limit"),
             )
-            # Format as conversation messages
             messages = []
             for turn in turns:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": turn["user_message"],
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": turn["agent_response"],
-                    }
-                )
-            return ToolResult(
-                content=json.dumps(messages, indent=2),
-                is_error=False,
-            )
+                messages.append({"role": "user", "content": turn["user_message"]})
+                messages.append({"role": "assistant", "content": turn["agent_response"]})
+            return ToolResult(content=json.dumps(messages, indent=2), is_error=False)
 
         return FunctionTool(
             name="get_conversation",
-            description=(
-                "Get the conversation history for this session. "
-                "Optionally limit the number of recent turns returned. "
-                "Use this to reference earlier parts of the conversation "
-                "instead of relying on context window."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of turns to return (optional)",
-                    },
-                },
-            },
+            description="Get the conversation history for this session.",
+            parameters={"type": "object", "properties": {"limit": {"type": "integer"}}},
             _executor=execute,
         )
 
     def _build_get_user_preferences_tool(self) -> Tool:
-        """Tool to get user preferences."""
-
-        def execute(_args: Dict[str, Any]) -> ToolResult:
-            session_id = self._session_id()
-            preferences = self._store.get_preferences(
+        async def execute(_args: Dict[str, Any]) -> ToolResult:
+            preferences = await self._store.get_preferences(
                 app_id=self._app_id,
-                session_id=session_id,
+                session_id=self._session_id(),
             )
             if preferences is None:
-                return ToolResult(
-                    content="No preferences stored.",
-                    is_error=False,
-                )
-            return ToolResult(
-                content=json.dumps(preferences, indent=2),
-                is_error=False,
-            )
+                return ToolResult(content="No preferences stored.", is_error=False)
+            return ToolResult(content=json.dumps(preferences, indent=2), is_error=False)
 
         return FunctionTool(
             name="get_user_preferences",
-            description=(
-                "Read the stored user preferences for the current session. "
-                "Use this before setting preferences if you need to see the "
-                "current session-scoped values."
-            ),
+            description="Read the stored user preferences for the current session.",
             parameters={"type": "object", "properties": {}},
             _executor=execute,
         )
 
     def _build_search_conversations_tool(self) -> Tool:
-        """Tool to search conversation history."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             query = args.get("query")
             if not isinstance(query, str) or not query.strip():
-                return ToolResult.error(
-                    "query is required and must be a non-empty string"
-                )
+                return ToolResult.error("query is required and must be a non-empty string")
             query = query.strip()
 
             raw_limit = args.get("limit", 10)
@@ -312,7 +200,7 @@ class RuntimeToolBuilder:
             search_session_id = self._session_id() if scope == "session" else None
             try:
                 normalized_queries = self._normalize_search_queries(query)
-                results = self._search_with_prefixes(
+                results = await self._search_with_prefixes(
                     normalized_queries,
                     app_id=self._app_id,
                     limit=limit,
@@ -320,7 +208,7 @@ class RuntimeToolBuilder:
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 return ToolResult.error(str(exc))
-            except Exception as exc:  # pragma: no cover - defensive guard
+            except Exception as exc:  # pragma: no cover
                 return ToolResult.error(f"search failed: {exc}")
 
             payload = {
@@ -332,48 +220,20 @@ class RuntimeToolBuilder:
                 "limit": limit,
                 "results": [asdict(result) for result in results],
             }
-            return ToolResult(
-                content=json.dumps(payload, indent=2),
-                is_error=False,
-            )
+            return ToolResult(content=json.dumps(payload, indent=2), is_error=False)
 
         return FunctionTool(
             name="search_conversations",
             description=(
                 "Search stored conversation turns and return ranked previews plus "
-                "the session_id and turn_id needed to retrieve full messages. "
-                "Use scope='session' for the current session only, or scope='app' "
-                "to search across all sessions for this app. Prefix the query with "
-                "@user: to search only user messages or @agent: to search only "
-                "assistant messages. If no prefix is provided, the tool searches "
-                "both and merges the results."
+                "the session_id and turn_id needed to retrieve full messages."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "Text to search for. Use @user:<text> to search only "
-                            "user messages, @agent:<text> to search only assistant "
-                            "messages, or plain text to search both."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": (
-                            "Maximum number of ranked matches to return "
-                            "(default: 10)."
-                        ),
-                    },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["session", "app"],
-                        "description": (
-                            "Search only the current session ('session') or all "
-                            "sessions for this app ('app')."
-                        ),
-                    },
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "scope": {"type": "string", "enum": ["session", "app"]},
                 },
                 "required": ["query"],
             },
@@ -382,14 +242,13 @@ class RuntimeToolBuilder:
 
     @staticmethod
     def _normalize_search_queries(query: str) -> list[str]:
-        """Return one or more prefixed queries accepted by the memory parser."""
         stripped = query.strip()
         lowered = stripped.lower()
         if lowered.startswith("@user:") or lowered.startswith("@agent:"):
             return [stripped]
         return [f"@user:{stripped}", f"@agent:{stripped}"]
 
-    def _search_with_prefixes(
+    async def _search_with_prefixes(
         self,
         queries: list[str],
         *,
@@ -397,10 +256,9 @@ class RuntimeToolBuilder:
         limit: int,
         session_id: str | None,
     ) -> list[SearchResult]:
-        """Search one or more prefixed queries and merge/dedupe results."""
         merged: dict[tuple[str, str], SearchResult] = {}
         for prefixed_query in queries:
-            for result in self._search_service.search(
+            for result in await self._search_service.search(
                 prefixed_query,
                 app_id=app_id,
                 limit=limit,
@@ -408,10 +266,7 @@ class RuntimeToolBuilder:
             ):
                 key = (result.session_id, result.turn_id)
                 existing = merged.get(key)
-                if (
-                    existing is None
-                    or result.similarity_score > existing.similarity_score
-                ):
+                if existing is None or result.similarity_score > existing.similarity_score:
                     merged[key] = result
         return sorted(
             merged.values(),
@@ -420,14 +275,10 @@ class RuntimeToolBuilder:
         )[:limit]
 
     def _build_get_full_turn_message_tool(self) -> Tool:
-        """Tool to fetch full messages for one or more conversation turns."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             raw_pairs = args.get("pairs")
             if not isinstance(raw_pairs, list) or not raw_pairs:
-                return ToolResult.error(
-                    "pairs is required and must be a non-empty array"
-                )
+                return ToolResult.error("pairs is required and must be a non-empty array")
 
             normalized_pairs: List[Dict[str, str]] = []
             for idx, pair in enumerate(raw_pairs):
@@ -435,30 +286,19 @@ class RuntimeToolBuilder:
                     return ToolResult.error(
                         f"pairs[{idx}] must be an object with session_id and turn_id"
                     )
-
                 session_id = pair.get("session_id")
                 turn_id = pair.get("turn_id")
                 if not isinstance(session_id, str) or not session_id.strip():
-                    return ToolResult.error(
-                        f"pairs[{idx}].session_id must be a non-empty string"
-                    )
+                    return ToolResult.error(f"pairs[{idx}].session_id must be a non-empty string")
                 if not isinstance(turn_id, str) or not turn_id.strip():
-                    return ToolResult.error(
-                        f"pairs[{idx}].turn_id must be a non-empty string"
-                    )
-
+                    return ToolResult.error(f"pairs[{idx}].turn_id must be a non-empty string")
                 normalized_pairs.append(
-                    {
-                        "session_id": session_id.strip(),
-                        "turn_id": turn_id.strip(),
-                    }
+                    {"session_id": session_id.strip(), "turn_id": turn_id.strip()}
                 )
 
             try:
-                turns = self._store.get_turn_by_ids(
-                    pairs=normalized_pairs,
-                )
-            except Exception as exc:  # pragma: no cover - defensive guard
+                turns = await self._store.get_turn_by_ids(pairs=normalized_pairs)
+            except Exception as exc:  # pragma: no cover
                 return ToolResult.error(f"failed to fetch turns: {exc}")
 
             found_turns = turns or []
@@ -471,7 +311,6 @@ class RuntimeToolBuilder:
                 for pair in normalized_pairs
                 if (pair["session_id"], pair["turn_id"]) not in found_keys
             ]
-
             return ToolResult(
                 content=json.dumps(
                     {
@@ -487,41 +326,21 @@ class RuntimeToolBuilder:
 
         return FunctionTool(
             name="get_full_turn_message",
-            description=(
-                "Expand one or more search results into full turn text using "
-                "(session_id, turn_id) pairs. Use this after search_conversations "
-                "when the ranked preview is not enough and you need the complete "
-                "user_message and agent_response."
-            ),
+            description="Expand one or more search results into full turn text.",
             parameters={
                 "type": "object",
                 "properties": {
                     "pairs": {
                         "type": "array",
-                        "description": (
-                            "List of (session_id, turn_id) pairs to expand into "
-                            "full turn messages, usually copied from "
-                            "search_conversations results."
-                        ),
                         "items": {
                             "type": "object",
                             "properties": {
-                                "session_id": {
-                                    "type": "string",
-                                    "description": (
-                                        "The session_id for the turn to fetch."
-                                    ),
-                                },
-                                "turn_id": {
-                                    "type": "string",
-                                    "description": (
-                                        "The turn_id for the turn to fetch."
-                                    ),
-                                },
+                                "session_id": {"type": "string"},
+                                "turn_id": {"type": "string"},
                             },
                             "required": ["session_id", "turn_id"],
                         },
-                    },
+                    }
                 },
                 "required": ["pairs"],
             },
@@ -529,227 +348,121 @@ class RuntimeToolBuilder:
         )
 
     def _build_set_user_preferences_tool(self) -> Tool:
-        """Tool to set user preferences."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             preferences = args.get("preferences")
             if not isinstance(preferences, dict):
-                return ToolResult(
-                    content="preferences must be a JSON object",
-                    is_error=True,
-                )
-            self._store.set_preferences(
+                return ToolResult(content="preferences must be a JSON object", is_error=True)
+            await self._store.set_preferences(
                 app_id=self._app_id,
                 session_id=self._session_id(),
                 preferences=preferences,
             )
-            return ToolResult(
-                content="Preferences saved successfully.",
-                is_error=False,
-            )
+            return ToolResult(content="Preferences saved successfully.", is_error=False)
 
         return FunctionTool(
             name="set_user_preferences",
-            description=(
-                "Store user preferences for the current session. Use this for "
-                "user-specific settings or working preferences, such as response "
-                "style, depth, focus areas, or language."
-            ),
+            description="Store user preferences for the current session.",
             parameters={
                 "type": "object",
-                "properties": {
-                    "preferences": {
-                        "type": "object",
-                        "description": (
-                            "A JSON object of user-specific settings for the "
-                            "current session."
-                        ),
-                    },
-                },
+                "properties": {"preferences": {"type": "object"}},
                 "required": ["preferences"],
             },
             _executor=execute,
         )
 
     def _build_get_app_data_tool(self) -> Tool:
-        """Tool to get app-specific data by key."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             key = args.get("key")
             if not key:
-                return ToolResult(
-                    content="key is required",
-                    is_error=True,
-                )
-            value = self._store.get_app_data(
+                return ToolResult(content="key is required", is_error=True)
+            value = await self._store.get_app_data(
                 app_id=self._app_id,
                 session_id=self._session_id(),
                 key=str(key),
             )
             if value is None:
-                return ToolResult(
-                    content=f"No data found for key: {key}",
-                    is_error=False,
-                )
-            return ToolResult(
-                content=json.dumps(value, indent=2),
-                is_error=False,
-            )
+                return ToolResult(content=f"No data found for key: {key}", is_error=False)
+            return ToolResult(content=json.dumps(value, indent=2), is_error=False)
 
         return FunctionTool(
             name="get_app_data",
-            description=(
-                "Get app-specific data by key. "
-                "Use this to retrieve information previously stored "
-                "with set_app_data (e.g., file locations, discovered patterns, "
-                "configurations)."
-            ),
+            description="Get app-specific data by key.",
             parameters={
                 "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "Data key to retrieve",
-                    },
-                },
+                "properties": {"key": {"type": "string"}},
                 "required": ["key"],
             },
             _executor=execute,
         )
 
     def _build_set_app_data_tool(self) -> Tool:
-        """Tool to set app-specific data by key."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             key = args.get("key")
             value = args.get("value")
             if not key:
-                return ToolResult(
-                    content="key is required",
-                    is_error=True,
-                )
+                return ToolResult(content="key is required", is_error=True)
             if value is None:
-                return ToolResult(
-                    content="value is required",
-                    is_error=True,
-                )
-            self._store.set_app_data(
+                return ToolResult(content="value is required", is_error=True)
+            await self._store.set_app_data(
                 app_id=self._app_id,
                 session_id=self._session_id(),
                 key=str(key),
                 value=value,
             )
-            return ToolResult(
-                content=f"Data stored successfully for key: {key}",
-                is_error=False,
-            )
+            return ToolResult(content=f"Data stored successfully for key: {key}", is_error=False)
 
         return FunctionTool(
             name="set_app_data",
-            description=(
-                "Store session-scoped app data under a key. Use this for working "
-                "memory or extracted facts that are not user preferences, such as "
-                "discovered file paths, identifiers, or intermediate results."
-            ),
+            description="Store session-scoped app data under a key.",
             parameters={
                 "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": (
-                            "A key for the session-scoped app data entry, used as "
-                            "a stable tag or identifier."
-                        ),
-                    },
-                    "value": {
-                        "description": (
-                            "The value to store for this key. Any JSON-serializable "
-                            "type is allowed."
-                        ),
-                    },
-                },
+                "properties": {"key": {"type": "string"}, "value": {}},
                 "required": ["key", "value"],
             },
             _executor=execute,
         )
 
     def _build_list_app_data_tool(self) -> Tool:
-        """Tool to list all app-specific data."""
-
-        def execute(_args: Dict[str, Any]) -> ToolResult:
-            session_id = self._session_id()
-            data = self._store.list_app_data(
+        async def execute(_args: Dict[str, Any]) -> ToolResult:
+            data = await self._store.list_app_data(
                 app_id=self._app_id,
-                session_id=session_id,
+                session_id=self._session_id(),
             )
             if not data:
-                return ToolResult(
-                    content="No app data stored.",
-                    is_error=False,
-                )
-            return ToolResult(
-                content=json.dumps(data, indent=2),
-                is_error=False,
-            )
+                return ToolResult(content="No app data stored.", is_error=False)
+            return ToolResult(content=json.dumps(data, indent=2), is_error=False)
 
         return FunctionTool(
             name="list_app_data",
-            description=(
-                "List all app-data entries stored for the current session. Use "
-                "this to inspect the session-scoped working memory previously "
-                "saved with set_app_data."
-            ),
+            description="List all app-data entries stored for the current session.",
             parameters={"type": "object", "properties": {}},
             _executor=execute,
         )
 
     def _build_delete_app_data_tool(self) -> Tool:
-        """Tool to delete app-specific data by key."""
-
-        def execute(args: Dict[str, Any]) -> ToolResult:
+        async def execute(args: Dict[str, Any]) -> ToolResult:
             key = args.get("key")
             if not key:
-                return ToolResult(
-                    content="key is required",
-                    is_error=True,
-                )
-            deleted = self._store.delete_app_data(
+                return ToolResult(content="key is required", is_error=True)
+            deleted = await self._store.delete_app_data(
                 app_id=self._app_id,
                 session_id=self._session_id(),
                 key=str(key),
             )
             if deleted:
-                return ToolResult(
-                    content=f"Data deleted successfully for key: {key}",
-                    is_error=False,
-                )
-            else:
-                return ToolResult(
-                    content=f"No data found for key: {key}",
-                    is_error=False,
-                )
+                return ToolResult(content=f"Data deleted successfully for key: {key}", is_error=False)
+            return ToolResult(content=f"No data found for key: {key}", is_error=False)
 
         return FunctionTool(
             name="delete_app_data",
-            description=(
-                "Delete app-specific data by key. "
-                "Use this to remove information that is no longer needed "
-                "or has become outdated."
-            ),
+            description="Delete app-specific data by key.",
             parameters={
                 "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "Data key to delete",
-                    },
-                },
+                "properties": {"key": {"type": "string"}},
                 "required": ["key"],
             },
             _executor=execute,
         )
 
 
-__all__ = [
-    "RuntimeToolBuilder",
-]
+__all__ = ["RuntimeToolBuilder"]

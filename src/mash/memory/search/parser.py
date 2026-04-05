@@ -19,7 +19,7 @@ _UNKNOWN_PREFIX_RE = re.compile(r"^@([a-zA-Z_][a-zA-Z0-9_-]*):")
 class QueryParser:
     """Parse and normalize memory search queries."""
 
-    def parse(
+    async def parse(
         self,
         query: str,
         query_id: str,
@@ -65,7 +65,7 @@ class QueryParser:
                 semantic_query_text=query_term,
                 semantic_embedding=None,
             )
-            self._emit_event(
+            await self._emit_event(
                 event_logger=event_logger,
                 event_type="memory.search.parse.complete",
                 query_id=query_id,
@@ -80,7 +80,7 @@ class QueryParser:
             )
             return parsed
         except Exception as exc:
-            self._emit_event(
+            await self._emit_event(
                 event_logger=event_logger,
                 event_type="memory.search.parse.error",
                 query_id=query_id,
@@ -102,7 +102,7 @@ class QueryParser:
         return int((time.time() - start_time) * 1000)
 
     @staticmethod
-    def _emit_event(
+    async def _emit_event(
         *,
         event_logger: EventLogger | None,
         event_type: str,
@@ -116,7 +116,7 @@ class QueryParser:
     ) -> None:
         if event_logger is None or query_id is None or app_id is None:
             return
-        event_logger.emit(
+        await event_logger.emit(
             MemorySearchEvent(
                 event_type=event_type,
                 app_id=app_id,

@@ -241,7 +241,9 @@ class ChainOfThoughtRenderer:
             return
 
         total_steps = len(self._steps)
-        total_duration = sum(s.get("total_duration", 0) for s in self._steps)
+        total_duration = sum(
+            self._step_duration_ms(step) for step in self._steps
+        )
         total_tokens = sum(
             s.get("token_usage", {}).get("input", 0)
             + s.get("token_usage", {}).get("output", 0)
@@ -263,6 +265,18 @@ class ChainOfThoughtRenderer:
         summary.append(f"{total_duration:,}ms", style="dim")
 
         self._console.print(summary)
+
+    @staticmethod
+    def _step_duration_ms(step: Dict[str, Any]) -> int:
+        total_duration = step.get("total_duration")
+        if isinstance(total_duration, int):
+            return total_duration
+
+        think_duration = step.get("think_duration")
+        act_duration = step.get("act_duration")
+        resolved_think = think_duration if isinstance(think_duration, int) else 0
+        resolved_act = act_duration if isinstance(act_duration, int) else 0
+        return resolved_think + resolved_act
 
 
 class CompactChainRenderer:

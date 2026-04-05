@@ -39,7 +39,6 @@ class BashSession:
         self._process: Optional[subprocess.Popen[str]] = None
         self._stdout_queue: queue.Queue[str] = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
-        self._start_process()
 
     def _start_process(self) -> None:
         """Start the bash process."""
@@ -59,6 +58,12 @@ class BashSession:
             daemon=True,
         )
         self._reader_thread.start()
+
+    def _ensure_process(self) -> None:
+        """Start the bash process on first use."""
+        if self._process is not None:
+            return
+        self._start_process()
 
     def _read_stdout(self) -> None:
         """Read stdout in a separate thread."""
@@ -104,8 +109,9 @@ class BashSession:
             RuntimeError: If the session is not running.
             TimeoutError: If the command times out.
         """
+        self._ensure_process()
         if self._process is None or self._process.stdin is None:
-            raise RuntimeError("Bash session is not running.")
+            raise RuntimeError("Bash session failed to start.")
 
         token = uuid.uuid4().hex
         sentinel = f"{_BASH_SENTINEL_PREFIX}{token}"
@@ -232,7 +238,7 @@ class BashTool:
         }
         self._session = BashSession(working_dir=working_dir)
 
-    def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the bash command.
 
         Args:

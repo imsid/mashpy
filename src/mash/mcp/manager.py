@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -38,6 +40,19 @@ class MCPManager:
         self._event_logger = event_logger
         self._session_id = session_id
         self._app_id = app_id
+
+    def _emit_event(self, event: MCPEvent) -> None:
+        if self._event_logger is None:
+            return
+        result = self._event_logger.emit(event)
+        if not inspect.isawaitable(result):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(result)
+        else:
+            loop.create_task(result)
 
     def add_server(
         self,
@@ -81,8 +96,7 @@ class MCPManager:
 
             # Log connection attempt
             if self._event_logger:
-
-                self._event_logger.emit(
+                self._emit_event(
                     MCPEvent(
                         event_type="mcp.client.connect",
                         app_id=self._app_id,
@@ -99,7 +113,6 @@ class MCPManager:
 
                 # Log successful connection
                 if self._event_logger:
-
                     # Get tool count for metadata
                     tool_count = 0
                     try:
@@ -108,7 +121,7 @@ class MCPManager:
                     except Exception:
                         pass
 
-                    self._event_logger.emit(
+                    self._emit_event(
                         MCPEvent(
                             event_type="mcp.client.connected",
                             app_id=self._app_id,
@@ -123,8 +136,7 @@ class MCPManager:
             except MCPClientError as e:
                 # Log connection error
                 if self._event_logger:
-
-                    self._event_logger.emit(
+                    self._emit_event(
                         MCPEvent(
                             event_type="mcp.client.error",
                             app_id=self._app_id,
@@ -156,8 +168,7 @@ class MCPManager:
 
             # Log disconnection
             if self._event_logger:
-
-                self._event_logger.emit(
+                self._emit_event(
                     MCPEvent(
                         event_type="mcp.client.disconnect",
                         app_id=self._app_id,
@@ -272,8 +283,7 @@ class MCPManager:
 
         # Log tool call
         if self._event_logger:
-
-            self._event_logger.emit(
+            self._emit_event(
                 MCPEvent(
                     event_type="mcp.tool.call",
                     app_id=self._app_id,
@@ -289,8 +299,7 @@ class MCPManager:
 
             # Log tool result
             if self._event_logger:
-
-                self._event_logger.emit(
+                self._emit_event(
                     MCPEvent(
                         event_type="mcp.tool.result",
                         app_id=self._app_id,
@@ -306,8 +315,7 @@ class MCPManager:
         except Exception as e:
             # Log tool error
             if self._event_logger:
-
-                self._event_logger.emit(
+                self._emit_event(
                     MCPEvent(
                         event_type="mcp.tool.error",
                         app_id=self._app_id,

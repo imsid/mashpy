@@ -16,7 +16,7 @@ It contains three main components:
 
 ```text
 src/mash/                  SDK, host API, and CLI
-docs/rfcs/                Protocol and design RFCs
+docs/rfcs/                 Protocol and design RFCs
 pilot/                     Mash Pilot host built on Mash
 tests/                     Unified test suite
 Dockerfile                 Base image for Mash host deployments
@@ -36,8 +36,6 @@ The architecture is:
 - `mash.api` also serves the built-in telemetry UI at `/telemetry`
 - `mash` talks to a running Mash API deployment
 - deployments are expected to run in a container
-
-Persistence is runtime-level, not app-level.
 
 Mash stores agent state under:
 
@@ -104,13 +102,15 @@ The core execution stack is:
 - [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
   `AgentSpec` is the transport-agnostic contract app authors implement.
 - [src/mash/runtime/host.py](src/mash/runtime/host.py)
-  `MashAgentHost` and `MashAgentHostBuilder` register the primary agent and subagents, start one runtime per agent, and wire host-managed delegation.
+  `MashAgentHost` and `MashAgentHostBuilder` register the primary agent and subagents, start one in-process uvicorn-backed runtime server per agent, and wire host-managed delegation.
+- [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
+  `MashAgentRuntime` is the async execution core for one agent: request lifecycle, per-session serialization, persistence, and trace fanout.
 - [src/mash/runtime/server.py](src/mash/runtime/server.py)
-  `MashAgentServer` owns per-agent execution state, request buffering, session persistence, event logging, and the HTTP request worker.
+  `MashAgentServer` is the Starlette transport adapter over one runtime and exposes the H2A HTTP + SSE surface.
 - [src/mash/core/agent.py](src/mash/core/agent.py)
   `Agent.run()` executes the think/act/observe loop and emits trace + token metadata.
 - [src/mash/runtime/client.py](src/mash/runtime/client.py)
-  `MashAgentClient` is the runtime-side HTTP client used by the host and by subagent delegation.
+  `MashAgentClient` is the async H2A client used by the host and by subagent delegation.
 
 ```mermaid
 sequenceDiagram
@@ -118,21 +118,23 @@ sequenceDiagram
     participant API as mash.api
     participant Host as MashAgentHost
     participant Client as MashAgentClient
-    participant Runtime as MashAgentServer
+    participant Server as MashAgentServer
+    participant Runtime as MashAgentRuntime
     participant Agent as mash.core.Agent
     participant Store as State Store
 
-    User->>API: POST /api/v1/agents/{agent_id}/requests
+    User->>API: POST /api/v1/agent/{agent_id}/request
     API->>Host: get_client(agent_id)
     Host-->>API: MashAgentClient
-    API->>Client: post_request(...) / stream(...)
-    Client->>Runtime: HTTP request + SSE stream
+    API->>Client: post_request(...) / stream_response(...)
+    Client->>Server: HTTP request + SSE stream
+    Server->>Runtime: submit_request(...) / stream_request_events(...)
     Runtime->>Agent: process_user_message(...)
     Agent->>Agent: think -> act -> observe
     Agent-->>Runtime: Response + token_usage + trace_id
     Runtime->>Store: save_turn(...)
     Runtime->>Store: collect_signals(...)
-    Runtime-->>Client: request.accepted / agent.trace / request.completed
+    Server-->>Client: request.accepted / request.waiting? / agent.trace / request.completed
     Client-->>API: streamed runtime events
     API-->>User: SSE / final payload
 
@@ -140,11 +142,15 @@ sequenceDiagram
 
 Important runtime properties:
 
-- Each `MashAgentServer` is single-flight per server: requests are queued and executed by one worker thread.
+- Each request is accepted immediately and runs in its own async task.
+- Requests for the same `session_id` are serialized inside one runtime with a per-session lock.
+- Different sessions on the same agent may run concurrently up to the runtime concurrency limit.
 - Request lifecycle is streamed over SSE using stable event names:
-  `request.accepted`, `request.started`, `agent.trace`, `request.completed`, `request.error`.
+  `request.accepted`, optional `request.waiting`, `request.started`, `agent.trace`, `request.completed`, `request.error`.
 - Token accounting is session-scoped inside each runtime. `session_total_tokens` is computed from saved turn metadata and persisted with each turn.
 - Runtime logs are persisted in each agent's `MemoryStore` and also fanned out as live events for telemetry and remote clients.
+- The runtime H2A surface is:
+  `GET /health`, `POST /agent/{agent_id}/request`, `GET /agent/{agent_id}/request/{request_id}`.
 
 ## Working on the SDK
 
@@ -152,6 +158,7 @@ The main SDK surface is:
 
 - `AgentSpec` in [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
 - `MashAgentHost` in [src/mash/runtime/host.py](src/mash/runtime/host.py)
+- `MashAgentRuntime` in [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
 - `MashAgentClient` in [src/mash/runtime/client.py](src/mash/runtime/client.py)
 - `MashAgentServer` in [src/mash/runtime/server.py](src/mash/runtime/server.py)
 
@@ -191,9 +198,9 @@ def build_host():
 Subagent delegation is host-managed, not a special local shortcut.
 
 1. The host registers the primary agent and subagents in [src/mash/runtime/host.py](src/mash/runtime/host.py).
-2. On startup, the host injects subagent routing guidance into the primary system prompt and registers `InvokeSubagent`.
+2. On startup, the host resolves subagent endpoints and the primary runtime injects subagent routing guidance plus `InvokeSubagent`.
 3. `InvokeSubagentTool` in [src/mash/tools/subagent.py](src/mash/tools/subagent.py) resolves the target subagent client and submits a normal streamed request.
-4. The subagent request runs through that subagent’s own `MashAgentServer`, persistence layer, and session namespace.
+4. The subagent request runs through that subagent’s own runtime server, runtime core, persistence layer, and session namespace.
 5. Streamed request events are forwarded back to the primary runtime as `subagent.*` trace events for observability.
 
 ```mermaid
@@ -203,6 +210,7 @@ sequenceDiagram
     participant Host as MashAgentHost
     participant Client as MashAgentClient
     participant Server as Subagent MashAgentServer
+    participant Runtime as Subagent MashAgentRuntime
     participant Subagent as Subagent mash.core.Agent
 
     Primary->>Tool: InvokeSubagent(agent_id, prompt, opts)
@@ -210,9 +218,10 @@ sequenceDiagram
     Host-->>Tool: MashAgentClient
     Tool->>Client: post_request(prompt, session_id=subagent_session_id)
     Client->>Server: HTTP request + SSE stream
-    Server->>Subagent: process_user_message(...)
+    Server->>Runtime: submit_request(...) / stream_request_events(...)
+    Runtime->>Subagent: process_user_message(...)
     Subagent->>Subagent: think -> act -> observe
-    Subagent-->>Server: Response + token_usage + trace_id
+    Subagent-->>Runtime: Response + token_usage + trace_id
     Server-->>Client: request.accepted / agent.trace / request.completed
     Client-->>Tool: streamed events
     Tool-->>Primary: ToolResult(text + metadata)
@@ -231,12 +240,14 @@ When working on `mashpy`, these are the main files to orient around:
 
 - [src/mash/core/agent.py](src/mash/core/agent.py)
   Core think/act/observe loop, tool execution, token aggregation, and trace emission.
+- [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
+  Async request lifecycle, per-session locking, event buffering, and persistence orchestration.
 - [src/mash/runtime/server.py](src/mash/runtime/server.py)
-  Session persistence, request queueing, SSE event buffering, and runtime event fan-out.
+  H2A Starlette surface and SSE streaming for one runtime.
 - [src/mash/runtime/host.py](src/mash/runtime/host.py)
-  Multi-agent composition and subagent tool wiring.
+  Multi-agent composition, uvicorn server startup, and subagent endpoint wiring.
 - [src/mash/api/app.py](src/mash/api/app.py)
-  FastAPI composition for the public host API, telemetry endpoints, and auth.
+  FastAPI composition for the public host API, telemetry endpoints, auth, and `/api/v1/agent/...` routes.
 - [src/mash/cli/main.py](src/mash/cli/main.py)
   Unified `mash` CLI entrypoint for remote operations and `mash host serve`.
 - [src/mash/cli/shell.py](src/mash/cli/shell.py)

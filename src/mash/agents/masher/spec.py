@@ -11,6 +11,7 @@ from mash.logging import EventLogger
 from mash.memory.store import MemoryStore
 from mash.runtime.spec import AgentSpec
 from mash.runtime.types import SubAgentMetadata
+from mash.memory.store import SQLiteStore
 from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.bash import BashTool
@@ -180,4 +181,20 @@ class MasherAgentSpec(AgentSpec):
         )
 
 
-__all__ = ["MASHER_AGENT_ID", "MasherAgentSpec", "build_masher_metadata"]
+def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgentSpec:
+    """Build a spawnable Masher spec for child runtime processes."""
+    resolved_target = (
+        target_app_id.strip()
+        if isinstance(target_app_id, str) and target_app_id.strip()
+        else "primary"
+    )
+    store_path = (AgentSpec.get_data_root() / resolved_target / "state.db").resolve()
+    return MasherAgentSpec(SQLiteStore(store_path), target_app_id=resolved_target)
+
+
+__all__ = [
+    "MASHER_AGENT_ID",
+    "MasherAgentSpec",
+    "build_masher_metadata",
+    "create_masher_agent_spec",
+]

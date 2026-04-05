@@ -24,7 +24,7 @@ class WeightedFusionReranker:
         if self._weights.semantic_weight == 0 and self._weights.keyword_weight == 0:
             raise ValueError("At least one fusion weight must be positive")
 
-    def rerank(
+    async def rerank(
         self,
         query_id: str,
         event_logger: EventLogger,
@@ -108,7 +108,7 @@ class WeightedFusionReranker:
                     item.turn_id,
                 )
             )
-            self._emit_event(
+            await self._emit_event(
                 event_logger=event_logger,
                 event_type="memory.search.rerank.complete",
                 query_id=query_id,
@@ -120,7 +120,7 @@ class WeightedFusionReranker:
             )
             return fused
         except Exception as exc:
-            self._emit_event(
+            await self._emit_event(
                 event_logger=event_logger,
                 event_type="memory.search.rerank.error",
                 query_id=query_id,
@@ -137,7 +137,7 @@ class WeightedFusionReranker:
         return int((time.time() - start_time) * 1000)
 
     @staticmethod
-    def _emit_event(
+    async def _emit_event(
         *,
         event_logger: EventLogger | None,
         event_type: str,
@@ -151,7 +151,7 @@ class WeightedFusionReranker:
     ) -> None:
         if event_logger is None or query_id is None or app_id is None:
             return
-        event_logger.emit(
+        await event_logger.emit(
             MemorySearchEvent(
                 event_type=event_type,
                 app_id=app_id,

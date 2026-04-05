@@ -25,7 +25,7 @@ Requirements:
 """
 
 
-def compact_conversation(
+async def compact_conversation(
     store: MemoryStore,
     llm: LLMProvider,
     app_id: str,
@@ -40,7 +40,7 @@ def compact_conversation(
     if turn_limit <= 0:
         raise ValueError("turn_limit must be > 0")
 
-    turns = store.get_turns(session_id=session_id, limit=None)
+    turns = await store.get_turns(session_id=session_id, limit=None)
     if not turns:
         return "", ""
 
@@ -76,7 +76,7 @@ def compact_conversation(
         return "", ""
 
     conversation_text = "\n".join(lines)
-    response = llm.send(
+    response = await llm.send(
         LLMRequest(
             model=llm.model,
             system=COMPACTION_SYSTEM_PROMPT,
@@ -103,7 +103,7 @@ def compact_conversation(
         "token_usage": {"input": 0, "output": 0},
     }
     trace_id = str(uuid.uuid4())
-    turn_id = store.save_turn(
+    turn_id = await store.save_turn(
         trace_id=trace_id,
         session_id=session_id,
         app_id=app_id,

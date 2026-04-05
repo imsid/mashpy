@@ -76,7 +76,7 @@ class MashHostClient:
         return response.json()["data"]
 
     def list_agents(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/api/v1/agents")
+        response = self._request("GET", "/api/v1/agent")
         payload = response.json()["data"]
         agents = payload.get("agents")
         if not isinstance(agents, list):
@@ -84,7 +84,7 @@ class MashHostClient:
         return [agent for agent in agents if isinstance(agent, dict)]
 
     def get_agent(self, agent_id: str) -> dict[str, Any]:
-        response = self._request("GET", f"/api/v1/agents/{quote(agent_id, safe='')}")
+        response = self._request("GET", f"/api/v1/agent/{quote(agent_id, safe='')}")
         return response.json()["data"]
 
     def submit_request(
@@ -97,7 +97,7 @@ class MashHostClient:
     ) -> str:
         response = self._request(
             "POST",
-            f"/api/v1/agents/{quote(agent_id, safe='')}/requests",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/request",
             json_body={
                 "message": message,
                 "session_id": session_id,
@@ -109,7 +109,7 @@ class MashHostClient:
     def stream_request(self, agent_id: str, request_id: str) -> Iterator[dict[str, Any]]:
         with self._request(
             "GET",
-            f"/api/v1/agents/{quote(agent_id, safe='')}/requests/{quote(request_id, safe='')}/events",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/events",
             stream=True,
         ) as response:
             event_name: Optional[str] = None
@@ -165,7 +165,7 @@ class MashHostClient:
         raise MashHostClientError("stream ended without a terminal event")
 
     def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
-        response = self._request("GET", f"/api/v1/agents/{quote(agent_id, safe='')}/sessions")
+        response = self._request("GET", f"/api/v1/agent/{quote(agent_id, safe='')}/sessions")
         sessions = response.json()["data"].get("sessions")
         if not isinstance(sessions, list):
             return []
@@ -174,7 +174,7 @@ class MashHostClient:
     def get_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
         response = self._request(
             "GET",
-            f"/api/v1/agents/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}",
         )
         return response.json()["data"]
 
@@ -182,7 +182,7 @@ class MashHostClient:
         query = {"limit": limit} if limit is not None else None
         response = self._request(
             "GET",
-            f"/api/v1/agents/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}/history",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}/history",
             query=query,
         )
         turns = response.json()["data"].get("turns")

@@ -2,9 +2,9 @@
 
 Status: Draft
 
-Version: 0.1.0
+Version: 0.2.0
 
-Last Updated: 2026-03-22
+Last Updated: 2026-04-04
 
 ## 1. Overview
 
@@ -14,7 +14,7 @@ In the H2A model, each addressable agent is exposed as a runtime endpoint and ha
 
 The protocol semantics are defined independently of any specific transport. This document defines HTTP plus Server-Sent Events (SSE) as the first standard transport binding.
 
-H2A assumes a user-facing application interacts with a host, and the host acts as the bridge to one or more agents. H2A therefore standardizes the host-facing surface that user applications and orchestration layers depend on, rather than agent internals or tool interoperability.
+H2A assumes a user-facing application interacts with a host, and the host acts as the bridge to one or more agents. H2A therefore standardizes the host-to-client and client-to-agent lifecycle that user-facing hosts depend on, rather than agent internals or tool interoperability.
 
 ## 2. Goals, Non-Goals, And Positioning
 
@@ -87,7 +87,7 @@ flowchart TD
 
 An implementation claiming H2A conformance MUST implement the H2A request flow defined by this specification and at least one supported transport binding.
 
-H2A conformance is defined in terms of hosts, agents, clients, and protocol behavior rather than a separate server role. A host MAY embed transport servers internally.
+H2A conformance is defined in terms of hosts, agents, clients, and protocol behavior rather than a separate deployment boundary. A host MAY embed transport servers internally, including running one per-agent HTTP server in the same process.
 
 ## 4. Protocol Structure
 
@@ -159,24 +159,24 @@ sequenceDiagram
     App->>Host: submit_request(agent_id, message, session_id)
     Host->>Host: Resolve agent_id to associated client
     Host->>Client: post_request(message, session_id)
-    Client->>Server: POST /agents/{agent_id}/requests
+    Client->>Server: POST /agent/{agent_id}/request
     Server-->>Client: request.accepted
     Client-->>Host: request.accepted
     Host-->>App: request_id
     App->>Host: stream_request_events(agent_id, request_id)
     Host-->>App: SSE request.accepted
-    Server->>Server: Execute request
+    Server->>Server: Start request task
     Server->>Store: Persist turn state
-    Server-->>Client: request.started / agent.trace / request.completed
+    Server-->>Client: request.waiting? / request.started / agent.trace / request.completed
     Client-->>Host: Stream events
-    Host-->>App: SSE request.started / agent.trace / request.completed
+    Host-->>App: SSE request.waiting? / request.started / agent.trace / request.completed
 ```
 
 ### 5.5 Completion And Retention
 
 Request execution ends with exactly one terminal event: `request.completed` or `request.error`.
 
-The current runtime retains accepted requests and buffered events for an implementation-defined time window. The runtime binding guarantees live streaming of request events, but does not currently define a separate retained request resource or replay API.
+The current runtime retains accepted requests and buffered events for an implementation-defined time window and count bound. The runtime binding guarantees live streaming of request events, but does not currently define a separate retained request resource or replay API.
 
 ## 6. Host To Client Interaction
 
@@ -185,7 +185,7 @@ This section defines the second communication standard: `Host -> Client`.
 At this layer, H2A centers interaction on two operations:
 
 - `post_request`
-- `stream`
+- `stream_response`
 
 These two operations are sufficient for a host to submit work to one agent and observe the resulting lifecycle until completion.
 
@@ -205,6 +205,7 @@ Rules:
 - `message` MUST be present and MUST be a non-empty string.
 - `session_id` MAY be omitted.
 - If `session_id` is omitted or empty, the agent runtime MUST resolve the request into its default session before execution begins.
+- Same-session overlap MUST be accepted rather than rejected. If execution cannot begin immediately because another request for the same `session_id` is in flight, the runtime MAY emit a later `request.waiting` event.
 
 The server response MUST be `202 Accepted` with a JSON object containing:
 
@@ -233,9 +234,9 @@ Accepted response:
 }
 ```
 
-### 6.2 `stream`
+### 6.2 `stream_response`
 
-`stream` consumes the event stream for one previously accepted request.
+`stream_response` consumes the event stream for one previously accepted request.
 
 Inputs:
 
@@ -243,7 +244,7 @@ Inputs:
 
 Rules:
 
-- The client MUST open `stream` as an HTTP `GET` against the request stream endpoint for that `request_id`.
+- The client MUST open `stream_response` as an HTTP `GET` against the request stream endpoint for that `request_id`.
 - The server MUST respond with `200 OK` and `Content-Type: text/event-stream` when the request exists.
 - Each event MUST be encoded as an SSE event with `event:` and `data:` lines.
 - The `data:` payload MUST be a JSON object.
@@ -257,13 +258,38 @@ event: request.started
 data: {"request_id":"req_123","agent_id":"planner","session_id":"sess_123","status":"started"}
 ```
 
-### 6.3 Client Contract
+Optional waiting frame:
+
+```text
+event: request.waiting
+data: {"request_id":"req_123","agent_id":"planner","session_id":"sess_123","status":"waiting","reason":"session_busy"}
+```
+
+### 6.3 Event Contract
+
+H2A v1 defines this canonical event sequence:
+
+- `request.accepted`
+- optional `request.waiting`
+- `request.started`
+- zero or more `agent.trace`
+- terminal `request.completed` or `request.error`
+
+Rules:
+
+- `request.accepted` MUST be the first event for a request.
+- `request.waiting` MUST be non-terminal.
+- `request.waiting` indicates that the request has been accepted but is blocked behind another in-flight request for the same `session_id`.
+- `request.started` MUST be emitted before any `agent.trace` or terminal event.
+- Exactly one terminal event MUST be emitted.
+
+### 6.4 Client Contract
 
 For one addressable agent:
 
 - one client MUST target exactly one `agent_id`
 - one client MUST use exactly one base URL for that agent server
-- `post_request` and `stream` together form the complete asynchronous request contract
+- `post_request` and `stream_response` together form the complete asynchronous request contract
 
 H2A v1 does not define:
 
@@ -275,20 +301,21 @@ H2A v1 does not define:
 
 This section defines the third communication standard: `Client -> Agent`.
 
-Each agent is exposed by one HTTP server that handles request creation and request event streaming.
+Each agent is exposed by one HTTP server that handles health checks, request creation, and request event streaming.
 
 ### 7.1 Endpoint Shape
 
 The HTTP plus SSE binding defines these endpoints for one agent:
 
-- `POST /agents/{agent_id}/requests`
-- `GET /agents/{agent_id}/requests/{request_id}`
+- `GET /health`
+- `POST /agent/{agent_id}/request`
+- `GET /agent/{agent_id}/request/{request_id}`
 
 Equivalent route shapes are permitted if they preserve the same semantics.
 
 ### 7.2 POST Handling
 
-For `POST /agents/{agent_id}/requests`, the server MUST:
+For `POST /agent/{agent_id}/request`, the server MUST:
 
 1. match the route for the target `agent_id`
 2. read the request body as JSON
@@ -313,7 +340,7 @@ Example transport error:
 
 ### 7.3 GET Handling
 
-For `GET /agents/{agent_id}/requests/{request_id}`, the server MUST:
+For `GET /agent/{agent_id}/request/{request_id}`, the server MUST:
 
 1. validate the route and extract `request_id`
 2. reject missing or unknown request ids
@@ -334,6 +361,13 @@ The runtime attached to one agent HTTP server MUST provide:
 
 The server/runtime boundary MUST preserve request ordering and terminal-event semantics.
 
+The runtime execution model MAY vary internally, but the current H2A reference behavior is:
+
+- every accepted request creates an execution task immediately
+- requests sharing the same `session_id` are serialized
+- different sessions MAY run concurrently up to an implementation-defined limit
+- the runtime MAY emit `request.waiting` when same-session contention delays execution start
+
 ## 8. Per-Agent HTTP Runtime Binding
 
 H2A is per-agent at the transport boundary.
@@ -343,6 +377,7 @@ H2A is per-agent at the transport boundary.
 - Each addressable agent MUST be exposed through its own HTTP server instance or an equivalent per-agent endpoint surface.
 - Each server instance MUST bind exactly one runtime and exactly one `agent_id`.
 - A host with multiple agents MUST maintain one client per agent server.
+- Separate processes or containers are not required by the protocol. An implementation MAY run per-agent servers in the same process.
 
 ### 8.2 Server Startup
 
@@ -351,8 +386,6 @@ When an agent runtime starts its HTTP server:
 - it MUST bind a host and port
 - it MUST associate the bound server with exactly one `agent_id`
 - it MUST return a base URL that clients can use for subsequent `post_request` and `stream` calls
-
-If the server is already running, implementations SHOULD return the existing base URL rather than rebinding a new listener.
 
 ### 8.3 Binding Summary
 
@@ -382,6 +415,7 @@ Request execution failures after acceptance MUST be emitted as `request.error` e
 Recommended HTTP status codes:
 
 - `200 OK` for successful stream establishment
+- `200 OK` for successful health checks
 - `202 Accepted` for successful request submission
 - `400 Bad Request` for validation failures
 - `404 Not Found` for unknown routes or request ids

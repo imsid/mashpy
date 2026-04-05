@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable, Dict
 
 from .base import ToolResult
@@ -30,7 +31,7 @@ class MCPToolAdapter:
         self.parameters = parameters
         self._executor = executor
 
-    def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the MCP tool.
 
         Args:
@@ -41,6 +42,8 @@ class MCPToolAdapter:
         """
         try:
             result = self._executor(args)
+            if inspect.isawaitable(result):
+                result = await result
             return ToolResult.success(result)
         except Exception as e:
             return ToolResult.error(f"Error executing MCP tool: {str(e)}")

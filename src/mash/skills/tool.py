@@ -20,7 +20,7 @@ class SkillTool:
         self.description = ""
         self.parameters: Dict[str, Any] = {}
 
-    def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
         raw_name = (args or {}).get("name")
         if isinstance(raw_name, str):
             skill_name = raw_name.strip()

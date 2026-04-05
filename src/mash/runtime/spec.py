@@ -16,7 +16,7 @@ from ..skills.registry import SkillRegistry
 from ..tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from .server import MashAgentServer
+    from .runtime import MashAgentRuntime
 
 
 class AgentSpec(ABC):
@@ -80,11 +80,11 @@ class AgentSpec(ABC):
         """Whether Mash runtime tools should be auto-registered."""
         return True
 
-    def on_startup(self, runtime: "MashAgentServer") -> None:
+    def on_startup(self, runtime: "MashAgentRuntime") -> None:
         """Hook called after runtime initialization."""
         del runtime
 
-    def on_shutdown(self, runtime: "MashAgentServer") -> None:
+    def on_shutdown(self, runtime: "MashAgentRuntime") -> None:
         """Hook called before runtime cleanup."""
         del runtime
 

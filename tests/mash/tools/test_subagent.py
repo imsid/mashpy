@@ -43,7 +43,7 @@ class _FakeClient:
         }
         return self._request_id
 
-    def stream(
+    def stream_response(
         self,
         request_id: str,
         *,

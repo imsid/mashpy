@@ -41,7 +41,11 @@ PILOT_DOC_ROOTS = (
     "src/mash/memory",
     "src/mash/agents/masher",
 )
-PILOT_EXTRA_DOC_PATHS = ("README.md", "src/mash/AGENTS.md")
+PILOT_EXTRA_DOC_PATHS = (
+    "README.md",
+    "src/mash/AGENTS.md",
+    "docs/rfcs/host-to-agent-protocol.md",
+)
 
 CLI_DOC_ROOTS = ("src/mash/cli",)
 API_DOC_ROOTS = ("src/mash/api",)
@@ -441,25 +445,38 @@ def build_mcp_metadata() -> SubAgentMetadata:
     )
 
 
+def create_pilot_spec(*, workspace_root: str) -> PilotSpec:
+    return PilotSpec(Path(workspace_root).resolve())
+
+
+def create_cli_copilot_spec(*, workspace_root: str) -> CliCopilotSpec:
+    return CliCopilotSpec(Path(workspace_root).resolve())
+
+
+def create_api_copilot_spec(*, workspace_root: str) -> ApiCopilotSpec:
+    return ApiCopilotSpec(Path(workspace_root).resolve())
+
+
+def create_mcp_copilot_spec(*, workspace_root: str) -> McpCopilotSpec:
+    return McpCopilotSpec(Path(workspace_root).resolve())
+
+
 def build_host(workspace_root: Path | None = None) -> MashAgentHost:
     """Build the Mash Pilot Agent host."""
     resolved_workspace_root = (workspace_root or Path(".")).resolve()
     return (
         MashAgentHostBuilder()
-        .primary(PilotSpec(resolved_workspace_root), agent_id=PILOT_AGENT_ID)
+        .primary(create_pilot_spec(workspace_root=str(resolved_workspace_root)))
         .subagent(
-            CliCopilotSpec(resolved_workspace_root),
-            agent_id=CLI_COPILOT_AGENT_ID,
+            create_cli_copilot_spec(workspace_root=str(resolved_workspace_root)),
             metadata=build_cli_metadata(),
         )
         .subagent(
-            ApiCopilotSpec(resolved_workspace_root),
-            agent_id=API_COPILOT_AGENT_ID,
+            create_api_copilot_spec(workspace_root=str(resolved_workspace_root)),
             metadata=build_api_metadata(),
         )
         .subagent(
-            McpCopilotSpec(resolved_workspace_root),
-            agent_id=MCP_COPILOT_AGENT_ID,
+            create_mcp_copilot_spec(workspace_root=str(resolved_workspace_root)),
             metadata=build_mcp_metadata(),
         )
         .enable_masher()

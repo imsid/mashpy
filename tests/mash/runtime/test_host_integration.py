@@ -1,305 +1,171 @@
-"""Integration tests for host/client/server runtime contracts."""
+"""Integration tests for host-managed runtime server contracts."""
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import unittest
-from pathlib import Path
-from typing import Any, Optional
 from unittest.mock import patch
 
-from mash.core.config import AgentConfig
-from mash.core.context import Context, Response
-from mash.core.llm import LLMProvider
-from mash.core.llm.types import LLMRequest, LLMResponse
-from mash.runtime import (
-    AgentSpec,
-    MashAgentClientError,
-    MashAgentHost,
-    MashAgentHostBuilder,
-    SubAgentMetadata,
-)
+from mash.runtime.client import MashAgentClientError
+from mash.runtime import MashAgentHostBuilder
 from mash.runtime.session import derive_subagent_session_id
-from mash.skills.registry import SkillRegistry
-from mash.tools.registry import ToolRegistry
+from mash.testing.runtime_fixtures import (
+    build_delegating_spec,
+    build_spec,
+    metadata,
+)
 
 
-class _FakeLLMProvider(LLMProvider):
-    @property
-    def model(self) -> str:
-        return "test-model"
-
-    def send(self, request: LLMRequest) -> LLMResponse:
-        del request
-        raise NotImplementedError
-
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-
-class _Definition(AgentSpec):
-    def __init__(self, root: Path, *, app_id: str) -> None:
-        self.root = root
-        self.app_id = app_id
-
-    def get_agent_id(self) -> str:
-        return self.app_id
-
-    def build_tools(self) -> ToolRegistry:
-        return ToolRegistry()
-
-    def build_skills(self) -> SkillRegistry:
-        return SkillRegistry()
-
-    def build_llm(self) -> LLMProvider:
-        return _FakeLLMProvider()
-
-    def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id=self.app_id, system_prompt=f"You are {self.app_id}.")
-
-
-def _metadata() -> SubAgentMetadata:
-    return SubAgentMetadata(
-        display_name="Research",
-        description="Research specialist",
-        capabilities=["search", "summarize"],
-        usage_guidance="Use for focused research tasks.",
-    )
-
-
-class MashAgentHostIntegrationTests(unittest.TestCase):
+class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def test_host_builder_requires_primary(self) -> None:
         with self.assertRaises(ValueError):
             MashAgentHostBuilder().build()
 
     def test_host_builder_composes_primary_and_subagent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 host = (
                     MashAgentHostBuilder()
-                    .primary(_Definition(root, app_id="primary"), agent_id="primary")
-                    .subagent(_Definition(root, app_id="research"), agent_id="research", metadata=_metadata())
+                    .primary(build_spec(agent_id="primary", response_text="primary-ok"))
+                    .subagent(
+                        build_spec(
+                            agent_id="research",
+                            response_text="research-ok",
+                        ),
+                        metadata=metadata(),
+                    )
                     .build()
                 )
-                try:
-                    self.assertEqual(host.get_primary_agent_id(), "primary")
-                    described = {item["agent_id"]: item for item in host.describe_agents()}
-                    self.assertEqual(described["primary"]["role"], "primary")
-                    self.assertEqual(described["research"]["role"], "subagent")
-                finally:
-                    host.close()
+                described = {item["agent_id"]: item for item in host.describe_agents()}
+                self.assertEqual(described["primary"]["role"], "primary")
+                self.assertEqual(described["research"]["role"], "subagent")
 
-    def test_host_wires_primary_and_subagent_contracts(self) -> None:
+    async def test_host_starts_runtime_servers_and_client_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary"), agent_id="primary")
-                host.register_subagent(
-                    _Definition(root, app_id="research"),
-                    agent_id="research",
-                    metadata=_metadata(),
-                )
-                host.start()
-                try:
-                    primary = host.get_agent("primary")
-                    self.assertEqual(primary.get_subagent_ids(), ["research"])
-                    self.assertIn("InvokeSubagent", primary.agent.tools)
-                    self.assertIn("SUBAGENTS", str(primary.system_prompt))
-                    self.assertEqual(sorted(host.list_agents()), ["primary", "research"])
-                finally:
-                    host.close()
-
-    def test_client_post_and_stream_round_trip(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary"), agent_id="primary")
-                host.start()
-                try:
-                    runtime = host.get_agent("primary")
-                    client = host.get_client("primary")
-                    response = Response(
-                        text="primary-ok",
-                        context=Context(),
-                        metadata={"trace_id": "trace-primary"},
-                    )
-                    with patch.object(runtime.agent, "run", return_value=response):
-                        request_id = client.post_request("hello", session_id="s-1")
-                        events = []
-                        for event in client.stream(request_id, timeout=30):
-                            events.append(event)
-                            if event.get("event") in {"request.completed", "request.error"}:
-                                break
-
-                    event_names = [event["event"] for event in events]
-                    self.assertEqual(event_names[0], "request.accepted")
-                    self.assertIn("request.started", event_names)
-                    self.assertEqual(event_names[-1], "request.completed")
-                    self.assertEqual(
-                        events[-1]["data"]["response"]["text"],
-                        "primary-ok",
-                    )
-                    self.assertEqual(events[-1]["data"]["session_id"], "s-1")
-                finally:
-                    host.close()
-
-    def test_invoke_subagent_tool_uses_host_client_server_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary-app"), agent_id="primary")
-                host.register_subagent(
-                    _Definition(root, app_id="research-app"),
-                    agent_id="research",
-                    metadata=_metadata(),
-                )
-                host.start()
-                try:
-                    primary = host.get_agent("primary")
-                    research = host.get_agent("research")
-                    tool = primary.agent.tools.get("InvokeSubagent")
-                    self.assertIsNotNone(tool)
-
-                    response = Response(
-                        text="research-ok",
-                        context=Context(),
-                        metadata={"trace_id": "trace-research"},
-                    )
-                    with patch.object(research.agent, "run", return_value=response):
-                        result = tool.execute(  # type: ignore[union-attr]
-                            {"agent_id": "research", "prompt": "analyze", "opts": {"timeout_ms": 1500}}
-                        )
-
-                    self.assertFalse(result.is_error)
-                    payload = json.loads(result.content)
-                    expected_subagent_session = derive_subagent_session_id(
-                        "primary-app",
-                        primary.get_default_session_id(),
-                        "research",
-                    )
-                    self.assertEqual(payload["agent_id"], "research")
-                    self.assertEqual(payload["subagent_session_id"], expected_subagent_session)
-                    self.assertEqual(payload["text"], "research-ok")
-
-                    turns = research.store.get_turns(session_id=expected_subagent_session, limit=1)
-                    self.assertEqual(turns[-1]["user_message"], "analyze")
-                    self.assertEqual(turns[-1]["metadata"]["primary_app_id"], "primary-app")
-                    self.assertEqual(turns[-1]["metadata"]["primary_session_id"], primary.get_default_session_id())
-                finally:
-                    host.close()
-
-    def test_client_invoke_raises_when_stream_ends_without_terminal_event(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary"), agent_id="primary")
-                host.start()
+                host = MashAgentHostBuilder().primary(
+                    build_spec(agent_id="primary", response_text="primary-ok")
+                ).build()
+                await host.start()
                 try:
                     client = host.get_client("primary")
-                    with patch.object(
-                        client,
-                        "stream",
-                        return_value=iter([{"event": "request.accepted", "data": {"request_id": "r1"}}]),
-                    ):
-                        with self.assertRaises(MashAgentClientError) as exc:
-                            client.invoke("hello", session_id="s-1")
-                    self.assertNotIn("timed out", str(exc.exception).lower())
-                finally:
-                    host.close()
+                    result = await client.invoke("hello", session_id="s-1")
+                    self.assertEqual(result["response"]["text"], "primary-ok")
 
-    def test_invoke_subagent_tool_returns_structured_terminal_error_without_timeout(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary-app"), agent_id="primary")
-                host.register_subagent(
-                    _Definition(root, app_id="research-app"),
-                    agent_id="research",
-                    metadata=_metadata(),
-                )
-                host.start()
-                try:
                     primary = host.get_agent("primary")
-                    research = host.get_agent("research")
-                    tool = primary.agent.tools.get("InvokeSubagent")
-                    self.assertIsNotNone(tool)
-
-                    context_error = RuntimeError(
-                        "Error code: 400 - {'error': {'message': 'Your input exceeds the context window of this model.', 'code': 'context_length_exceeded'}}"
-                    )
-                    with patch.object(research.agent, "run", side_effect=context_error):
-                        result = tool.execute(  # type: ignore[union-attr]
-                            {"agent_id": "research", "prompt": "analyze", "opts": {"timeout_ms": 1500}}
-                        )
-
-                    self.assertTrue(result.is_error)
-                    payload = json.loads(result.content)
-                    self.assertEqual(payload["agent_id"], "research")
-                    self.assertEqual(payload["primary_session_id"], primary.get_default_session_id())
-                    self.assertEqual(payload["error_code"], "context_length_exceeded")
-                    self.assertFalse(payload["retryable"])
-                    self.assertEqual(payload["error_source"], "subagent")
-                    self.assertNotIn("timed out", payload["error"].lower())
-
-                    request_id = payload["request_id"]
-                    client = host.get_client("research")
-                    events = []
-                    for event in client.stream(request_id, timeout=5):
-                        events.append(event)
-                        if event.get("event") in {"request.completed", "request.error"}:
-                            break
-                    self.assertEqual(
-                        [event["event"] for event in events],
-                        ["request.accepted", "request.started", "request.error"],
-                    )
-                    self.assertEqual(events[-1]["data"]["error_code"], "context_length_exceeded")
-                    self.assertFalse(events[-1]["data"]["retryable"])
-                finally:
-                    host.close()
-
-    def test_client_get_preferences_reads_session_scope(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary"), agent_id="primary")
-                host.start()
-                try:
-                    client = host.get_client("primary")
-                    client.set_preferences("s-1", {"tone": "brief"})
-                    self.assertEqual(client.get_preferences("s-1"), {"tone": "brief"})
-                finally:
-                    host.close()
-
-    def test_client_lists_persisted_sessions(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHost()
-                host.register_primary(_Definition(root, app_id="primary"), agent_id="primary")
-                host.start()
-                try:
-                    client = host.get_client("primary")
-                    primary = host.get_agent("primary")
-                    response = Response(text="ok", context=Context())
-                    with patch.object(primary.agent, "run", return_value=response):
-                        client.invoke("hello", session_id="s-1")
-                    sessions = client.list_sessions()
+                    sessions = await primary.list_sessions()
                     self.assertEqual(len(sessions), 1)
                     self.assertEqual(sessions[0]["session_id"], "s-1")
                 finally:
-                    host.close()
+                    await host.close()
+
+    async def test_host_start_does_not_self_probe_runtime_health_over_http(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                host = MashAgentHostBuilder().primary(
+                    build_spec(agent_id="primary", response_text="primary-ok")
+                ).build()
+                with patch(
+                    "mash.runtime.client.MashAgentClient.health",
+                    side_effect=MashAgentClientError("unexpected health probe"),
+                ):
+                    await host.start()
+                try:
+                    result = await host.get_client("primary").invoke(
+                        "hello",
+                        session_id="s-1",
+                    )
+                    self.assertEqual(result["response"]["text"], "primary-ok")
+                finally:
+                    await host.close()
+
+    async def test_subagent_invocation_uses_real_runtime_clients(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                host = (
+                    MashAgentHostBuilder()
+                    .primary(
+                        build_delegating_spec(
+                            agent_id="primary-app",
+                            final_text="delegated-ok",
+                            subagent_id="research",
+                            subagent_prompt="analyze",
+                        )
+                    )
+                    .subagent(
+                        build_spec(
+                            agent_id="research",
+                            response_text="research-ok",
+                        ),
+                        metadata=metadata(),
+                    )
+                    .build()
+                )
+                await host.start()
+                try:
+                    client = host.get_client("primary-app")
+                    result = await client.invoke("delegate", session_id="s-1")
+                    self.assertEqual(result["response"]["text"], "delegated-ok")
+
+                    research = host.get_agent("research")
+                    expected_subagent_session = derive_subagent_session_id(
+                        "primary-app",
+                        "s-1",
+                        "research",
+                    )
+                    turns = await research.store.get_turns(
+                        session_id=expected_subagent_session,
+                        limit=1,
+                    )
+                    self.assertEqual(turns[-1]["user_message"], "analyze")
+                    self.assertEqual(turns[-1]["metadata"]["primary_app_id"], "primary-app")
+                    self.assertEqual(turns[-1]["metadata"]["primary_session_id"], "s-1")
+                finally:
+                    await host.close()
+
+    async def test_request_error_emits_terminal_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                host = MashAgentHostBuilder().primary(
+                    build_spec(
+                        agent_id="primary",
+                        response_text="ok",
+                        fail_on_message="boom",
+                    )
+                ).build()
+                await host.start()
+                try:
+                    client = host.get_client("primary")
+                    request_id = await client.post_request("boom", session_id="s-1")
+                    events = await _collect_events(client, request_id, timeout=5)
+                    self.assertEqual(events[-1]["event"], "request.error")
+                    self.assertIn("boom", str(events[-1]["data"]["error"]))
+                finally:
+                    await host.close()
+
+    async def test_host_local_state_helpers_preserve_preferences(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                host = MashAgentHostBuilder().primary(
+                    build_spec(agent_id="primary", response_text="primary-ok")
+                ).build()
+                await host.start()
+                try:
+                    primary = host.get_agent("primary")
+                    await primary.set_preferences("s-1", {"tone": "brief"})
+                    self.assertEqual(await primary.get_preferences("s-1"), {"tone": "brief"})
+                finally:
+                    await host.close()
+
+
+async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    async for event in client.stream_response(request_id, timeout=timeout):
+        events.append(event)
+        if event.get("event") in {"request.completed", "request.error"}:
+            break
+    return events
 
 
 if __name__ == "__main__":

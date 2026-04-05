@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from rich.console import Console
+
+from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
+from mash.logging.events import AgentTraceEvent
 from mash.runtime import derive_subagent_session_id
 
 
@@ -171,3 +175,29 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.handle_repl_message(shell.context, "hello")
         info.assert_any_call("Subagent research started")
         info.assert_any_call("Subagent research completed")
+
+
+class ChainOfThoughtRendererTests(unittest.TestCase):
+    def test_summary_uses_think_duration_when_step_complete_is_missing(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console)
+        renderer.on_think_complete(
+            AgentTraceEvent(
+                event_type="agent.think.complete",
+                app_id="primary",
+                session_id="s-1",
+                trace_id="trace-1",
+                step_id=0,
+                duration_ms=13447,
+                action_type="finish",
+                tool_calls=[],
+                token_usage={"input": 1320, "output": 1406},
+            )
+        )
+
+        renderer.finish_trace()
+
+        output = console.export_text()
+        self.assertIn("Agent Execution Complete:", output)
+        self.assertIn("2,726 tokens", output)
+        self.assertIn("13,447ms", output)

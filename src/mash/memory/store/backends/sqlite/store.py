@@ -1,13 +1,14 @@
-"""SQLite-backed memory store implementation."""
+"""Async SQLite-backed memory store implementation."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-import sqlite3
-import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+
+import aiosqlite
 
 from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
@@ -15,26 +16,48 @@ from ...protocol import MemoryStore
 
 
 class SQLiteStore(MemoryStore):
-    """SQLite-backed conversation store with signals."""
+    """Async SQLite-backed conversation store with signals."""
 
     _FTS_TABLE = "fts_turns"
 
     def __init__(self, path: Union[str, Path] = ":memory:") -> None:
-        """Initialize SQLite store.
-
-        Args:
-            path: Path to SQLite database file.
-        """
         self._db_path = self._prepare_path(path)
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._lock = threading.Lock()
-        self._init_schema()
+        self._conn: aiosqlite.Connection | None = None
+        self._lock = asyncio.Lock()
 
-    def _init_schema(self) -> None:
-        """Initialize database schema."""
-        with self._lock:
-            # Turns table (with app_id for isolation)
-            self._conn.execute(
+    async def open(self) -> None:
+        """Open the SQLite connection and initialize schema lazily."""
+        if self._conn is not None:
+            return
+
+        conn = await aiosqlite.connect(self._db_path)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA busy_timeout = 5000")
+        if self._db_path != ":memory:":
+            try:
+                await conn.execute("PRAGMA journal_mode = WAL")
+            except aiosqlite.Error:
+                pass
+        self._conn = conn
+        await self._init_schema()
+
+    async def close(self) -> None:
+        """Close the SQLite connection."""
+        if self._conn is None:
+            return
+        await self._conn.close()
+        self._conn = None
+
+    async def _get_conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            raise RuntimeError("SQLiteStore is not open")
+        assert self._conn is not None
+        return self._conn
+
+    async def _init_schema(self) -> None:
+        conn = await self._get_conn()
+        async with self._lock:
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS turns (
                     turn_id TEXT PRIMARY KEY,
@@ -48,8 +71,7 @@ class SQLiteStore(MemoryStore):
                 )
                 """
             )
-
-            self._conn.execute(
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS signals (
                     turn_id TEXT NOT NULL,
@@ -62,9 +84,7 @@ class SQLiteStore(MemoryStore):
                 )
                 """
             )
-
-            # Preferences table
-            self._conn.execute(
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS preferences (
                     app_id TEXT NOT NULL,
@@ -75,9 +95,7 @@ class SQLiteStore(MemoryStore):
                 )
                 """
             )
-
-            # App-specific data table
-            self._conn.execute(
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS app_data (
                     app_id TEXT NOT NULL,
@@ -89,8 +107,7 @@ class SQLiteStore(MemoryStore):
                 )
                 """
             )
-
-            self._conn.execute(
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,38 +121,36 @@ class SQLiteStore(MemoryStore):
                 )
                 """
             )
-
-            # Indexes for faster queries
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_turns_app ON turns(app_id)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_name ON signals(signal_name)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_app_session ON signals(app_id, session_id)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_app_name ON signals(app_id, signal_name)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_app_data_session ON app_data(app_id, session_id)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_logs_app_id ON logs(app_id)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_logs_session_id ON logs(session_id)"
             )
-            self._conn.execute(
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON logs(trace_id)"
             )
 
             try:
-                self._conn.execute(
+                await conn.execute(
                     f"""
                     CREATE VIRTUAL TABLE IF NOT EXISTS {self._FTS_TABLE} USING fts5(
                         turn_id UNINDEXED,
@@ -146,30 +161,30 @@ class SQLiteStore(MemoryStore):
                     )
                     """
                 )
-            except sqlite3.OperationalError as exc:
+            except aiosqlite.OperationalError as exc:
                 raise RuntimeError(
                     "SQLite FTS5 support is required for SQLiteStore keyword search"
                 ) from exc
 
             turns_has_rows = (
-                self._conn.execute("SELECT 1 FROM turns LIMIT 1").fetchone() is not None
+                await self._fetchone_unlocked("SELECT 1 FROM turns LIMIT 1") is not None
             )
             fts_has_rows = (
-                self._conn.execute(
+                await self._fetchone_unlocked(
                     f"SELECT 1 FROM {self._FTS_TABLE} LIMIT 1"
-                ).fetchone()
+                )
                 is not None
             )
             if turns_has_rows and not fts_has_rows:
-                self._rebuild_turns_fts_index_locked()
+                await self._rebuild_turns_fts_index_unlocked()
 
-            self._conn.commit()
+            await conn.commit()
 
-    def save_logs(self, logs: List[Dict[str, Any]]) -> None:
-        """Persist one or more structured log records."""
+    async def save_logs(self, logs: List[Dict[str, Any]]) -> None:
         if not logs:
             return
 
+        await self.open()
         rows: List[tuple[Any, ...]] = []
         for log in logs:
             payload = log.get("payload")
@@ -185,8 +200,9 @@ class SQLiteStore(MemoryStore):
                 )
             )
 
-        with self._lock:
-            self._conn.executemany(
+        conn = await self._get_conn()
+        async with self._lock:
+            await conn.executemany(
                 """
                 INSERT INTO logs (
                     app_id,
@@ -201,9 +217,9 @@ class SQLiteStore(MemoryStore):
                 """,
                 rows,
             )
-            self._conn.commit()
+            await conn.commit()
 
-    def get_logs(
+    async def get_logs(
         self,
         app_id: str,
         session_id: Optional[str] = None,
@@ -211,7 +227,6 @@ class SQLiteStore(MemoryStore):
         limit: Optional[int] = None,
         after_log_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Return structured log records for one app/session/trace scope."""
         params: List[Any] = [app_id]
         filters = ["app_id = ?"]
 
@@ -229,18 +244,11 @@ class SQLiteStore(MemoryStore):
         normalized_limit = None if limit is None else max(0, int(limit))
         if normalized_limit == 0:
             return []
+        await self.open()
 
         if after_log_id is None and normalized_limit is not None:
             sql = f"""
-                SELECT
-                    id,
-                    app_id,
-                    session_id,
-                    trace_id,
-                    event_class,
-                    event_type,
-                    created_at,
-                    payload
+                SELECT id, app_id, session_id, trace_id, event_class, event_type, created_at, payload
                 FROM logs
                 WHERE {where_clause}
                 ORDER BY id DESC
@@ -250,15 +258,7 @@ class SQLiteStore(MemoryStore):
             reverse_results = True
         else:
             sql = f"""
-                SELECT
-                    id,
-                    app_id,
-                    session_id,
-                    trace_id,
-                    event_class,
-                    event_type,
-                    created_at,
-                    payload
+                SELECT id, app_id, session_id, trace_id, event_class, event_type, created_at, payload
                 FROM logs
                 WHERE {where_clause}
                 ORDER BY id ASC
@@ -268,58 +268,50 @@ class SQLiteStore(MemoryStore):
                 params.append(normalized_limit)
             reverse_results = False
 
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        async with self._lock:
+            rows = await self._fetchall_unlocked(sql, params)
 
         if reverse_results:
             rows = list(reversed(rows))
 
-        events: List[Dict[str, Any]] = []
-        for (
-            log_id,
-            found_app_id,
-            found_session_id,
-            found_trace_id,
-            event_class,
-            event_type,
-            created_at,
-            payload_json,
-        ) in rows:
-            events.append(
-                inflate_logged_event(
-                    log_id=int(log_id),
-                    app_id=str(found_app_id),
-                    session_id=None if found_session_id is None else str(found_session_id),
-                    trace_id=None if found_trace_id is None else str(found_trace_id),
-                    event_class=str(event_class),
-                    event_type=str(event_type),
-                    created_at=float(created_at or 0.0),
-                    payload=self._load_json_dict(payload_json),
-                )
+        return [
+            inflate_logged_event(
+                log_id=int(row["id"]),
+                app_id=str(row["app_id"]),
+                session_id=(
+                    None if row["session_id"] is None else str(row["session_id"])
+                ),
+                trace_id=None if row["trace_id"] is None else str(row["trace_id"]),
+                event_class=str(row["event_class"]),
+                event_type=str(row["event_type"]),
+                created_at=float(row["created_at"] or 0.0),
+                payload=self._load_json_dict(row["payload"]),
             )
-        return events
+            for row in rows
+        ]
 
-    def get_latest_log_trace(
+    async def get_latest_log_trace(
         self,
         app_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Return the latest trace summary from persisted logs."""
-        traces = self.list_recent_log_traces(app_id=app_id, session_id=session_id, limit=1)
-        if not traces:
-            return None
-        return traces[0]
+        traces = await self.list_recent_log_traces(
+            app_id=app_id,
+            session_id=session_id,
+            limit=1,
+        )
+        return traces[0] if traces else None
 
-    def list_recent_log_traces(
+    async def list_recent_log_traces(
         self,
         app_id: str,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """List recent trace summaries from persisted logs."""
         normalized_limit = max(1, int(limit))
-        with self._lock:
-            rows = self._conn.execute(
+        await self.open()
+        async with self._lock:
+            rows = await self._fetchall_unlocked(
                 """
                 SELECT
                     trace_id,
@@ -338,30 +330,21 @@ class SQLiteStore(MemoryStore):
                 LIMIT ?
                 """,
                 (app_id, session_id, normalized_limit),
-            ).fetchall()
-
-        traces: List[Dict[str, Any]] = []
-        for (
-            found_trace_id,
-            found_session_id,
-            found_app_id,
-            started_at,
-            last_event_at,
-            event_count,
-        ) in rows:
-            traces.append(
-                {
-                    "trace_id": str(found_trace_id),
-                    "session_id": str(found_session_id),
-                    "app_id": str(found_app_id),
-                    "started_at": float(started_at or 0.0),
-                    "last_event_at": float(last_event_at or 0.0),
-                    "event_count": int(event_count or 0),
-                }
             )
-        return traces
 
-    def save_turn(
+        return [
+            {
+                "trace_id": str(row["trace_id"]),
+                "session_id": str(row["session_id"]),
+                "app_id": str(row["app_id"]),
+                "started_at": float(row["started_at"] or 0.0),
+                "last_event_at": float(row["last_event_at"] or 0.0),
+                "event_count": int(row["event_count"] or 0),
+            }
+            for row in rows
+        ]
+
+    async def save_turn(
         self,
         trace_id: str,
         session_id: str,
@@ -372,16 +355,14 @@ class SQLiteStore(MemoryStore):
         session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Save a conversation turn with signals."""
         turn_id = trace_id
         timestamp = time.time()
-
-        # Serialize metadata
         metadata_json = json.dumps(metadata or {})
 
-        with self._lock:
-            # Save turn
-            self._conn.execute(
+        await self.open()
+        conn = await self._get_conn()
+        async with self._lock:
+            await conn.execute(
                 """
                 INSERT INTO turns (
                     turn_id,
@@ -406,8 +387,7 @@ class SQLiteStore(MemoryStore):
                     timestamp,
                 ),
             )
-
-            self._conn.execute(
+            await conn.execute(
                 f"""
                 INSERT INTO {self._FTS_TABLE} (
                     turn_id,
@@ -419,10 +399,8 @@ class SQLiteStore(MemoryStore):
                 """,
                 (turn_id, session_id, user_message, agent_response),
             )
-
-            # Save signals
-            for signal_name, signal_value in signals.items():
-                self._conn.execute(
+            if signals:
+                await conn.executemany(
                     """
                     INSERT INTO signals (
                         turn_id,
@@ -433,28 +411,29 @@ class SQLiteStore(MemoryStore):
                     )
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (
-                        turn_id,
-                        session_id,
-                        app_id,
-                        signal_name,
-                        json.dumps(signal_value),
-                    ),
+                    [
+                        (
+                            turn_id,
+                            session_id,
+                            app_id,
+                            signal_name,
+                            json.dumps(signal_value),
+                        )
+                        for signal_name, signal_value in signals.items()
+                    ],
                 )
-
-            self._conn.commit()
-
+            await conn.commit()
         return turn_id
 
-    def get_turns(
+    async def get_turns(
         self,
         session_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Get conversation turns for a session."""
-        with self._lock:
+        await self.open()
+        async with self._lock:
             if limit is None:
-                rows = self._conn.execute(
+                rows = await self._fetchall_unlocked(
                     """
                     SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
                     FROM turns
@@ -462,9 +441,9 @@ class SQLiteStore(MemoryStore):
                     ORDER BY created_at ASC
                     """,
                     (session_id,),
-                ).fetchall()
+                )
             else:
-                rows = self._conn.execute(
+                rows = await self._fetchall_unlocked(
                     """
                     SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
                     FROM turns
@@ -473,45 +452,35 @@ class SQLiteStore(MemoryStore):
                     LIMIT ?
                     """,
                     (session_id, max(0, int(limit))),
-                ).fetchall()
+                )
                 rows = list(reversed(rows))
 
-        turns = []
-        for (
-            turn_id,
-            user_msg,
-            agent_resp,
-            session_total_tokens,
-            metadata_json,
-            created_at,
-        ) in rows:
-            # Get signals for this turn
-            signals = self._get_signals_for_turn(turn_id)
+            turn_ids = [str(row["turn_id"]) for row in rows]
+            signals_by_turn = await self._get_signals_for_turn_ids_unlocked(turn_ids)
 
-            # Parse metadata
+        turns: List[Dict[str, Any]] = []
+        for row in rows:
             try:
-                metadata = json.loads(metadata_json) if metadata_json else {}
+                metadata = json.loads(row["metadata"]) if row["metadata"] else {}
             except json.JSONDecodeError:
                 metadata = {}
-
             turns.append(
                 {
-                    "turn_id": turn_id,
-                    "user_message": user_msg,
-                    "agent_response": agent_resp,
-                    "session_total_tokens": session_total_tokens,
-                    "signals": signals,
+                    "turn_id": str(row["turn_id"]),
+                    "user_message": row["user_message"],
+                    "agent_response": row["agent_response"],
+                    "session_total_tokens": row["session_total_tokens"],
+                    "signals": signals_by_turn.get(str(row["turn_id"]), {}),
                     "metadata": metadata,
-                    "created_at": created_at,
+                    "created_at": row["created_at"],
                 }
             )
-
         return turns
 
-    def list_sessions(self, app_id: str) -> List[Dict[str, Any]]:
-        """List persisted sessions for one application."""
-        with self._lock:
-            rows = self._conn.execute(
+    async def list_sessions(self, app_id: str) -> List[Dict[str, Any]]:
+        await self.open()
+        async with self._lock:
+            rows = await self._fetchall_unlocked(
                 """
                 SELECT
                     session_id,
@@ -524,52 +493,43 @@ class SQLiteStore(MemoryStore):
                 ORDER BY last_activity_at DESC, session_id ASC
                 """,
                 (app_id,),
-            ).fetchall()
-
-        sessions: List[Dict[str, Any]] = []
-        for session_id, turn_count, last_activity_at, session_total_tokens in rows:
-            sessions.append(
-                {
-                    "session_id": str(session_id),
-                    "turn_count": int(turn_count or 0),
-                    "last_activity_at": float(last_activity_at or 0.0),
-                    "session_total_tokens": int(session_total_tokens or 0),
-                }
             )
-        return sessions
 
-    def get_latest_session(self, app_id: str) -> Optional[Dict[str, Any]]:
-        """Return the most recent persisted session for one application."""
-        sessions = self.list_sessions(app_id=app_id)
-        if not sessions:
-            return None
-        return sessions[0]
+        return [
+            {
+                "session_id": str(row["session_id"]),
+                "turn_count": int(row["turn_count"] or 0),
+                "last_activity_at": float(row["last_activity_at"] or 0.0),
+                "session_total_tokens": int(row["session_total_tokens"] or 0),
+            }
+            for row in rows
+        ]
 
-    def get_latest_trace(
+    async def get_latest_session(self, app_id: str) -> Optional[Dict[str, Any]]:
+        sessions = await self.list_sessions(app_id=app_id)
+        return sessions[0] if sessions else None
+
+    async def get_latest_trace(
         self,
         app_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Return the most recent trace for a session in one application."""
-        traces = self.list_recent_traces(
+        traces = await self.list_recent_traces(
             app_id=app_id,
             session_id=session_id,
             limit=1,
         )
-        if not traces:
-            return None
-        return traces[0]
+        return traces[0] if traces else None
 
-    def list_recent_traces(
+    async def list_recent_traces(
         self,
         app_id: str,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """List recent traces for a session in one application."""
         normalized_limit = max(1, int(limit))
-        with self._lock:
-            rows = self._conn.execute(
+        async with self._lock:
+            rows = await self._fetchall_unlocked(
                 """
                 SELECT
                     turn_id,
@@ -584,41 +544,37 @@ class SQLiteStore(MemoryStore):
                 LIMIT ?
                 """,
                 (app_id, session_id, normalized_limit),
-            ).fetchall()
+            )
 
         traces: List[Dict[str, Any]] = []
-        for (
-            turn_id,
-            found_session_id,
-            user_message,
-            agent_response,
-            metadata_json,
-            created_at,
-        ) in rows:
+        for row in rows:
             try:
-                metadata = json.loads(metadata_json) if metadata_json else {}
+                metadata = json.loads(row["metadata"]) if row["metadata"] else {}
             except json.JSONDecodeError:
                 metadata = {}
-
             traces.append(
                 {
-                    "trace_id": str(turn_id),
-                    "session_id": str(found_session_id),
-                    "user_message": "" if user_message is None else str(user_message),
+                    "trace_id": str(row["turn_id"]),
+                    "session_id": str(row["session_id"]),
+                    "user_message": (
+                        "" if row["user_message"] is None else str(row["user_message"])
+                    ),
                     "agent_response": (
-                        "" if agent_response is None else str(agent_response)
+                        ""
+                        if row["agent_response"] is None
+                        else str(row["agent_response"])
                     ),
                     "metadata": metadata if isinstance(metadata, dict) else {},
-                    "created_at": float(created_at or 0.0),
+                    "created_at": float(row["created_at"] or 0.0),
                 }
             )
         return traces
 
-    def get_turn_by_ids(
+    async def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],
     ) -> Optional[List[Dict[str, Any]]]:
-        """Get turns by exact session/turn identifier pairs in one DB call."""
+        await self.open()
         if not pairs:
             return None
 
@@ -651,53 +607,29 @@ class SQLiteStore(MemoryStore):
             WHERE {' OR '.join(where_clauses)}
         """
 
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        async with self._lock:
+            rows = await self._fetchall_unlocked(sql, params)
 
         by_key: Dict[tuple[str, str], Dict[str, Any]] = {}
-        for found_turn_id, found_session_id, user_message, agent_response in rows:
-            key = (str(found_session_id), str(found_turn_id))
+        for row in rows:
+            key = (str(row["session_id"]), str(row["turn_id"]))
             by_key[key] = {
-                "turn_id": str(found_turn_id),
-                "session_id": str(found_session_id),
-                "user_message": "" if user_message is None else str(user_message),
-                "agent_response": "" if agent_response is None else str(agent_response),
+                "turn_id": str(row["turn_id"]),
+                "session_id": str(row["session_id"]),
+                "user_message": (
+                    "" if row["user_message"] is None else str(row["user_message"])
+                ),
+                "agent_response": (
+                    ""
+                    if row["agent_response"] is None
+                    else str(row["agent_response"])
+                ),
             }
 
         results = [by_key[key] for key in requested_keys if key in by_key]
         return results or None
 
-    @staticmethod
-    def _load_json_dict(value: Any) -> Dict[str, Any]:
-        if not isinstance(value, str):
-            return {}
-        try:
-            loaded = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
-
-    def _get_signals_for_turn(self, turn_id: str) -> Dict[str, Any]:
-        """Get signals for a specific turn."""
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT signal_name, signal_value
-                FROM signals
-                WHERE turn_id = ?
-                """,
-                (turn_id,),
-            ).fetchall()
-
-        signals: Dict[str, Any] = {}
-        for name, value_json in rows:
-            try:
-                signals[str(name)] = json.loads(value_json)
-            except json.JSONDecodeError:
-                signals[str(name)] = value_json
-        return signals
-
-    def keyword_search(
+    async def keyword_search(
         self,
         column: SearchColumn,
         query_term: str,
@@ -705,10 +637,10 @@ class SQLiteStore(MemoryStore):
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search turns by keyword using SQLite FTS5 BM25 ranking."""
         normalized_limit = max(0, int(limit))
         if normalized_limit <= 0:
             return []
+        await self.open()
 
         match_query = self._build_keyword_match_query(column, query_term)
         if not match_query:
@@ -743,28 +675,24 @@ class SQLiteStore(MemoryStore):
         params.append(normalized_limit)
 
         try:
-            with self._lock:
-                rows = self._conn.execute(sql, params).fetchall()
-        except sqlite3.OperationalError as exc:
+            async with self._lock:
+                rows = await self._fetchall_unlocked(sql, params)
+        except aiosqlite.OperationalError as exc:
             raise RuntimeError(
                 "SQLite FTS5 support is required for SQLiteStore keyword search"
             ) from exc
 
-        hits: List[Dict[str, Any]] = []
-        for rank, (turn_id, hit_session_id, preview, _bm25_score) in enumerate(
-            rows, start=1
-        ):
-            hits.append(
-                {
-                    "turn_id": turn_id,
-                    "session_id": str(hit_session_id),
-                    "score": 1.0 / (1.0 + rank),
-                    "preview": "" if preview is None else str(preview),
-                }
-            )
-        return hits
+        return [
+            {
+                "turn_id": str(row["turn_id"]),
+                "session_id": str(row["session_id"]),
+                "score": 1.0 / (1.0 + rank),
+                "preview": "" if row["preview"] is None else str(row["preview"]),
+            }
+            for rank, row in enumerate(rows, start=1)
+        ]
 
-    def semantic_search(
+    async def semantic_search(
         self,
         column: SearchColumn,
         query_term: str,
@@ -773,16 +701,230 @@ class SQLiteStore(MemoryStore):
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Phase 1 contract only; SQLite-backed implementation comes next."""
+        del column, query_term, query_embedding, limit, session_id, app_id
         raise NotImplementedError("SQLiteStore.semantic_search is not implemented yet")
 
-    def _rebuild_turns_fts_index_locked(self) -> None:
-        """Rebuild the FTS index from the canonical turns table.
+    async def get_preferences(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        await self.open()
+        async with self._lock:
+            row = await self._fetchone_unlocked(
+                """
+                SELECT value
+                FROM preferences
+                WHERE app_id = ? AND session_id = ?
+                """,
+                (app_id, session_id),
+            )
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value"])
+        except json.JSONDecodeError:
+            return {}
 
-        Caller must hold ``self._lock``.
-        """
-        self._conn.execute(f"DELETE FROM {self._FTS_TABLE}")
-        self._conn.execute(
+    async def get_latest_preferences(
+        self,
+        app_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        await self.open()
+        async with self._lock:
+            row = await self._fetchone_unlocked(
+                """
+                SELECT value
+                FROM preferences
+                WHERE app_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (app_id,),
+            )
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value"])
+        except json.JSONDecodeError:
+            return {}
+
+    async def set_preferences(
+        self,
+        app_id: str,
+        session_id: str,
+        preferences: Dict[str, Any],
+    ) -> None:
+        timestamp = time.time()
+        await self.open()
+        conn = await self._get_conn()
+        async with self._lock:
+            await conn.execute(
+                """
+                INSERT INTO preferences (app_id, session_id, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(app_id, session_id)
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (app_id, session_id, json.dumps(preferences), timestamp),
+            )
+            await conn.commit()
+
+    async def get_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+    ) -> Optional[Any]:
+        await self.open()
+        async with self._lock:
+            row = await self._fetchone_unlocked(
+                """
+                SELECT value
+                FROM app_data
+                WHERE app_id = ? AND session_id = ? AND key = ?
+                """,
+                (app_id, session_id, key),
+            )
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value"])
+        except json.JSONDecodeError:
+            return row["value"]
+
+    async def set_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        timestamp = time.time()
+        try:
+            value_json = json.dumps(value)
+        except TypeError:
+            value_json = json.dumps(str(value))
+
+        await self.open()
+        conn = await self._get_conn()
+        async with self._lock:
+            await conn.execute(
+                """
+                INSERT INTO app_data (app_id, session_id, key, value, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(app_id, session_id, key)
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (app_id, session_id, key, value_json, timestamp),
+            )
+            await conn.commit()
+
+    async def list_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+    ) -> List[Dict[str, Any]]:
+        await self.open()
+        async with self._lock:
+            rows = await self._fetchall_unlocked(
+                """
+                SELECT key, value, updated_at
+                FROM app_data
+                WHERE app_id = ? AND session_id = ?
+                ORDER BY updated_at DESC, key ASC
+                """,
+                (app_id, session_id),
+            )
+        entries: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                value = json.loads(row["value"])
+            except json.JSONDecodeError:
+                value = row["value"]
+            entries.append(
+                {
+                    "key": row["key"],
+                    "value": value,
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return entries
+
+    async def delete_app_data(
+        self,
+        app_id: str,
+        session_id: str,
+        key: str,
+    ) -> bool:
+        await self.open()
+        conn = await self._get_conn()
+        async with self._lock:
+            cursor = await conn.execute(
+                """
+                DELETE FROM app_data
+                WHERE app_id = ? AND session_id = ? AND key = ?
+                """,
+                (app_id, session_id, key),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def _fetchall_unlocked(
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
+    ) -> list[aiosqlite.Row]:
+        conn = await self._get_conn()
+        cursor = await conn.execute(sql, params)
+        try:
+            return await cursor.fetchall()
+        finally:
+            await cursor.close()
+
+    async def _fetchone_unlocked(
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
+    ) -> aiosqlite.Row | None:
+        conn = await self._get_conn()
+        cursor = await conn.execute(sql, params)
+        try:
+            return await cursor.fetchone()
+        finally:
+            await cursor.close()
+
+    async def _get_signals_for_turn_ids_unlocked(
+        self,
+        turn_ids: Iterable[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized_turn_ids = [str(turn_id) for turn_id in turn_ids if str(turn_id)]
+        if not normalized_turn_ids:
+            return {}
+
+        placeholders = ", ".join("?" for _ in normalized_turn_ids)
+        rows = await self._fetchall_unlocked(
+            f"""
+            SELECT turn_id, signal_name, signal_value
+            FROM signals
+            WHERE turn_id IN ({placeholders})
+            """,
+            normalized_turn_ids,
+        )
+
+        signals_by_turn: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            turn_id = str(row["turn_id"])
+            signals = signals_by_turn.setdefault(turn_id, {})
+            try:
+                signals[str(row["signal_name"])] = json.loads(row["signal_value"])
+            except json.JSONDecodeError:
+                signals[str(row["signal_name"])] = row["signal_value"]
+        return signals_by_turn
+
+    async def _rebuild_turns_fts_index_unlocked(self) -> None:
+        conn = await self._get_conn()
+        await conn.execute(f"DELETE FROM {self._FTS_TABLE}")
+        await conn.execute(
             f"""
             INSERT INTO {self._FTS_TABLE} (
                 turn_id,
@@ -796,8 +938,17 @@ class SQLiteStore(MemoryStore):
         )
 
     @staticmethod
+    def _load_json_dict(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, str):
+            return {}
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    @staticmethod
     def _validated_search_column(column: SearchColumn) -> str:
-        """Return a whitelisted turns column name for search."""
         if column not in ("user_message", "agent_response"):
             raise ValueError(f"Unsupported search column: {column}")
         return column
@@ -808,7 +959,6 @@ class SQLiteStore(MemoryStore):
         column: SearchColumn,
         query_term: str,
     ) -> str:
-        """Build a column-scoped FTS5 MATCH expression with token-AND semantics."""
         column_name = cls._validated_search_column(column)
         tokens = [token for token in str(query_term).split() if token]
         if not tokens:
@@ -819,191 +969,11 @@ class SQLiteStore(MemoryStore):
         token_expr = " AND ".join(escaped_tokens)
         return f"{column_name} : ({token_expr})"
 
-    def get_preferences(
-        self,
-        app_id: str,
-        session_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Get user preferences for app and session."""
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT value
-                FROM preferences
-                WHERE app_id = ? AND session_id = ?
-                """,
-                (app_id, session_id),
-            ).fetchone()
-
-        if row is None:
-            return None
-
-        try:
-            return json.loads(row[0])
-        except json.JSONDecodeError:
-            return {}
-
-    def get_latest_preferences(
-        self,
-        app_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Get latest user preferences for app."""
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT value
-                FROM preferences
-                WHERE app_id = ?
-                ORDER BY updated_at DESC
-                """,
-                (app_id,),
-            ).fetchone()
-
-        if row is None:
-            return None
-
-        try:
-            return json.loads(row[0])
-        except json.JSONDecodeError:
-            return {}
-
-    def set_preferences(
-        self,
-        app_id: str,
-        session_id: str,
-        preferences: Dict[str, Any],
-    ) -> None:
-        """Set user preferences for app and session."""
-        timestamp = time.time()
-        preferences_json = json.dumps(preferences)
-
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO preferences (app_id, session_id, value, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(app_id, session_id)
-                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (app_id, session_id, preferences_json, timestamp),
-            )
-            self._conn.commit()
-
-    def get_app_data(
-        self,
-        app_id: str,
-        session_id: str,
-        key: str,
-    ) -> Optional[Any]:
-        """Get app-specific data by key."""
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT value
-                FROM app_data
-                WHERE app_id = ? AND session_id = ? AND key = ?
-                """,
-                (app_id, session_id, key),
-            ).fetchone()
-
-        if row is None:
-            return None
-
-        try:
-            return json.loads(row[0])
-        except json.JSONDecodeError:
-            return row[0]
-
-    def set_app_data(
-        self,
-        app_id: str,
-        session_id: str,
-        key: str,
-        value: Any,
-    ) -> None:
-        """Set app-specific data by key."""
-        timestamp = time.time()
-
-        try:
-            value_json = json.dumps(value)
-        except TypeError:
-            value_json = json.dumps(str(value))
-
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO app_data (app_id, session_id, key, value, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(app_id, session_id, key)
-                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (app_id, session_id, key, value_json, timestamp),
-            )
-            self._conn.commit()
-
-    def list_app_data(
-        self,
-        app_id: str,
-        session_id: str,
-    ) -> List[Dict[str, Any]]:
-        """List all app-specific data for session."""
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT key, value, updated_at
-                FROM app_data
-                WHERE app_id = ? AND session_id = ?
-                ORDER BY updated_at DESC, key ASC
-                """,
-                (app_id, session_id),
-            ).fetchall()
-
-        entries: List[Dict[str, Any]] = []
-        for key, value_json, updated_at in rows:
-            try:
-                value = json.loads(value_json)
-            except json.JSONDecodeError:
-                value = value_json
-
-            entries.append(
-                {
-                    "key": key,
-                    "value": value,
-                    "updated_at": updated_at,
-                }
-            )
-
-        return entries
-
-    def delete_app_data(
-        self,
-        app_id: str,
-        session_id: str,
-        key: str,
-    ) -> bool:
-        """Delete app-specific data by key."""
-        with self._lock:
-            cursor = self._conn.execute(
-                """
-                DELETE FROM app_data
-                WHERE app_id = ? AND session_id = ? AND key = ?
-                """,
-                (app_id, session_id, key),
-            )
-            self._conn.commit()
-            return cursor.rowcount > 0
-
     @staticmethod
     def _prepare_path(path: Union[str, Path]) -> str:
-        """Normalize and ensure directories exist for the DB path."""
-        if isinstance(path, Path):
-            raw = str(path)
-        else:
-            raw = path
-
+        raw = str(path) if isinstance(path, Path) else path
         if raw == ":memory:":
             return raw
-
         location = Path(raw).expanduser()
         location.parent.mkdir(parents=True, exist_ok=True)
         return str(location)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -15,6 +16,7 @@ if str(_REPO_ROOT) not in sys.path:
 from mash.agents import MasherAgentSpec
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
+from mash.tools.bash import BashTool
 from pilot.spec import (
     API_COPILOT_AGENT_ID,
     APP_NAME,
@@ -106,7 +108,15 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
 
 def test_build_host_registers_primary_cli_api_and_masher() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "MASH_DATA_DIR": tmp,
+                "ANTHROPIC_API_KEY": "test-key",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ):
             with ExitStack() as stack:
                 stack.enter_context(
                     patch.object(PilotSpec, "build_llm", return_value=_FakeLLMProvider())
@@ -127,38 +137,49 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     patch("pilot.spec._cached_docs_for_scope", return_value=[])
                 )
 
-                host = build_host(Path.cwd())
-                host.start()
-                try:
-                    described = {
-                        item["agent_id"]: item for item in host.describe_agents()
-                    }
-                    assert sorted(described.keys()) == [
-                        API_COPILOT_AGENT_ID,
-                        CLI_COPILOT_AGENT_ID,
-                        "masher",
-                        MCP_COPILOT_AGENT_ID,
-                        PILOT_AGENT_ID,
-                    ]
+                async def _run() -> None:
+                    host = build_host(Path.cwd())
+                    await host.start()
+                    try:
+                        described = {
+                            item["agent_id"]: item for item in host.describe_agents()
+                        }
+                        assert sorted(described.keys()) == [
+                            API_COPILOT_AGENT_ID,
+                            CLI_COPILOT_AGENT_ID,
+                            "masher",
+                            MCP_COPILOT_AGENT_ID,
+                            PILOT_AGENT_ID,
+                        ]
 
-                    primary = host.get_agent(PILOT_AGENT_ID)
-                    assert primary.get_subagent_ids() == [
-                        API_COPILOT_AGENT_ID,
-                        CLI_COPILOT_AGENT_ID,
-                        "masher",
-                        MCP_COPILOT_AGENT_ID,
-                    ]
-                    assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
-                    assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
-                    assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
-                    assert "masher" in str(primary.system_prompt)
-                finally:
-                    host.close()
+                        primary = host.get_agent(PILOT_AGENT_ID)
+                        assert primary.get_subagent_ids() == [
+                            API_COPILOT_AGENT_ID,
+                            CLI_COPILOT_AGENT_ID,
+                            "masher",
+                            MCP_COPILOT_AGENT_ID,
+                        ]
+                        assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
+                        assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
+                        assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
+                        assert "masher" in str(primary.system_prompt)
+                    finally:
+                        await host.close()
+
+                asyncio.run(_run())
 
 
 def test_tool_shape_matches_mash_copilot_design() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "MASH_DATA_DIR": tmp,
+                "ANTHROPIC_API_KEY": "test-key",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ):
             with ExitStack() as stack:
                 stack.enter_context(
                     patch.object(PilotSpec, "build_llm", return_value=_FakeLLMProvider())
@@ -179,28 +200,75 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     patch("pilot.spec._cached_docs_for_scope", return_value=[])
                 )
 
-                host = build_host(Path.cwd())
-                host.start()
-                try:
-                    primary = host.get_agent(PILOT_AGENT_ID)
-                    cli_agent = host.get_agent(CLI_COPILOT_AGENT_ID)
-                    api_agent = host.get_agent(API_COPILOT_AGENT_ID)
-                    mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
-                    masher = host.get_agent("masher")
+                async def _run() -> None:
+                    host = build_host(Path.cwd())
+                    await host.start()
+                    try:
+                        primary = host.get_agent(PILOT_AGENT_ID)
+                        cli_agent = host.get_agent(CLI_COPILOT_AGENT_ID)
+                        api_agent = host.get_agent(API_COPILOT_AGENT_ID)
+                        mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
+                        masher = host.get_agent("masher")
 
-                    assert "bash" in primary.agent.tools
-                    assert "InvokeSubagent" in primary.agent.tools
-                    assert "bash" in cli_agent.agent.tools
-                    assert "bash" in api_agent.agent.tools
-                    assert "bash" in mcp_agent.agent.tools
-                    assert "search_conversations" not in primary.agent.tools
-                    assert "search_conversations" not in cli_agent.agent.tools
-                    assert "search_conversations" not in api_agent.agent.tools
-                    assert "search_conversations" not in mcp_agent.agent.tools
-                    assert "get_latest_session" in masher.agent.tools
-                    assert "get_trace_logs" in masher.agent.tools
-                finally:
-                    host.close()
+                        assert "bash" in primary.agent.tools
+                        assert "InvokeSubagent" not in primary.agent.tools
+                        assert "bash" in cli_agent.agent.tools
+                        assert "bash" in api_agent.agent.tools
+                        assert "bash" in mcp_agent.agent.tools
+                        assert "search_conversations" not in primary.agent.tools
+                        assert "search_conversations" not in cli_agent.agent.tools
+                        assert "search_conversations" not in api_agent.agent.tools
+                        assert "search_conversations" not in mcp_agent.agent.tools
+                        assert "get_latest_session" in masher.agent.tools
+                        assert "get_trace_logs" in masher.agent.tools
+                    finally:
+                        await host.close()
+
+                asyncio.run(_run())
+
+
+def test_build_host_shutdown_closes_bash_tools() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.dict(
+            os.environ,
+            {
+                "MASH_DATA_DIR": tmp,
+                "ANTHROPIC_API_KEY": "test-key",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ):
+            with ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(PilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch.object(CliCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch.object(ApiCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch("pilot.spec._cached_docs_for_scope", return_value=[])
+                )
+                shutdown = stack.enter_context(
+                    patch.object(BashTool, "shutdown", autospec=True)
+                )
+
+                async def _run() -> None:
+                    host = build_host(Path.cwd())
+                    await host.start()
+                    await host.close()
+
+                asyncio.run(_run())
+
+                assert shutdown.call_count >= 5
 
 
 def test_build_system_prompt_uses_cached_docs_helper() -> None:
@@ -220,6 +288,8 @@ def test_build_system_prompt_uses_cached_docs_helper() -> None:
         McpCopilotSpec(workspace_root).build_system_prompt()
 
     assert cached_docs.call_count == 4
+    primary_call = cached_docs.call_args_list[0]
+    assert "docs/rfcs/host-to-agent-protocol.md" in primary_call.kwargs["extra_doc_paths"]
 
 
 def test_missing_cached_docs_do_not_break_prompt_building() -> None:
@@ -268,6 +338,7 @@ def test_scope_prompt_blocks_include_cached_docs_only() -> None:
     assert "DOC: `README.md`" in primary_prompt
     assert "DOC: `src/mash/AGENTS.md`" in primary_prompt
     assert "DOC: `src/mash/runtime/AGENTS.md`" in primary_prompt
+    assert "host-to-agent-protocol.md" not in primary_prompt
     assert "# Repository index" not in primary_prompt
     assert "# Symbol index" not in primary_prompt
     assert "Cache dir:" not in primary_prompt

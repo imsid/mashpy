@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, List, Optional
 
 from .base import Tool
@@ -62,6 +63,20 @@ class ToolRegistry:
             List of tool definitions in LLM format.
         """
         return [tool.to_llm_format() for tool in self._tools.values()]
+
+    async def shutdown(self) -> None:
+        """Shut down registered tools that expose lifecycle hooks."""
+        for tool in self._tools.values():
+            close = getattr(tool, "shutdown", None)
+            if not callable(close):
+                close = getattr(tool, "close", None)
+            if not callable(close):
+                close = getattr(tool, "aclose", None)
+            if not callable(close):
+                continue
+            result = close()
+            if inspect.isawaitable(result):
+                await result
 
     def __len__(self) -> int:
         """Get the number of registered tools."""

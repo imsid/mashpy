@@ -22,6 +22,6 @@ class EventLogger:
         """Return the backing MemoryStore."""
         return self._store
 
-    def emit(self, event: LogEvent) -> None:
+    async def emit(self, event: LogEvent) -> None:
         """Persist one structured event."""
-        self._store.save_logs([normalize_log_event(event)])
+        await self._store.save_logs([normalize_log_event(event)])

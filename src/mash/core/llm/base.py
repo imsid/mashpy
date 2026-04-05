@@ -25,7 +25,7 @@ class LLMProvider(ABC):
         """Return the provider-owned model identifier."""
 
     @abstractmethod
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         """Send a normalized request to the provider."""
 
     @abstractmethod
@@ -93,7 +93,7 @@ class BaseLLMProvider(LLMProvider):
         betas = request.provider_options.get("betas")
         return betas if isinstance(betas, list) else None
 
-    def _emit_request_start(
+    async def _emit_request_start(
         self,
         request: LLMRequest,
         *,
@@ -102,7 +102,7 @@ class BaseLLMProvider(LLMProvider):
         if self._event_logger is None:
             return
 
-        self._event_logger.emit(
+        await self._event_logger.emit(
             LLMEvent(
                 event_type="llm.request.start",
                 app_id=self._app_id,
@@ -116,7 +116,7 @@ class BaseLLMProvider(LLMProvider):
             )
         )
 
-    def _emit_request_complete(
+    async def _emit_request_complete(
         self,
         request: LLMRequest,
         *,
@@ -127,7 +127,7 @@ class BaseLLMProvider(LLMProvider):
             return
 
         usage = response.usage or LLMTokenUsage()
-        self._event_logger.emit(
+        await self._event_logger.emit(
             LLMEvent(
                 event_type="llm.request.complete",
                 app_id=self._app_id,
@@ -148,7 +148,7 @@ class BaseLLMProvider(LLMProvider):
             )
         )
 
-    def _emit_request_error(
+    async def _emit_request_error(
         self,
         request: LLMRequest,
         *,
@@ -158,7 +158,7 @@ class BaseLLMProvider(LLMProvider):
         if self._event_logger is None:
             return
 
-        self._event_logger.emit(
+        await self._event_logger.emit(
             LLMEvent(
                 event_type="llm.request.error",
                 app_id=self._app_id,

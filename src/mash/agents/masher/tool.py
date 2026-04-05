@@ -43,7 +43,7 @@ class GetTraceLogsTool(FunctionTool):
             _executor=self._execute,
         )
 
-    def _execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def _execute(self, args: Dict[str, Any]) -> ToolResult:
         raw_session_id = args.get("session_id")
         raw_trace_id = args.get("trace_id")
         if not isinstance(raw_session_id, str) or not raw_session_id.strip():
@@ -58,7 +58,7 @@ class GetTraceLogsTool(FunctionTool):
 
         events = [
             _strip_log_cursor(item)
-            for item in self._store.get_logs(
+            for item in await self._store.get_logs(
                 app_id=self._app_id,
                 session_id=session_id,
                 trace_id=trace_id,
@@ -108,20 +108,20 @@ class GetLatestTraceTool(FunctionTool):
             _executor=self._execute,
         )
 
-    def _execute(self, args: Dict[str, Any]) -> ToolResult:
-        session_id, error = self._resolve_session_id(args)
+    async def _execute(self, args: Dict[str, Any]) -> ToolResult:
+        session_id, error = await self._resolve_session_id(args)
         if error is not None:
             return error
 
-        trace = self._store.get_latest_log_trace(app_id=self._app_id, session_id=session_id)
+        trace = await self._store.get_latest_log_trace(app_id=self._app_id, session_id=session_id)
         if trace is None:
             return ToolResult.error(f"no traces found for session: {session_id}")
         return ToolResult.success(json.dumps(trace, ensure_ascii=True, indent=2), **trace)
 
-    def _resolve_session_id(self, args: Dict[str, Any]) -> tuple[str, ToolResult | None]:
+    async def _resolve_session_id(self, args: Dict[str, Any]) -> tuple[str, ToolResult | None]:
         raw_session_id = args.get("session_id")
         if raw_session_id is None:
-            latest_session = self._store.get_latest_session(app_id=self._app_id)
+            latest_session = await self._store.get_latest_session(app_id=self._app_id)
             if latest_session is None:
                 return "", ToolResult.error("no sessions found for this app")
             return str(latest_session["session_id"]), None
@@ -162,9 +162,9 @@ class ListRecentTracesTool(FunctionTool):
             _executor=self._execute,
         )
 
-    def _execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def _execute(self, args: Dict[str, Any]) -> ToolResult:
         resolver = GetLatestTraceTool(self._store, app_id=self._app_id)
-        session_id, error = resolver._resolve_session_id(args)
+        session_id, error = await resolver._resolve_session_id(args)
         if error is not None:
             return error
 
@@ -174,7 +174,7 @@ class ListRecentTracesTool(FunctionTool):
         except (TypeError, ValueError):
             return ToolResult.error("limit must be an integer")
 
-        traces = self._store.list_recent_log_traces(
+        traces = await self._store.list_recent_log_traces(
             app_id=self._app_id,
             session_id=session_id,
             limit=limit,
@@ -216,7 +216,7 @@ class AppendJsonlTool(FunctionTool):
             _executor=self._execute,
         )
 
-    def _execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def _execute(self, args: Dict[str, Any]) -> ToolResult:
         raw_path = args.get("path")
         record = args.get("record")
         if not isinstance(raw_path, str) or not raw_path.strip():

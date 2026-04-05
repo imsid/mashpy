@@ -111,11 +111,11 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `observability.memory.path`
   - `observability.memory.default_limit`
 
-`GET /api/v1/agents`
+`GET /api/v1/agent`
 - Lists hosted agents.
 - Returns `agents` and `primary_agent_id`.
 
-`GET /api/v1/agents/{agent_id}`
+`GET /api/v1/agent/{agent_id}`
 - Returns agent metadata plus current session info.
 - Path params:
   - `agent_id`
@@ -125,7 +125,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 
 ### Runtime Invocation
 
-`POST /api/v1/agents/{agent_id}/invoke`
+`POST /api/v1/agent/{agent_id}/invoke`
 - Synchronous request/response invocation.
 - Path params:
   - `agent_id`
@@ -133,14 +133,14 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 - Returns the runtime invoke result in `data`.
 - Returns `504 REQUEST_TIMEOUT` if the invoke call times out.
 
-`POST /api/v1/agents/{agent_id}/requests`
+`POST /api/v1/agent/{agent_id}/request`
 - Submits an async request and returns a request id.
 - Path params:
   - `agent_id`
 - Body: `SubmitRequest`
 - Returns `request_id`.
 
-`GET /api/v1/agents/{agent_id}/requests/{request_id}/events`
+`GET /api/v1/agent/{agent_id}/request/{request_id}/events`
 - Server-Sent Events stream for async request progress.
 - Path params:
   - `agent_id`
@@ -153,19 +153,19 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 
 ### Sessions
 
-`GET /api/v1/agents/{agent_id}/sessions`
+`GET /api/v1/agent/{agent_id}/sessions`
 - Lists runtime sessions for one agent.
 - Path params:
   - `agent_id`
 - Returns `sessions`.
 
-`GET /api/v1/agents/{agent_id}/sessions/{session_id}`
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}`
 - Returns session info for a specific session id.
 - Path params:
   - `agent_id`
   - `session_id`
 
-`GET /api/v1/agents/{agent_id}/sessions/{session_id}/history`
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}/history`
 - Returns session history turns.
 - Path params:
   - `agent_id`
@@ -174,7 +174,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `limit` optional
 - Returns `turns`.
 
-`POST /api/v1/agents/{agent_id}/sessions/{session_id}/compact`
+`POST /api/v1/agent/{agent_id}/sessions/{session_id}/compact`
 - Compacts a session and resets token accounting if requested.
 - Path params:
   - `agent_id`
@@ -186,14 +186,14 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 
 ### Session Preferences
 
-`GET /api/v1/agents/{agent_id}/sessions/{session_id}/preferences`
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}/preferences`
 - Reads session preferences.
 - Path params:
   - `agent_id`
   - `session_id`
 - Returns `preferences`.
 
-`PUT /api/v1/agents/{agent_id}/sessions/{session_id}/preferences`
+`PUT /api/v1/agent/{agent_id}/sessions/{session_id}/preferences`
 - Replaces session preferences.
 - Path params:
   - `agent_id`
@@ -203,14 +203,14 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 
 ### Session App Data
 
-`GET /api/v1/agents/{agent_id}/sessions/{session_id}/app-data`
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}/app-data`
 - Lists app-data items for a session.
 - Path params:
   - `agent_id`
   - `session_id`
 - Returns `items`.
 
-`GET /api/v1/agents/{agent_id}/sessions/{session_id}/app-data/{key}`
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}/app-data/{key}`
 - Reads one app-data value.
 - Path params:
   - `agent_id`
@@ -218,7 +218,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `key`
 - Returns `value`.
 
-`PUT /api/v1/agents/{agent_id}/sessions/{session_id}/app-data/{key}`
+`PUT /api/v1/agent/{agent_id}/sessions/{session_id}/app-data/{key}`
 - Sets one app-data value.
 - Path params:
   - `agent_id`
@@ -227,7 +227,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 - Body: `AppDataSetRequest`
 - Returns `ok: true`.
 
-`DELETE /api/v1/agents/{agent_id}/sessions/{session_id}/app-data/{key}`
+`DELETE /api/v1/agent/{agent_id}/sessions/{session_id}/app-data/{key}`
 - Deletes one app-data value.
 - Path params:
   - `agent_id`
