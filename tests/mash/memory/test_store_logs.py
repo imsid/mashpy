@@ -176,7 +176,8 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_open_serializes_concurrent_lazy_initialization(self) -> None:
-        store = SQLiteStore(Path(self.enterContext(TemporaryDirectory())) / "state.db")
+        tempdir = TemporaryDirectory()
+        store = SQLiteStore(Path(tempdir.name) / "state.db")
         connect_calls = 0
         first_connect_started = asyncio.Event()
         release_first_connect = asyncio.Event()
@@ -206,9 +207,11 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(store._conn)
         finally:
             await store.close()
+            tempdir.cleanup()
 
     async def test_concurrent_save_logs_and_open_on_fresh_db_persists_logs(self) -> None:
-        store = SQLiteStore(Path(self.enterContext(TemporaryDirectory())) / "state.db")
+        tempdir = TemporaryDirectory()
+        store = SQLiteStore(Path(tempdir.name) / "state.db")
         connect_calls = 0
         first_connect_started = asyncio.Event()
         release_first_connect = asyncio.Event()
@@ -264,6 +267,7 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await store.close()
+            tempdir.cleanup()
 
 
 if __name__ == "__main__":
