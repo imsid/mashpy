@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import aiosqlite
 
 from mash.logging import AgentTraceEvent, EventLogger, LLMEvent
 from mash.memory.store import SQLiteStore
@@ -168,6 +174,96 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
                     trace_id=None,
                 )
             )
+
+    async def test_open_serializes_concurrent_lazy_initialization(self) -> None:
+        store = SQLiteStore(Path(self.enterContext(TemporaryDirectory())) / "state.db")
+        connect_calls = 0
+        first_connect_started = asyncio.Event()
+        release_first_connect = asyncio.Event()
+        original_connect = aiosqlite.connect
+
+        async def delayed_connect(*args: object, **kwargs: object) -> aiosqlite.Connection:
+            nonlocal connect_calls
+            connect_calls += 1
+            if connect_calls == 1:
+                first_connect_started.set()
+                await release_first_connect.wait()
+            return await original_connect(*args, **kwargs)
+
+        try:
+            with patch(
+                "mash.memory.store.backends.sqlite.store.aiosqlite.connect",
+                new=delayed_connect,
+            ):
+                first = asyncio.create_task(store.open())
+                await first_connect_started.wait()
+                others = [asyncio.create_task(store.open()) for _ in range(4)]
+                await asyncio.sleep(0)
+                release_first_connect.set()
+                await asyncio.gather(first, *others)
+
+            self.assertEqual(connect_calls, 1)
+            self.assertIsNotNone(store._conn)
+        finally:
+            await store.close()
+
+    async def test_concurrent_save_logs_and_open_on_fresh_db_persists_logs(self) -> None:
+        store = SQLiteStore(Path(self.enterContext(TemporaryDirectory())) / "state.db")
+        connect_calls = 0
+        first_connect_started = asyncio.Event()
+        release_first_connect = asyncio.Event()
+        original_connect = aiosqlite.connect
+
+        async def delayed_connect(*args: object, **kwargs: object) -> aiosqlite.Connection:
+            nonlocal connect_calls
+            connect_calls += 1
+            if connect_calls == 1:
+                first_connect_started.set()
+                await release_first_connect.wait()
+            return await original_connect(*args, **kwargs)
+
+        log_one = {
+            "app_id": "primary",
+            "session_id": "session-1",
+            "trace_id": "trace-1",
+            "event_class": "AgentTraceEvent",
+            "event_type": "agent.run.start",
+            "created_at": 1.0,
+            "payload": {"payload": {"step": 1}},
+        }
+        log_two = {
+            "app_id": "primary",
+            "session_id": "session-1",
+            "trace_id": "trace-2",
+            "event_class": "AgentTraceEvent",
+            "event_type": "agent.run.complete",
+            "created_at": 2.0,
+            "payload": {"payload": {"step": 2}},
+        }
+
+        try:
+            with patch(
+                "mash.memory.store.backends.sqlite.store.aiosqlite.connect",
+                new=delayed_connect,
+            ):
+                first = asyncio.create_task(store.save_logs([log_one]))
+                await first_connect_started.wait()
+                second = asyncio.create_task(store.save_logs([log_two]))
+                third = asyncio.create_task(store.open())
+                await asyncio.sleep(0)
+                release_first_connect.set()
+                await asyncio.gather(first, second, third)
+
+            self.assertEqual(connect_calls, 1)
+            events = await store.get_logs(app_id="primary", session_id="session-1")
+            self.assertEqual(len(events), 2)
+            self.assertEqual({event["trace_id"] for event in events}, {"trace-1", "trace-2"})
+            self.assertEqual(
+                {event["event_type"] for event in events},
+                {"agent.run.start", "agent.run.complete"},
+            )
+        finally:
+            await store.close()
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ class SQLiteStore(MemoryStore):
     def __init__(self, path: Union[str, Path] = ":memory:") -> None:
         self._db_path = self._prepare_path(path)
         self._conn: aiosqlite.Connection | None = None
+        self._open_lock = asyncio.Lock()
         self._lock = asyncio.Lock()
 
     async def open(self) -> None:
@@ -30,16 +31,20 @@ class SQLiteStore(MemoryStore):
         if self._conn is not None:
             return
 
-        conn = await aiosqlite.connect(self._db_path)
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA busy_timeout = 5000")
-        if self._db_path != ":memory:":
-            try:
-                await conn.execute("PRAGMA journal_mode = WAL")
-            except aiosqlite.Error:
-                pass
-        self._conn = conn
-        await self._init_schema()
+        async with self._open_lock:
+            if self._conn is not None:
+                return
+
+            conn = await aiosqlite.connect(self._db_path)
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            if self._db_path != ":memory:":
+                try:
+                    await conn.execute("PRAGMA journal_mode = WAL")
+                except aiosqlite.Error:
+                    pass
+            self._conn = conn
+            await self._init_schema()
 
     async def close(self) -> None:
         """Close the SQLite connection."""
