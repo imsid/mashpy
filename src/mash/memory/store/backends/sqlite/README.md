@@ -2,7 +2,7 @@
 
 `src/mash/memory/store/backends/sqlite` contains the built-in `SQLiteStore` backend.
 
-This backend persists turns, signals, preferences, and app-scoped data in SQLite, and provides keyword retrieval via SQLite FTS5.
+This backend persists turns and signals in SQLite, and provides keyword retrieval via SQLite FTS5.
 
 ## Files
 - `store.py`: `SQLiteStore` implementation
@@ -62,51 +62,6 @@ Main readers:
 - `_get_signals_for_turn()`
 - indirectly `get_turns()`
 
-### `preferences`
-Session-scoped preferences per app.
-
-Columns:
-- `app_id TEXT NOT NULL`
-- `session_id TEXT NOT NULL`
-- `value TEXT NOT NULL`
-- `updated_at REAL NOT NULL`
-
-Constraints:
-- `PRIMARY KEY (app_id, session_id)`
-
-What it stores:
-- One JSON object per app/session pair.
-- `set_preferences()` uses upsert semantics.
-
-Main readers/writers:
-- `get_preferences()`
-- `get_latest_preferences()`
-- `set_preferences()`
-
-### `app_data`
-Arbitrary app-defined key/value storage per app/session.
-
-Columns:
-- `app_id TEXT NOT NULL`
-- `session_id TEXT NOT NULL`
-- `key TEXT NOT NULL`
-- `value TEXT NOT NULL`
-- `updated_at REAL NOT NULL`
-
-Constraints:
-- `PRIMARY KEY (app_id, session_id, key)`
-
-What it stores:
-- One JSON value per app/session/key tuple.
-- `set_app_data()` upserts by that composite key.
-- Values are JSON-encoded when possible; non-serializable values are stringified first.
-
-Main readers/writers:
-- `get_app_data()`
-- `set_app_data()`
-- `list_app_data()`
-- `delete_app_data()`
-
 ### `fts_turns`
 SQLite FTS5 virtual table used for keyword search.
 
@@ -134,13 +89,11 @@ Rebuild behavior:
 - `idx_turns_session ON turns(session_id)`
 - `idx_turns_app ON turns(app_id)`
 - `idx_signals_name ON signals(signal_name)`
-- `idx_app_data_session ON app_data(app_id, session_id)`
 
 Why they exist:
 - `idx_turns_session`: session-history reads
 - `idx_turns_app`: app-scoped session and trace listing
 - `idx_signals_name`: signal-based lookups/inspection
-- `idx_app_data_session`: app/session-scoped app-data reads
 
 ## Method-To-Table Mapping
 
@@ -165,12 +118,6 @@ Why they exist:
 `keyword_search(...)`
 - Searches `fts_turns`
 - Joins to `turns`
-
-`get_preferences(...)`, `get_latest_preferences(...)`, `set_preferences(...)`
-- Operate on `preferences`
-
-`get_app_data(...)`, `set_app_data(...)`, `list_app_data(...)`, `delete_app_data(...)`
-- Operate on `app_data`
 
 ## Search Constraints
 - Keyword search supports only:

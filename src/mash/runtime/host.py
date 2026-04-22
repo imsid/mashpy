@@ -116,54 +116,6 @@ class HostedAgentHandle:
             return []
         return await self.store.list_sessions(app_id=self.agent_id)
 
-    async def get_preferences(self, session_id: str) -> Optional[dict[str, object]]:
-        return await self.store.get_preferences(
-            app_id=self.agent_id,
-            session_id=session_id,
-        )
-
-    async def get_latest_preferences(self) -> Optional[dict[str, object]]:
-        return await self.store.get_latest_preferences(
-            app_id=self.agent_id,
-        )
-
-    async def set_preferences(
-        self, session_id: str, preferences: dict[str, object]
-    ) -> None:
-        await self.store.set_preferences(
-            app_id=self.agent_id,
-            session_id=session_id,
-            preferences=preferences,
-        )
-
-    async def list_app_data(self, session_id: str) -> list[dict[str, object]]:
-        return await self.store.list_app_data(
-            app_id=self.agent_id,
-            session_id=session_id,
-        )
-
-    async def get_app_data(self, session_id: str, key: str):
-        return await self.store.get_app_data(
-            app_id=self.agent_id,
-            session_id=session_id,
-            key=key,
-        )
-
-    async def set_app_data(self, session_id: str, key: str, value) -> None:
-        await self.store.set_app_data(
-            app_id=self.agent_id,
-            session_id=session_id,
-            key=key,
-            value=value,
-        )
-
-    async def delete_app_data(self, session_id: str, key: str) -> bool:
-        return await self.store.delete_app_data(
-            app_id=self.agent_id,
-            session_id=session_id,
-            key=key,
-        )
-
     async def get_history_turns(
         self, session_id: str, *, limit: int | None = None
     ) -> list[dict[str, object]]:

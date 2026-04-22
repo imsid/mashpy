@@ -98,6 +98,42 @@ def test_agent_scoped_invoke_and_session_routes() -> None:
             assert len(history.json()["data"]["turns"]) == 1
 
 
+def test_removed_session_state_routes_return_not_found() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            assert (
+                client.get("/api/v1/agent/primary/sessions/s1/preferences").status_code
+                == 404
+            )
+            assert (
+                client.put(
+                    "/api/v1/agent/primary/sessions/s1/preferences",
+                    json={"preferences": {"tone": "brief"}},
+                ).status_code
+                == 404
+            )
+            assert (
+                client.get("/api/v1/agent/primary/sessions/s1/app-data").status_code
+                == 404
+            )
+            assert (
+                client.get("/api/v1/agent/primary/sessions/s1/app-data/key").status_code
+                == 404
+            )
+            assert (
+                client.put(
+                    "/api/v1/agent/primary/sessions/s1/app-data/key",
+                    json={"value": "x"},
+                ).status_code
+                == 404
+            )
+            assert (
+                client.delete("/api/v1/agent/primary/sessions/s1/app-data/key").status_code
+                == 404
+            )
+
+
 def test_async_request_stream_and_auth() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

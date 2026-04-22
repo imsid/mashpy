@@ -1,6 +1,6 @@
 # Memory Store
 
-`src/mash/memory/store` defines the backend-agnostic storage contract used by runtime memory, session persistence, preferences, app data, structured event logging, and memory-search retrieval.
+`src/mash/memory/store` defines the backend-agnostic storage contract used by runtime memory, session persistence, structured event logging, and memory-search retrieval.
 
 ## What This Package Exposes
 - `MemoryStore`: protocol contract that all storage backends must implement.
@@ -164,42 +164,9 @@ SQLite behavior:
 SQLite behavior:
 - Not implemented yet.
 
-### Preferences
-
-`get_preferences(app_id, session_id) -> dict | None`
-- Reads app-scoped preferences for one session.
-
-`get_latest_preferences(app_id) -> dict | None`
-- Reads the most recently updated preferences row for one app.
-
-`set_preferences(app_id, session_id, preferences) -> None`
-- Upserts preferences for one app/session pair.
-
-Expected payload shape:
-- Arbitrary JSON object.
-
-### App Data
-
-`get_app_data(app_id, session_id, key) -> Any | None`
-- Reads one app-defined data value.
-
-`set_app_data(app_id, session_id, key, value) -> None`
-- Upserts one app-defined data value.
-
-`list_app_data(app_id, session_id) -> list[dict]`
-- Lists all app-defined key/value entries for a session.
-- Expected shape per item:
-  - `key`
-  - `value`
-  - `updated_at`
-
-`delete_app_data(app_id, session_id, key) -> bool`
-- Deletes one app-defined value.
-- Returns `True` if a row was deleted.
-
 ## Return Shape Notes
 - Store methods return plain dictionaries/lists, not typed model objects.
-- `metadata`, `preferences`, and `app_data.value` are intended to be JSON-compatible.
+- `metadata` is intended to be JSON-compatible.
 - Callers should not assume backend-specific extra keys beyond the documented shapes.
 
 ## SQLite-Specific Notes

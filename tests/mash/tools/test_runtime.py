@@ -382,20 +382,11 @@ class RuntimeToolMetadataTests(unittest.TestCase):
             [
                 "search_conversations",
                 "get_full_turn_message",
-                "get_user_preferences",
-                "set_user_preferences",
-                "list_app_data",
-                "set_app_data",
             ],
         )
 
     def test_rewritten_descriptions_and_parameters_clarify_scope_and_usage(self) -> None:
         tools = {tool.name: tool for tool in self.builder.build_tools()}
-
-        self.assertIn("current session", tools["get_user_preferences"].description)
-        self.assertIn("current session", tools["set_user_preferences"].description)
-        self.assertIn("current session", tools["list_app_data"].description)
-        self.assertIn("session-scoped", tools["set_app_data"].description)
 
         search_tool = tools["search_conversations"]
         self.assertIn("ranked previews", search_tool.description)
@@ -412,16 +403,6 @@ class RuntimeToolMetadataTests(unittest.TestCase):
         self.assertIn("full turn text", turn_tool.description)
         self.assertEqual(turn_tool.parameters["required"], ["pairs"])
         self.assertEqual(turn_tool.parameters["properties"]["pairs"]["type"], "array")
-
-        set_preferences_tool = tools["set_user_preferences"]
-        self.assertEqual(
-            set_preferences_tool.parameters["properties"]["preferences"]["type"],
-            "object",
-        )
-
-        set_app_data_tool = tools["set_app_data"]
-        self.assertEqual(set_app_data_tool.parameters["properties"]["key"]["type"], "string")
-        self.assertIn("value", set_app_data_tool.parameters["properties"])
 
 
 if __name__ == "__main__":

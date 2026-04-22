@@ -68,14 +68,6 @@ class SubmitRequest(BaseModel):
     turn_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class PreferencesUpdateRequest(BaseModel):
-    preferences: dict[str, Any]
-
-
-class AppDataSetRequest(BaseModel):
-    value: Any
-
-
 class CompactSessionRequest(BaseModel):
     reason: str = "manual"
     session_total_tokens_reset: int = 0
@@ -340,62 +332,6 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
     async def get_runtime_session(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
         agent = _get_agent(request, agent_id)
         return _success(await agent.get_session_info(_normalize_optional_text(session_id)))
-
-    @api.get("/agent/{agent_id}/sessions/{session_id}/preferences")
-    async def get_preferences(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
-        agent = _get_agent(request, agent_id)
-        if not session_id.strip():
-            raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        return _success({"preferences": await agent.get_preferences(session_id)})
-
-    @api.put("/agent/{agent_id}/sessions/{session_id}/preferences")
-    async def set_preferences(
-        request: Request,
-        agent_id: str,
-        session_id: str,
-        body: PreferencesUpdateRequest,
-    ) -> dict[str, Any]:
-        agent = _get_agent(request, agent_id)
-        if not session_id.strip():
-            raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        await agent.set_preferences(session_id, body.preferences)
-        return _success({"ok": True})
-
-    @api.get("/agent/{agent_id}/sessions/{session_id}/app-data")
-    async def list_app_data(request: Request, agent_id: str, session_id: str) -> dict[str, Any]:
-        agent = _get_agent(request, agent_id)
-        if not session_id.strip():
-            raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
-        return _success({"items": await agent.list_app_data(session_id)})
-
-    @api.get("/agent/{agent_id}/sessions/{session_id}/app-data/{key}")
-    async def get_app_data(request: Request, agent_id: str, session_id: str, key: str) -> dict[str, Any]:
-        agent = _get_agent(request, agent_id)
-        if not session_id.strip() or not key.strip():
-            raise APIError(code="INVALID_REQUEST", message="session_id and key are required", status_code=400)
-        return _success({"value": await agent.get_app_data(session_id, key)})
-
-    @api.put("/agent/{agent_id}/sessions/{session_id}/app-data/{key}")
-    async def set_app_data(
-        request: Request,
-        agent_id: str,
-        session_id: str,
-        key: str,
-        body: AppDataSetRequest,
-    ) -> dict[str, Any]:
-        agent = _get_agent(request, agent_id)
-        if not session_id.strip() or not key.strip():
-            raise APIError(code="INVALID_REQUEST", message="session_id and key are required", status_code=400)
-        await agent.set_app_data(session_id, key, body.value)
-        return _success({"ok": True})
-
-    @api.delete("/agent/{agent_id}/sessions/{session_id}/app-data/{key}")
-    async def delete_app_data(request: Request, agent_id: str, session_id: str, key: str) -> dict[str, Any]:
-        agent = _get_agent(request, agent_id)
-        if not session_id.strip() or not key.strip():
-            raise APIError(code="INVALID_REQUEST", message="session_id and key are required", status_code=400)
-        deleted = await agent.delete_app_data(session_id, key)
-        return _success({"deleted": bool(deleted)})
 
     @api.get("/agent/{agent_id}/sessions/{session_id}/history")
     async def get_history(

@@ -144,21 +144,6 @@ class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await host.close()
 
-    async def test_host_local_state_helpers_preserve_preferences(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHostBuilder().primary(
-                    build_spec(agent_id="primary", response_text="primary-ok")
-                ).build()
-                await host.start()
-                try:
-                    primary = host.get_agent("primary")
-                    await primary.set_preferences("s-1", {"tone": "brief"})
-                    self.assertEqual(await primary.get_preferences("s-1"), {"tone": "brief"})
-                finally:
-                    await host.close()
-
-
 async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     async for event in client.stream_response(request_id, timeout=timeout):

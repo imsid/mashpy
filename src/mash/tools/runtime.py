@@ -1,4 +1,4 @@
-"""Runtime tools for agent memory and preferences."""
+"""Runtime tools for agent memory and search."""
 
 from __future__ import annotations
 
@@ -44,10 +44,6 @@ class RuntimeToolBuilder:
         return [
             self._build_search_conversations_tool(),
             self._build_get_full_turn_message_tool(),
-            self._build_get_user_preferences_tool(),
-            self._build_set_user_preferences_tool(),
-            self._build_list_app_data_tool(),
-            self._build_set_app_data_tool(),
         ]
 
     def build_get_latest_session_tool(self) -> Tool:
@@ -157,23 +153,6 @@ class RuntimeToolBuilder:
             name="get_conversation",
             description="Get the conversation history for this session.",
             parameters={"type": "object", "properties": {"limit": {"type": "integer"}}},
-            _executor=execute,
-        )
-
-    def _build_get_user_preferences_tool(self) -> Tool:
-        async def execute(_args: Dict[str, Any]) -> ToolResult:
-            preferences = await self._store.get_preferences(
-                app_id=self._app_id,
-                session_id=self._session_id(),
-            )
-            if preferences is None:
-                return ToolResult(content="No preferences stored.", is_error=False)
-            return ToolResult(content=json.dumps(preferences, indent=2), is_error=False)
-
-        return FunctionTool(
-            name="get_user_preferences",
-            description="Read the stored user preferences for the current session.",
-            parameters={"type": "object", "properties": {}},
             _executor=execute,
         )
 
@@ -346,123 +325,5 @@ class RuntimeToolBuilder:
             },
             _executor=execute,
         )
-
-    def _build_set_user_preferences_tool(self) -> Tool:
-        async def execute(args: Dict[str, Any]) -> ToolResult:
-            preferences = args.get("preferences")
-            if not isinstance(preferences, dict):
-                return ToolResult(content="preferences must be a JSON object", is_error=True)
-            await self._store.set_preferences(
-                app_id=self._app_id,
-                session_id=self._session_id(),
-                preferences=preferences,
-            )
-            return ToolResult(content="Preferences saved successfully.", is_error=False)
-
-        return FunctionTool(
-            name="set_user_preferences",
-            description="Store user preferences for the current session.",
-            parameters={
-                "type": "object",
-                "properties": {"preferences": {"type": "object"}},
-                "required": ["preferences"],
-            },
-            _executor=execute,
-        )
-
-    def _build_get_app_data_tool(self) -> Tool:
-        async def execute(args: Dict[str, Any]) -> ToolResult:
-            key = args.get("key")
-            if not key:
-                return ToolResult(content="key is required", is_error=True)
-            value = await self._store.get_app_data(
-                app_id=self._app_id,
-                session_id=self._session_id(),
-                key=str(key),
-            )
-            if value is None:
-                return ToolResult(content=f"No data found for key: {key}", is_error=False)
-            return ToolResult(content=json.dumps(value, indent=2), is_error=False)
-
-        return FunctionTool(
-            name="get_app_data",
-            description="Get app-specific data by key.",
-            parameters={
-                "type": "object",
-                "properties": {"key": {"type": "string"}},
-                "required": ["key"],
-            },
-            _executor=execute,
-        )
-
-    def _build_set_app_data_tool(self) -> Tool:
-        async def execute(args: Dict[str, Any]) -> ToolResult:
-            key = args.get("key")
-            value = args.get("value")
-            if not key:
-                return ToolResult(content="key is required", is_error=True)
-            if value is None:
-                return ToolResult(content="value is required", is_error=True)
-            await self._store.set_app_data(
-                app_id=self._app_id,
-                session_id=self._session_id(),
-                key=str(key),
-                value=value,
-            )
-            return ToolResult(content=f"Data stored successfully for key: {key}", is_error=False)
-
-        return FunctionTool(
-            name="set_app_data",
-            description="Store session-scoped app data under a key.",
-            parameters={
-                "type": "object",
-                "properties": {"key": {"type": "string"}, "value": {}},
-                "required": ["key", "value"],
-            },
-            _executor=execute,
-        )
-
-    def _build_list_app_data_tool(self) -> Tool:
-        async def execute(_args: Dict[str, Any]) -> ToolResult:
-            data = await self._store.list_app_data(
-                app_id=self._app_id,
-                session_id=self._session_id(),
-            )
-            if not data:
-                return ToolResult(content="No app data stored.", is_error=False)
-            return ToolResult(content=json.dumps(data, indent=2), is_error=False)
-
-        return FunctionTool(
-            name="list_app_data",
-            description="List all app-data entries stored for the current session.",
-            parameters={"type": "object", "properties": {}},
-            _executor=execute,
-        )
-
-    def _build_delete_app_data_tool(self) -> Tool:
-        async def execute(args: Dict[str, Any]) -> ToolResult:
-            key = args.get("key")
-            if not key:
-                return ToolResult(content="key is required", is_error=True)
-            deleted = await self._store.delete_app_data(
-                app_id=self._app_id,
-                session_id=self._session_id(),
-                key=str(key),
-            )
-            if deleted:
-                return ToolResult(content=f"Data deleted successfully for key: {key}", is_error=False)
-            return ToolResult(content=f"No data found for key: {key}", is_error=False)
-
-        return FunctionTool(
-            name="delete_app_data",
-            description="Delete app-specific data by key.",
-            parameters={
-                "type": "object",
-                "properties": {"key": {"type": "string"}},
-                "required": ["key"],
-            },
-            _executor=execute,
-        )
-
 
 __all__ = ["RuntimeToolBuilder"]

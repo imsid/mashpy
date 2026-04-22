@@ -339,52 +339,6 @@ class MashAgentRuntime:
             ),
         }
 
-    async def get_latest_preferences(self) -> Optional[Dict[str, Any]]:
-        return await self.store.get_latest_preferences(app_id=self.app_id)
-
-    async def get_preferences(self, session_id: str) -> Optional[Dict[str, Any]]:
-        return await self.store.get_preferences(
-            app_id=self.app_id,
-            session_id=session_id,
-        )
-
-    async def set_preferences(
-        self, session_id: str, preferences: Dict[str, Any]
-    ) -> None:
-        await self.store.set_preferences(
-            app_id=self.app_id,
-            session_id=session_id,
-            preferences=preferences,
-        )
-
-    async def list_app_data(self, session_id: str) -> list[dict[str, Any]]:
-        return await self.store.list_app_data(
-            app_id=self.app_id,
-            session_id=session_id,
-        )
-
-    async def get_app_data(self, session_id: str, key: str) -> Any:
-        return await self.store.get_app_data(
-            app_id=self.app_id,
-            session_id=session_id,
-            key=key,
-        )
-
-    async def set_app_data(self, session_id: str, key: str, value: Any) -> None:
-        await self.store.set_app_data(
-            app_id=self.app_id,
-            session_id=session_id,
-            key=key,
-            value=value,
-        )
-
-    async def delete_app_data(self, session_id: str, key: str) -> bool:
-        return await self.store.delete_app_data(
-            app_id=self.app_id,
-            session_id=session_id,
-            key=key,
-        )
-
     async def get_history_turns(
         self,
         session_id: str,

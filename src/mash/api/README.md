@@ -61,22 +61,6 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 }
 ```
 
-- `PreferencesUpdateRequest`
-
-```json
-{
-  "preferences": {}
-}
-```
-
-- `AppDataSetRequest`
-
-```json
-{
-  "value": "any JSON value"
-}
-```
-
 - `CompactSessionRequest`
 
 ```json
@@ -183,57 +167,6 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 - Returns:
   - `summary_text`
   - `turn_id`
-
-### Session Preferences
-
-`GET /api/v1/agent/{agent_id}/sessions/{session_id}/preferences`
-- Reads session preferences.
-- Path params:
-  - `agent_id`
-  - `session_id`
-- Returns `preferences`.
-
-`PUT /api/v1/agent/{agent_id}/sessions/{session_id}/preferences`
-- Replaces session preferences.
-- Path params:
-  - `agent_id`
-  - `session_id`
-- Body: `PreferencesUpdateRequest`
-- Returns `ok: true`.
-
-### Session App Data
-
-`GET /api/v1/agent/{agent_id}/sessions/{session_id}/app-data`
-- Lists app-data items for a session.
-- Path params:
-  - `agent_id`
-  - `session_id`
-- Returns `items`.
-
-`GET /api/v1/agent/{agent_id}/sessions/{session_id}/app-data/{key}`
-- Reads one app-data value.
-- Path params:
-  - `agent_id`
-  - `session_id`
-  - `key`
-- Returns `value`.
-
-`PUT /api/v1/agent/{agent_id}/sessions/{session_id}/app-data/{key}`
-- Sets one app-data value.
-- Path params:
-  - `agent_id`
-  - `session_id`
-  - `key`
-- Body: `AppDataSetRequest`
-- Returns `ok: true`.
-
-`DELETE /api/v1/agent/{agent_id}/sessions/{session_id}/app-data/{key}`
-- Deletes one app-data value.
-- Path params:
-  - `agent_id`
-  - `session_id`
-  - `key`
-- Returns `deleted: <bool>`.
 
 ### Observability
 

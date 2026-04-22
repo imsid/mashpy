@@ -464,25 +464,6 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime.set_subagent_ids(["research", "", "analysis", "research", "  "])
                 self.assertEqual(runtime.get_subagent_ids(), ["research", "analysis"])
 
-    async def test_runtime_tools_use_active_session_context(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
-                token = runtime._current_session_id.set("s-42")
-                try:
-                    tool = runtime.agent.tools.get("set_user_preferences")
-                    self.assertIsNotNone(tool)
-                    result = await tool.execute({"preferences": {"tone": "brief"}})  # type: ignore[union-attr]
-                    self.assertFalse(result.is_error)
-                finally:
-                    runtime._current_session_id.reset(token)
-
-                self.assertEqual(
-                    await runtime.store.get_preferences(app_id=runtime.app_id, session_id="s-42"),
-                    {"tone": "brief"},
-                )
-                await runtime.shutdown()
-
     async def test_completed_request_replays_buffered_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
