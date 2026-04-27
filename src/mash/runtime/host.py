@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import socket
 import time
 from contextlib import contextmanager
@@ -11,18 +12,21 @@ from types import SimpleNamespace
 from typing import Dict, Optional
 
 import uvicorn
-
-from ..agents.masher import (
-    MASHER_AGENT_ID,
-    build_masher_metadata,
-    create_masher_agent_spec,
-)
 from ..memory.compaction import compact_conversation
 from .client import MashAgentClient
 from .runtime import MashAgentRuntime, build_subagent_prompt_block
 from .server import MashAgentServer
 from .spec import AgentSpec
 from .types import SubagentEndpoint, SubAgentMetadata
+
+
+def _load_masher_components():
+    masher = importlib.import_module("mash.agents.masher")
+    return (
+        masher.MASHER_AGENT_ID,
+        masher.build_masher_metadata,
+        masher.create_masher_agent_spec,
+    )
 
 
 @dataclass
@@ -549,9 +553,12 @@ class MashAgentHostBuilder:
                 bind_port=registered.bind_port,
             )
         if self._masher_enabled:
+            masher_agent_id, build_masher_metadata, create_masher_agent_spec = (
+                _load_masher_components()
+            )
             host.register_subagent(
                 create_masher_agent_spec(target_app_id=self._primary.agent_id),
-                agent_id=MASHER_AGENT_ID,
+                agent_id=masher_agent_id,
                 metadata=build_masher_metadata(),
             )
         return host
