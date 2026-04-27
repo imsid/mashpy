@@ -81,7 +81,55 @@ class MashRemoteShell:
             betas=payload.get("betas"),
         )
 
+    @staticmethod
+    def _normalize_runtime_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        event_type = str(payload.get("event_type") or "")
+        nested = payload.get("payload")
+        if not isinstance(nested, dict):
+            return payload
+        if event_type == "runtime.llm.think.completed":
+            tool_calls_detail = nested.get("tool_calls")
+            tool_calls = []
+            if isinstance(tool_calls_detail, list):
+                for item in tool_calls_detail:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or "").strip()
+                    if name:
+                        tool_calls.append(name)
+            return {
+                "event_type": "agent.think.complete",
+                "trace_id": payload.get("trace_id"),
+                "step_id": payload.get("loop_index"),
+                "duration_ms": nested.get("duration_ms"),
+                "action_type": nested.get("action_type"),
+                "tool_calls": tool_calls,
+                "token_usage": nested.get("token_usage"),
+                "payload": {
+                    "assistant_text": nested.get("assistant_text"),
+                    "tool_calls_detail": (
+                        tool_calls_detail if isinstance(tool_calls_detail, list) else None
+                    ),
+                },
+            }
+        if event_type in {
+            "runtime.tool.call.completed",
+            "runtime.subagent.call.completed",
+        }:
+            tool_name = str(nested.get("tool_name") or "").strip()
+            return {
+                "event_type": "agent.act.complete",
+                "trace_id": payload.get("trace_id"),
+                "step_id": payload.get("loop_index"),
+                "duration_ms": nested.get("duration_ms"),
+                "action_type": "tool_call",
+                "tool_calls": [tool_name] if tool_name else [],
+                "payload": {},
+            }
+        return payload
+
     def _render_trace_event(self, payload: dict[str, Any]) -> None:
+        payload = self._normalize_runtime_trace_payload(payload)
         event_type = str(payload.get("event_type") or "")
         if event_type.startswith("subagent."):
             self._render_subagent_event(payload)
@@ -97,6 +145,20 @@ class MashRemoteShell:
             return
         if event_type == "llm.request.complete":
             self.chain_renderer.on_llm_request_complete(self._build_llm_event(payload))
+
+    @staticmethod
+    def _extract_streamed_response_text(payload: dict[str, Any]) -> str:
+        payload = MashRemoteShell._normalize_runtime_trace_payload(payload)
+        event_type = str(payload.get("event_type") or "")
+        if event_type != "agent.think.complete":
+            return ""
+        action_type = str(payload.get("action_type") or "")
+        if action_type != "response":
+            return ""
+        nested = payload.get("payload")
+        if not isinstance(nested, dict):
+            return ""
+        return str(nested.get("assistant_text") or "").strip()
 
     def _render_subagent_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
@@ -131,6 +193,7 @@ class MashRemoteShell:
             session_id=ctx.session_id,
         )
         final_payload: dict[str, Any] | None = None
+        streamed_response_text: str | None = None
         try:
             for event in self.client.stream_request(ctx.agent_id, request_id):
                 event_name = str(event.get("event") or "")
@@ -140,6 +203,10 @@ class MashRemoteShell:
 
                 if event_name == "agent.trace":
                     self._render_trace_event(payload)
+                    streamed_text = self._extract_streamed_response_text(payload)
+                    if streamed_text:
+                        streamed_response_text = streamed_text
+                        ctx.renderer.markdown(streamed_text)
                     continue
 
                 if event_name == "request.completed":
@@ -165,7 +232,7 @@ class MashRemoteShell:
             text = str(response_payload.get("text") or "")
         else:
             text = str(final_payload.get("text") or "")
-        if text:
+        if text and text != streamed_response_text:
             ctx.renderer.markdown(text)
 
     def run(self) -> None:

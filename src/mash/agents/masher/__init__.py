@@ -1,5 +1,15 @@
 """Masher built-in subagent."""
 
-from .spec import MASHER_AGENT_ID, build_masher_metadata, MasherAgentSpec
+from .spec import (
+    MASHER_AGENT_ID,
+    MasherAgentSpec,
+    build_masher_metadata,
+    create_masher_agent_spec,
+)
 
-__all__ = ["MASHER_AGENT_ID", "MasherAgentSpec", "build_masher_metadata"]
+__all__ = [
+    "MASHER_AGENT_ID",
+    "MasherAgentSpec",
+    "build_masher_metadata",
+    "create_masher_agent_spec",
+]

@@ -6,7 +6,7 @@ from .runtime import MashAgentRuntime
 from .spec import AgentSpec
 from .server import MashAgentServer
 from .session import derive_subagent_session_id
-from .types import RuntimeTurnResult, SubAgentMetadata, SubagentEndpoint
+from .types import SubAgentMetadata, SubagentEndpoint
 
 __all__ = [
     "AgentSpec",
@@ -16,7 +16,6 @@ __all__ = [
     "MashAgentClientError",
     "MashAgentHost",
     "MashAgentHostBuilder",
-    "RuntimeTurnResult",
     "SubAgentMetadata",
     "SubagentEndpoint",
     "derive_subagent_session_id",

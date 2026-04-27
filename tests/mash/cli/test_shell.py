@@ -156,8 +156,136 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
-        markdown.assert_called_once_with("echo: hello")
+        self.assertEqual(
+            [call.args[0] for call in markdown.call_args_list],
+            ["draft", "echo: hello"],
+        )
         self.assertEqual(shell.context.session_ids["primary"], "s-1")
+
+    def test_handle_repl_message_deduplicates_streamed_and_terminal_response(self) -> None:
+        shell = self._build_shell()
+
+        def stream_same_text(_agent_id: str, _request_id: str):
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "agent.think.complete",
+                    "trace_id": "trace-1",
+                    "step_id": 0,
+                    "duration_ms": 12,
+                    "action_type": "response",
+                    "tool_calls": [],
+                    "token_usage": {"input": 2, "output": 1},
+                    "payload": {"assistant_text": "echo: hello"},
+                },
+            }
+            yield {
+                "event": "request.completed",
+                "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
+            }
+
+        shell.client.stream_request = stream_same_text
+        with patch.object(shell.context.renderer, "markdown") as markdown:
+            shell.handle_repl_message(shell.context, "hello")
+        markdown.assert_called_once_with("echo: hello")
+
+    def test_handle_repl_message_does_not_stream_terminal_finish_preview(self) -> None:
+        shell = self._build_shell()
+
+        def stream_finish_preview(_agent_id: str, _request_id: str):
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "runtime.llm.think.completed",
+                    "trace_id": "trace-1",
+                    "loop_index": 0,
+                    "payload": {
+                        "action_type": "finish",
+                        "assistant_text": "preview that should not render early",
+                        "tool_calls": [],
+                        "token_usage": {"input": 2, "output": 1},
+                        "duration_ms": 123,
+                    },
+                },
+            }
+            yield {
+                "event": "request.completed",
+                "data": {
+                    "session_id": "s-1",
+                    "response": {"text": "final response"},
+                },
+            }
+
+        shell.client.stream_request = stream_finish_preview
+        with patch.object(shell.context.renderer, "markdown") as markdown:
+            shell.handle_repl_message(shell.context, "hello")
+        markdown.assert_called_once_with("final response")
+
+    def test_handle_repl_message_renders_runtime_think_events(self) -> None:
+        shell = self._build_shell()
+
+        def stream_runtime_think(_agent_id: str, _request_id: str):
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "runtime.llm.think.completed",
+                    "trace_id": "trace-1",
+                    "loop_index": 0,
+                    "payload": {
+                        "action_type": "response",
+                        "assistant_text": "streamed from runtime",
+                        "tool_calls": [],
+                        "token_usage": {"input": 2, "output": 1},
+                    },
+                },
+            }
+            yield {
+                "event": "request.completed",
+                "data": {
+                    "session_id": "s-1",
+                    "response": {"text": "final response"},
+                },
+            }
+
+        shell.client.stream_request = stream_runtime_think
+        with patch.object(shell.context.renderer, "markdown") as markdown:
+            shell.handle_repl_message(shell.context, "hello")
+        self.assertEqual(
+            [call.args[0] for call in markdown.call_args_list],
+            ["streamed from runtime", "final response"],
+        )
+
+    def test_normalize_runtime_trace_payload_preserves_durations(self) -> None:
+        think = MashRemoteShell._normalize_runtime_trace_payload(
+            {
+                "event_type": "runtime.llm.think.completed",
+                "trace_id": "trace-1",
+                "loop_index": 2,
+                "payload": {
+                    "action_type": "tool_call",
+                    "assistant_text": "thinking",
+                    "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
+                    "token_usage": {"input": 2, "output": 1},
+                    "duration_ms": 123,
+                },
+            }
+        )
+        act = MashRemoteShell._normalize_runtime_trace_payload(
+            {
+                "event_type": "runtime.tool.call.completed",
+                "trace_id": "trace-1",
+                "loop_index": 2,
+                "payload": {
+                    "tool_name": "bash",
+                    "duration_ms": 45,
+                },
+            }
+        )
+
+        self.assertEqual(think["event_type"], "agent.think.complete")
+        self.assertEqual(think["duration_ms"], 123)
+        self.assertEqual(act["event_type"], "agent.act.complete")
+        self.assertEqual(act["duration_ms"], 45)
 
     def test_handle_repl_message_streams_chain_events(self) -> None:
         shell = self._build_shell()
@@ -178,6 +306,40 @@ class MashRemoteShellTests(unittest.TestCase):
 
 
 class ChainOfThoughtRendererTests(unittest.TestCase):
+    def test_think_events_use_step_id_for_display_when_step_complete_is_missing(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console)
+        renderer.on_think_complete(
+            AgentTraceEvent(
+                event_type="agent.think.complete",
+                app_id="primary",
+                session_id="s-1",
+                trace_id="trace-1",
+                step_id=0,
+                duration_ms=10,
+                action_type="tool_call",
+                tool_calls=["bash"],
+                token_usage={"input": 10, "output": 1},
+            )
+        )
+        renderer.on_think_complete(
+            AgentTraceEvent(
+                event_type="agent.think.complete",
+                app_id="primary",
+                session_id="s-1",
+                trace_id="trace-1",
+                step_id=1,
+                duration_ms=12,
+                action_type="tool_call",
+                tool_calls=["bash"],
+                token_usage={"input": 12, "output": 1},
+            )
+        )
+
+        output = console.export_text()
+        self.assertIn("Step 1:", output)
+        self.assertIn("Step 2:", output)
+
     def test_summary_uses_think_duration_when_step_complete_is_missing(self) -> None:
         console = Console(record=True, width=120)
         renderer = ChainOfThoughtRenderer(console)

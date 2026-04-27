@@ -44,8 +44,9 @@ Mash stores agent state under:
 `state.db` is the single per-agent SQLite store. It contains:
 
 - conversation turns and signals
-- preferences and app data
-- structured runtime logs in the `logs` table
+- preferences and app/runtime data
+- a runtime event log for hosted request execution
+- structured logs in the `logs` table where still applicable
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 
@@ -90,8 +91,12 @@ Persistence is runtime-level, not app-level. Each agent stores state under:
 
 - `<MASH_DATA_DIR>/<agent_id>/state.db`
 
-Structured runtime events are stored inside that SQLite database in the `logs`
-table rather than in a separate JSONL file.
+That SQLite database now carries multiple persistence concerns:
+
+- conversation turns and signals
+- app/runtime data
+- hosted execution events in `runtime_event_log`
+- structured logs in `logs` where still applicable
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 
@@ -100,15 +105,17 @@ If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 The core execution stack is:
 
 - [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
-  `AgentSpec` is the transport-agnostic contract app authors implement.
+  `AgentSpec` is the transport-agnostic contract app authors implement, including `build_memory_store()` and `build_runtime_store()`.
 - [src/mash/runtime/host.py](src/mash/runtime/host.py)
   `MashAgentHost` and `MashAgentHostBuilder` register the primary agent and subagents, start one in-process uvicorn-backed runtime server per agent, and wire host-managed delegation.
 - [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
-  `MashAgentRuntime` is the async execution core for one agent: request lifecycle, per-session serialization, persistence, and trace fanout.
+  `MashAgentRuntime` is the async execution core for one agent: event-sourced hosted request execution, per-session serialization, replay, recovery, persistence orchestration, and trace fanout.
+- [src/mash/runtime/execution](src/mash/runtime/execution)
+  Event-sourced hosted execution primitives: `RuntimeEvent`, `RuntimeStore`, `RuntimeWorkflowExecutor`, and `RuntimeRecoveryManager`.
 - [src/mash/runtime/server.py](src/mash/runtime/server.py)
   `MashAgentServer` is the Starlette transport adapter over one runtime and exposes the H2A HTTP + SSE surface.
 - [src/mash/core/agent.py](src/mash/core/agent.py)
-  `Agent.run()` executes the think/act/observe loop and emits trace + token metadata.
+  `Agent` provides think/act/observe primitives used by the hosted runtime workflow loop.
 - [src/mash/runtime/client.py](src/mash/runtime/client.py)
   `MashAgentClient` is the async H2A client used by the host and by subagent delegation.
 
@@ -120,6 +127,7 @@ sequenceDiagram
     participant Client as MashAgentClient
     participant Server as MashAgentServer
     participant Runtime as MashAgentRuntime
+    participant Workflow as RuntimeWorkflowExecutor
     participant Agent as mash.core.Agent
     participant Store as State Store
 
@@ -129,11 +137,12 @@ sequenceDiagram
     API->>Client: post_request(...) / stream_response(...)
     Client->>Server: HTTP request + SSE stream
     Server->>Runtime: submit_request(...) / stream_request_events(...)
-    Runtime->>Agent: process_user_message(...)
-    Agent->>Agent: think -> act -> observe
-    Agent-->>Runtime: Response + token_usage + trace_id
+    Runtime->>Store: append runtime.request.accepted
+    Runtime->>Workflow: run(request_id)
+    Workflow->>Store: replay runtime_event_log
+    Workflow->>Agent: think / act / observe primitives
+    Workflow->>Store: append RuntimeEvent progress
     Runtime->>Store: save_turn(...)
-    Runtime->>Store: collect_signals(...)
     Server-->>Client: request.accepted / request.waiting? / agent.trace / request.completed
     Client-->>API: streamed runtime events
     API-->>User: SSE / final payload
@@ -145,10 +154,13 @@ Important runtime properties:
 - Each request is accepted immediately and runs in its own async task.
 - Requests for the same `session_id` are serialized inside one runtime with a per-session lock.
 - Different sessions on the same agent may run concurrently up to the runtime concurrency limit.
+- Hosted request execution is event-sourced and replayable through `runtime_store`.
+- Public request streaming is derived from persisted `RuntimeEvent`s in `runtime_event_log`.
+- Startup recovery resumes incomplete hosted requests through `RuntimeRecoveryManager`.
 - Request lifecycle is streamed over SSE using stable event names:
   `request.accepted`, optional `request.waiting`, `request.started`, `agent.trace`, `request.completed`, `request.error`.
 - Token accounting is session-scoped inside each runtime. `session_total_tokens` is computed from saved turn metadata and persisted with each turn.
-- Runtime logs are persisted in each agent's `MemoryStore` and also fanned out as live events for telemetry and remote clients.
+- Each runtime uses separate `memory_store` and `runtime_store` persistence roles.
 - The runtime H2A surface is:
   `GET /health`, `POST /agent/{agent_id}/request`, `GET /agent/{agent_id}/request/{request_id}`.
 
@@ -219,9 +231,9 @@ sequenceDiagram
     Tool->>Client: post_request(prompt, session_id=subagent_session_id)
     Client->>Server: HTTP request + SSE stream
     Server->>Runtime: submit_request(...) / stream_request_events(...)
-    Runtime->>Subagent: process_user_message(...)
-    Subagent->>Subagent: think -> act -> observe
-    Subagent-->>Runtime: Response + token_usage + trace_id
+    Runtime->>Runtime: RuntimeWorkflowExecutor.run(request_id)
+    Runtime->>Subagent: think / act / observe primitives
+    Runtime->>Runtime: append RuntimeEvent progress
     Server-->>Client: request.accepted / agent.trace / request.completed
     Client-->>Tool: streamed events
     Tool-->>Primary: ToolResult(text + metadata)
@@ -239,9 +251,11 @@ Relevant implementation details:
 When working on `mashpy`, these are the main files to orient around:
 
 - [src/mash/core/agent.py](src/mash/core/agent.py)
-  Core think/act/observe loop, tool execution, token aggregation, and trace emission.
+  Core think/act/observe primitives, tool execution, token aggregation, and trace metadata generation.
 - [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
-  Async request lifecycle, per-session locking, event buffering, and persistence orchestration.
+  Async hosted request lifecycle, per-session locking, runtime event append/read behavior, and persistence orchestration.
+- [src/mash/runtime/execution](src/mash/runtime/execution)
+  `RuntimeEvent`, replay state, workflow execution, recovery, and runtime event storage.
 - [src/mash/runtime/server.py](src/mash/runtime/server.py)
   H2A Starlette surface and SSE streaming for one runtime.
 - [src/mash/runtime/host.py](src/mash/runtime/host.py)

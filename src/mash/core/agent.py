@@ -77,6 +77,28 @@ class Agent:
         self._event_logger = logger
         self._session_id = session_id
 
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        """Bind a trace ID for externally managed execution flows."""
+        self._trace_id = trace_id
+        if hasattr(self.llm, "set_trace_id"):
+            self.llm.set_trace_id(trace_id)
+
+    def set_trace_tool_usage(self, tool_usage: Dict[str, Dict[str, int]]) -> None:
+        """Replace the accumulated per-tool trace usage for external replay flows."""
+        normalized: Dict[str, Dict[str, int]] = {}
+        for name, entry in (tool_usage or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            normalized[str(name)] = {
+                "tokens": int(entry.get("tokens", 0) or 0),
+                "invocations": int(entry.get("invocations", 0) or 0),
+            }
+        self._trace_tool_usage = normalized
+
+    def get_trace_tool_usage(self) -> Dict[str, Dict[str, int]]:
+        """Return a copy of the accumulated per-tool trace usage."""
+        return self._get_trace_tool_usage()
+
     def get_event_logger_session_id(self) -> Optional[str]:
         """Return the currently bound event-logger session ID."""
         return self._session_id
@@ -154,7 +176,7 @@ class Agent:
                 # Check if we're done
                 if action.type == ActionType.FINISH:
                     if self._signal_collector:
-                        context.signals.update(self._collect_signals(context, action, []))
+                        context.signals.update(self.collect_signals(context, action, []))
                     context.mark_complete()
                     max_steps_exhausted = False
                     break
@@ -296,6 +318,10 @@ class Agent:
                 self._run_token_usage["input"] += int(input_tokens)
             if output_tokens is not None:
                 self._run_token_usage["output"] += int(output_tokens)
+        if token_usage:
+            action.metadata["token_usage"] = dict(token_usage)
+        if self._trace_id:
+            action.metadata["trace_id"] = self._trace_id
 
         # Log think completion
         if self._event_logger:
@@ -352,7 +378,7 @@ class Agent:
         act_start = time.time()
         results: List[ToolResult] = []
         for tool_call in action.tool_calls:
-            result = await self._execute_single_tool(tool_call)
+            result = await self.execute_tool_call(tool_call)
             results.append(result)
 
         # Log act completion
@@ -376,7 +402,7 @@ class Agent:
 
         return results
 
-    async def _execute_single_tool(self, tool_call: Any) -> ToolResult:
+    async def execute_tool_call(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call with error handling.
 
         Args:
@@ -507,7 +533,13 @@ class Agent:
         )
 
         assistant_text = text.strip()
-        action_metadata = {"assistant_text": assistant_text} if assistant_text else {}
+        action_metadata: Dict[str, Any] = {}
+        if assistant_text:
+            action_metadata["assistant_text"] = assistant_text
+        if blocks:
+            action_metadata["assistant_blocks"] = blocks
+        if stop_reason:
+            action_metadata["stop_reason"] = stop_reason
 
         # Store the assistant's response in context
         if blocks:
@@ -521,7 +553,7 @@ class Agent:
             # Check stop_reason to determine if we should finish
             # When Claude sends "end_turn", it means it's done and we should finish
             if stop_reason == "end_turn" or not text:
-                return Action.finish()
+                return Action.finish(metadata=action_metadata)
             else:
                 # For other stop reasons (like max_tokens), treat as response
                 return Action.from_response(text, metadata=action_metadata)
@@ -588,7 +620,7 @@ class Agent:
                 return False
         return True
 
-    def _collect_signals(
+    def collect_signals(
         self,
         context: Context,
         action: Action,

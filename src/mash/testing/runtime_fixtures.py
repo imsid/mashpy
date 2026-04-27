@@ -116,7 +116,6 @@ class DelegatingLLMProvider(LLMProvider):
         self._final_text = final_text
         self._subagent_id = subagent_id
         self._subagent_prompt = subagent_prompt
-        self._call_count = 0
         self.last_session_id: str | None = None
 
     @property
@@ -124,9 +123,17 @@ class DelegatingLLMProvider(LLMProvider):
         return "test-model"
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-        del request
-        self._call_count += 1
-        if self._call_count == 1:
+        saw_tool_result = False
+        for message in request.messages:
+            if message.role != "tool":
+                continue
+            for block in message.content:
+                if block.type == "tool_result":
+                    saw_tool_result = True
+                    break
+            if saw_tool_result:
+                break
+        if not saw_tool_result:
             return LLMResponse(
                 text="Delegating.",
                 tool_calls=[

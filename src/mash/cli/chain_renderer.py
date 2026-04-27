@@ -91,6 +91,8 @@ class ChainOfThoughtRenderer:
             "token_usage": event.token_usage,
             "think_duration": event.duration_ms,
         }
+        if isinstance(event.step_id, int) and event.step_id >= 0:
+            step_info["display_step"] = event.step_id + 1
         self._steps.append(step_info)
 
         # Render thinking
@@ -121,7 +123,10 @@ class ChainOfThoughtRenderer:
         # Update last step with total duration
         self._steps[-1]["total_duration"] = event.duration_ms
         self._render_step_complete(self._steps[-1])
-        self._current_step += 1
+        if isinstance(event.step_id, int) and event.step_id >= 0:
+            self._current_step = max(self._current_step, event.step_id + 1)
+        else:
+            self._current_step += 1
 
     def on_llm_request_start(self) -> None:
         """Handle LLM request start."""
@@ -178,8 +183,12 @@ class ChainOfThoughtRenderer:
             output_tok = token_usage.get("output", 0)
             token_str = f" [dim]({input_tok}+{output_tok} tokens)[/dim]"
 
+        display_step = step.get("display_step")
+        if not isinstance(display_step, int) or display_step <= 0:
+            display_step = self._current_step + 1
+
         self._console.print(
-            f"  [cyan]→[/cyan] Step {self._current_step + 1}: {desc}{token_str} "
+            f"  [cyan]→[/cyan] Step {display_step}: {desc}{token_str} "
             f"[dim]{think_duration}ms[/dim]"
         )
 

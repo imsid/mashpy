@@ -12,6 +12,11 @@ from typing import Dict, Optional
 
 import uvicorn
 
+from ..agents.masher import (
+    MASHER_AGENT_ID,
+    build_masher_metadata,
+    create_masher_agent_spec,
+)
 from ..memory.compaction import compact_conversation
 from .client import MashAgentClient
 from .runtime import MashAgentRuntime, build_subagent_prompt_block
@@ -44,7 +49,7 @@ class HostedAgentHandle:
                 f"(got {self.agent_id!r} vs {config.app_id!r})"
             )
         self._config = config
-        self._store = self.definition.build_store()
+        self._store = self.definition.build_memory_store()
         self._preview_tools = self.definition.build_tools()
         self._agent_preview = SimpleNamespace(tools=self._preview_tools)
 
@@ -544,12 +549,6 @@ class MashAgentHostBuilder:
                 bind_port=registered.bind_port,
             )
         if self._masher_enabled:
-            from ..agents.masher import (
-                MASHER_AGENT_ID,
-                build_masher_metadata,
-            )
-            from ..agents.masher.spec import create_masher_agent_spec
-
             host.register_subagent(
                 create_masher_agent_spec(target_app_id=self._primary.agent_id),
                 agent_id=MASHER_AGENT_ID,

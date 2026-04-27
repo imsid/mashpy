@@ -12,6 +12,7 @@ from mash.mcp.types import MCPServerConfig
 from ..core.config import AgentConfig
 from ..core.llm import LLMProvider
 from ..memory.store import MemoryStore, SQLiteStore
+from .execution import RuntimeStore, SQLiteRuntimeStore
 from ..skills.registry import SkillRegistry
 from ..tools.registry import ToolRegistry
 
@@ -40,13 +41,21 @@ class AgentSpec(ABC):
     def get_agent_id(self) -> str:
         """Return the stable agent id used for storage, routing, and logs."""
 
-    def build_store(self) -> MemoryStore:
+    def build_memory_store(self) -> MemoryStore:
         """Construct the agent memory store.
 
         By default, Mash provisions a SQLite store at:
         `<data_root>/<agent_id>/state.db`
         """
         return SQLiteStore(self.get_agent_data_dir() / "state.db")
+
+    def build_store(self) -> MemoryStore:
+        """Compatibility alias for the agent memory store."""
+        return self.build_memory_store()
+
+    def build_runtime_store(self) -> RuntimeStore:
+        """Construct the runtime durable event store."""
+        return SQLiteRuntimeStore(self.get_agent_data_dir() / "state.db")
 
     @abstractmethod
     def build_tools(self) -> ToolRegistry:
@@ -66,7 +75,7 @@ class AgentSpec(ABC):
 
     def get_log_destination(self) -> MemoryStore:
         """Return the MemoryStore used for structured event persistence."""
-        return self.build_store()
+        return self.build_memory_store()
 
     def get_agent_data_dir(self) -> Path:
         """Return the agent-specific persistent data directory."""

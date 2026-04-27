@@ -140,9 +140,9 @@ class Action:
         )
 
     @classmethod
-    def finish(cls) -> Action:
+    def finish(cls, metadata: Optional[Dict[str, Any]] = None) -> Action:
         """Create a finish action."""
-        return cls(type=ActionType.FINISH)
+        return cls(type=ActionType.FINISH, metadata=metadata or {})
 
 
 @dataclass
@@ -208,8 +208,8 @@ class Response:
                     if isinstance(block, dict) and block.get("type") == "text"
                 ).strip()
         return cls(
-            text=text,
-            context=context,
-            signals=context.signals.copy(),
-            metadata=context.metadata.copy(),
+            text,
+            context,
+            context.signals.copy(),
+            context.metadata.copy(),
         )

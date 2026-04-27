@@ -3,20 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-
-from ..core.context import Response
-
-
-@dataclass(frozen=True)
-class RuntimeTurnResult:
-    """Structured result for one runtime turn."""
-
-    session_id: str
-    response: Response
-    compaction_summary_text: Optional[str]
-    compaction_summary_turn_id: Optional[str]
-    session_total_tokens: int
 
 
 @dataclass(frozen=True)

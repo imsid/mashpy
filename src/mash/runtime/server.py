@@ -136,7 +136,7 @@ class MashAgentServer:
         request_id = request.path_params.get("request_id", "").strip()
         if not request_id:
             return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-        if not self.runtime.has_request(request_id):
+        if not await self.runtime.runtime_store.has_request(request_id):
             return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
 
         async def _generate():

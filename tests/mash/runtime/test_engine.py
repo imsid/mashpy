@@ -12,12 +12,13 @@ from typing import Any, Optional
 from unittest.mock import patch
 
 from mash.core.config import AgentConfig
-from mash.core.context import Context, Response, ToolCall
+from mash.core.context import ToolCall
 from mash.core.llm import BaseLLMProvider, LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
 from mash.mcp.types import MCPServerConfig
 from mash.runtime.spec import AgentSpec
 from mash.runtime.runtime import MashAgentRuntime
+from mash.testing.runtime_fixtures import build_spec
 from mash.skills.registry import SkillRegistry
 from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
@@ -187,6 +188,10 @@ class _FakeMCPClient:
 
 
 class _MCPDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+        super().__init__(root, app_id=app_id)
+        self.provider = _MCPAssertingLLMProvider()
+
     def build_mcp_servers(self) -> list[MCPServerConfig]:
         return [
             MCPServerConfig(
@@ -194,6 +199,9 @@ class _MCPDefinition(_BaseDefinition):
                 url="https://example.test/mcp",
             )
         ]
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
 
 
 class _MismatchedDefinition(_BaseDefinition):
@@ -243,6 +251,102 @@ class _CompactionLoggingDefinition(_BaseDefinition):
         return llm
 
 
+class _SessionBindingLLMProvider(LLMProvider):
+    def __init__(self, runtime_provider, *, expected_session_id: str) -> None:
+        self._runtime_provider = runtime_provider
+        self._expected_session_id = expected_session_id
+        self.last_session_id: str | None = None
+        self.asserted = False
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        del request
+        runtime = self._runtime_provider()
+        if runtime is None:
+            raise AssertionError("runtime binding is required")
+        if self.last_session_id != self._expected_session_id:
+            raise AssertionError(
+                f"expected llm session {self._expected_session_id}, got {self.last_session_id}"
+            )
+        if runtime.get_current_processing_session_id() != self._expected_session_id:
+            raise AssertionError(
+                "runtime current session id did not match the durable request session"
+            )
+        self.asserted = True
+        return LLMResponse(
+            text="hello",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("hello")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, app_id
+        self.last_session_id = session_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+    def get_event_logger_session_id(self) -> str | None:
+        return self.last_session_id
+
+
+class _SessionBindingDefinition(_BaseDefinition):
+    def __init__(
+        self,
+        root: Path,
+        *,
+        expected_session_id: str,
+        app_id: str = "test-app",
+    ) -> None:
+        super().__init__(root, app_id=app_id)
+        self.runtime: MashAgentRuntime | None = None
+        self.provider = _SessionBindingLLMProvider(
+            lambda: self.runtime,
+            expected_session_id=expected_session_id,
+        )
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
+
+
+class _MCPAssertingLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_session_id: str | None = None
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        tool_names = [tool.name for tool in request.tools]
+        if "mcp_github_search" not in tool_names:
+            raise AssertionError("remote MCP tool should be present in request tools")
+        self.call_count += 1
+        return LLMResponse(
+            text="ok",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("ok")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, app_id
+        self.last_session_id = session_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+    def get_event_logger_session_id(self) -> str | None:
+        return self.last_session_id
+
+
 class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def _collect_request_events(
         self,
@@ -261,6 +365,24 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             events.extend(chunk)
         return events
 
+    async def _invoke_request(
+        self,
+        runtime: MashAgentRuntime,
+        *,
+        message: str,
+        session_id: str | None = None,
+        turn_metadata: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+        accepted = await runtime.submit_request(
+            message=message,
+            session_id=session_id,
+            turn_metadata=turn_metadata,
+        )
+        events = await self._collect_request_events(runtime, str(accepted["request_id"]))
+        terminal = events[-1]
+        self.assertEqual(terminal["event"], "request.completed")
+        return accepted, events, dict(terminal["data"])
+
     async def test_boots_and_shutdown_without_mcp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
@@ -277,68 +399,66 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     MashAgentRuntime.from_spec(_MismatchedDefinition(Path(tmp)))
 
-    async def test_process_user_message_saves_turn_and_tokens(self) -> None:
+    def test_runtime_package_does_not_export_runtime_turn_result(self) -> None:
+        import mash.runtime as runtime_pkg
+
+        self.assertFalse(hasattr(runtime_pkg, "RuntimeTurnResult"))
+
+    async def test_submit_request_saves_turn_and_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
-                response = Response(
-                    text="hello",
-                    context=Context(),
-                    metadata={"trace_id": "trace-1", "token_usage": {"input": 3, "output": 2}},
+                runtime = MashAgentRuntime.from_spec(
+                    build_spec(agent_id="test-app", response_text="hello")
                 )
-                with patch.object(runtime, "_run_agent", return_value=response):
-                    result = await runtime.process_user_message("hi")
+                _, _, result = await self._invoke_request(runtime, message="hi")
 
-                self.assertEqual(result.session_total_tokens, 5)
+                self.assertEqual(result["session_total_tokens"], 3)
                 turns = await runtime.store.get_turns(
                     session_id=runtime.get_default_session_id(),
                     limit=1,
                 )
                 self.assertEqual(turns[-1]["user_message"], "hi")
                 self.assertEqual(turns[-1]["agent_response"], "hello")
-                self.assertEqual(turns[-1]["metadata"]["token_usage"]["input"], 3)
+                self.assertEqual(turns[-1]["metadata"]["token_usage"]["input"], 2)
 
                 await runtime.shutdown()
 
-    async def test_process_user_message_binds_active_session_for_execution_agent(self) -> None:
+    async def test_submit_request_binds_active_session_for_execution_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
-
-                def run_assertions(agent, _context: Context) -> Response:
-                    self.assertEqual(agent.get_event_logger_session_id(), "s-1")
-                    self.assertEqual(agent.llm.get_event_logger_session_id(), "s-1")
-                    self.assertEqual(runtime.get_current_processing_session_id(), "s-1")
-                    return Response(text="hello", context=Context(), metadata={})
-
-                with patch.object(runtime, "_run_agent", side_effect=run_assertions):
-                    await runtime.process_user_message("hi", session_id="s-1")
-
-                self.assertEqual(runtime.agent._session_id, runtime.default_session_id)
-                self.assertEqual(runtime.agent.llm.last_session_id, runtime.default_session_id)
-                await runtime.shutdown()
-
-    async def test_process_user_message_returns_compaction_details(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
-                runtime.agent.config.compaction_token_threshold = 10
-                response = Response(
-                    text="hello",
-                    context=Context(),
-                    metadata={"trace_id": "trace-1", "token_usage": {"input": 1, "output": 1}},
+                definition = _SessionBindingDefinition(
+                    Path(tmp),
+                    expected_session_id="s-1",
                 )
+                runtime = MashAgentRuntime.from_spec(definition)
+                definition.runtime = runtime
+
+                await self._invoke_request(runtime, message="hi", session_id="s-1")
+
+                self.assertTrue(definition.provider.asserted)
+                self.assertEqual(
+                    runtime.get_current_processing_session_id(),
+                    runtime.default_session_id,
+                )
+                await runtime.shutdown()
+
+    async def test_submit_request_returns_compaction_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                runtime = MashAgentRuntime.from_spec(
+                    build_spec(agent_id="test-app", response_text="hello")
+                )
+                runtime.agent.config.compaction_token_threshold = 10
 
                 with patch.object(runtime, "get_session_total_tokens", side_effect=[11, 0]):
                     with patch(
                         "mash.runtime.runtime.compact_conversation",
                         return_value=("summary text", "summary-turn"),
                     ):
-                        with patch.object(runtime, "_run_agent", return_value=response):
-                            result = await runtime.process_user_message("hi")
+                        _, _, result = await self._invoke_request(runtime, message="hi")
 
-                self.assertEqual(result.compaction_summary_text, "summary text")
-                self.assertEqual(result.compaction_summary_turn_id, "summary-turn")
+                self.assertEqual(result["compaction_summary_text"], "summary text")
+                self.assertEqual(result["compaction_summary_turn_id"], "summary-turn")
                 await runtime.shutdown()
 
     async def test_compact_session_assigns_trace_id_before_llm_events(self) -> None:
@@ -388,19 +508,23 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await runtime.shutdown()
 
-    async def test_process_user_message_persists_unused_tool_metrics(self) -> None:
+    async def test_submit_request_persists_unused_tool_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 runtime = MashAgentRuntime.from_spec(_SignalsDefinition(Path(tmp)))
                 try:
-                    result = await runtime.process_user_message("hi", session_id="s-tools")
+                    _, _, result = await self._invoke_request(
+                        runtime,
+                        message="hi",
+                        session_id="s-tools",
+                    )
 
                     self.assertEqual(
-                        result.response.signals["unused_tools"],
+                        result["response"]["signals"]["unused_tools"],
                         ["unused_tool"],
                     )
                     self.assertGreater(
-                        int(result.response.signals["unused_tool_tokens"]),
+                        int(result["response"]["signals"]["unused_tool_tokens"]),
                         0,
                     )
 
@@ -423,7 +547,7 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await runtime.shutdown()
 
-    async def test_process_user_message_reuses_existing_mcp_server_registration(self) -> None:
+    async def test_submit_request_reuses_existing_mcp_server_registration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 with patch(
@@ -439,19 +563,14 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                                 raise AssertionError("configure_remote_tools should not re-add existing servers")
 
                             runtime.mcp_manager.add_server = fail_on_duplicate_registration  # type: ignore[method-assign]
+                            _, _, first = await self._invoke_request(runtime, message="first")
+                            _, _, second = await self._invoke_request(runtime, message="second")
 
-                            def assert_remote_tool_present(agent, _context: Context) -> Response:
-                                self.assertIn("mcp_github_search", agent.tools)
-                                return Response(text="ok", context=Context(), metadata={})
-
-                            with patch.object(runtime, "_run_agent", side_effect=assert_remote_tool_present):
-                                first = await runtime.process_user_message("first")
-                                second = await runtime.process_user_message("second")
-
-                            self.assertEqual(first.response.text, "ok")
-                            self.assertEqual(second.response.text, "ok")
+                            self.assertEqual(first["response"]["text"], "ok")
+                            self.assertEqual(second["response"]["text"], "ok")
                             self.assertEqual(runtime.mcp_manager.list_servers(), ["github"])
                             self.assertEqual(get_client.call_count, 1)
+                            self.assertEqual(runtime.definition.provider.call_count, 2)
                         finally:
                             if runtime.mcp_manager is not None:
                                 runtime.mcp_manager.add_server = original_add_server  # type: ignore[method-assign]
@@ -467,17 +586,13 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_completed_request_replays_buffered_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
-                response = Response(
-                    text="hello",
-                    context=Context(),
-                    metadata={"trace_id": "trace-1"},
+                runtime = MashAgentRuntime.from_spec(
+                    build_spec(agent_id="test-app", response_text="hello")
                 )
                 try:
-                    with patch.object(runtime, "_run_agent", return_value=response):
-                        accepted = await runtime.submit_request(message="hi", session_id="s1")
-                        request_id = str(accepted["request_id"])
-                        events = await self._collect_request_events(runtime, request_id)
+                    accepted = await runtime.submit_request(message="hi", session_id="s1")
+                    request_id = str(accepted["request_id"])
+                    events = await self._collect_request_events(runtime, request_id)
 
                     event_names = [event["event"] for event in events]
                     self.assertEqual(event_names[0], "request.accepted")
@@ -498,12 +613,17 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_request_error_emits_terminal_error_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
+                runtime = MashAgentRuntime.from_spec(
+                    build_spec(
+                        agent_id="test-app",
+                        response_text="ignored",
+                        fail_on_message="boom",
+                    )
+                )
                 try:
-                    with patch.object(runtime, "process_user_message", side_effect=RuntimeError("boom")):
-                        accepted = await runtime.submit_request(message="hi", session_id="s1")
-                        request_id = str(accepted["request_id"])
-                        events = await self._collect_request_events(runtime, request_id)
+                    accepted = await runtime.submit_request(message="boom", session_id="s1")
+                    request_id = str(accepted["request_id"])
+                    events = await self._collect_request_events(runtime, request_id)
 
                     self.assertEqual(events[-1]["event"], "request.error")
                     self.assertIn("boom", str(events[-1]["data"].get("error", "")))
@@ -515,7 +635,7 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
                 try:
-                    with patch.object(runtime, "process_user_message", side_effect=RuntimeError("boom")):
+                    with patch.object(runtime._workflow_executor, "run", side_effect=RuntimeError("boom")):
                         accepted = await runtime.submit_request(message="hi", session_id="s1")
                         request_id = str(accepted["request_id"])
                         events = await self._collect_request_events(runtime, request_id)
@@ -535,55 +655,52 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_session_overlap_emits_waiting_and_serializes_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
+                runtime = MashAgentRuntime.from_spec(
+                    build_spec(
+                        agent_id="test-app",
+                        response_text="ok",
+                        delay_seconds=0.25,
+                    )
+                )
                 try:
-                    def slow_run(_agent, _context: Context) -> Response:
-                        time.sleep(0.2)
-                        return Response(
-                            text="ok",
-                            context=Context(),
-                            metadata={},
-                        )
-
-                    with patch.object(runtime, "_run_agent", side_effect=slow_run):
-                        first = await runtime.submit_request(message="first", session_id="s1")
+                    first = await runtime.submit_request(message="first", session_id="s1")
+                    first_events_prefix, first_cursor, _ = await runtime.stream_request_events(
+                        str(first["request_id"]),
+                        cursor=0,
+                        wait_timeout=0.1,
+                    )
+                    prefix_names = [event["event"] for event in first_events_prefix]
+                    if "request.started" not in prefix_names:
                         first_events_prefix, first_cursor, _ = await runtime.stream_request_events(
                             str(first["request_id"]),
-                            cursor=0,
+                            cursor=first_cursor,
                             wait_timeout=0.1,
                         )
-                        prefix_names = [event["event"] for event in first_events_prefix]
-                        if "request.started" not in prefix_names:
-                            first_events_prefix, first_cursor, _ = await runtime.stream_request_events(
-                                str(first["request_id"]),
-                                cursor=first_cursor,
-                                wait_timeout=0.1,
-                            )
-                            prefix_names.extend(event["event"] for event in first_events_prefix)
-                        self.assertIn("request.started", prefix_names)
-                        second = await runtime.submit_request(message="second", session_id="s1")
-                        second_id = str(second["request_id"])
-                        first_id = str(first["request_id"])
+                        prefix_names.extend(event["event"] for event in first_events_prefix)
+                    self.assertIn("request.started", prefix_names)
+                    second = await runtime.submit_request(message="second", session_id="s1")
+                    second_id = str(second["request_id"])
+                    first_id = str(first["request_id"])
 
-                        early_events, second_cursor, _ = await runtime.stream_request_events(
-                            second_id,
-                            cursor=0,
-                            wait_timeout=0.1,
-                        )
-                        early_names = [event["event"] for event in early_events]
-                        self.assertEqual(early_names, ["request.accepted"])
-                        waiting_events, _, _ = await runtime.stream_request_events(
-                            second_id,
-                            cursor=second_cursor,
-                            wait_timeout=0.1,
-                        )
-                        self.assertEqual(
-                            [event["event"] for event in waiting_events],
-                            ["request.waiting"],
-                        )
+                    early_events, second_cursor, _ = await runtime.stream_request_events(
+                        second_id,
+                        cursor=0,
+                        wait_timeout=0.1,
+                    )
+                    early_names = [event["event"] for event in early_events]
+                    self.assertEqual(early_names, ["request.accepted"])
+                    waiting_events, _, _ = await runtime.stream_request_events(
+                        second_id,
+                        cursor=second_cursor,
+                        wait_timeout=0.1,
+                    )
+                    self.assertEqual(
+                        [event["event"] for event in waiting_events],
+                        ["request.waiting"],
+                    )
 
-                        first_events = await self._collect_request_events(runtime, first_id)
-                        second_events = await self._collect_request_events(runtime, second_id)
+                    first_events = await self._collect_request_events(runtime, first_id)
+                    second_events = await self._collect_request_events(runtime, second_id)
 
                     self.assertEqual(first_events[-1]["event"], "request.completed")
                     self.assertEqual(second_events[-1]["event"], "request.completed")
@@ -596,35 +713,34 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_different_sessions_can_run_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = MashAgentRuntime.from_spec(_BaseDefinition(Path(tmp)))
-                started = asyncio.Event()
-                release = asyncio.Event()
-                concurrent_seen = 0
-                current_running = 0
-                lock = asyncio.Lock()
-
-                async def slow_run(_agent, _context: Context) -> Response:
-                    nonlocal concurrent_seen, current_running
-                    async with lock:
-                        current_running += 1
-                        concurrent_seen = max(concurrent_seen, current_running)
-                        if concurrent_seen >= 2:
-                            started.set()
-                    await asyncio.wait_for(release.wait(), timeout=1.0)
-                    async with lock:
-                        current_running -= 1
-                    return Response(text="ok", context=Context(), metadata={})
-
+                runtime = MashAgentRuntime.from_spec(
+                    build_spec(
+                        agent_id="test-app",
+                        response_text="ok",
+                        delay_seconds=0.25,
+                    )
+                )
                 try:
-                    with patch.object(runtime, "_run_agent", side_effect=slow_run):
-                        first = await runtime.submit_request(message="first", session_id="s1")
-                        second = await runtime.submit_request(message="second", session_id="s2")
-                        await asyncio.wait_for(started.wait(), timeout=1.0)
-                        release.set()
-                        first_events = await self._collect_request_events(runtime, str(first["request_id"]))
-                        second_events = await self._collect_request_events(runtime, str(second["request_id"]))
+                    first = await runtime.submit_request(message="first", session_id="s1")
+                    second = await runtime.submit_request(message="second", session_id="s2")
+                    second_events_prefix, second_cursor, _ = await runtime.stream_request_events(
+                        str(second["request_id"]),
+                        cursor=0,
+                        wait_timeout=0.15,
+                    )
+                    prefix_names = [event["event"] for event in second_events_prefix]
+                    if "request.started" not in prefix_names:
+                        second_events_prefix, second_cursor, _ = await runtime.stream_request_events(
+                            str(second["request_id"]),
+                            cursor=second_cursor,
+                            wait_timeout=0.15,
+                        )
+                        prefix_names.extend(event["event"] for event in second_events_prefix)
 
-                    self.assertGreaterEqual(concurrent_seen, 2)
+                    first_events = await self._collect_request_events(runtime, str(first["request_id"]))
+                    second_events = await self._collect_request_events(runtime, str(second["request_id"]))
+
+                    self.assertIn("request.started", prefix_names)
                     self.assertEqual(first_events[-1]["event"], "request.completed")
                     self.assertEqual(second_events[-1]["event"], "request.completed")
                 finally:
@@ -634,32 +750,28 @@ class MashAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 runtime = MashAgentRuntime.from_spec(
-                    _BaseDefinition(Path(tmp)),
+                    build_spec(
+                        agent_id="test-app",
+                        response_text="ok",
+                        delay_seconds=0.25,
+                    ),
                 )
                 runtime.max_concurrent_requests = 1
                 runtime._semaphore = asyncio.Semaphore(1)
-                release = asyncio.Event()
-
-                async def slow_run(_agent, _context: Context) -> Response:
-                    await asyncio.wait_for(release.wait(), timeout=1.0)
-                    return Response(text="ok", context=Context(), metadata={})
-
                 try:
-                    with patch.object(runtime, "_run_agent", side_effect=slow_run):
-                        first = await runtime.submit_request(message="first", session_id="s1")
-                        second = await runtime.submit_request(message="second", session_id="s2")
-                        early_events, _, _ = await runtime.stream_request_events(
-                            str(second["request_id"]),
-                            cursor=0,
-                            wait_timeout=0.05,
-                        )
-                        self.assertEqual(
-                            [event["event"] for event in early_events],
-                            ["request.accepted"],
-                        )
-                        release.set()
-                        await self._collect_request_events(runtime, str(first["request_id"]))
-                        second_events = await self._collect_request_events(runtime, str(second["request_id"]))
+                    first = await runtime.submit_request(message="first", session_id="s1")
+                    second = await runtime.submit_request(message="second", session_id="s2")
+                    early_events, _, _ = await runtime.stream_request_events(
+                        str(second["request_id"]),
+                        cursor=0,
+                        wait_timeout=0.05,
+                    )
+                    self.assertEqual(
+                        [event["event"] for event in early_events],
+                        ["request.accepted"],
+                    )
+                    await self._collect_request_events(runtime, str(first["request_id"]))
+                    second_events = await self._collect_request_events(runtime, str(second["request_id"]))
 
                     self.assertIn("request.started", [event["event"] for event in second_events])
                 finally:
