@@ -17,4 +17,4 @@ This package is the Mash codebase root. The SDK/runtime remains the core layer, 
 
 ## Minimal Validation
 - `python -m compileall src/mash`
-- Verify one direct invoke path, one subagent path, and one session/history path.
+- Verify one submit-then-stream request path, one subagent path, and one session/history path.

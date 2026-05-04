@@ -6,7 +6,6 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import uvicorn
@@ -19,8 +18,8 @@ from pydantic import BaseModel, Field
 from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
-from mash.memory.store import SQLiteStore
-from mash.runtime import AgentClient, AgentClientError, AgentHost
+from mash.runtime import AgentClientError, AgentHost
+from mash.runtime.client import AgentClientLike
 from mash.runtime.events import RuntimeEvent
 
 from .config import MashHostConfig
@@ -50,16 +49,8 @@ class _AppRuntimeState:
     host: AgentHost
     api_key: Optional[str]
     observability_enabled: bool
-    observability_memory_db_path: Optional[Path]
-    search_service: Optional[MemorySearchService]
     default_events_limit: int
     default_search_limit: int
-
-
-class InvokeRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
-    timeout_ms: Optional[int] = None
 
 
 class SubmitRequest(BaseModel):
@@ -123,7 +114,7 @@ def _build_observability_sse_payload(payload: str) -> str:
     return f"data: {payload}\n\n"
 
 
-def _get_client(request: Request, agent_id: str) -> AgentClient:
+def _get_client(request: Request, agent_id: str) -> AgentClientLike:
     state = _state_from_request(request)
     try:
         return state.host.get_client(agent_id.strip())
@@ -141,6 +132,19 @@ def _get_agent(request: Request, agent_id: str):
 
 def _telemetry_event_source() -> str:
     return "runtime_event_log"
+
+
+def _build_memory_search_service(agent: Any) -> MemorySearchService:
+    return MemorySearchService(
+        agent.memory_store,
+        event_logger=EventLogger(agent.runtime_store),
+        retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
+        fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
+    )
+
+
+def _memory_search_available(agent: Any) -> bool:
+    return hasattr(agent, "memory_store") and hasattr(agent, "runtime_store")
 
 
 def _serialize_runtime_event(event: RuntimeEvent) -> dict[str, Any]:
@@ -171,22 +175,10 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             resolved_config.resolved_runtime_database_url()
         )
         await host.start()
-        search_service: Optional[MemorySearchService] = None
-        observability_memory_db_path = resolved_config.resolved_memory_db_path()
-        if resolved_config.enable_observability and observability_memory_db_path is not None:
-            primary_agent = host.get_agent(host.get_primary_agent_id())
-            search_service = MemorySearchService(
-                SQLiteStore(observability_memory_db_path),
-                event_logger=EventLogger(primary_agent.runtime_store),
-                retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
-                fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
-            )
         application.state.runtime_state = _AppRuntimeState(
             host=host,
             api_key=resolved_config.resolved_api_key(),
             observability_enabled=resolved_config.enable_observability,
-            observability_memory_db_path=observability_memory_db_path,
-            search_service=search_service,
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
             default_search_limit=max(1, int(resolved_config.default_search_limit)),
         )
@@ -249,6 +241,7 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
     async def health(request: Request) -> dict[str, Any]:
         state = _state_from_request(request)
         primary_client = state.host.get_client(state.host.get_primary_agent_id())
+        primary_agent = state.host.get_agent(state.host.get_primary_agent_id())
         health_payload = await primary_client.health()
         primary_info = health_payload.get("session") if isinstance(health_payload, dict) else {}
         return _success(
@@ -264,9 +257,9 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                 "observability": {
                     "enabled": state.observability_enabled,
                     "memory": {
-                        "configured": state.observability_memory_db_path is not None,
-                        "search_available": state.search_service is not None,
-                        "path": str(state.observability_memory_db_path) if state.observability_memory_db_path else None,
+                        "search_available": (
+                            state.observability_enabled and _memory_search_available(primary_agent)
+                        ),
                         "default_limit": state.default_search_limit,
                     },
                 },
@@ -291,24 +284,6 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                 "session": session_payload,
             }
         )
-
-    @api.post("/agent/{agent_id}/invoke")
-    async def invoke(request: Request, agent_id: str, body: InvokeRequest) -> dict[str, Any]:
-        client = _get_client(request, agent_id)
-        message = _require_message(body.message)
-        session_id = _require_session_id(body.session_id)
-        timeout_ms = body.timeout_ms if body.timeout_ms is None else int(body.timeout_ms)
-        if timeout_ms is not None and timeout_ms <= 0:
-            timeout_ms = None
-        try:
-            result = await client.invoke(
-                message,
-                session_id=session_id,
-                timeout_ms=timeout_ms,
-            )
-        except TimeoutError as exc:
-            raise APIError(code="REQUEST_TIMEOUT", message=str(exc), status_code=504) from exc
-        return _success(result)
 
     @api.post("/agent/{agent_id}/request")
     async def submit_request(request: Request, agent_id: str, body: SubmitRequest) -> dict[str, Any]:
@@ -508,17 +483,23 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                 details={"param": "app_id"},
             )
 
-        if state.search_service is None:
+        try:
+            agent = state.host.get_agent(app_id_value)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        if not _memory_search_available(agent):
             raise APIError(
                 code="MEMORY_SEARCH_UNAVAILABLE",
-                message="memory search unavailable (configure memory db path)",
+                message="memory search unavailable for this agent",
                 status_code=503,
             )
 
+        search_service = _build_memory_search_service(agent)
         resolved_limit = _parse_limit(limit, default=state.default_search_limit, max_value=50)
         normalized_session_id = _normalize_optional_text(session_id)
         try:
-            results = await state.search_service.search(
+            results = await search_service.search(
                 query_text,
                 limit=resolved_limit,
                 session_id=normalized_session_id,

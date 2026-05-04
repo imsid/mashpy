@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict
 from typing import Dict, Optional
 
-from ..client import AgentClient, InProcessAgentClient
+from ..client import AgentClientLike, InProcessAgentClient
 from ..factory import configure_subagent_tools
 from ..service import AgentRuntime
 from ..spec import AgentSpec
@@ -26,7 +26,7 @@ class AgentHost:
         self._primary_agent_id: Optional[str] = None
         self._registered: Dict[str, AgentRegistration] = {}
         self._agents: Dict[str, AgentRuntime] = {}
-        self._clients: Dict[str, AgentClient] = {}
+        self._clients: Dict[str, AgentClientLike] = {}
 
     def configure_runtime_database_url(self, database_url: str | None) -> None:
         value = str(database_url or "").strip()
@@ -130,7 +130,7 @@ class AgentHost:
             await self.close()
             raise
 
-    def get_client(self, agent_id: str) -> AgentClient:
+    def get_client(self, agent_id: str) -> AgentClientLike:
         client = self._clients.get(agent_id)
         if client is None:
             raise ValueError(f"agent client '{agent_id}' is not registered")

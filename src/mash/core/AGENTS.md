@@ -13,4 +13,4 @@
 
 ## Minimal Validation
 - `python -m compileall src/mash/core`
-- Verify one direct invoke path and one tool-call path.
+- Verify one submit-then-stream request path and one tool-call path.

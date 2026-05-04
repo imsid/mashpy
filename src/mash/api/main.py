@@ -78,11 +78,6 @@ def add_serve_parser(subparsers) -> None:
         help="Allowed CORS origin; repeat for multiple values.",
     )
     parser.add_argument(
-        "--memory-db",
-        default=os.environ.get("MASH_MEMORY_DB"),
-        help="Optional SQLite path for /telemetry/memory/search",
-    )
-    parser.add_argument(
         "--disable-observability",
         action="store_true",
         help="Disable telemetry endpoints.",
@@ -108,7 +103,6 @@ def _run_serve_command(args) -> int:
             else MashHostConfig().cors_allow_origins
         ),
         enable_observability=not (args.disable_observability or _env_flag("MASH_DISABLE_OBSERVABILITY")),
-        observability_memory_db_path=args.memory_db,
     )
     host = _resolve_host(args.host_app)
     run_host(host, config=config)

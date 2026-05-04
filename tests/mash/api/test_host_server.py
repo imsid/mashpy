@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from contextlib import contextmanager
@@ -35,7 +36,6 @@ def _build_test_client(root: Path, *, api_key: str | None = None):
             host,
             config=MashHostConfig(
                 api_key=api_key,
-                observability_memory_db_path=root / "memory.db",
             ),
         )
         with TestClient(app) as client:
@@ -57,6 +57,7 @@ def test_health_and_agent_contract() -> None:
             assert payload["deployment"]["primary_agent_id"] == "primary"
             assert len(payload["deployment"]["agents"]) == 2
             assert payload["primary_agent"]["agent_id"] == "primary"
+            assert payload["observability"]["memory"]["search_available"] is True
 
             agents = client.get("/api/v1/agent")
             assert agents.status_code == 200
@@ -77,16 +78,17 @@ def test_health_and_agent_contract() -> None:
             assert "text/html" in spa.headers["content-type"]
 
 
-def test_agent_scoped_invoke_and_session_routes() -> None:
+def test_agent_scoped_request_and_session_routes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            invoke = client.post(
-                "/api/v1/agent/primary/invoke",
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
                 json={"message": "hello", "session_id": "s1"},
             )
-            assert invoke.status_code == 200
-            payload = invoke.json()["data"]
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            payload = _collect_terminal_response(client, "primary", request_id)
             assert payload["response"]["text"] == "primary-ok"
 
             sessions = client.get("/api/v1/agent/primary/sessions")
@@ -96,6 +98,17 @@ def test_agent_scoped_invoke_and_session_routes() -> None:
             history = client.get("/api/v1/agent/primary/sessions/s1/history")
             assert history.status_code == 200
             assert len(history.json()["data"]["turns"]) == 1
+
+
+def test_invoke_route_is_removed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.post(
+                "/api/v1/agent/primary/invoke",
+                json={"message": "hello", "session_id": "s1"},
+            )
+            assert response.status_code == 404
 
 
 def test_removed_session_state_routes_return_not_found() -> None:
@@ -189,9 +202,7 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
             )
             app = create_app(
                 host,
-                config=MashHostConfig(
-                    observability_memory_db_path=root / "memory.db",
-                ),
+                config=MashHostConfig(),
             )
             with TestClient(app) as client:
                 first = client.post(
@@ -248,16 +259,48 @@ def test_telemetry_events_filter_by_agent() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            invoke = client.post(
-                "/api/v1/agent/primary/invoke",
-                json={"agent_id": "primary", "message": "hello", "session_id": "s-1"},
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-1"},
             )
-            assert invoke.status_code == 200
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            payload = _collect_terminal_response(client, "primary", request_id)
+            assert payload["response"]["text"] == "primary-ok"
             events = client.get("/api/v1/telemetry/events?agent_id=primary")
             assert events.status_code == 200
             payload = events.json()["data"]
             assert any(event["event_type"] == "agent.run.start" for event in payload["events"])
             assert payload["source"] == "runtime_event_log"
+
+
+def test_memory_search_uses_agent_memory_store_by_default() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello world", "session_id": "s-1"},
+            )
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            payload = _collect_terminal_response(client, "primary", request_id)
+            assert payload["response"]["text"] == "primary-ok"
+
+            search = client.get(
+                "/api/v1/telemetry/memory/search",
+                params={
+                    "q": "@user: hello",
+                    "app_id": "primary",
+                    "session_id": "s-1",
+                },
+            )
+            assert search.status_code == 200
+            payload = search.json()["data"]
+            assert payload["app_id"] == "primary"
+            assert payload["session_id"] == "s-1"
+            assert payload["results"]
+            assert payload["results"][0]["preview"]
 
 
 def test_missing_telemetry_assets_fail_fast() -> None:
@@ -274,3 +317,28 @@ def test_missing_telemetry_assets_fail_fast() -> None:
                     assert "missing telemetry assets" in str(exc)
                 else:  # pragma: no cover
                     raise AssertionError("expected create_app() to fail when telemetry assets are missing")
+
+
+def _collect_terminal_response(client: TestClient, agent_id: str, request_id: str) -> dict[str, object]:
+    with client.stream(
+        "GET",
+        f"/api/v1/agent/{agent_id}/request/{request_id}/events",
+    ) as stream:
+        assert stream.status_code == 200
+        current_event = None
+        for line in stream.iter_lines():
+            if not line:
+                continue
+            text = line if isinstance(line, str) else line.decode("utf-8")
+            if text.startswith("event:"):
+                current_event = text.split(":", 1)[1].strip()
+                continue
+            if not text.startswith("data:") or current_event is None:
+                continue
+            if current_event == "request.completed":
+                payload = json.loads(text.split(":", 1)[1].strip())
+                assert isinstance(payload, dict)
+                return payload
+            if current_event == "request.error":
+                raise AssertionError(f"request failed: {text}")
+    raise AssertionError("stream ended without request.completed")

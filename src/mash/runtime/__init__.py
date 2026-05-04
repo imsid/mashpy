@@ -6,7 +6,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .client import AgentClient, AgentClientError
+    from .client import AgentClient, AgentClientError, AgentClientLike
     from .host import AgentHost, HostBuilder
     from .host.subagents import SubAgentMetadata
     from .server import AgentServer
@@ -19,6 +19,7 @@ __all__ = [
     "AgentServer",
     "AgentClient",
     "AgentClientError",
+    "AgentClientLike",
     "AgentHost",
     "HostBuilder",
     "SubAgentMetadata",
@@ -30,6 +31,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AgentServer": (".server", "AgentServer"),
     "AgentClient": (".client", "AgentClient"),
     "AgentClientError": (".client", "AgentClientError"),
+    "AgentClientLike": (".client", "AgentClientLike"),
     "AgentHost": (".host", "AgentHost"),
     "HostBuilder": (".host", "HostBuilder"),
     "SubAgentMetadata": (".host.subagents", "SubAgentMetadata"),
@@ -45,4 +47,3 @@ def __getattr__(name: str) -> Any:
     value = getattr(module, attr_name)
     globals()[name] = value
     return value
-

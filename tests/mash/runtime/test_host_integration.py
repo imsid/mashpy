@@ -50,7 +50,8 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await host.start()
                 try:
                     client = host.get_client("primary")
-                    result = await client.invoke("hello", session_id="s-1")
+                    request_id = await client.post_request("hello", session_id="s-1")
+                    result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "primary-ok")
 
                     primary = host.get_agent("primary")
@@ -72,10 +73,9 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     await host.start()
                 try:
-                    result = await host.get_client("primary").invoke(
-                        "hello",
-                        session_id="s-1",
-                    )
+                    client = host.get_client("primary")
+                    request_id = await client.post_request("hello", session_id="s-1")
+                    result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "primary-ok")
                 finally:
                     await host.close()
@@ -105,7 +105,8 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await host.start()
                 try:
                     client = host.get_client("primary-app")
-                    result = await client.invoke("delegate", session_id="s-1")
+                    request_id = await client.post_request("delegate", session_id="s-1")
+                    result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
                     research = host.get_agent("research")
@@ -151,6 +152,22 @@ async def _collect_events(client, request_id: str, *, timeout: float) -> list[di
         if event.get("event") in {"request.completed", "request.error"}:
             break
     return events
+
+
+async def _collect_terminal_payload(
+    client,
+    request_id: str,
+    *,
+    timeout: float,
+) -> dict[str, object]:
+    events = await _collect_events(client, request_id, timeout=timeout)
+    terminal = events[-1]
+    if terminal.get("event") != "request.completed":
+        raise AssertionError(f"expected request.completed, got {terminal.get('event')}")
+    payload = terminal.get("data")
+    if not isinstance(payload, dict):
+        raise AssertionError("terminal payload must be a dict")
+    return payload
 
 
 if __name__ == "__main__":

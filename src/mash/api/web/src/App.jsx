@@ -429,7 +429,7 @@ export default function App() {
                 </h2>
                 <p className="mt-2 text-xs text-slate-500">
                   {!health.memorySearchAvailable
-                    ? 'Memory search unavailable (start mash host serve with --memory-db)'
+                    ? 'Memory search unavailable for the selected agent'
                     : selectedSessionAppId
                     ? `App ${selectedSessionAppId}`
                     : 'Select a session with app_id to search memory'}

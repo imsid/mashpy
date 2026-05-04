@@ -40,16 +40,6 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 - Runtime client failures return `502` with `code = "RUNTIME_CLIENT_ERROR"`.
 
 ## Bodies
-- `InvokeRequest`
-
-```json
-{
-  "message": "required non-empty string",
-  "session_id": "required non-empty string",
-  "timeout_ms": 30000
-}
-```
-
 - `SubmitRequest`
 
 ```json
@@ -88,9 +78,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `deployment.agents`
   - `primary_agent`
   - `observability.enabled`
-  - `observability.memory.configured`
   - `observability.memory.search_available`
-  - `observability.memory.path`
   - `observability.memory.default_limit`
 
 `GET /api/v1/agent`
@@ -105,15 +93,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `agent`
   - `session`
 
-### Runtime Invocation
-
-`POST /api/v1/agent/{agent_id}/invoke`
-- Synchronous request/response invocation.
-- Path params:
-  - `agent_id`
-- Body: `InvokeRequest`
-- Returns the runtime invoke result in `data`.
-- Returns `504 REQUEST_TIMEOUT` if the invoke call times out.
+### Runtime Requests
 
 `POST /api/v1/agent/{agent_id}/request`
 - Submits an async request and returns a request id.
@@ -168,26 +148,26 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 
 ### Observability
 
-These endpoints require `enable_observability = True`. Memory search also requires `observability_memory_db_path` to be configured and searchable.
+These endpoints require `enable_observability = True`. Memory search uses the target agent's `memory_store`.
 
 `GET /api/v1/telemetry/events`
-- Reads recent JSONL telemetry events for one agent.
+- Reads recent canonical runtime events for one agent.
 - Query params:
   - `agent_id` required
   - `limit` optional, clamped to `1..20000`
 - Returns:
   - `events`
-  - `path`
+  - `source`
   - `agent_id`
   - `limit`
 
 `GET /api/v1/telemetry/events/stream`
-- Tails telemetry events as SSE.
+- Tails canonical runtime events as SSE.
 - Query params:
   - `agent_id` required
 - Response type: `text/event-stream`
 - Emits:
-  - `data: <raw json line>`
+  - `data: <serialized runtime event>`
 - Emits `: keep-alive` frames while idle.
 
 `GET /api/v1/telemetry/memory/search`
@@ -208,9 +188,8 @@ These endpoints require `enable_observability = True`. Memory search also requir
 - `401 UNAUTHORIZED`: missing or wrong API key
 - `404 AGENT_NOT_FOUND`: unknown `agent_id`
 - `400 INVALID_REQUEST`: blank required path/body values after trimming
-- `404 LOG_FILE_NOT_FOUND`: telemetry log path missing
 - `503 OBSERVABILITY_DISABLED`: telemetry APIs disabled
-- `503 MEMORY_SEARCH_UNAVAILABLE`: memory DB/search service not configured
+- `503 MEMORY_SEARCH_UNAVAILABLE`: memory search unavailable for the target agent
 - `400 SEARCH_VALIDATION_ERROR`: invalid memory search arguments
 - `503 SEARCH_UNAVAILABLE`: search backend not available
 - `500 SEARCH_FAILED`: unexpected memory search failure

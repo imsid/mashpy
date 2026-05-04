@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
-from pathlib import Path
 from typing import Optional, Sequence
 
 _DEFAULT_CORS_ORIGINS = (
@@ -26,7 +25,6 @@ class MashHostConfig:
     api_key: Optional[str] = None
     cors_allow_origins: Sequence[str] = field(default_factory=lambda: _DEFAULT_CORS_ORIGINS)
     enable_observability: bool = True
-    observability_memory_db_path: Optional[Path] = None
     default_events_limit: int = 2000
     default_search_limit: int = 10
 
@@ -45,8 +43,3 @@ class MashHostConfig:
             if text:
                 values.append(text)
         return values
-
-    def resolved_memory_db_path(self) -> Optional[Path]:
-        if self.observability_memory_db_path is None:
-            return None
-        return Path(self.observability_memory_db_path).expanduser().resolve()

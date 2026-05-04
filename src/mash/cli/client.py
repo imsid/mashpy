@@ -143,31 +143,6 @@ class MashHostClient:
                 if stripped.startswith("data:"):
                     data_lines.append(stripped[5:].strip())
 
-    def invoke(
-        self,
-        agent_id: str,
-        *,
-        message: str,
-        session_id: str,
-    ) -> dict[str, Any]:
-        request_id = self.submit_request(
-            agent_id,
-            message=message,
-            session_id=session_id,
-        )
-        for event in self.stream_request(agent_id, request_id):
-            event_name = str(event.get("event") or "")
-            data = event.get("data")
-            if event_name == "request.completed":
-                if not isinstance(data, dict):
-                    raise MashHostClientError("request.completed payload is invalid")
-                return data
-            if event_name == "request.error":
-                if isinstance(data, dict) and isinstance(data.get("error"), str):
-                    raise MashHostClientError(data["error"])
-                raise MashHostClientError("remote request failed")
-        raise MashHostClientError("stream ended without a terminal event")
-
     def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
         response = self._request(
             "GET", f"/api/v1/agent/{quote(agent_id, safe='')}/sessions"

@@ -63,10 +63,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", parents=[common], help="Show deployment status")
     subparsers.add_parser("agents", parents=[common], help="List deployment agents")
 
-    invoke = subparsers.add_parser("invoke", parents=[common], help="Invoke a remote agent")
-    invoke.add_argument("message", help="Prompt to send to the remote agent")
-    invoke.add_argument("--session-id", default=None, help="Remote session id")
-
     subparsers.add_parser("sessions", parents=[common], help="List sessions for an agent")
 
     history = subparsers.add_parser("history", parents=[common], help="Show session history")
@@ -128,18 +124,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             agents = client.list_agents()
             rows = [[str(agent.get("agent_id") or ""), str(agent.get("role") or "")] for agent in agents]
             renderer.table(["Agent", "Role"], rows)
-            return 0
-
-        if args.command == "invoke":
-            session_id = args.session_id or MashRemoteShell.new_session_id()
-            with renderer.status("Invoking remote agent..."):
-                result = client.invoke(agent_id, message=args.message, session_id=session_id)
-            response_payload = result.get("response")
-            text = str(response_payload.get("text") or "") if isinstance(response_payload, dict) else str(result.get("text") or "")
-            renderer.info(f"Agent: {agent_id}")
-            renderer.info(f"Session: {result.get('session_id') or session_id}")
-            if text:
-                renderer.markdown(text)
             return 0
 
         if args.command == "sessions":

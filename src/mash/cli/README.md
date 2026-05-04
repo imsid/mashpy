@@ -23,7 +23,6 @@ Host-facing commands
 
 - `status [common]`: show deployment base URL, primary agent, and agent count.
 - `agents [common]`: list available agents and their roles.
-- `invoke [common] MESSAGE [--session-id ID]`: invoke a remote agent once and print the response.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
 - `repl [common] [--session-id ID]`: start an interactive remote shell session.
@@ -36,7 +35,6 @@ Host management
 - `--port`: API bind port. Defaults to `8000` or `MASH_API_PORT` / `PORT`.
 - `--api-key`: optional bearer API key, or `MASH_API_KEY`.
 - `--cors-origin`: repeatable allowed CORS origin.
-- `--memory-db`: optional SQLite path for telemetry memory search, or `MASH_MEMORY_DB`.
 - `--disable-observability`: disable telemetry endpoints.
 
 Notes

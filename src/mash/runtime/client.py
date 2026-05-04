@@ -1,10 +1,10 @@
-"""Async H2A client for interacting with one agent runtime."""
+"""Async H2A clients for interacting with one agent runtime."""
 
 from __future__ import annotations
 
 import json
 import time
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -14,8 +14,37 @@ class AgentClientError(RuntimeError):
     """Raised when AgentClient operations fail."""
 
 
+class AgentClientLike(Protocol):
+    """Shared transport contract for one addressable agent runtime."""
+
+    agent_id: str
+
+    async def health(self, *, timeout: float = 5.0) -> dict[str, Any]:
+        ...
+
+    async def post_request(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        timeout: float = 30.0,
+    ) -> str:
+        ...
+
+    async def stream_response(
+        self,
+        request_id: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        ...
+
+    async def close(self) -> None:
+        ...
+
+
 class AgentClient:
-    """Dedicated client bound to exactly one agent runtime."""
+    """Dedicated HTTP client bound to exactly one agent runtime."""
 
     def __init__(
         self,
@@ -174,43 +203,11 @@ class AgentClient:
         except httpx.HTTPError as exc:
             raise AgentClientError(f"GET stream failed: {exc}") from exc
 
-    async def invoke(
-        self,
-        message: str,
-        *,
-        session_id: str,
-        timeout_ms: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        request_id = await self.post_request(
-            message,
-            session_id=session_id,
-        )
-
-        started = time.time()
-        timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
-
-        async for event in self.stream_response(request_id, timeout=timeout_seconds):
-            event_name = str(event.get("event") or "")
-            data = event.get("data")
-            if event_name == "request.completed":
-                if not isinstance(data, dict):
-                    raise AgentClientError("request.completed payload is invalid")
-                return data
-            if event_name == "request.error":
-                error_message = "request failed"
-                if isinstance(data, dict) and isinstance(data.get("error"), str):
-                    error_message = data["error"]
-                raise AgentClientError(error_message)
-            if timeout_seconds is not None and time.time() - started > timeout_seconds:
-                raise TimeoutError("agent invoke timed out")
-
-        raise AgentClientError("SSE stream ended without a terminal event")
-
     async def close(self) -> None:
         return None
 
 
-class InProcessAgentClient(AgentClient):
+class InProcessAgentClient:
     """Client adapter for talking to an in-process runtime without HTTP."""
 
     def __init__(self, runtime: Any) -> None:
@@ -298,5 +295,7 @@ class InProcessAgentClient(AgentClient):
             if done:
                 return
 
+    async def close(self) -> None:
+        return None
 
-__all__ = ["AgentClient", "AgentClientError", "InProcessAgentClient"]
+__all__ = ["AgentClient", "AgentClientError", "AgentClientLike", "InProcessAgentClient"]

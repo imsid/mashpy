@@ -45,11 +45,11 @@ Mash stores agent state under:
 
 - conversation turns and signals
 - preferences and app/runtime data
-- structured logs in the `logs` table where still applicable
+- memory-search data and other local SQLite-backed state
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 
-Hosted runtime durability and runtime events require Postgres via `MASH_RUNTIME_DATABASE_URL`.
+Hosted runtime durability and observability events require Postgres via `MASH_RUNTIME_DATABASE_URL`.
 
 ## Local setup
 
@@ -96,7 +96,7 @@ That SQLite database now carries multiple persistence concerns:
 
 - conversation turns and signals
 - app/runtime data
-- structured logs in `logs` where still applicable
+- memory-search data and other local SQLite-backed state
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 
@@ -154,7 +154,7 @@ Important runtime properties:
 - Requests for the same `session_id` are serialized inside one runtime with a per-session lock.
 - Different sessions on the same agent may run concurrently up to the runtime concurrency limit.
 - `request.waiting` is emitted when an accepted request cannot start yet because the session is busy or the runtime concurrency limit is saturated.
-- `runtime_store` is the append-only semantic runtime event log for request streaming, telemetry, replay, and debugging.
+- `runtime_store` is the append-only canonical event log for request streaming, telemetry, replay, and debugging.
 - Runtime durability is implemented separately from the event log via DBOS workflows.
 - Public request streaming is derived from persisted `RuntimeEvent`s in `runtime_event_log`.
 - Startup recovery resumes incomplete hosted requests through DBOS workflow recovery.
@@ -274,6 +274,7 @@ Common contributor questions:
 - If you are changing token accounting or persistence, validate both `tests/mash/runtime/test_engine.py` and `tests/mash/runtime/test_host_integration.py`.
 - If you are changing telemetry behavior, remember there are two layers:
   the API routes in `mash.api`, and the bundled frontend assets under `src/mash/api/web`.
+- Telemetry is a trace debugger backed by canonical runtime events; memory search remains turns-backed.
 
 ## Mash Pilot
 
@@ -321,6 +322,13 @@ Open the built-in telemetry UI:
 
 - [http://127.0.0.1:8000/telemetry](http://127.0.0.1:8000/telemetry)
 
+Telemetry is intentionally narrow:
+
+- request and trace inspection backed by `runtime_event_log`
+- recent trace lookup
+- live request streaming via the hosted SSE endpoints
+- memory search as a separate turns-backed feature
+
 Pilot is useful as both:
 
 - a real Mash app built on the same `AgentSpec` and `MashAgentHostBuilder` contracts exposed to users
@@ -330,14 +338,14 @@ Pilot is useful as both:
 
 Masher is another agent built on Mash, implemented in [src/mash/agents/masher/spec.py](src/mash/agents/masher/spec.py).
 
-It is a built-in log-analysis specialist that uses the normal Mash runtime contracts:
+It is a built-in diagnosis specialist that uses the normal Mash runtime contracts:
 
 - `MasherAgentSpec` is a regular `AgentSpec`.
-- it uses Mash memory/store tools to resolve recent sessions and traces
-- it reads structured event rows from the target agent's `MemoryStore`
+- it uses stable runtime/session tools to resolve recent sessions and traces
+- it reads canonical trace events from the target agent's runtime event store
 - it can append normalized online-eval rows with `append_jsonl`
 
-Pilot enables Masher by default with `.enable_masher()`, but Masher can also be registered in any other Mash host that wants a log-analysis subagent.
+Pilot enables Masher by default with `.enable_masher()`, but Masher can also be registered in any other Mash host that wants a diagnosis subagent.
 
 ## Running the host API directly
 
