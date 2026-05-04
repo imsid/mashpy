@@ -12,12 +12,11 @@ from mash.mcp.types import MCPServerConfig
 from ..core.config import AgentConfig
 from ..core.llm import LLMProvider
 from ..memory.store import MemoryStore, SQLiteStore
-from .execution import RuntimeStore, SQLiteRuntimeStore
 from ..skills.registry import SkillRegistry
 from ..tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from .runtime import MashAgentRuntime
+    from .service import AgentRuntime
 
 
 class AgentSpec(ABC):
@@ -53,10 +52,6 @@ class AgentSpec(ABC):
         """Compatibility alias for the agent memory store."""
         return self.build_memory_store()
 
-    def build_runtime_store(self) -> RuntimeStore:
-        """Construct the runtime durable event store."""
-        return SQLiteRuntimeStore(self.get_agent_data_dir() / "state.db")
-
     @abstractmethod
     def build_tools(self) -> ToolRegistry:
         """Construct the agent tool registry."""
@@ -89,11 +84,11 @@ class AgentSpec(ABC):
         """Whether Mash runtime tools should be auto-registered."""
         return True
 
-    def on_startup(self, runtime: "MashAgentRuntime") -> None:
+    def on_startup(self, runtime: "AgentRuntime") -> None:
         """Hook called after runtime initialization."""
         del runtime
 
-    def on_shutdown(self, runtime: "MashAgentRuntime") -> None:
+    def on_shutdown(self, runtime: "AgentRuntime") -> None:
         """Hook called before runtime cleanup."""
         del runtime
 

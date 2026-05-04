@@ -4,12 +4,12 @@
 
 ## What This Package Does
 - Defines the structured event payloads emitted across the system.
-- Implements the `MemoryStore`-backed event logger used by hosted agents.
+- Implements the canonical runtime-event logger used by hosted agents.
 - Provides helpers for creating and propagating trace IDs across agent, tool, and host boundaries.
 
 ## Main Components
 - `events.py`: structured event types used across Mash.
-- `logger.py`: `MemoryStore`-backed event logger implementation.
+- `logger.py`: canonical runtime-event logger implementation.
 - `trace_context.py`: trace ID helpers.
 
 ## Role In The System
@@ -17,10 +17,10 @@
 - Event shapes should remain machine-readable and stable enough for downstream inspection and tests.
 
 ## Logged Event Stream
-- `EventLogger` persists structured events through `MemoryStore.save_logs(...)`.
-- In the default SQLite backend, events live in the agent's `<MASH_DATA_DIR>/<agent_id>/state.db` `logs` table.
+- `EventLogger` persists structured events through the canonical runtime event store.
+- Hosted observability events live in Postgres `runtime_event_log`.
 - Downstream readers should treat each stored row as an independent event record.
-- Every record includes an `event_type` string and an `event_class` discriminator.
+- Every record includes an `event_type` string plus request/session/trace context when available.
 - The concrete event classes currently written are:
   - `CommandEvent`
   - `AgentTraceEvent`

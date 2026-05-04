@@ -23,10 +23,12 @@ from pilot.spec import (
     CLI_COPILOT_AGENT_ID,
     MCP_COPILOT_AGENT_ID,
     PILOT_AGENT_ID,
+    RUNTIME_COPILOT_AGENT_ID,
     ApiCopilotSpec,
     CliCopilotSpec,
     McpCopilotSpec,
     PilotSpec,
+    RuntimeCopilotSpec,
     _cached_docs_for_scope,
     build_host,
 )
@@ -63,11 +65,13 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
         cli_prompt = CliCopilotSpec(workspace_root).build_system_prompt()
         api_prompt = ApiCopilotSpec(workspace_root).build_system_prompt()
         mcp_prompt = McpCopilotSpec(workspace_root).build_system_prompt()
+        runtime_prompt = RuntimeCopilotSpec(workspace_root).build_system_prompt()
 
     primary_text = str(primary_prompt)
     cli_text = str(cli_prompt)
     api_text = str(api_prompt)
     mcp_text = str(mcp_prompt)
+    runtime_text = str(runtime_prompt)
 
     assert APP_NAME in primary_text
     assert "primary Mash codebase guide" in primary_text
@@ -75,12 +79,13 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
     assert "DOC: `README.md`" in primary_text
     assert "DOC: `src/mash/AGENTS.md`" in primary_text
     assert "DOC: `src/mash/core/README.md`" in primary_text
-    assert "DOC: `src/mash/runtime/AGENTS.md`" in primary_text
+    assert "DOC: `src/mash/runtime/AGENTS.md`" not in primary_text
     assert "# Repository index" not in primary_text
     assert "# Symbol index" not in primary_text
     assert CLI_COPILOT_AGENT_ID in primary_text
     assert API_COPILOT_AGENT_ID in primary_text
     assert MCP_COPILOT_AGENT_ID in primary_text
+    assert RUNTIME_COPILOT_AGENT_ID in primary_text
 
     assert APP_NAME in cli_text
     assert "copilot for `src/mash/cli`" in cli_text
@@ -104,6 +109,12 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
     assert "Use the cached MCP docs before using bash." in mcp_text
     assert "DOC: `src/mash/mcp/README.md`" in mcp_text
     assert "DOC: `src/mash/mcp/AGENTS.md`" in mcp_text
+
+    assert APP_NAME in runtime_text
+    assert "copilot for `src/mash/runtime`" in runtime_text
+    assert "Use the cached runtime docs before using bash." in runtime_text
+    assert "DOC: `src/mash/runtime/README.md`" in runtime_text
+    assert "DOC: `src/mash/runtime/AGENTS.md`" in runtime_text
 
 
 def test_build_host_registers_primary_cli_api_and_masher() -> None:
@@ -131,6 +142,13 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
+                    patch.object(
+                        RuntimeCopilotSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
@@ -150,6 +168,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             "masher",
                             MCP_COPILOT_AGENT_ID,
                             PILOT_AGENT_ID,
+                            RUNTIME_COPILOT_AGENT_ID,
                         ]
 
                         primary = host.get_agent(PILOT_AGENT_ID)
@@ -158,10 +177,12 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             CLI_COPILOT_AGENT_ID,
                             "masher",
                             MCP_COPILOT_AGENT_ID,
+                            RUNTIME_COPILOT_AGENT_ID,
                         ]
                         assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
+                        assert RUNTIME_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert "masher" in str(primary.system_prompt)
                     finally:
                         await host.close()
@@ -194,6 +215,13 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
+                    patch.object(
+                        RuntimeCopilotSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
@@ -208,19 +236,17 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         cli_agent = host.get_agent(CLI_COPILOT_AGENT_ID)
                         api_agent = host.get_agent(API_COPILOT_AGENT_ID)
                         mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
+                        runtime_agent = host.get_agent(RUNTIME_COPILOT_AGENT_ID)
                         masher = host.get_agent("masher")
 
                         assert "bash" in primary.agent.tools
-                        assert "InvokeSubagent" not in primary.agent.tools
+                        assert "InvokeSubagent" in primary.agent.tools
                         assert "bash" in cli_agent.agent.tools
                         assert "bash" in api_agent.agent.tools
                         assert "bash" in mcp_agent.agent.tools
-                        assert "search_conversations" not in primary.agent.tools
-                        assert "search_conversations" not in cli_agent.agent.tools
-                        assert "search_conversations" not in api_agent.agent.tools
-                        assert "search_conversations" not in mcp_agent.agent.tools
+                        assert "bash" in runtime_agent.agent.tools
                         assert "get_latest_session" in masher.agent.tools
-                        assert "get_trace_logs" in masher.agent.tools
+                        assert "get_trace_events" in masher.agent.tools
                     finally:
                         await host.close()
 
@@ -250,6 +276,13 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                 )
                 stack.enter_context(
                     patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch.object(
+                        RuntimeCopilotSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
                 )
                 stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
@@ -286,8 +319,9 @@ def test_build_system_prompt_uses_cached_docs_helper() -> None:
         CliCopilotSpec(workspace_root).build_system_prompt()
         ApiCopilotSpec(workspace_root).build_system_prompt()
         McpCopilotSpec(workspace_root).build_system_prompt()
+        RuntimeCopilotSpec(workspace_root).build_system_prompt()
 
-    assert cached_docs.call_count == 4
+    assert cached_docs.call_count == 5
     primary_call = cached_docs.call_args_list[0]
     assert "docs/rfcs/host-to-agent-protocol.md" in primary_call.kwargs["extra_doc_paths"]
 
@@ -337,7 +371,7 @@ def test_scope_prompt_blocks_include_cached_docs_only() -> None:
     assert "# Cached docs" in primary_prompt
     assert "DOC: `README.md`" in primary_prompt
     assert "DOC: `src/mash/AGENTS.md`" in primary_prompt
-    assert "DOC: `src/mash/runtime/AGENTS.md`" in primary_prompt
+    assert "DOC: `src/mash/runtime/AGENTS.md`" not in primary_prompt
     assert "host-to-agent-protocol.md" not in primary_prompt
     assert "# Repository index" not in primary_prompt
     assert "# Symbol index" not in primary_prompt
@@ -383,16 +417,20 @@ def test_copilot_configs_limit_history_and_steps() -> None:
         cli_config = CliCopilotSpec(workspace_root).build_agent_config()
         api_config = ApiCopilotSpec(workspace_root).build_agent_config()
         mcp_config = McpCopilotSpec(workspace_root).build_agent_config()
+        runtime_config = RuntimeCopilotSpec(workspace_root).build_agent_config()
 
     assert cli_config.conversation_history_turns == 0
     assert api_config.conversation_history_turns == 0
     assert mcp_config.conversation_history_turns == 0
+    assert runtime_config.conversation_history_turns == 0
     assert cli_config.max_steps == 10
     assert api_config.max_steps == 10
     assert mcp_config.max_steps == 10
+    assert runtime_config.max_steps == 10
     assert cli_config.temperature == 0.2
     assert api_config.temperature == 0.2
     assert mcp_config.temperature == 0.2
+    assert runtime_config.temperature == 0.2
 
 
 def test_missing_docs_do_not_break_prompt_building() -> None:

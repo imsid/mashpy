@@ -45,8 +45,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 ```json
 {
   "message": "required non-empty string",
-  "session_id": "optional string",
-  "turn_metadata": {},
+  "session_id": "required non-empty string",
   "timeout_ms": 30000
 }
 ```
@@ -56,8 +55,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 ```json
 {
   "message": "required non-empty string",
-  "session_id": "optional string",
-  "turn_metadata": {}
+  "session_id": "required non-empty string"
 }
 ```
 

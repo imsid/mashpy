@@ -6,7 +6,7 @@ import importlib
 import os
 from typing import Any, Sequence
 
-from mash.runtime import MashAgentHost, MashAgentHostBuilder
+from mash.runtime import AgentHost, HostBuilder
 
 from .app import run_host
 from .config import MashHostConfig
@@ -29,17 +29,17 @@ def _load_target(app_ref: str) -> Any:
     return getattr(module, attr_name)
 
 
-def _resolve_host(app_ref: str, *, bind_host: str) -> MashAgentHost:
+def _resolve_host(app_ref: str) -> AgentHost:
     target = _load_target(app_ref)
     resolved = target() if callable(target) else target
 
     if isinstance(resolved, MashHostApp):
         resolved = resolved.factory()
-    if isinstance(resolved, MashAgentHostBuilder):
-        return resolved.build(bind_host=bind_host)
-    if isinstance(resolved, MashAgentHost):
+    if isinstance(resolved, HostBuilder):
+        return resolved.build()
+    if isinstance(resolved, AgentHost):
         return resolved
-    raise ValueError("host target must resolve to MashAgentHost, MashAgentHostBuilder, or MashHostApp")
+    raise ValueError("host target must resolve to AgentHost, HostBuilder, or MashHostApp")
 
 
 def add_serve_parser(subparsers) -> None:
@@ -62,9 +62,9 @@ def add_serve_parser(subparsers) -> None:
         help="API bind port",
     )
     parser.add_argument(
-        "--runtime-bind-host",
-        default=os.environ.get("MASH_RUNTIME_BIND_HOST", "127.0.0.1"),
-        help="Internal mash runtime bind host",
+        "--runtime-database-url",
+        default=os.environ.get("MASH_RUNTIME_DATABASE_URL"),
+        help="Required Postgres database URL for the hosted runtime request engine",
     )
     parser.add_argument(
         "--api-key",
@@ -100,7 +100,7 @@ def _run_serve_command(args) -> int:
     config = MashHostConfig(
         bind_host=args.host,
         bind_port=args.port,
-        runtime_bind_host=args.runtime_bind_host,
+        runtime_database_url=args.runtime_database_url,
         api_key=api_key,
         cors_allow_origins=(
             args.cors_origin
@@ -110,7 +110,7 @@ def _run_serve_command(args) -> int:
         enable_observability=not (args.disable_observability or _env_flag("MASH_DISABLE_OBSERVABILITY")),
         observability_memory_db_path=args.memory_db,
     )
-    host = _resolve_host(args.host_app, bind_host=config.runtime_bind_host)
+    host = _resolve_host(args.host_app)
     run_host(host, config=config)
     return 0
 

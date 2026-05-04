@@ -15,8 +15,8 @@ from mash.core.llm import LLMProvider
 from mash.core.llm.anthropic import AnthropicProvider
 from mash.runtime import (
     AgentSpec,
-    MashAgentHost,
-    MashAgentHostBuilder,
+    AgentHost,
+    HostBuilder,
     SubAgentMetadata,
 )
 from mash.skills.registry import SkillRegistry
@@ -30,11 +30,11 @@ PILOT_AGENT_ID = "pilot"
 CLI_COPILOT_AGENT_ID = "cli-copilot"
 API_COPILOT_AGENT_ID = "api-copilot"
 MCP_COPILOT_AGENT_ID = "mcp-copilot"
+RUNTIME_COPILOT_AGENT_ID = "runtime-copilot"
 DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
 
 PILOT_DOC_ROOTS = (
     "src/mash/core",
-    "src/mash/runtime",
     "src/mash/tools",
     "src/mash/skills",
     "src/mash/logging",
@@ -50,6 +50,7 @@ PILOT_EXTRA_DOC_PATHS = (
 CLI_DOC_ROOTS = ("src/mash/cli",)
 API_DOC_ROOTS = ("src/mash/api",)
 MCP_DOC_ROOTS = ("src/mash/mcp",)
+RUNTIME_DOC_ROOTS = ("src/mash/runtime",)
 
 
 def _load_pilot_env() -> None:
@@ -316,6 +317,67 @@ class McpCopilotSpec(_BaseCopilotSpec):
         )
 
 
+class RuntimeCopilotSpec(_BaseCopilotSpec):
+    """Subagent specialized in Mash runtime hosting and durability."""
+
+    def get_agent_id(self) -> str:
+        return RUNTIME_COPILOT_AGENT_ID
+
+    def build_tools(self) -> ToolRegistry:
+        tools = ToolRegistry()
+        tools.register(BashTool(working_dir=str(self.workspace_root)))
+        return tools
+
+    def build_system_prompt(self) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": build_base_prompt(
+                    repo=str(self.workspace_root),
+                    role=f"You are the {APP_NAME} copilot for `src/mash/runtime`.",
+                    extra_rules=(
+                        "If the delegated prompt asks you to perform a focused codebase task, do it and answer directly instead of asking back-and-forth permission questions.",
+                        "Use the cached runtime docs before using bash.",
+                        "Use bash only when one targeted verification is still needed.",
+                        "For command, inventory, or existence questions, start with one targeted `rg` and answer as soon as it gives enough evidence.",
+                        "Use `sed` only after `rg` points to a specific file and line range that needs verification.",
+                        "Prefer a single `rg` or one small `sed` read over repeated broad reads.",
+                        "Do not repeat an equivalent bash command.",
+                        "Do not ask the user for permission to inspect code; inspect the code and answer directly.",
+                        "If you already have enough evidence, stop and answer instead of continuing to explore.",
+                    ),
+                ),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        repo_context = build_repo_context(
+            repo=str(self.workspace_root),
+            cached_files=_cached_docs_for_scope(
+                self.workspace_root,
+                doc_roots=RUNTIME_DOC_ROOTS,
+            ),
+        )
+        if repo_context:
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": repo_context,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        return blocks
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=RUNTIME_COPILOT_AGENT_ID,
+            system_prompt=self.build_system_prompt(),
+            skills_enabled=False,
+            conversation_history_turns=0,
+            max_steps=10,
+            temperature=0.2,
+        )
+
+
 class PilotSpec(_BaseCopilotSpec):
     """Primary pilot specialized in Mash codebase."""
 
@@ -337,8 +399,8 @@ class PilotSpec(_BaseCopilotSpec):
                             repo=str(self.workspace_root),
                             role=f"You are the primary Mash codebase guide in {APP_NAME}.",
                             extra_rules=(
-                                "Handle shared and core questions for `src/mash/core`, `src/mash/runtime`, `src/mash/tools`, `src/mash/skills`, `src/mash/logging`, and `src/mash/memory`.",
-                                f"Delegate to `{CLI_COPILOT_AGENT_ID}`, `{API_COPILOT_AGENT_ID}`, or `{MCP_COPILOT_AGENT_ID}` when the question is centered on that module.",
+                                "Handle shared and core questions for `src/mash/core`, `src/mash/tools`, `src/mash/skills`, `src/mash/logging`, `src/mash/memory`, and other cross-cutting codebase behavior.",
+                                f"Delegate to `{CLI_COPILOT_AGENT_ID}`, `{API_COPILOT_AGENT_ID}`, `{MCP_COPILOT_AGENT_ID}`, or `{RUNTIME_COPILOT_AGENT_ID}` when the question is centered on that module.",
                                 "Return one synthesized answer after any delegation.",
                                 "If a subagent call fails or returns an incomplete answer, do not repeat the same delegation blindly; use your own cached docs and one targeted bash lookup to finish the answer when possible.",
                                 "If you need direct code verification, use one targeted bash command and answer directly.",
@@ -445,6 +507,30 @@ def build_mcp_metadata() -> SubAgentMetadata:
     )
 
 
+def build_runtime_metadata() -> SubAgentMetadata:
+    return SubAgentMetadata(
+        display_name="Mash Runtime Copilot",
+        description=(
+            "Specialist for Mash runtime hosting, request handling, event sourcing, "
+            "durable workflow execution, and subagent/runtime integration."
+        ),
+        capabilities=[
+            "src/mash/runtime",
+            "agent runtime",
+            "host composition",
+            "request handling",
+            "event sourcing",
+            "durable workflow execution",
+            "subagent runtime integration",
+        ],
+        usage_guidance=(
+            "Use for questions centered on AgentRuntime behavior, runtime host "
+            "composition, request lifecycle, event replay, workflow durability, "
+            "or other behavior implemented under `src/mash/runtime`."
+        ),
+    )
+
+
 def create_pilot_spec(*, workspace_root: str) -> PilotSpec:
     return PilotSpec(Path(workspace_root).resolve())
 
@@ -461,11 +547,15 @@ def create_mcp_copilot_spec(*, workspace_root: str) -> McpCopilotSpec:
     return McpCopilotSpec(Path(workspace_root).resolve())
 
 
-def build_host(workspace_root: Path | None = None) -> MashAgentHost:
+def create_runtime_copilot_spec(*, workspace_root: str) -> RuntimeCopilotSpec:
+    return RuntimeCopilotSpec(Path(workspace_root).resolve())
+
+
+def build_host(workspace_root: Path | None = None) -> AgentHost:
     """Build the Mash Pilot Agent host."""
     resolved_workspace_root = (workspace_root or Path(".")).resolve()
     return (
-        MashAgentHostBuilder()
+        HostBuilder()
         .primary(create_pilot_spec(workspace_root=str(resolved_workspace_root)))
         .subagent(
             create_cli_copilot_spec(workspace_root=str(resolved_workspace_root)),
@@ -478,6 +568,10 @@ def build_host(workspace_root: Path | None = None) -> MashAgentHost:
         .subagent(
             create_mcp_copilot_spec(workspace_root=str(resolved_workspace_root)),
             metadata=build_mcp_metadata(),
+        )
+        .subagent(
+            create_runtime_copilot_spec(workspace_root=str(resolved_workspace_root)),
+            metadata=build_runtime_metadata(),
         )
         .enable_masher()
         .build()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -21,7 +22,7 @@ class MashHostConfig:
     api_prefix: str = "/api/v1"
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000
-    runtime_bind_host: str = "127.0.0.1"
+    runtime_database_url: Optional[str] = None
     api_key: Optional[str] = None
     cors_allow_origins: Sequence[str] = field(default_factory=lambda: _DEFAULT_CORS_ORIGINS)
     enable_observability: bool = True
@@ -31,6 +32,10 @@ class MashHostConfig:
 
     def resolved_api_key(self) -> Optional[str]:
         value = (self.api_key or "").strip()
+        return value or None
+
+    def resolved_runtime_database_url(self) -> Optional[str]:
+        value = (self.runtime_database_url or os.environ.get("MASH_RUNTIME_DATABASE_URL") or "").strip()
         return value or None
 
     def resolved_cors_origins(self) -> list[str]:

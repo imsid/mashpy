@@ -16,14 +16,14 @@
 
 ## How The Pieces Fit Together
 1. A user implements `mash.runtime.AgentSpec` to define one agent.
-2. `MashAgentHostBuilder` composes one primary agent and optional subagents into a host.
-3. `MashAgentServer` wires the core loop, tools, memory, logging, and optional MCP integrations for each agent.
+2. `mash.runtime.HostBuilder` composes one primary agent and optional subagents into a host.
+3. `mash.runtime.AgentServer` exposes each per-agent runtime over HTTP + SSE.
 4. `mash.api` exposes that host over HTTP, and `mash.cli` talks to it as a remote client.
 5. Primary agents can delegate focused work through the runtime host and `InvokeSubagent`.
 
 ## Public Entry Points
 - `mash.runtime.AgentSpec`: single-agent build contract.
-- `mash.runtime.MashAgentHostBuilder`: host composition entrypoint.
+- `mash.runtime.HostBuilder`: host composition entrypoint.
 - `mash.api.create_app` and `mash.api.run_host`: hosted HTTP surface.
 - `mash.cli`: CLI client, shell, and command helpers for remote operation.
 

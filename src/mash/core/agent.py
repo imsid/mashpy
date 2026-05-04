@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import time
 import uuid
@@ -28,6 +29,26 @@ if TYPE_CHECKING:
     from ..logging import EventLogger
     from ..memory.signals import SignalCollector
     from ..tools.registry import ToolRegistry
+
+
+@dataclass
+class StepPlan:
+    """One planned agent step after a think phase."""
+
+    action: Action
+    duration_ms: int
+    token_usage: Dict[str, int] = field(default_factory=dict)
+    tool_usage: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    trace_id: Optional[str] = None
+
+
+@dataclass
+class StepCommitResult:
+    """Result of committing one agent step to context."""
+
+    context: Context
+    done: bool
+    signals: Dict[str, Any] = field(default_factory=dict)
 
 
 class Agent:
@@ -166,59 +187,26 @@ class Agent:
             if self._chain_renderer:
                 self._chain_renderer.start_trace(self._trace_id)
 
-            max_steps_exhausted = True
             for step in range(self.config.max_steps):
                 step_start = time.time()
-
-                # Think: decide what to do next
-                action = await self.think(context)
-
-                # Check if we're done
-                if action.type == ActionType.FINISH:
-                    if self._signal_collector:
-                        context.signals.update(self.collect_signals(context, action, []))
-                    context.mark_complete()
-                    max_steps_exhausted = False
-                    break
-
-                # Act: execute the action
-                results = await self.act(action)
-
-                # Observe: update context with results
-                context = self.observe(context, action, results)
-
-                # Log step completion
-                if self._event_logger:
-                    step_event = AgentTraceEvent(
-                        event_type="agent.step.complete",
-                        app_id=self.config.app_id,
-                        session_id=self._session_id,
-                        trace_id=self._trace_id,
-                        step_id=step,
-                        duration_ms=int((time.time() - step_start) * 1000),
-                        action_type=action.type.value if action.type else None,
-                        tool_calls=(
-                            [tc.name for tc in action.tool_calls]
-                            if action.tool_calls
-                            else None
-                        ),
-                    )
-                    await self._event_logger.emit(step_event)
-
-                    # Render step complete
-                    if self._chain_renderer:
-                        self._chain_renderer.on_step_complete(step_event)
-
-            if max_steps_exhausted and not context.is_complete:
-                context.metadata["stop_reason"] = "max_steps"
-                context.add_assistant_message(
-                    (
-                        f"Stopped after reaching the max step limit "
-                        f"({self.config.max_steps}) before finishing. "
-                        "Increase `max_steps` or narrow the task."
-                    ),
-                    stop_reason="max_steps",
+                plan = await self.plan_step(context)
+                results = await self.act(plan.action)
+                commit = self.commit_step(
+                    context,
+                    plan.action,
+                    results,
+                    step_index=step,
                 )
+                context = commit.context
+
+                if plan.action.type != ActionType.FINISH:
+                    await self._emit_step_complete(
+                        plan.action,
+                        step_index=step,
+                        duration_ms=int((time.time() - step_start) * 1000),
+                    )
+                if commit.done:
+                    break
 
             # Finish chain rendering
             if self._chain_renderer:
@@ -260,6 +248,51 @@ class Agent:
         finally:
             # Always clear trace ID when execution completes
             clear_trace_id()
+
+    async def plan_step(self, context: Context) -> StepPlan:
+        """Execute one think phase and return a durable step plan."""
+        started_at = time.time()
+        action = await self.think(context)
+        return StepPlan(
+            action=action,
+            duration_ms=int((time.time() - started_at) * 1000),
+            token_usage=dict(action.metadata.get("token_usage") or {}),
+            tool_usage=self.get_trace_tool_usage(),
+            trace_id=action.metadata.get("trace_id") or self._trace_id,
+        )
+
+    def commit_step(
+        self,
+        context: Context,
+        action: Action,
+        results: List[ToolResult],
+        *,
+        step_index: int,
+        tool_usage: Optional[Dict[str, Dict[str, int]]] = None,
+    ) -> StepCommitResult:
+        """Commit one planned step into context using canonical loop semantics."""
+        signals: Dict[str, Any] = {}
+        done = False
+
+        if action.type == ActionType.FINISH:
+            signals = self.collect_signals(
+                context,
+                action,
+                results,
+                tool_usage=tool_usage,
+            )
+            if signals:
+                context.signals.update(signals)
+            context.mark_complete()
+            done = True
+        elif action.type == ActionType.TOOL_CALL:
+            context = self.observe(context, action, results)
+
+        if not done and step_index + 1 >= self.config.max_steps:
+            self._apply_max_steps_exhausted(context)
+            done = True
+
+        return StepCommitResult(context=context, done=done, signals=signals)
 
     async def think(self, context: Context) -> Action:
         """Decide what action to take.
@@ -401,6 +434,10 @@ class Agent:
                 self._chain_renderer.on_act_complete(act_event)
 
         return results
+
+    async def execute_step_tool_call(self, tool_call: ToolCall) -> ToolResult:
+        """Execute one tool call as a durable sub-boundary within a step."""
+        return await self.execute_tool_call(tool_call)
 
     async def execute_tool_call(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call with error handling.
@@ -625,6 +662,8 @@ class Agent:
         context: Context,
         action: Action,
         results: List[ToolResult],
+        *,
+        tool_usage: Optional[Dict[str, Dict[str, int]]] = None,
     ) -> Dict[str, Any]:
         """Collect signals from the current step.
 
@@ -643,10 +682,60 @@ class Agent:
             "context": context,
             "action": action,
             "results": results,
-            "tool_usage": self._get_trace_tool_usage(),
+            "tool_usage": self._normalized_tool_usage(tool_usage),
         }
 
         return self._signal_collector.collect(event)
+
+    async def _emit_step_complete(
+        self,
+        action: Action,
+        *,
+        step_index: int,
+        duration_ms: int,
+    ) -> None:
+        """Emit one step-complete event using the canonical agent step contract."""
+        if not self._event_logger:
+            return
+        step_event = AgentTraceEvent(
+            event_type="agent.step.complete",
+            app_id=self.config.app_id,
+            session_id=self._session_id,
+            trace_id=self._trace_id,
+            step_id=step_index,
+            duration_ms=int(duration_ms),
+            action_type=action.type.value if action.type else None,
+            tool_calls=[tc.name for tc in action.tool_calls] if action.tool_calls else None,
+        )
+        await self._event_logger.emit(step_event)
+        if self._chain_renderer:
+            self._chain_renderer.on_step_complete(step_event)
+
+    def _apply_max_steps_exhausted(self, context: Context) -> None:
+        """Apply the canonical max-step exhaustion behavior."""
+        context.metadata["stop_reason"] = "max_steps"
+        context.add_assistant_message(
+            (
+                f"Stopped after reaching the max step limit "
+                f"({self.config.max_steps}) before finishing. "
+                "Increase `max_steps` or narrow the task."
+            ),
+            stop_reason="max_steps",
+        )
+
+    def _normalized_tool_usage(
+        self,
+        tool_usage: Optional[Dict[str, Dict[str, int]]] = None,
+    ) -> Dict[str, Dict[str, int]]:
+        source = self._get_trace_tool_usage() if tool_usage is None else tool_usage
+        return {
+            str(name): {
+                "tokens": int(entry.get("tokens", 0) or 0),
+                "invocations": int(entry.get("invocations", 0) or 0),
+            }
+            for name, entry in dict(source or {}).items()
+            if isinstance(entry, dict)
+        }
 
     def _build_tool_definitions(self) -> List[LLMToolDefinition]:
         """Build tool definitions from the current tool registry.

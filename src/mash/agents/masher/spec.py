@@ -2,46 +2,47 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider
-from mash.logging import EventLogger
 from mash.memory.store import MemoryStore
+from mash.runtime.events import RuntimeStore
 from mash.runtime.spec import AgentSpec
-from mash.runtime.types import SubAgentMetadata
+from mash.runtime.host.subagents import SubAgentMetadata
 from mash.memory.store import SQLiteStore
 from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.bash import BashTool
+from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
-from mash.tools.runtime import RuntimeToolBuilder
 
 from .tool import (
     AppendJsonlTool,
     GetLatestTraceTool,
-    GetTraceLogsTool,
+    GetTraceEventsTool,
     ListRecentTracesTool,
 )
 
 MASHER_AGENT_ID = "masher"
 
-_PROMPT_TEMPLATE = """You are Masher, Mash's built-in log analysis specialist.
+_PROMPT_TEMPLATE = """You are Masher, Mash's built-in trace diagnosis specialist.
 
 Configured event store:
-- {store_path}
+- {event_source}
 
 Your roles:
-1. Analyze structured Mash event logs and answer questions about agent performance.
-2. Curate normalized online eval records from those logs and append JSONL records to files.
+1. Analyze canonical Mash trace events and answer questions about agent performance.
+2. Curate normalized online eval records from those trace events and append JSONL records to files.
 
 Structured event schema:
-- Common envelope fields: event_type, ts, app_id, session_id, event_class, payload
+- Common envelope fields: event_id, event_type, app_id, session_id, trace_id, payload, created_at
 - Important event families:
-  - agent.* for run lifecycle, steps, action type, tool calls, stop/completion
+  - runtime.* for request lifecycle and persisted execution milestones
+  - agent.* for run lifecycle and tool actions
   - llm.* for model usage, latency, token counts, finish reasons
-  - subagent.* for delegated work and subagent session tracking
   - memory.search.* for retrieval/search activity
   - mcp.* for MCP tool/server operations
   - command.* for command lifecycle events
@@ -53,11 +54,11 @@ When analyzing performance:
 - Use `get_latest_session` for questions about the most recent session.
 - Use `get_latest_trace` to select the latest trace within a session.
 - Use `list_recent_traces` when the user asks to compare recent runs.
-- After resolving identifiers, call `get_trace_logs` and analyze the raw returned events.
+- After resolving identifiers, call `get_trace_events` and analyze the raw returned events.
 - Treat InvokeSubagent opts as invocation controls only, such as timeout_ms. Do not expect task inputs in opts.
 - Use raw facts first: session ids, trace ids, counts, durations, token usage, stop reasons.
-- Infer any needed metrics from the raw session records returned by the tool.
-- Use bash only as a fallback when the deterministic store tools or raw log tool are insufficient.
+- Infer any needed metrics from the raw trace events returned by the tool.
+- Use bash only as a fallback when the deterministic store tools or trace event tool are insufficient.
 - Keep bash reads small with rg, tail, head, sed, or context flags.
 - Do not dump the whole event store.
 - Inspect only the configured event store and nearby eval files unless the prompt asks otherwise.
@@ -65,7 +66,7 @@ When analyzing performance:
 When creating eval records:
 - This is curation only. Do not perform or claim evaluation results.
 - Use session_id and trace_id together as the unique run key.
-- Include the source store path, app_id, session_id, trace_id, user prompt, assistant response,
+- Include the source event store, app_id, session_id, trace_id, user prompt, assistant response,
   tools_called, step_count, and token usage when present.
 - Use append_jsonl to write JSONL output.
 """
@@ -74,17 +75,17 @@ When creating eval records:
 def build_masher_metadata() -> SubAgentMetadata:
     return SubAgentMetadata(
         display_name="Masher",
-        description="Analyzes Mash event logs and curates online eval rows.",
+        description="Analyzes Mash trace events and curates online eval rows.",
         capabilities=[
-            "log and session analysis",
+            "trace and session analysis",
             "run diagnostics",
             "online eval generation",
         ],
         usage_guidance=(
-            "Use for Mash log analysis or eval-record curation against the host-"
+            "Use for Mash trace diagnosis or eval-record curation against the host-"
             "configured event store. Ask free-form questions about that store. For "
             "analysis, Masher should first resolve the target session or trace "
-            "with its deterministic store tools, then fetch raw log events, and "
+            "with its deterministic store tools, then fetch raw trace events, and "
             "only fall back to bash when needed. Use opts only for invocation "
             "controls such as timeout_ms."
         ),
@@ -92,13 +93,15 @@ def build_masher_metadata() -> SubAgentMetadata:
 
 
 class MasherAgentSpec(AgentSpec):
-    """Built-in log analysis subagent."""
+    """Built-in trace diagnosis subagent."""
 
     def __init__(
         self,
         log_store: MemoryStore,
         *,
         target_app_id: str | None = None,
+        runtime_store: RuntimeStore | None = None,
+        runtime_database_url: str | None = None,
     ) -> None:
         self.log_store = log_store
         self.target_app_id = (
@@ -106,6 +109,8 @@ class MasherAgentSpec(AgentSpec):
             if isinstance(target_app_id, str) and target_app_id.strip()
             else "primary"
         )
+        self.runtime_store = runtime_store
+        self.runtime_database_url = runtime_database_url
         self.store_path = (
             AgentSpec.get_data_root() / self.target_app_id / "state.db"
         ).resolve()
@@ -119,25 +124,50 @@ class MasherAgentSpec(AgentSpec):
     def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
         target_store = self._build_target_store()
-        runtime_tools = RuntimeToolBuilder(
-            store=target_store,
-            app_id=self.target_app_id,
-            event_logger=EventLogger(target_store),
-            session_id=MASHER_AGENT_ID,
-        )
-        tools.register(runtime_tools.build_get_latest_session_tool())
-        tools.register(GetLatestTraceTool(target_store, app_id=self.target_app_id))
-        tools.register(ListRecentTracesTool(target_store, app_id=self.target_app_id))
+        tools.register(self._build_get_latest_session_tool())
         tools.register(
-            GetTraceLogsTool(
+            GetLatestTraceTool(
                 target_store,
+                runtime_store=self.runtime_store,
+                runtime_database_url=self.runtime_database_url,
                 app_id=self.target_app_id,
-                store_path=self.store_path,
+            )
+        )
+        tools.register(
+            ListRecentTracesTool(
+                target_store,
+                runtime_store=self.runtime_store,
+                runtime_database_url=self.runtime_database_url,
+                app_id=self.target_app_id,
+            )
+        )
+        tools.register(
+            GetTraceEventsTool(
+                runtime_store=self.runtime_store,
+                runtime_database_url=self.runtime_database_url,
+                app_id=self.target_app_id,
             )
         )
         tools.register(BashTool(working_dir=str(self.store_path.parent)))
         tools.register(AppendJsonlTool())
         return tools
+
+    def _build_get_latest_session_tool(self) -> FunctionTool:
+        async def execute(_args: dict[str, object]) -> ToolResult:
+            session = await self.log_store.get_latest_session(app_id=self.target_app_id)
+            if session is None:
+                return ToolResult.error("no sessions found for this app")
+            return ToolResult.success(json.dumps(session, ensure_ascii=True, indent=2), **session)
+
+        return FunctionTool(
+            name="get_latest_session",
+            description=(
+                "Return the most recent session for the target app from the runtime "
+                "store. Use this to resolve which session to inspect before fetching events."
+            ),
+            parameters={"type": "object", "properties": {}},
+            _executor=execute,
+        )
 
     def build_skills(self) -> SkillRegistry:
         skills = SkillRegistry()
@@ -146,7 +176,7 @@ class MasherAgentSpec(AgentSpec):
             Skill(
                 type="custom",
                 name="online-eval-curation",
-                description="Build normalized online eval JSONL rows from Mash event stores.",
+                description="Build normalized online eval JSONL rows from Mash trace events.",
                 location=str(skill_dir),
             )
         )
@@ -175,7 +205,7 @@ class MasherAgentSpec(AgentSpec):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
             app_id=MASHER_AGENT_ID,
-            system_prompt=_PROMPT_TEMPLATE.format(store_path=str(self.store_path)),
+            system_prompt=_PROMPT_TEMPLATE.format(event_source="runtime_event_log"),
             skills_enabled=True,
             max_steps=6,
         )
@@ -189,7 +219,10 @@ def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgent
         else "primary"
     )
     store_path = (AgentSpec.get_data_root() / resolved_target / "state.db").resolve()
-    return MasherAgentSpec(SQLiteStore(store_path), target_app_id=resolved_target)
+    return MasherAgentSpec(
+        SQLiteStore(store_path),
+        target_app_id=resolved_target,
+    )
 
 
 __all__ = [

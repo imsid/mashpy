@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from mash.api import MashHostConfig, create_app
 from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE, get_telemetry_static_dir
-from mash.runtime import MashAgentHostBuilder
+from mash.runtime import HostBuilder
 from mash.testing.runtime_fixtures import build_spec, metadata
 
 
@@ -20,7 +20,7 @@ from mash.testing.runtime_fixtures import build_spec, metadata
 def _build_test_client(root: Path, *, api_key: str | None = None):
     with patch.dict(os.environ, {"MASH_DATA_DIR": str(root)}):
         host = (
-            MashAgentHostBuilder()
+            HostBuilder()
             .primary(build_spec(agent_id="primary", response_text="primary-ok"))
             .subagent(
                 build_spec(
@@ -172,12 +172,12 @@ def test_async_request_stream_and_auth() -> None:
                 assert names[-1] == "request.completed"
 
 
-def test_same_session_overlap_relays_waiting_event() -> None:
+def test_same_session_overlap_completes_without_waiting_event() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with patch.dict(os.environ, {"MASH_DATA_DIR": str(root)}):
             host = (
-                MashAgentHostBuilder()
+                HostBuilder()
                 .primary(
                     build_spec(
                         agent_id="primary",
@@ -225,7 +225,7 @@ def test_same_session_overlap_relays_waiting_event() -> None:
                                 break
 
                     assert names[0] == "request.accepted"
-                    assert "request.waiting" in names
+                    assert "request.waiting" not in names
                     assert names[-1] == "request.completed"
 
 
@@ -257,7 +257,7 @@ def test_telemetry_events_filter_by_agent() -> None:
             assert events.status_code == 200
             payload = events.json()["data"]
             assert any(event["event_type"] == "agent.run.start" for event in payload["events"])
-            assert payload["path"].endswith("/primary/state.db")
+            assert payload["source"] == "runtime_event_log"
 
 
 def test_missing_telemetry_assets_fail_fast() -> None:
@@ -265,7 +265,7 @@ def test_missing_telemetry_assets_fail_fast() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with patch.dict(os.environ, {"MASH_DATA_DIR": str(root)}):
-                host = MashAgentHostBuilder().primary(
+                host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
                 try:

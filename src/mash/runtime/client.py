@@ -1,4 +1,4 @@
-"""Async H2A client for interacting with one Mash agent runtime."""
+"""Async H2A client for interacting with one agent runtime."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 
-class MashAgentClientError(RuntimeError):
-    """Raised when MashAgentClient operations fail."""
+class AgentClientError(RuntimeError):
+    """Raised when AgentClient operations fail."""
 
 
-class MashAgentClient:
+class AgentClient:
     """Dedicated client bound to exactly one agent runtime."""
 
     def __init__(
@@ -85,30 +85,27 @@ class MashAgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise MashAgentClientError(f"health check failed: {exc}") from exc
+            raise AgentClientError(f"health check failed: {exc}") from exc
         if response.status_code != 200:
-            raise MashAgentClientError(
+            raise AgentClientError(
                 f"health check failed (status={response.status_code}): {self._extract_message(response)}"
             )
         payload = response.json()
         if not isinstance(payload, dict):
-            raise MashAgentClientError("health response must be an object")
+            raise AgentClientError("health response must be an object")
         return payload
 
     async def post_request(
         self,
         message: str,
         *,
-        session_id: Optional[str] = None,
-        turn_metadata: Optional[Dict[str, Any]] = None,
+        session_id: str,
         timeout: float = 30.0,
     ) -> str:
         payload: Dict[str, Any] = {
             "message": message,
-            "turn_metadata": dict(turn_metadata or {}),
+            "session_id": session_id,
         }
-        if session_id is not None:
-            payload["session_id"] = session_id
 
         try:
             async with httpx.AsyncClient(headers=self._headers) as client:
@@ -118,17 +115,17 @@ class MashAgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise MashAgentClientError(f"POST request failed: {exc}") from exc
+            raise AgentClientError(f"POST request failed: {exc}") from exc
 
         if response.status_code != 202:
-            raise MashAgentClientError(
+            raise AgentClientError(
                 f"POST request failed (status={response.status_code}): {self._extract_message(response)}"
             )
 
         data = response.json()
         request_id = str(data.get("request_id") or "").strip()
         if not request_id:
-            raise MashAgentClientError("Agent POST response missing request_id")
+            raise AgentClientError("Agent POST response missing request_id")
         return request_id
 
     async def stream_response(
@@ -150,7 +147,7 @@ class MashAgentClient:
                     timeout=timeout_config,
                 ) as response:
                     if response.status_code != 200:
-                        raise MashAgentClientError(
+                        raise AgentClientError(
                             f"GET stream failed (status={response.status_code}): {self._extract_message(response)}"
                         )
 
@@ -175,20 +172,18 @@ class MashAgentClient:
                         if stripped.startswith("data:"):
                             data_lines.append(stripped[5:].strip())
         except httpx.HTTPError as exc:
-            raise MashAgentClientError(f"GET stream failed: {exc}") from exc
+            raise AgentClientError(f"GET stream failed: {exc}") from exc
 
     async def invoke(
         self,
         message: str,
         *,
-        session_id: Optional[str] = None,
-        turn_metadata: Optional[Dict[str, Any]] = None,
+        session_id: str,
         timeout_ms: Optional[int] = None,
     ) -> Dict[str, Any]:
         request_id = await self.post_request(
             message,
             session_id=session_id,
-            turn_metadata=turn_metadata,
         )
 
         started = time.time()
@@ -199,20 +194,109 @@ class MashAgentClient:
             data = event.get("data")
             if event_name == "request.completed":
                 if not isinstance(data, dict):
-                    raise MashAgentClientError("request.completed payload is invalid")
+                    raise AgentClientError("request.completed payload is invalid")
                 return data
             if event_name == "request.error":
                 error_message = "request failed"
                 if isinstance(data, dict) and isinstance(data.get("error"), str):
                     error_message = data["error"]
-                raise MashAgentClientError(error_message)
+                raise AgentClientError(error_message)
             if timeout_seconds is not None and time.time() - started > timeout_seconds:
                 raise TimeoutError("agent invoke timed out")
 
-        raise MashAgentClientError("SSE stream ended without a terminal event")
+        raise AgentClientError("SSE stream ended without a terminal event")
 
     async def close(self) -> None:
         return None
 
 
-__all__ = ["MashAgentClient", "MashAgentClientError"]
+class InProcessAgentClient(AgentClient):
+    """Client adapter for talking to an in-process runtime without HTTP."""
+
+    def __init__(self, runtime: Any) -> None:
+        self.runtime = runtime
+        self.agent_id = runtime.app_id
+        self.base_url = f"inproc://{self.agent_id}"
+        self._headers: Dict[str, str] = {}
+
+    async def health(self, *, timeout: float = 5.0) -> dict[str, Any]:
+        del timeout
+        session_info = await self.runtime.get_session_info()
+        return {
+            "status": "ok",
+            "agent_id": self.agent_id,
+            "app_id": self.runtime.app_id,
+            "session": session_info,
+        }
+
+    async def post_request(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        timeout: float = 30.0,
+    ) -> str:
+        del timeout
+        accepted = await self.runtime.submit_request(
+            message=message,
+            session_id=session_id,
+        )
+        request_id = str(accepted.get("request_id") or "").strip()
+        if not request_id:
+            raise AgentClientError("Agent POST response missing request_id")
+        return request_id
+
+    async def post_subagent_request(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        primary_session_id: str,
+        primary_app_id: str,
+        subagent_id: str,
+        subagent_invoke_opts: Dict[str, Any],
+        timeout: float = 30.0,
+    ) -> str:
+        del timeout
+        accepted = await self.runtime.submit_subagent_request(
+            message=message,
+            session_id=session_id,
+            primary_session_id=primary_session_id,
+            primary_app_id=primary_app_id,
+            subagent_id=subagent_id,
+            subagent_invoke_opts=subagent_invoke_opts,
+        )
+        request_id = str(accepted.get("request_id") or "").strip()
+        if not request_id:
+            raise AgentClientError("Agent POST response missing request_id")
+        return request_id
+
+    async def stream_response(
+        self,
+        request_id: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        cursor = 0
+        started_at = time.time()
+        poll_timeout = 0.25
+        while True:
+            elapsed = time.time() - started_at
+            if timeout is not None and elapsed > timeout:
+                raise TimeoutError("agent stream timed out")
+
+            wait_timeout = poll_timeout
+            if timeout is not None:
+                wait_timeout = max(0.0, min(poll_timeout, timeout - elapsed))
+            events, cursor, done = await self.runtime.stream_response_events(
+                request_id,
+                cursor=cursor,
+                wait_timeout=wait_timeout,
+            )
+            for event in events:
+                yield event
+            if done:
+                return
+
+
+__all__ = ["AgentClient", "AgentClientError", "InProcessAgentClient"]

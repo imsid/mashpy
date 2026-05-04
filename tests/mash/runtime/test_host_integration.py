@@ -7,26 +7,26 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mash.runtime.client import MashAgentClientError
-from mash.runtime import MashAgentHostBuilder
-from mash.runtime.session import derive_subagent_session_id
+from mash.runtime.client import AgentClientError
+from mash.runtime import HostBuilder
 from mash.testing.runtime_fixtures import (
     build_delegating_spec,
     build_spec,
     metadata,
 )
+from mash.tools.subagent import derive_subagent_session_id
 
 
-class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
+class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def test_host_builder_requires_primary(self) -> None:
         with self.assertRaises(ValueError):
-            MashAgentHostBuilder().build()
+            HostBuilder().build()
 
     def test_host_builder_composes_primary_and_subagent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 host = (
-                    MashAgentHostBuilder()
+                    HostBuilder()
                     .primary(build_spec(agent_id="primary", response_text="primary-ok"))
                     .subagent(
                         build_spec(
@@ -44,7 +44,7 @@ class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_host_starts_runtime_servers_and_client_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHostBuilder().primary(
+                host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
                 await host.start()
@@ -63,12 +63,12 @@ class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_host_start_does_not_self_probe_runtime_health_over_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHostBuilder().primary(
+                host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
                 with patch(
-                    "mash.runtime.client.MashAgentClient.health",
-                    side_effect=MashAgentClientError("unexpected health probe"),
+                    "mash.runtime.client.AgentClient.health",
+                    side_effect=AgentClientError("unexpected health probe"),
                 ):
                     await host.start()
                 try:
@@ -84,7 +84,7 @@ class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 host = (
-                    MashAgentHostBuilder()
+                    HostBuilder()
                     .primary(
                         build_delegating_spec(
                             agent_id="primary-app",
@@ -127,7 +127,7 @@ class MashAgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_request_error_emits_terminal_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                host = MashAgentHostBuilder().primary(
+                host = HostBuilder().primary(
                     build_spec(
                         agent_id="primary",
                         response_text="ok",

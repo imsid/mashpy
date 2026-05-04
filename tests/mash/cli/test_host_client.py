@@ -64,7 +64,7 @@ class MashHostClientTests(unittest.TestCase):
         session = _RecordingSession()
         client._session = session  # type: ignore[assignment]
 
-        client.submit_request("primary", message="hello")
+        client.submit_request("primary", message="hello", session_id="s-1")
 
         self.assertEqual(session.calls[-1]["timeout"], DEFAULT_REQUEST_TIMEOUT)
 

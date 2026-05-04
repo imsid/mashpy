@@ -8,8 +8,8 @@ import unittest
 from typing import Any, AsyncIterator, Dict, Optional
 
 from mash.logging import clear_trace_id, set_trace_id
-from mash.runtime.session import derive_subagent_session_id
 from mash.tools.subagent import InvokeSubagentTool
+from mash.tools.subagent import derive_subagent_session_id
 
 
 class _FakeClient:
@@ -34,13 +34,33 @@ class _FakeClient:
         self,
         message: str,
         *,
-        session_id: Optional[str] = None,
-        turn_metadata: Optional[Dict[str, Any]] = None,
+        session_id: str,
     ) -> str:
         self.last_call = {
             "message": message,
             "session_id": session_id,
-            "turn_metadata": turn_metadata,
+            "request_kind": "plain",
+        }
+        return self._request_id
+
+    async def post_subagent_request(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        primary_session_id: str,
+        primary_app_id: str,
+        subagent_id: str,
+        subagent_invoke_opts: Dict[str, Any],
+    ) -> str:
+        self.last_call = {
+            "message": message,
+            "session_id": session_id,
+            "request_kind": "subagent",
+            "primary_session_id": primary_session_id,
+            "primary_app_id": primary_app_id,
+            "subagent_id": subagent_id,
+            "subagent_invoke_opts": subagent_invoke_opts,
         }
         return self._request_id
 
@@ -104,9 +124,9 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metadata["subagent_session_id"], expected_subagent_session_id)
         assert self.client.last_call is not None
         self.assertEqual(self.client.last_call["session_id"], expected_subagent_session_id)
-        turn_metadata = self.client.last_call["turn_metadata"] or {}
-        self.assertEqual(turn_metadata["primary_app_id"], "primary-app")
-        self.assertEqual(turn_metadata["subagent_invoke_opts"]["x"], 1)
+        self.assertEqual(self.client.last_call["request_kind"], "subagent")
+        self.assertEqual(self.client.last_call["primary_app_id"], "primary-app")
+        self.assertEqual(self.client.last_call["subagent_invoke_opts"]["x"], 1)
         self.assertEqual(self.client.last_call["timeout"], 360.0)
         streamed_event_types = [event.event_type for event in self.event_logger.events]
         self.assertEqual(
@@ -218,7 +238,7 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.last_call["session_id"], expected_subagent_session_id)
         self.assertEqual(client.last_call["timeout"], 2.5)
         self.assertEqual(
-            client.last_call["turn_metadata"]["primary_app_id"],  # type: ignore[index]
+            client.last_call["primary_app_id"],  # type: ignore[index]
             "primary-app",
         )
 

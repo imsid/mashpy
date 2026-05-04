@@ -3,30 +3,44 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
 from ..logging import AgentTraceEvent, get_trace_id
 from ..runtime.errors import classify_error
-from ..runtime.session import derive_subagent_session_id
 from .base import ToolResult
 
 DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
 MAX_STEP_LIMIT_PREFIX = "Stopped after reaching the max step limit"
 
 
+def derive_subagent_session_id(
+    primary_app_id: str,
+    primary_session_id: str,
+    subagent_id: str,
+) -> str:
+    """Derive deterministic subagent session namespace from primary context."""
+    key = f"{primary_app_id}:{primary_session_id}:{subagent_id}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+    return f"subagent:{subagent_id}:{digest}"
+
+
 class SupportsSubagentStream(Protocol):
     """Client protocol for host-managed subagent request streaming."""
 
-    async def post_request(
+    async def post_subagent_request(
         self,
         message: str,
         *,
-        session_id: Optional[str] = None,
-        turn_metadata: Optional[Dict[str, Any]] = None,
+        session_id: str,
+        primary_session_id: str,
+        primary_app_id: str,
+        subagent_id: str,
+        subagent_invoke_opts: Dict[str, Any],
     ) -> str:
-        """Submit one subagent request and return its request id."""
+        """Submit one subagent request with parent-call context."""
 
     def stream_response(
         self,
@@ -231,22 +245,20 @@ class InvokeSubagentTool:
                     timeout_ms = DEFAULT_SUBAGENT_TIMEOUT_MS
 
             client = self._client_resolver(agent_id)
-            if not callable(getattr(client, "post_request", None)):
-                raise RuntimeError("subagent client does not support request submission")
+            if not callable(getattr(client, "post_subagent_request", None)):
+                raise RuntimeError("subagent client does not support subagent request submission")
             if not callable(getattr(client, "stream_response", None)):
                 raise RuntimeError("subagent client does not support request streaming")
 
             async def _invoke() -> Dict[str, Any] | None:
                 nonlocal request_id
-                request_id = await client.post_request(
+                request_id = await client.post_subagent_request(
                     prompt,
                     session_id=subagent_session_id,
-                    turn_metadata={
-                        "primary_session_id": primary_session_id,
-                        "primary_app_id": self._primary_app_id,
-                        "subagent_id": agent_id,
-                        "subagent_invoke_opts": dict(opts),
-                    },
+                    primary_session_id=primary_session_id,
+                    primary_app_id=self._primary_app_id,
+                    subagent_id=agent_id,
+                    subagent_invoke_opts=dict(opts),
                 )
                 timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
 

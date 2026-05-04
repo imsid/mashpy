@@ -125,6 +125,40 @@ class _FinishImmediatelyLLMProvider(LLMProvider):
         del trace_id
 
 
+class _ResponseThenFinishLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        del request
+        self._call_count += 1
+        if self._call_count == 1:
+            return LLMResponse(
+                text="Partial response.",
+                tool_calls=[],
+                content_blocks=[LLMContentBlock.text("Partial response.")],
+                stop_reason="max_tokens",
+                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+            )
+        return LLMResponse(
+            text="Final answer.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("Final answer.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
 class _LoggingFinishLLMProvider(BaseLLMProvider):
     provider_name = "test-provider"
 
@@ -318,6 +352,28 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.signals["unused_tools"], ["alpha_tool", "beta_tool"])
         self.assertGreater(int(response.signals["unused_tool_tokens"]), 0)
+
+    async def test_run_continues_after_non_terminal_response(self) -> None:
+        agent = Agent(
+            llm=_ResponseThenFinishLLMProvider(),
+            tools=ToolRegistry(),
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id="test",
+                system_prompt="You are a test agent.",
+                max_steps=3,
+            ),
+        )
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("keep going")
+
+        response = await agent.run(context)
+
+        self.assertEqual(response.text, "Final answer.")
+        assistant_messages = [
+            msg for msg in response.context.messages if msg.role.value == "assistant"
+        ]
+        self.assertEqual(len(assistant_messages), 2)
 
     async def test_run_emits_llm_and_agent_trace_events_without_removed_debug_events(
         self,

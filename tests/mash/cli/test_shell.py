@@ -10,7 +10,7 @@ from rich.console import Console
 from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
 from mash.logging.events import AgentTraceEvent
-from mash.runtime import derive_subagent_session_id
+from mash.tools.subagent import derive_subagent_session_id
 
 
 class _FakeClient:
@@ -36,8 +36,8 @@ class _FakeClient:
         del agent_id, session_id, limit
         return [{"user_message": "hello", "agent_response": "hi"}]
 
-    def submit_request(self, agent_id: str, *, message: str, session_id: str | None = None, turn_metadata=None):
-        del agent_id, message, session_id, turn_metadata
+    def submit_request(self, agent_id: str, *, message: str, session_id: str | None = None):
+        del agent_id, message, session_id
         return "req-1"
 
     def stream_request(self, agent_id: str, request_id: str):
@@ -303,6 +303,27 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.handle_repl_message(shell.context, "hello")
         info.assert_any_call("Subagent research started")
         info.assert_any_call("Subagent research completed")
+
+    def test_handle_repl_message_ignores_null_subagent_payloads(self) -> None:
+        shell = self._build_shell()
+
+        def stream_with_null_subagent_payload(_agent_id: str, _request_id: str):
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "subagent.request.error",
+                    "payload": None,
+                },
+            }
+            yield {
+                "event": "request.completed",
+                "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
+            }
+
+        shell.client.stream_request = stream_with_null_subagent_payload
+        with patch.object(shell.renderer, "error") as error:
+            shell.handle_repl_message(shell.context, "hello")
+        error.assert_called_once_with("Subagent subagent error: request failed")
 
 
 class ChainOfThoughtRendererTests(unittest.TestCase):

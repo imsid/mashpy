@@ -5,12 +5,14 @@ const MAX_EVENTS = 5000;
 const DEFAULT_LIMIT = 2000;
 const DEFAULT_SEARCH_LIMIT = 10;
 
-const CLASS_STYLES = {
-  AgentTraceEvent: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  LLMEvent: 'bg-sky-100 text-sky-800 border-sky-200',
-  CommandEvent: 'bg-amber-100 text-amber-800 border-amber-200',
-  DebugEvent: 'bg-rose-100 text-rose-800 border-rose-200',
-  MCPEvent: 'bg-indigo-100 text-indigo-800 border-indigo-200'
+const EVENT_STYLES = {
+  runtime: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  llm: 'bg-sky-100 text-sky-800 border-sky-200',
+  command: 'bg-amber-100 text-amber-800 border-amber-200',
+  debug: 'bg-rose-100 text-rose-800 border-rose-200',
+  mcp: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+  memory: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+  default: 'border-slate-200 bg-slate-100 text-slate-600'
 };
 
 export default function App() {
@@ -20,7 +22,7 @@ export default function App() {
   const [selectedSearchTurnId, setSelectedSearchTurnId] = useState(null);
   const [expanded, setExpanded] = useState(new Set());
   const [status, setStatus] = useState({ connected: false, error: null });
-  const [logPath, setLogPath] = useState('');
+  const [eventSource, setEventSource] = useState('');
   const [health, setHealth] = useState({ memorySearchAvailable: false });
   const [telemetryAgentId, setTelemetryAgentId] = useState(null);
 
@@ -47,18 +49,18 @@ export default function App() {
           throw new Error('Could not resolve primary agent id from deployment health.');
         }
 
-        const logsResponse = await fetch(
+        const eventsResponse = await fetch(
           `${API_BASE}/telemetry/events?${new URLSearchParams({
             agent_id: resolvedAgentId,
             limit: String(DEFAULT_LIMIT)
           }).toString()}`
         );
-        const logsPayload = await logsResponse.json().catch(() => ({}));
-        if (!logsResponse.ok) {
-          throw new Error(apiErrorMessage(logsPayload, `Logs request failed (${logsResponse.status})`));
+        const eventsPayload = await eventsResponse.json().catch(() => ({}));
+        if (!eventsResponse.ok) {
+          throw new Error(apiErrorMessage(eventsPayload, `Events request failed (${eventsResponse.status})`));
         }
 
-        const logsData = apiData(logsPayload) || {};
+        const eventsData = apiData(eventsPayload) || {};
         if (cancelled) {
           return;
         }
@@ -69,8 +71,8 @@ export default function App() {
             healthData?.observability?.memory?.search_available ?? healthData?.memory?.search_available
           )
         });
-        setEvents(Array.isArray(logsData.events) ? logsData.events : []);
-        setLogPath(logsData.path || '');
+        setEvents(Array.isArray(eventsData.events) ? eventsData.events : []);
+        setEventSource(eventsData.source || '');
       } catch (err) {
         if (cancelled) {
           return;
@@ -124,10 +126,7 @@ export default function App() {
         session.appId = appId;
       }
 
-      let traceId = event.trace_id;
-      if (!traceId && event.event_class === 'CommandEvent') {
-        traceId = '__commands__';
-      }
+      const traceId = event.trace_id;
       if (!traceId) {
         continue;
       }
@@ -157,7 +156,7 @@ export default function App() {
             const endTrace = timestamp(list[list.length - 1]);
             return {
               id: traceId,
-              label: traceId === '__commands__' ? 'commands' : traceId,
+              label: traceId,
               count: list.length,
               start: startTrace,
               end: endTrace
@@ -330,7 +329,7 @@ export default function App() {
             </div>
             <div>
               <p className="font-[600] tracking-tight text-lg font-display">Mash Telemetry</p>
-              <p className="text-xs text-slate-500">Live trace waterfall - {logPath || 'loading log path'}</p>
+              <p className="text-xs text-slate-500">Trace debugger - {eventSource || 'loading event source'}</p>
             </div>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -587,10 +586,10 @@ export default function App() {
                         <div className="flex items-center gap-3">
                           <span
                             className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
-                              CLASS_STYLES[event.event_class] || 'border-slate-200 bg-slate-100 text-slate-600'
+                              styleForEvent(event.event_type)
                             }`}
                           >
-                            {event.event_class || 'Event'}
+                            {eventFamilyLabel(event.event_type)}
                           </span>
                           <span className="text-sm font-medium text-slate-800">
                             {event.event_type || 'unknown'}
@@ -662,7 +661,7 @@ function formatSearchScore(value) {
 }
 
 function timestamp(event) {
-  const value = event?.ts ?? event?.timestamp ?? event?.time;
+  const value = event?.created_at ?? event?.timestamp ?? event?.time;
   if (value == null) return null;
   const ts = Number(value);
   return Number.isFinite(ts) ? ts : null;
@@ -699,26 +698,44 @@ function formatDelta(base, current) {
 }
 
 function eventKey(event, idx) {
-  return `${event.trace_id || 'trace'}-${event.event_type || 'event'}-${event.ts || idx}`;
+  return `${event.event_id || idx}`;
 }
 
 function eventSummary(event) {
   const parts = [];
-  if (event.step_id != null) parts.push(`step ${event.step_id}`);
-  if (event.duration_ms != null) parts.push(`${event.duration_ms}ms`);
-  if (event.action_type) parts.push(event.action_type);
-  if (event.model) parts.push(event.model);
-  if (event.total_tokens != null) parts.push(`${event.total_tokens} tokens`);
-  if (event.finish_reason) parts.push(`finish ${event.finish_reason}`);
-  if (event.command_name) parts.push(event.command_name);
+  if (event.loop_index != null) parts.push(`step ${event.loop_index}`);
+  if (event?.payload?.duration_ms != null) parts.push(`${event.payload.duration_ms}ms`);
+  if (event?.payload?.action_type) parts.push(event.payload.action_type);
+  if (event?.payload?.model) parts.push(event.payload.model);
+  if (event?.payload?.total_tokens != null) parts.push(`${event.payload.total_tokens} tokens`);
+  if (event?.payload?.finish_reason) parts.push(`finish ${event.payload.finish_reason}`);
+  if (event?.payload?.command_name) parts.push(event.payload.command_name);
 
-  const payloadTool = event?.payload?.tool || event?.payload?.tool_name || event?.payload?.name;
+  const payloadTool =
+    event?.payload?.tool ||
+    event?.payload?.tool_name ||
+    event?.payload?.name ||
+    event?.payload?.payload?.tool_name;
   if (payloadTool) parts.push(`tool ${payloadTool}`);
 
-  const toolCalls = Array.isArray(event.tool_calls) ? event.tool_calls : null;
+  const toolCalls = Array.isArray(event?.payload?.tool_calls) ? event.payload.tool_calls : null;
   if (toolCalls && toolCalls.length) parts.push(`${toolCalls.length} tool(s)`);
 
-  if (event.error) parts.push('error');
+  if (event?.payload?.error) parts.push('error');
 
   return parts.length ? parts.join(' - ') : 'event';
+}
+
+function eventFamily(eventType) {
+  const [family] = String(eventType || '').split('.');
+  return family || 'default';
+}
+
+function eventFamilyLabel(eventType) {
+  const family = eventFamily(eventType);
+  return family === 'default' ? 'Event' : family;
+}
+
+function styleForEvent(eventType) {
+  return EVENT_STYLES[eventFamily(eventType)] || EVENT_STYLES.default;
 }

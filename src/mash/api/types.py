@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Union
 
-from mash.runtime import MashAgentHost, MashAgentHostBuilder
+from mash.runtime import AgentHost, HostBuilder
 
 
-HostFactory = Callable[[], Union[MashAgentHost, MashAgentHostBuilder]]
+HostFactory = Callable[[], Union[AgentHost, HostBuilder]]
 
 
 @dataclass(frozen=True)

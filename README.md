@@ -41,14 +41,15 @@ Mash stores agent state under:
 
 - `<MASH_DATA_DIR>/<agent_id>/state.db`
 
-`state.db` is the single per-agent SQLite store. It contains:
+`state.db` is the per-agent memory store. It contains:
 
 - conversation turns and signals
 - preferences and app/runtime data
-- a runtime event log for hosted request execution
 - structured logs in the `logs` table where still applicable
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
+
+Hosted runtime durability and runtime events require Postgres via `MASH_RUNTIME_DATABASE_URL`.
 
 ## Local setup
 
@@ -95,7 +96,6 @@ That SQLite database now carries multiple persistence concerns:
 
 - conversation turns and signals
 - app/runtime data
-- hosted execution events in `runtime_event_log`
 - structured logs in `logs` where still applicable
 
 If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
@@ -105,13 +105,13 @@ If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
 The core execution stack is:
 
 - [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
-  `AgentSpec` is the transport-agnostic contract app authors implement, including `build_memory_store()` and `build_runtime_store()`.
+  `AgentSpec` is the transport-agnostic contract app authors implement, including `build_memory_store()`.
 - [src/mash/runtime/host.py](src/mash/runtime/host.py)
   `MashAgentHost` and `MashAgentHostBuilder` register the primary agent and subagents, start one in-process uvicorn-backed runtime server per agent, and wire host-managed delegation.
 - [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
-  `MashAgentRuntime` is the async execution core for one agent: event-sourced hosted request execution, per-session serialization, replay, recovery, persistence orchestration, and trace fanout.
+  `MashAgentRuntime` is the async execution core for one agent: hosted request execution, per-session serialization, runtime event emission, replay-derived request state, recovery hooks, persistence orchestration, and trace fanout.
 - [src/mash/runtime/execution](src/mash/runtime/execution)
-  Event-sourced hosted execution primitives: `RuntimeEvent`, `RuntimeStore`, `RuntimeWorkflowExecutor`, and `RuntimeRecoveryManager`.
+  Runtime execution primitives: `RuntimeEvent`, `RuntimeStore`, and the Postgres-backed runtime event log.
 - [src/mash/runtime/server.py](src/mash/runtime/server.py)
   `MashAgentServer` is the Starlette transport adapter over one runtime and exposes the H2A HTTP + SSE surface.
 - [src/mash/core/agent.py](src/mash/core/agent.py)
@@ -127,7 +127,7 @@ sequenceDiagram
     participant Client as MashAgentClient
     participant Server as MashAgentServer
     participant Runtime as MashAgentRuntime
-    participant Workflow as RuntimeWorkflowExecutor
+    participant Workflow as DBOS Workflow
     participant Agent as mash.core.Agent
     participant Store as State Store
 
@@ -138,8 +138,7 @@ sequenceDiagram
     Client->>Server: HTTP request + SSE stream
     Server->>Runtime: submit_request(...) / stream_request_events(...)
     Runtime->>Store: append runtime.request.accepted
-    Runtime->>Workflow: run(request_id)
-    Workflow->>Store: replay runtime_event_log
+    Runtime->>Workflow: start_workflow(request_id)
     Workflow->>Agent: think / act / observe primitives
     Workflow->>Store: append RuntimeEvent progress
     Runtime->>Store: save_turn(...)
@@ -151,12 +150,14 @@ sequenceDiagram
 
 Important runtime properties:
 
-- Each request is accepted immediately and runs in its own async task.
+- Each request is accepted immediately and started as a durable DBOS workflow.
 - Requests for the same `session_id` are serialized inside one runtime with a per-session lock.
 - Different sessions on the same agent may run concurrently up to the runtime concurrency limit.
-- Hosted request execution is event-sourced and replayable through `runtime_store`.
+- `request.waiting` is emitted when an accepted request cannot start yet because the session is busy or the runtime concurrency limit is saturated.
+- `runtime_store` is the append-only semantic runtime event log for request streaming, telemetry, replay, and debugging.
+- Runtime durability is implemented separately from the event log via DBOS workflows.
 - Public request streaming is derived from persisted `RuntimeEvent`s in `runtime_event_log`.
-- Startup recovery resumes incomplete hosted requests through `RuntimeRecoveryManager`.
+- Startup recovery resumes incomplete hosted requests through DBOS workflow recovery.
 - Request lifecycle is streamed over SSE using stable event names:
   `request.accepted`, optional `request.waiting`, `request.started`, `agent.trace`, `request.completed`, `request.error`.
 - Token accounting is session-scoped inside each runtime. `session_total_tokens` is computed from saved turn metadata and persisted with each turn.
@@ -291,12 +292,14 @@ The Pilot host currently registers:
 - `cli-copilot`: specialist for `src/mash/cli`.
 - `api-copilot`: specialist for `src/mash/api`.
 - `mcp-copilot`: specialist for `src/mash/mcp`.
+- `runtime-copilot`: specialist for `src/mash/runtime`.
 
 Run Pilot from the activated repo environment:
 
 ```bash
 export OPENAI_API_KEY=...
 export MASH_DATA_DIR=.mash
+export MASH_RUNTIME_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime
 
 python -m pilot.spec \
   --workspace-root /Users/sid/Projects/mashpy \
@@ -343,10 +346,13 @@ You can start the API server either from Python or through `mash host serve`.
 From Python:
 
 ```python
+import os
+
 from mash.api import MashHostConfig, run_host
 
 from my_app import build_host
 
+os.environ["MASH_RUNTIME_DATABASE_URL"] = "postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime"
 run_host(build_host(), config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
 ```
 
@@ -357,6 +363,7 @@ MASH_HOST_APP=my_app:build_host \
 MASH_API_HOST=0.0.0.0 \
 MASH_API_PORT=8000 \
 MASH_DATA_DIR=/var/lib/mash \
+MASH_RUNTIME_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime \
 mash host serve
 ```
 
@@ -384,6 +391,7 @@ docker run \
   -e MASH_HOST_APP=pilot.spec:build_host \
   -e MASH_API_KEY=secret \
   -e MASH_DATA_DIR=/var/lib/mash \
+  -e MASH_RUNTIME_DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/mash_runtime \
   -v $(pwd)/data:/var/lib/mash \
   mashpy/pilot:latest
 ```
@@ -392,6 +400,7 @@ The container contract is:
 
 - `MASH_HOST_APP` points at `module:build_host`
 - `MASH_DATA_DIR` points at the persistent state root
+- `MASH_RUNTIME_DATABASE_URL` points at the Postgres database used for hosted runtime durability and runtime events
 - port `8000` is exposed by default
 - operators mount persistent storage at `/var/lib/mash`
 

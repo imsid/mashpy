@@ -34,7 +34,6 @@ Host management
 - `--host-app module:attribute` or `MASH_HOST_APP`: host target to load.
 - `--host`: API bind host. Defaults to `127.0.0.1` or `MASH_API_HOST`.
 - `--port`: API bind port. Defaults to `8000` or `MASH_API_PORT` / `PORT`.
-- `--runtime-bind-host`: internal runtime bind host. Defaults to `127.0.0.1` or `MASH_RUNTIME_BIND_HOST`.
 - `--api-key`: optional bearer API key, or `MASH_API_KEY`.
 - `--cors-origin`: repeatable allowed CORS origin.
 - `--memory-db`: optional SQLite path for telemetry memory search, or `MASH_MEMORY_DB`.

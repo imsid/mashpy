@@ -10,7 +10,16 @@ from .events import (
     MCPEvent,
 )
 from .logger import EventLogger
-from .trace_context import bound_trace_id, clear_trace_id, get_trace_id, set_trace_id
+from .trace_context import (
+    bound_request_id,
+    bound_trace_id,
+    clear_request_id,
+    clear_trace_id,
+    get_request_id,
+    get_trace_id,
+    set_request_id,
+    set_trace_id,
+)
 
 __all__ = [
     "LogEvent",
@@ -21,8 +30,12 @@ __all__ = [
     "MemorySearchEvent",
     "DebugEvent",
     "EventLogger",
+    "bound_request_id",
     "bound_trace_id",
+    "set_request_id",
     "set_trace_id",
+    "get_request_id",
     "get_trace_id",
+    "clear_request_id",
     "clear_trace_id",
 ]

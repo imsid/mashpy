@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mash.runtime import derive_subagent_session_id
+from mash.tools.subagent import derive_subagent_session_id
 
 from .commands import Command
 

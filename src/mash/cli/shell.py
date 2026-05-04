@@ -162,8 +162,11 @@ class MashRemoteShell:
 
     def _render_subagent_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
-        agent_id = str(payload.get("payload", {}).get("agent_id") or "subagent")
-        nested = payload.get("payload", {}).get("data")
+        outer_payload = payload.get("payload")
+        if not isinstance(outer_payload, dict):
+            outer_payload = {}
+        agent_id = str(outer_payload.get("agent_id") or "subagent")
+        nested = outer_payload.get("data")
         trace_label = f"Subagent {agent_id}"
 
         if event_type == "subagent.agent.trace" and isinstance(nested, dict):
@@ -183,7 +186,8 @@ class MashRemoteShell:
             return
 
         if event_type == "subagent.request.error":
-            error = payload.get("payload", {}).get("data", {}).get("error")
+            error_payload = nested if isinstance(nested, dict) else {}
+            error = error_payload.get("error")
             self.renderer.error(f"{trace_label} error: {error or 'request failed'}")
 
     def handle_repl_message(self, ctx: CLIContext, message: str) -> None:

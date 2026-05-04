@@ -20,7 +20,8 @@ from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.memory.store import SQLiteStore
-from mash.runtime import MashAgentClient, MashAgentClientError, MashAgentHost
+from mash.runtime import AgentClient, AgentClientError, AgentHost
+from mash.runtime.events import RuntimeEvent
 
 from .config import MashHostConfig
 from .telemetry_ui import TELEMETRY_API_KEY_COOKIE, mount_telemetry_ui
@@ -46,7 +47,7 @@ class APIError(RuntimeError):
 
 @dataclass
 class _AppRuntimeState:
-    host: MashAgentHost
+    host: AgentHost
     api_key: Optional[str]
     observability_enabled: bool
     observability_memory_db_path: Optional[Path]
@@ -57,15 +58,13 @@ class _AppRuntimeState:
 
 class InvokeRequest(BaseModel):
     message: str = Field(min_length=1)
-    session_id: Optional[str] = None
-    turn_metadata: dict[str, Any] = Field(default_factory=dict)
+    session_id: str = Field(min_length=1)
     timeout_ms: Optional[int] = None
 
 
 class SubmitRequest(BaseModel):
     message: str = Field(min_length=1)
-    session_id: Optional[str] = None
-    turn_metadata: dict[str, Any] = Field(default_factory=dict)
+    session_id: str = Field(min_length=1)
 
 
 class CompactSessionRequest(BaseModel):
@@ -102,6 +101,13 @@ def _require_message(value: str) -> str:
     return text
 
 
+def _require_session_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
+    return text
+
+
 def _parse_limit(raw: Optional[int], *, default: int, max_value: int) -> int:
     if raw is None:
         return default
@@ -117,7 +123,7 @@ def _build_observability_sse_payload(payload: str) -> str:
     return f"data: {payload}\n\n"
 
 
-def _get_client(request: Request, agent_id: str) -> MashAgentClient:
+def _get_client(request: Request, agent_id: str) -> AgentClient:
     state = _state_from_request(request)
     try:
         return state.host.get_client(agent_id.strip())
@@ -133,18 +139,37 @@ def _get_agent(request: Request, agent_id: str):
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
 
-def _get_agent_store_path(host: MashAgentHost, agent_id: str) -> Path:
-    agent = host.get_agent(agent_id)
-    return (agent.definition.get_agent_data_dir() / "state.db").expanduser().resolve()
+def _telemetry_event_source() -> str:
+    return "runtime_event_log"
 
 
-def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> FastAPI:
+def _serialize_runtime_event(event: RuntimeEvent) -> dict[str, Any]:
+    return {
+        "event_id": int(event.event_id),
+        "request_id": event.request_id,
+        "request_seq": event.request_seq,
+        "trace_id": event.trace_id,
+        "app_id": event.app_id,
+        "agent_id": event.agent_id,
+        "session_id": event.session_id,
+        "event_type": event.event_type,
+        "loop_index": event.loop_index,
+        "step_key": event.step_key,
+        "payload": dict(event.payload or {}),
+        "created_at": float(event.created_at),
+    }
+
+
+def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> FastAPI:
     """Build a FastAPI app that exposes one hosted Mash deployment."""
 
     resolved_config = config or MashHostConfig()
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
+        host.configure_runtime_database_url(
+            resolved_config.resolved_runtime_database_url()
+        )
         await host.start()
         search_service: Optional[MemorySearchService] = None
         observability_memory_db_path = resolved_config.resolved_memory_db_path()
@@ -152,7 +177,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             primary_agent = host.get_agent(host.get_primary_agent_id())
             search_service = MemorySearchService(
                 SQLiteStore(observability_memory_db_path),
-                event_logger=EventLogger(primary_agent.store),
+                event_logger=EventLogger(primary_agent.runtime_store),
                 retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
                 fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
             )
@@ -197,8 +222,8 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             content=_error_payload("VALIDATION_ERROR", "request validation failed", {"errors": exc.errors()}),
         )
 
-    @app.exception_handler(MashAgentClientError)
-    async def _client_error_handler(_: Request, exc: MashAgentClientError) -> JSONResponse:
+    @app.exception_handler(AgentClientError)
+    async def _client_error_handler(_: Request, exc: AgentClientError) -> JSONResponse:
         return JSONResponse(status_code=502, content=_error_payload("RUNTIME_CLIENT_ERROR", str(exc)))
 
     async def _authorize(request: Request) -> None:
@@ -271,7 +296,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
     async def invoke(request: Request, agent_id: str, body: InvokeRequest) -> dict[str, Any]:
         client = _get_client(request, agent_id)
         message = _require_message(body.message)
-        session_id = _normalize_optional_text(body.session_id)
+        session_id = _require_session_id(body.session_id)
         timeout_ms = body.timeout_ms if body.timeout_ms is None else int(body.timeout_ms)
         if timeout_ms is not None and timeout_ms <= 0:
             timeout_ms = None
@@ -279,7 +304,6 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             result = await client.invoke(
                 message,
                 session_id=session_id,
-                turn_metadata=dict(body.turn_metadata or {}),
                 timeout_ms=timeout_ms,
             )
         except TimeoutError as exc:
@@ -291,8 +315,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
         client = _get_client(request, agent_id)
         request_id = await client.post_request(
             _require_message(body.message),
-            session_id=_normalize_optional_text(body.session_id),
-            turn_metadata=dict(body.turn_metadata or {}),
+            session_id=_require_session_id(body.session_id),
         )
         return _success({"request_id": request_id})
 
@@ -311,7 +334,7 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
                     yield _build_runtime_event_sse_payload(event_name, payload)
                     if event_name in {"request.completed", "request.error"}:
                         break
-            except MashAgentClientError as exc:
+            except AgentClientError as exc:
                 yield _build_runtime_event_sse_payload(
                     "request.error",
                     {"request_id": normalized_request_id, "status": "error", "error": str(exc)},
@@ -366,6 +389,8 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
     async def get_observability_events(
         request: Request,
         agent_id: str,
+        session_id: Optional[str] = Query(default=None),
+        trace_id: Optional[str] = Query(default=None),
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = _state_from_request(request)
@@ -379,20 +404,32 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
 
         resolved_limit = _parse_limit(limit, default=state.default_events_limit, max_value=20000)
         events = [
-            _strip_log_cursor(item)
-            for item in await agent.store.get_logs(app_id=agent_id, limit=resolved_limit)
+            _serialize_runtime_event(item)
+            for item in await agent.runtime_store.list_events(
+                app_id=agent_id,
+                session_id=_normalize_optional_text(session_id),
+                trace_id=_normalize_optional_text(trace_id),
+                limit=resolved_limit,
+            )
         ]
         return _success(
             {
                 "events": events,
-                "path": str(_get_agent_store_path(state.host, agent_id)),
+                "source": _telemetry_event_source(),
                 "agent_id": agent_id,
+                "session_id": _normalize_optional_text(session_id),
+                "trace_id": _normalize_optional_text(trace_id),
                 "limit": resolved_limit,
             }
         )
 
     @api.get("/telemetry/events/stream")
-    async def stream_observability_events(request: Request, agent_id: str) -> StreamingResponse:
+    async def stream_observability_events(
+        request: Request,
+        agent_id: str,
+        session_id: Optional[str] = Query(default=None),
+        trace_id: Optional[str] = Query(default=None),
+    ) -> StreamingResponse:
         state = _state_from_request(request)
         if not state.observability_enabled:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
@@ -403,29 +440,41 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
         async def _generate() -> AsyncIterator[str]:
-            latest = await agent.store.get_logs(app_id=agent_id, limit=1)
+            resolved_session_id = _normalize_optional_text(session_id)
+            resolved_trace_id = _normalize_optional_text(trace_id)
+            latest = await agent.runtime_store.list_events(
+                app_id=agent_id,
+                session_id=resolved_session_id,
+                trace_id=resolved_trace_id,
+                limit=1,
+            )
             last_seen = 0
             if latest:
                 try:
-                    last_seen = int(latest[-1].get("log_id") or 0)
+                    last_seen = int(latest[-1].event_id or 0)
                 except (TypeError, ValueError):
                     last_seen = 0
 
             while True:
                 if await request.is_disconnected():
                     break
-                events = await agent.store.get_logs(app_id=agent_id, after_log_id=last_seen)
+                events = await agent.runtime_store.list_events(
+                    app_id=agent_id,
+                    session_id=resolved_session_id,
+                    trace_id=resolved_trace_id,
+                    after_event_id=last_seen,
+                )
                 if not events:
                     yield ": keep-alive\n\n"
                     await asyncio.sleep(0.25)
                     continue
                 for event in events:
                     try:
-                        last_seen = max(last_seen, int(event.get("log_id") or 0))
+                        last_seen = max(last_seen, int(event.event_id or 0))
                     except (TypeError, ValueError):
                         pass
                     yield _build_observability_sse_payload(
-                        json.dumps(_strip_log_cursor(event), ensure_ascii=True)
+                        json.dumps(_serialize_runtime_event(event), ensure_ascii=True)
                     )
 
         return StreamingResponse(
@@ -509,15 +558,9 @@ def create_app(host: MashAgentHost, *, config: MashHostConfig | None = None) -> 
     return app
 
 
-def run_host(host: MashAgentHost, *, config: MashHostConfig | None = None) -> None:
+def run_host(host: AgentHost, *, config: MashHostConfig | None = None) -> None:
     """Run the Mash host API service with uvicorn."""
 
     resolved_config = config or MashHostConfig()
     app = create_app(host, config=resolved_config)
     uvicorn.run(app, host=resolved_config.bind_host, port=resolved_config.bind_port)
-
-
-def _strip_log_cursor(event: dict[str, Any]) -> dict[str, Any]:
-    sanitized = dict(event)
-    sanitized.pop("log_id", None)
-    return sanitized

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Iterator, Optional
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -56,7 +56,11 @@ class MashHostClient:
             headers=headers,
             json=json_body,
             stream=stream,
-            timeout=DEFAULT_STREAM_TIMEOUT if stream and timeout is None else (timeout or DEFAULT_REQUEST_TIMEOUT),
+            timeout=(
+                DEFAULT_STREAM_TIMEOUT
+                if stream and timeout is None
+                else (timeout or DEFAULT_REQUEST_TIMEOUT)
+            ),
         )
         if response.status_code >= 400:
             try:
@@ -68,7 +72,9 @@ class MashHostClient:
                 if isinstance(payload, dict)
                 else None
             ) or response.text
-            raise MashHostClientError(f"{method} {path} failed ({response.status_code}): {message}")
+            raise MashHostClientError(
+                f"{method} {path} failed ({response.status_code}): {message}"
+            )
         return response
 
     def health(self) -> dict[str, Any]:
@@ -92,8 +98,7 @@ class MashHostClient:
         agent_id: str,
         *,
         message: str,
-        session_id: str | None = None,
-        turn_metadata: dict[str, Any] | None = None,
+        session_id: str,
     ) -> str:
         response = self._request(
             "POST",
@@ -101,12 +106,13 @@ class MashHostClient:
             json_body={
                 "message": message,
                 "session_id": session_id,
-                "turn_metadata": dict(turn_metadata or {}),
             },
         )
         return str(response.json()["data"]["request_id"])
 
-    def stream_request(self, agent_id: str, request_id: str) -> Iterator[dict[str, Any]]:
+    def stream_request(
+        self, agent_id: str, request_id: str
+    ) -> Iterator[dict[str, Any]]:
         with self._request(
             "GET",
             f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/events",
@@ -142,14 +148,12 @@ class MashHostClient:
         agent_id: str,
         *,
         message: str,
-        session_id: str | None = None,
-        turn_metadata: dict[str, Any] | None = None,
+        session_id: str,
     ) -> dict[str, Any]:
         request_id = self.submit_request(
             agent_id,
             message=message,
             session_id=session_id,
-            turn_metadata=turn_metadata,
         )
         for event in self.stream_request(agent_id, request_id):
             event_name = str(event.get("event") or "")
@@ -165,7 +169,9 @@ class MashHostClient:
         raise MashHostClientError("stream ended without a terminal event")
 
     def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
-        response = self._request("GET", f"/api/v1/agent/{quote(agent_id, safe='')}/sessions")
+        response = self._request(
+            "GET", f"/api/v1/agent/{quote(agent_id, safe='')}/sessions"
+        )
         sessions = response.json()["data"].get("sessions")
         if not isinstance(sessions, list):
             return []
@@ -178,7 +184,9 @@ class MashHostClient:
         )
         return response.json()["data"]
 
-    def get_history(self, agent_id: str, session_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def get_history(
+        self, agent_id: str, session_id: str, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         query = {"limit": limit} if limit is not None else None
         response = self._request(
             "GET",

@@ -11,25 +11,29 @@ from unittest.mock import patch
 
 import aiosqlite
 
-from mash.logging import AgentTraceEvent, EventLogger, LLMEvent
+from mash.logging import AgentTraceEvent, LLMEvent
+from mash.logging.events import normalize_log_event
 from mash.memory.store import SQLiteStore
 
 
 class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = SQLiteStore(":memory:")
-        self.logger = EventLogger(self.store)
 
     async def test_save_and_get_logs_reconstruct_public_event_shape(self) -> None:
-        await self.logger.emit(
-            AgentTraceEvent(
-                event_type="agent.run.start",
-                app_id="primary",
-                session_id="session-1",
-                trace_id="trace-1",
-                payload={"user_message": "hello"},
-                ts=123.0,
-            )
+        await self.store.save_logs(
+            [
+                normalize_log_event(
+                    AgentTraceEvent(
+                        event_type="agent.run.start",
+                        app_id="primary",
+                        session_id="session-1",
+                        trace_id="trace-1",
+                        payload={"user_message": "hello"},
+                        ts=123.0,
+                    )
+                )
+            ]
         )
 
         events = await self.store.get_logs(app_id="primary", session_id="session-1")
@@ -47,15 +51,19 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("log_id", event)
 
     async def test_stored_payload_omits_none_fields(self) -> None:
-        await self.logger.emit(
-            AgentTraceEvent(
-                event_type="agent.run.start",
-                app_id="primary",
-                session_id="session-1",
-                trace_id="trace-1",
-                payload={},
-                ts=123.0,
-            )
+        await self.store.save_logs(
+            [
+                normalize_log_event(
+                    AgentTraceEvent(
+                        event_type="agent.run.start",
+                        app_id="primary",
+                        session_id="session-1",
+                        trace_id="trace-1",
+                        payload={},
+                        ts=123.0,
+                    )
+                )
+            ]
         )
 
         assert self.store._conn is not None
@@ -153,7 +161,7 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agent_trace_logging_requires_trace_id(self) -> None:
         with self.assertRaises(ValueError):
-            await self.logger.emit(
+            normalize_log_event(
                 AgentTraceEvent(
                     event_type="agent.run.start",
                     app_id="primary",
@@ -164,7 +172,7 @@ class SQLiteStoreLogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_llm_logging_requires_trace_id_provider_and_model(self) -> None:
         with self.assertRaises(ValueError):
-            await self.logger.emit(
+            normalize_log_event(
                 LLMEvent(
                     event_type="llm.request.start",
                     app_id="primary",

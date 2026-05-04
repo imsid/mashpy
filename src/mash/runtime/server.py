@@ -1,4 +1,4 @@
-"""Starlette transport adapter for one Mash agent runtime."""
+"""Starlette transport adapter for one agent runtime."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .runtime import MashAgentRuntime
+from .service import AgentRuntime
 
 
 def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -21,10 +21,10 @@ def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
-class MashAgentServer:
+class AgentServer:
     """ASGI server surface exposing one runtime via H2A HTTP + SSE."""
 
-    def __init__(self, runtime: MashAgentRuntime) -> None:
+    def __init__(self, runtime: AgentRuntime) -> None:
         self.runtime = runtime
         self.agent_id = runtime.app_id
         self._ready_event = asyncio.Event()
@@ -64,8 +64,20 @@ class MashAgentServer:
         )
 
     @classmethod
-    def from_spec(cls, definition) -> "MashAgentServer":
-        return cls(MashAgentRuntime.from_spec(definition))
+    def from_spec(
+        cls,
+        definition,
+        *,
+        runtime_database_url: str | None = None,
+        session_id: str,
+    ) -> "AgentServer":
+        return cls(
+            AgentRuntime.from_spec(
+                definition,
+                runtime_database_url=runtime_database_url,
+                session_id=session_id,
+            )
+        )
 
     async def wait_until_ready(self, *, timeout: float | None = None) -> None:
         try:
@@ -112,19 +124,16 @@ class MashAgentServer:
             return _json_error(400, "INVALID_REQUEST", "message is required")
 
         session_id = payload.get("session_id")
-        if session_id is not None and not isinstance(session_id, str):
-            return _json_error(400, "INVALID_REQUEST", "session_id must be a string")
-
-        turn_metadata = payload.get("turn_metadata") or {}
-        if not isinstance(turn_metadata, dict):
+        if not isinstance(session_id, str) or not session_id.strip():
             return _json_error(
-                400, "INVALID_REQUEST", "turn_metadata must be an object"
+                400,
+                "INVALID_REQUEST",
+                "session_id is required",
             )
 
         accepted = await self.runtime.submit_request(
             message=message,
-            session_id=session_id,
-            turn_metadata=turn_metadata,
+            session_id=session_id.strip(),
         )
         return JSONResponse(accepted, status_code=202)
 
@@ -144,7 +153,7 @@ class MashAgentServer:
             while True:
                 if await request.is_disconnected():
                     break
-                events, cursor, done = await self.runtime.stream_request_events(
+                events, cursor, done = await self.runtime.stream_response_events(
                     request_id,
                     cursor=cursor,
                     wait_timeout=15.0,
