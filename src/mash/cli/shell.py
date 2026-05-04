@@ -135,6 +135,11 @@ class MashRemoteShell:
             self._render_subagent_event(payload)
             return
         if event_type == "agent.think.complete":
+            # Skip EventLogger-sourced duplicates: those have action_type nested in
+            # payload.payload, not at top level. runtime.llm.think.completed events
+            # (which normalize to agent.think.complete) always set action_type at top level.
+            if not payload.get("action_type"):
+                return
             self.chain_renderer.on_think_complete(self._build_trace_event(payload))
             return
         if event_type == "agent.act.complete":

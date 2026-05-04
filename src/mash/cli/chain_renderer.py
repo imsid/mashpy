@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
-if TYPE_CHECKING:
-    from mash.logging.events import AgentTraceEvent, LLMEvent
 
 
 class ChainOfThoughtRenderer:
@@ -59,7 +57,7 @@ class ChainOfThoughtRenderer:
             title = f"{label} Execution Started"
         self._console.print(f"\n[bold cyan]{title}[/bold cyan]")
 
-    def on_think_complete(self, event: AgentTraceEvent) -> None:
+    def on_think_complete(self, event: Any) -> None:
         """Handle think complete event.
 
         Args:
@@ -98,7 +96,7 @@ class ChainOfThoughtRenderer:
         # Render thinking
         self._render_think(step_info)
 
-    def on_act_complete(self, event: AgentTraceEvent) -> None:
+    def on_act_complete(self, event: Any) -> None:
         """Handle act complete event.
 
         Args:
@@ -111,7 +109,7 @@ class ChainOfThoughtRenderer:
         self._steps[-1]["act_duration"] = event.duration_ms
         self._render_act(self._steps[-1])
 
-    def on_step_complete(self, event: AgentTraceEvent) -> None:
+    def on_step_complete(self, event: Any) -> None:
         """Handle step complete event.
 
         Args:
@@ -134,7 +132,7 @@ class ChainOfThoughtRenderer:
             return
         # Could show a spinner here if desired
 
-    def on_llm_request_complete(self, event: LLMEvent) -> None:
+    def on_llm_request_complete(self, event: Any) -> None:
         """Handle LLM request complete.
 
         Args:
@@ -254,8 +252,8 @@ class ChainOfThoughtRenderer:
             self._step_duration_ms(step) for step in self._steps
         )
         total_tokens = sum(
-            s.get("token_usage", {}).get("input", 0)
-            + s.get("token_usage", {}).get("output", 0)
+            (s.get("token_usage") or {}).get("input", 0)
+            + (s.get("token_usage") or {}).get("output", 0)
             for s in self._steps
         )
 
@@ -318,7 +316,7 @@ class CompactChainRenderer:
         self._current_step = 0
         self._console.print("[dim]Thinking...[/dim]", end=" ")
 
-    def on_think_complete(self, event: AgentTraceEvent) -> None:
+    def on_think_complete(self, event: Any) -> None:
         """Handle think complete."""
         if not self._enabled:
             return
