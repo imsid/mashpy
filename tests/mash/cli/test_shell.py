@@ -10,6 +10,7 @@ from rich.console import Console
 from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
 from mash.logging.events import AgentTraceEvent
+from mash.runtime.events import runtime_trace_payload_to_trace_payload
 from mash.tools.subagent import derive_subagent_session_id
 
 
@@ -59,14 +60,18 @@ class _FakeClient:
                 "payload": {
                     "agent_id": "research",
                     "data": {
-                        "event_type": "agent.think.complete",
+                        "event_type": "runtime.llm.think.completed",
                         "trace_id": "trace-sub-1",
-                        "step_id": 0,
-                        "duration_ms": 7,
-                        "action_type": "tool_call",
-                        "tool_calls": ["bash"],
-                        "token_usage": {"input": 1, "output": 1},
-                        "payload": {"assistant_text": "checking cli flow"},
+                        "session_id": "subagent:research:x",
+                        "loop_index": 0,
+                        "created_at": 10.0,
+                        "payload": {
+                            "duration_ms": 7,
+                            "action_type": "tool_call",
+                            "assistant_text": "checking cli flow",
+                            "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
+                            "token_usage": {"input": 1, "output": 1},
+                        },
                     },
                 },
             },
@@ -74,27 +79,33 @@ class _FakeClient:
         yield {
             "event": "agent.trace",
             "data": {
-                "event_type": "agent.think.complete",
+                "event_type": "runtime.llm.think.completed",
                 "trace_id": "trace-1",
-                "step_id": 0,
-                "duration_ms": 12,
-                "action_type": "response",
-                "tool_calls": [],
-                "token_usage": {"input": 2, "output": 1},
-                "payload": {"assistant_text": "draft"},
+                "session_id": "s-1",
+                "loop_index": 0,
+                "created_at": 100.0,
+                "payload": {
+                    "duration_ms": 12,
+                    "action_type": "response",
+                    "assistant_text": "draft",
+                    "tool_calls": [],
+                    "token_usage": {"input": 2, "output": 1},
+                },
             },
         }
         yield {
             "event": "agent.trace",
             "data": {
-                "event_type": "agent.step.complete",
+                "event_type": "runtime.step.completed",
                 "trace_id": "trace-1",
-                "step_id": 0,
-                "duration_ms": 15,
-                "action_type": "response",
-                "tool_calls": [],
-                "token_usage": {"input": 2, "output": 1},
-                "payload": {},
+                "session_id": "s-1",
+                "loop_index": 0,
+                "created_at": 101.0,
+                "payload": {
+                    "duration_ms": 15,
+                    "action_type": "response",
+                    "tool_calls": [],
+                },
             },
         }
         yield {
@@ -169,14 +180,18 @@ class MashRemoteShellTests(unittest.TestCase):
             yield {
                 "event": "agent.trace",
                 "data": {
-                    "event_type": "agent.think.complete",
+                    "event_type": "runtime.llm.think.completed",
                     "trace_id": "trace-1",
-                    "step_id": 0,
-                    "duration_ms": 12,
-                    "action_type": "response",
-                    "tool_calls": [],
-                    "token_usage": {"input": 2, "output": 1},
-                    "payload": {"assistant_text": "echo: hello"},
+                    "session_id": "s-1",
+                    "loop_index": 0,
+                    "created_at": 100.0,
+                    "payload": {
+                        "duration_ms": 12,
+                        "action_type": "response",
+                        "assistant_text": "echo: hello",
+                        "tool_calls": [],
+                        "token_usage": {"input": 2, "output": 1},
+                    },
                 },
             }
             yield {
@@ -255,12 +270,14 @@ class MashRemoteShellTests(unittest.TestCase):
             ["streamed from runtime", "final response"],
         )
 
-    def test_normalize_runtime_trace_payload_preserves_durations(self) -> None:
-        think = MashRemoteShell._normalize_runtime_trace_payload(
+    def test_runtime_trace_payload_projection_preserves_durations(self) -> None:
+        think = runtime_trace_payload_to_trace_payload(
             {
                 "event_type": "runtime.llm.think.completed",
                 "trace_id": "trace-1",
+                "session_id": "s-1",
                 "loop_index": 2,
+                "created_at": 100.0,
                 "payload": {
                     "action_type": "tool_call",
                     "assistant_text": "thinking",
@@ -270,11 +287,13 @@ class MashRemoteShellTests(unittest.TestCase):
                 },
             }
         )
-        act = MashRemoteShell._normalize_runtime_trace_payload(
+        act = runtime_trace_payload_to_trace_payload(
             {
                 "event_type": "runtime.tool.call.completed",
                 "trace_id": "trace-1",
+                "session_id": "s-1",
                 "loop_index": 2,
+                "created_at": 101.0,
                 "payload": {
                     "tool_name": "bash",
                     "duration_ms": 45,
@@ -282,6 +301,8 @@ class MashRemoteShellTests(unittest.TestCase):
             }
         )
 
+        assert think is not None
+        assert act is not None
         self.assertEqual(think["event_type"], "agent.think.complete")
         self.assertEqual(think["duration_ms"], 123)
         self.assertEqual(act["event_type"], "agent.act.complete")

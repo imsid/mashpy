@@ -83,6 +83,25 @@ def _step_tool_result_payload(
     }
 
 
+def _step_completed_payload(
+    action_payload: dict[str, Any],
+    *,
+    duration_ms: int,
+) -> dict[str, Any]:
+    tool_calls = []
+    for item in list(action_payload.get("tool_calls") or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            tool_calls.append(name)
+    return {
+        "action_type": action_payload.get("action_type"),
+        "tool_calls": tool_calls,
+        "duration_ms": int(duration_ms),
+    }
+
+
 async def _plan_step_payload(
     runtime: "AgentRuntime",
     *,
@@ -353,6 +372,7 @@ async def plan_request_step(
         "result_payloads": [],
         "signals": {},
         "done": False,
+        "step_started_at": float(time.time()),
     }
 
 
@@ -415,6 +435,7 @@ async def run_step_tool_call(
 
 async def commit_request_step(
     agent_id: str,
+    request_id: str,
     session_id: str,
     trace_id: str,
     workflow_state: dict[str, Any],
@@ -437,6 +458,34 @@ async def commit_request_step(
     )
     done = bool(commit_payload.get("done"))
     next_loop_index = loop_index if done else loop_index + 1
+    step_started_at = workflow_state.get("step_started_at")
+    if step_started_at is None:
+        step_duration_ms = 0
+    else:
+        try:
+            step_duration_ms = max(
+                0, int((time.time() - float(step_started_at)) * 1000)
+            )
+        except (TypeError, ValueError):
+            step_duration_ms = 0
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=runtime.app_id,
+            agent_id=runtime.app_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            loop_index=loop_index,
+            step_key=f"step.completed.{loop_index}",
+            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            dedupe_key=f"step.completed.{loop_index}",
+            payload=_step_completed_payload(
+                action_payload,
+                duration_ms=step_duration_ms,
+            ),
+        ),
+    )
     return {
         **dict(workflow_state or {}),
         "context": dict(commit_payload.get("context") or {}),
@@ -445,6 +494,7 @@ async def commit_request_step(
         "action": None,
         "result_payloads": [],
         "done": done,
+        "step_started_at": None,
     }
 
 

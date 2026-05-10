@@ -31,7 +31,7 @@ class AgentClientLike(Protocol):
     ) -> str:
         ...
 
-    async def stream_response(
+    def stream_response(
         self,
         request_id: str,
         *,

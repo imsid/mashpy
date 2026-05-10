@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+from mash.runtime.events import (
+    runtime_trace_payload_response_preview,
+    runtime_trace_payload_to_trace_payload,
+)
+
 from .chain_renderer import ChainOfThoughtRenderer
 from .client import MashHostClient
 from .commands import Command, CommandRegistry
@@ -81,89 +86,41 @@ class MashRemoteShell:
             betas=payload.get("betas"),
         )
 
-    @staticmethod
-    def _normalize_runtime_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        event_type = str(payload.get("event_type") or "")
-        nested = payload.get("payload")
-        if not isinstance(nested, dict):
-            return payload
-        if event_type == "runtime.llm.think.completed":
-            tool_calls_detail = nested.get("tool_calls")
-            tool_calls = []
-            if isinstance(tool_calls_detail, list):
-                for item in tool_calls_detail:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or "").strip()
-                    if name:
-                        tool_calls.append(name)
-            return {
-                "event_type": "agent.think.complete",
-                "trace_id": payload.get("trace_id"),
-                "step_id": payload.get("loop_index"),
-                "duration_ms": nested.get("duration_ms"),
-                "action_type": nested.get("action_type"),
-                "tool_calls": tool_calls,
-                "token_usage": nested.get("token_usage"),
-                "payload": {
-                    "assistant_text": nested.get("assistant_text"),
-                    "tool_calls_detail": (
-                        tool_calls_detail if isinstance(tool_calls_detail, list) else None
-                    ),
-                },
-            }
-        if event_type in {
-            "runtime.tool.call.completed",
-            "runtime.subagent.call.completed",
-        }:
-            tool_name = str(nested.get("tool_name") or "").strip()
-            return {
-                "event_type": "agent.act.complete",
-                "trace_id": payload.get("trace_id"),
-                "step_id": payload.get("loop_index"),
-                "duration_ms": nested.get("duration_ms"),
-                "action_type": "tool_call",
-                "tool_calls": [tool_name] if tool_name else [],
-                "payload": {},
-            }
-        return payload
+    def _render_runtime_trace_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        trace_label: str | None = None,
+    ) -> None:
+        trace_payload = runtime_trace_payload_to_trace_payload(
+            payload,
+            trace_label=trace_label,
+        )
+        if trace_payload is None:
+            return
+        event_type = str(trace_payload.get("event_type") or "")
+        trace_event = self._build_trace_event(trace_payload)
+        if event_type == "agent.think.complete":
+            self.chain_renderer.on_think_complete(trace_event)
+            return
+        if event_type == "agent.act.complete":
+            self.chain_renderer.on_act_complete(trace_event)
+            return
+        if event_type == "agent.step.complete":
+            self.chain_renderer.on_step_complete(trace_event)
 
     def _render_trace_event(self, payload: dict[str, Any]) -> None:
-        payload = self._normalize_runtime_trace_payload(payload)
         event_type = str(payload.get("event_type") or "")
         if event_type.startswith("subagent."):
             self._render_subagent_event(payload)
             return
-        if event_type == "agent.think.complete":
-            # Skip EventLogger-sourced duplicates: those have action_type nested in
-            # payload.payload, not at top level. runtime.llm.think.completed events
-            # (which normalize to agent.think.complete) always set action_type at top level.
-            if not payload.get("action_type"):
-                return
-            self.chain_renderer.on_think_complete(self._build_trace_event(payload))
-            return
-        if event_type == "agent.act.complete":
-            self.chain_renderer.on_act_complete(self._build_trace_event(payload))
-            return
-        if event_type == "agent.step.complete":
-            self.chain_renderer.on_step_complete(self._build_trace_event(payload))
-            return
+        self._render_runtime_trace_payload(payload)
         if event_type == "llm.request.complete":
             self.chain_renderer.on_llm_request_complete(self._build_llm_event(payload))
 
     @staticmethod
     def _extract_streamed_response_text(payload: dict[str, Any]) -> str:
-        payload = MashRemoteShell._normalize_runtime_trace_payload(payload)
-        event_type = str(payload.get("event_type") or "")
-        if event_type != "agent.think.complete":
-            return ""
-        action_type = str(payload.get("action_type") or "")
-        if action_type != "response":
-            return ""
-        nested = payload.get("payload")
-        if not isinstance(nested, dict):
-            return ""
-        return str(nested.get("assistant_text") or "").strip()
+        return runtime_trace_payload_response_preview(payload)
 
     def _render_subagent_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
@@ -176,10 +133,10 @@ class MashRemoteShell:
 
         if event_type == "subagent.agent.trace" and isinstance(nested, dict):
             nested_payload = dict(nested)
-            child_payload = dict(nested_payload.get("payload") or {})
-            child_payload["trace_label"] = trace_label
-            nested_payload["payload"] = child_payload
-            self._render_trace_event(nested_payload)
+            self._render_runtime_trace_payload(
+                nested_payload,
+                trace_label=trace_label,
+            )
             return
 
         if event_type == "subagent.request.started":

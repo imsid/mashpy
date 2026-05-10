@@ -170,6 +170,21 @@ These endpoints require `enable_observability = True`. Memory search uses the ta
   - `data: <serialized runtime event>`
 - Emits `: keep-alive` frames while idle.
 
+`GET /api/v1/telemetry/reasoning-trace`
+- Returns the compact CLI-style reasoning trace for one trace.
+- Query params:
+  - `agent_id` required
+  - `session_id` required
+  - `trace_id` required
+- Returns:
+  - `status`
+  - `steps`
+  - `summary`
+  - `source`
+  - `agent_id`
+  - `session_id`
+  - `trace_id`
+
 `GET /api/v1/telemetry/memory/search`
 - Searches observability memory records.
 - Query params:

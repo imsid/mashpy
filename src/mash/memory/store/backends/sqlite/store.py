@@ -91,29 +91,6 @@ class SQLiteStore(MemoryStore):
             )
             await conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS preferences (
-                    app_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (app_id, session_id)
-                )
-                """
-            )
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_data (
-                    app_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (app_id, session_id, key)
-                )
-                """
-            )
-            await conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     app_id TEXT NOT NULL,
@@ -140,9 +117,6 @@ class SQLiteStore(MemoryStore):
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_app_name ON signals(app_id, signal_name)"
-            )
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_app_data_session ON app_data(app_id, session_id)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_logs_app_id ON logs(app_id)"
@@ -201,7 +175,9 @@ class SQLiteStore(MemoryStore):
                     str(log["event_class"]),
                     str(log["event_type"]),
                     float(log["created_at"]),
-                    json.dumps(payload if isinstance(payload, dict) else {}, default=str),
+                    json.dumps(
+                        payload if isinstance(payload, dict) else {}, default=str
+                    ),
                 )
             )
 
@@ -630,9 +606,7 @@ class SQLiteStore(MemoryStore):
                     "" if row["user_message"] is None else str(row["user_message"])
                 ),
                 "agent_response": (
-                    ""
-                    if row["agent_response"] is None
-                    else str(row["agent_response"])
+                    "" if row["agent_response"] is None else str(row["agent_response"])
                 ),
             }
 

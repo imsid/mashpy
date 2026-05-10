@@ -57,7 +57,7 @@ Notes
 ## Main Components
 - `main.py`: top-level parser, command dispatch, and command execution.
 - `client.py`: HTTP client used to talk to hosted Mash agents.
-- `shell.py`: streamed remote shell UX and subagent event rendering.
+- `shell.py`: streamed remote shell UX, playback-event rendering, and subagent event rendering.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in shell commands.
 - `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained/subagent output.
 - `config.py`, `repl.py`, and `types.py`: saved connection config and shell state types.

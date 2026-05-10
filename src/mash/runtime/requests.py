@@ -178,8 +178,10 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
         "data": {
             "event_type": event.event_type,
             "trace_id": event.trace_id,
+            "session_id": event.session_id,
             "loop_index": event.loop_index,
             "step_key": event.step_key,
+            "created_at": float(event.created_at),
             "payload": dict(event.payload or {}),
         },
     }

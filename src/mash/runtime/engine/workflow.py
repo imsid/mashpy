@@ -96,6 +96,7 @@ async def execute_request_workflow(
                     {"name": f"step.commit.{loop_index}"},
                     commit_request_step,
                     agent_id,
+                    request_id,
                     session_id,
                     trace_id,
                     workflow_state,

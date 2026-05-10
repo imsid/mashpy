@@ -20,7 +20,7 @@ from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import AgentClientError, AgentHost
 from mash.runtime.client import AgentClientLike
-from mash.runtime.events import RuntimeEvent
+from mash.runtime.events import RuntimeEvent, build_reasoning_trace
 
 from .config import MashHostConfig
 from .telemetry_ui import TELEMETRY_API_KEY_COOKIE, mount_telemetry_ui
@@ -96,6 +96,20 @@ def _require_session_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
+    return text
+
+
+def _require_trace_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise APIError(code="INVALID_REQUEST", message="trace_id is required", status_code=400)
+    return text
+
+
+def _require_agent_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise APIError(code="INVALID_REQUEST", message="agent_id is required", status_code=400)
     return text
 
 
@@ -395,6 +409,41 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                 "session_id": _normalize_optional_text(session_id),
                 "trace_id": _normalize_optional_text(trace_id),
                 "limit": resolved_limit,
+            }
+        )
+
+    @api.get("/telemetry/reasoning-trace")
+    async def get_reasoning_trace(
+        request: Request,
+        agent_id: str = Query(...),
+        session_id: str = Query(...),
+        trace_id: str = Query(...),
+    ) -> dict[str, Any]:
+        state = _state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        resolved_agent_id = _require_agent_id(agent_id)
+        resolved_session_id = _require_session_id(session_id)
+        resolved_trace_id = _require_trace_id(trace_id)
+        try:
+            agent = state.host.get_agent(resolved_agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        events = await agent.runtime_store.list_events(
+            app_id=resolved_agent_id,
+            session_id=resolved_session_id,
+            trace_id=resolved_trace_id,
+        )
+        trace_payload = build_reasoning_trace(events)
+        return _success(
+            {
+                "source": _telemetry_event_source(),
+                "agent_id": resolved_agent_id,
+                "session_id": resolved_session_id,
+                "trace_id": resolved_trace_id,
+                **trace_payload,
             }
         )
 

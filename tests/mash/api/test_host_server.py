@@ -19,7 +19,13 @@ from mash.testing.runtime_fixtures import build_spec, metadata
 
 @contextmanager
 def _build_test_client(root: Path, *, api_key: str | None = None):
-    with patch.dict(os.environ, {"MASH_DATA_DIR": str(root)}):
+    with patch.dict(
+        os.environ,
+        {
+            "MASH_DATA_DIR": str(root),
+            "MASH_MEMORY_DATABASE_URL": "",
+        },
+    ):
         host = (
             HostBuilder()
             .primary(build_spec(agent_id="primary", response_text="primary-ok"))
@@ -188,7 +194,13 @@ def test_async_request_stream_and_auth() -> None:
 def test_same_session_overlap_completes_without_waiting_event() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with patch.dict(os.environ, {"MASH_DATA_DIR": str(root)}):
+        with patch.dict(
+            os.environ,
+            {
+                "MASH_DATA_DIR": str(root),
+                "MASH_MEMORY_DATABASE_URL": "",
+            },
+        ):
             host = (
                 HostBuilder()
                 .primary(
@@ -274,6 +286,57 @@ def test_telemetry_events_filter_by_agent() -> None:
             assert payload["source"] == "runtime_event_log"
 
 
+def test_reasoning_trace_route_returns_compact_trace() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-1"},
+            )
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            terminal = _collect_terminal_response(client, "primary", request_id)
+            trace_id = terminal["trace_id"]
+
+            reasoning_trace = client.get(
+                "/api/v1/telemetry/reasoning-trace",
+                params={
+                    "agent_id": "primary",
+                    "session_id": "s-1",
+                    "trace_id": trace_id,
+                },
+            )
+            assert reasoning_trace.status_code == 200
+            payload = reasoning_trace.json()["data"]
+            assert payload["source"] == "runtime_event_log"
+            assert payload["agent_id"] == "primary"
+            assert payload["session_id"] == "s-1"
+            assert payload["trace_id"] == trace_id
+            assert payload["status"] == "completed"
+            assert payload["steps"]
+            assert payload["summary"]["total_steps"] >= 1
+            assert payload["steps"][0]["title"]
+
+
+def test_reasoning_trace_route_rejects_blank_scope_values() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.get(
+                "/api/v1/telemetry/reasoning-trace",
+                params={
+                    "agent_id": "primary",
+                    "session_id": " ",
+                    "trace_id": "trace-1",
+                },
+            )
+            assert response.status_code == 400
+            payload = response.json()["error"]
+            assert payload["code"] == "INVALID_REQUEST"
+            assert payload["message"] == "session_id is required"
+
+
 def test_memory_search_uses_agent_memory_store_by_default() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -307,7 +370,13 @@ def test_missing_telemetry_assets_fail_fast() -> None:
     with patch("mash.api.app.mount_telemetry_ui", side_effect=RuntimeError("missing telemetry assets")):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.dict(os.environ, {"MASH_DATA_DIR": str(root)}):
+            with patch.dict(
+                os.environ,
+                {
+                    "MASH_DATA_DIR": str(root),
+                    "MASH_MEMORY_DATABASE_URL": "",
+                },
+            ):
                 host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()

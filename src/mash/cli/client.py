@@ -173,5 +173,22 @@ class MashHostClient:
             return []
         return [turn for turn in turns if isinstance(turn, dict)]
 
+    def get_reasoning_trace(
+        self,
+        agent_id: str,
+        session_id: str,
+        trace_id: str,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/api/v1/telemetry/reasoning-trace",
+            query={
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "trace_id": trace_id,
+            },
+        )
+        return response.json()["data"]
+
     def close(self) -> None:
         self._session.close()

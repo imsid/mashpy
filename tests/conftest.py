@@ -218,6 +218,7 @@ async def _execute_request_inline(
                     )
                 workflow_state = await commit_request_step(
                     runtime.app_id,
+                    request_id,
                     session_id=session_id,
                     trace_id=trace_id,
                     workflow_state=workflow_state,

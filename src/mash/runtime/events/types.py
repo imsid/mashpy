@@ -15,6 +15,7 @@ class RuntimeEventType(str, Enum):
     LLM_THINK_COMPLETED = "runtime.llm.think.completed"
     TOOL_CALL_COMPLETED = "runtime.tool.call.completed"
     SUBAGENT_CALL_COMPLETED = "runtime.subagent.call.completed"
+    STEP_COMPLETED = "runtime.step.completed"
     TURN_PERSISTED = "runtime.turn.persisted"
     REQUEST_COMPLETED = "runtime.request.completed"
     REQUEST_FAILED = "runtime.request.failed"

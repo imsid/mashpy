@@ -68,6 +68,18 @@ class MashHostClientTests(unittest.TestCase):
 
         self.assertEqual(session.calls[-1]["timeout"], DEFAULT_REQUEST_TIMEOUT)
 
+    def test_get_reasoning_trace_uses_telemetry_route(self) -> None:
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        client._session = session  # type: ignore[assignment]
+
+        client.get_reasoning_trace("primary", "s-1", "trace-1")
+
+        self.assertIn(
+            "/api/v1/telemetry/reasoning-trace?agent_id=primary&session_id=s-1&trace_id=trace-1",
+            str(session.calls[-1]["url"]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

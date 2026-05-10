@@ -16,6 +16,7 @@ from mash.core.llm import BaseLLMProvider, LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
 from mash.mcp.types import MCPServerConfig
 from mash.runtime import AgentRuntime
+from mash.runtime.events import RuntimeEventType, build_reasoning_trace
 from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import build_spec
@@ -427,6 +428,14 @@ class _MCPAssertingLLMProvider(LLMProvider):
 
 
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._memory_env = patch.dict(
+            os.environ,
+            {"MASH_MEMORY_DATABASE_URL": ""},
+        )
+        self._memory_env.start()
+        self.addCleanup(self._memory_env.stop)
+
     async def _collect_request_events(
         self,
         runtime: AgentRuntime,
@@ -559,7 +568,9 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 try:
                     await runtime.open()
-                    _, events, result = await self._invoke_request(runtime, message="hi")
+                    accepted, events, result = await self._invoke_request(
+                        runtime, message="hi"
+                    )
 
                     think_events = [
                         event
@@ -568,7 +579,24 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         and (event.get("data") or {}).get("event_type")
                         == "runtime.llm.think.completed"
                     ]
+                    stored_events = await runtime.runtime_store.list_request_events(
+                        str(accepted["request_id"])
+                    )
+                    step_events = [
+                        event
+                        for event in stored_events
+                        if event.event_type == RuntimeEventType.STEP_COMPLETED.value
+                    ]
+                    reasoning_trace = build_reasoning_trace(stored_events)
+
                     self.assertEqual(len(think_events), 2)
+                    self.assertEqual(len(step_events), 2)
+                    self.assertEqual(reasoning_trace["status"], "completed")
+                    self.assertEqual(reasoning_trace["summary"]["total_steps"], 2)
+                    self.assertEqual(
+                        [item["step_index"] for item in reasoning_trace["steps"]],
+                        [0, 1],
+                    )
                     self.assertEqual(result["response"]["text"], "Final answer.")
                 finally:
                     await runtime.shutdown()
