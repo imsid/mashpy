@@ -12,7 +12,7 @@ from mash.memory.store import MemoryStore
 from mash.runtime.events import RuntimeStore
 from mash.runtime.spec import AgentSpec
 from mash.runtime.host.subagents import SubAgentMetadata
-from mash.memory.store import SQLiteStore
+from mash.memory.store import PostgresStore, SQLiteStore
 from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.bash import BashTool
@@ -218,9 +218,14 @@ def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgent
         if isinstance(target_app_id, str) and target_app_id.strip()
         else "primary"
     )
-    store_path = (AgentSpec.get_data_root() / resolved_target / "state.db").resolve()
+    memory_database_url = os.getenv("MASH_MEMORY_DATABASE_URL", "").strip()
+    if memory_database_url:
+        store: MemoryStore = PostgresStore(memory_database_url)
+    else:
+        store_path = (AgentSpec.get_data_root() / resolved_target / "state.db").resolve()
+        store = SQLiteStore(store_path)
     return MasherAgentSpec(
-        SQLiteStore(store_path),
+        store,
         target_app_id=resolved_target,
     )
 

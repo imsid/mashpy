@@ -41,7 +41,8 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         )
 
         turns = await self.store.get_turn_by_ids(
-            [{"session_id": "s1", "turn_id": turn_id}]
+            [{"session_id": "s1", "turn_id": turn_id}],
+            app_id="test-app",
         )
 
         self.assertIsNotNone(turns)
@@ -60,7 +61,8 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         )
 
         turns = await self.store.get_turn_by_ids(
-            [{"session_id": "s2", "turn_id": turn_id}]
+            [{"session_id": "s2", "turn_id": turn_id}],
+            app_id="test-app",
         )
 
         self.assertIsNone(turns)
@@ -73,7 +75,8 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         )
 
         turns = await self.store.get_turn_by_ids(
-            [{"session_id": "s1", "turn_id": "unknown-turn"}]
+            [{"session_id": "s1", "turn_id": "unknown-turn"}],
+            app_id="test-app",
         )
 
         self.assertIsNone(turns)
@@ -86,7 +89,8 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         )
 
         turns = await self.store.get_turn_by_ids(
-            [{"session_id": "s1", "turn_id": turn_id}]
+            [{"session_id": "s1", "turn_id": turn_id}],
+            app_id="test-app",
         )
 
         self.assertIsNotNone(turns)
@@ -112,7 +116,8 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
             [
                 {"session_id": "s2", "turn_id": turn_2},
                 {"session_id": "s1", "turn_id": turn_1},
-            ]
+            ],
+            app_id="test-app",
         )
 
         self.assertIsNotNone(turns)
@@ -135,13 +140,52 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
             [
                 {"session_id": "s1", "turn_id": turn_1},
                 {"session_id": "s1", "turn_id": "missing"},
-            ]
+            ],
+            app_id="test-app",
         )
 
         self.assertIsNotNone(turns)
         assert turns is not None
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["turn_id"], turn_1)
+
+    async def test_get_turn_by_ids_honors_optional_app_id_filter(self) -> None:
+        turn_a = await self._save_turn(
+            session_id="shared-session",
+            user_message="from app a",
+            agent_response="a",
+            app_id="app-a",
+        )
+        turn_b = await self._save_turn(
+            session_id="shared-session",
+            app_id="app-b",
+            user_message="from app b",
+            agent_response="b",
+        )
+
+        filtered = await self.store.get_turn_by_ids(
+            [{"session_id": "shared-session", "turn_id": turn_b}],
+            app_id="app-a",
+        )
+        matching_a = await self.store.get_turn_by_ids(
+            [
+                {"session_id": "shared-session", "turn_id": turn_b},
+                {"session_id": "shared-session", "turn_id": turn_a},
+            ],
+            app_id="app-a",
+        )
+        matching_b = await self.store.get_turn_by_ids(
+            [{"session_id": "shared-session", "turn_id": turn_b}],
+            app_id="app-b",
+        )
+
+        self.assertIsNone(filtered)
+        self.assertIsNotNone(matching_a)
+        assert matching_a is not None
+        self.assertEqual([turn["turn_id"] for turn in matching_a], [turn_a])
+        self.assertIsNotNone(matching_b)
+        assert matching_b is not None
+        self.assertEqual([turn["turn_id"] for turn in matching_b], [turn_b])
 
 
 if __name__ == "__main__":

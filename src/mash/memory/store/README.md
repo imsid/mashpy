@@ -4,10 +4,12 @@
 
 ## What This Package Exposes
 - `MemoryStore`: protocol contract that all storage backends must implement.
-- `SQLiteStore`: the currently supported concrete backend, exported as the default built-in implementation.
+- `SQLiteStore`: the built-in file-backed backend.
+- `PostgresStore`: the built-in Postgres-backed backend.
 
 ## Supported Backends
 - `SQLiteStore` in `src/mash/memory/store/backends/sqlite/store.py`
+- `PostgresStore` in `src/mash/memory/store/backends/postgres/store.py`
 
 Backend expectations:
 - Backends must preserve the `MemoryStore` method signatures.
@@ -20,7 +22,8 @@ Backend expectations:
 
 Current backend status:
 - Keyword search is implemented in `SQLiteStore` via SQLite FTS5.
-- Semantic search is part of the protocol, but `SQLiteStore.semantic_search()` currently raises `NotImplementedError`.
+- Keyword search is implemented in `PostgresStore` via Postgres full-text search.
+- Semantic search is part of the protocol, but both built-in backends currently raise `NotImplementedError`.
 
 ## Protocol Methods
 
@@ -81,10 +84,9 @@ Current backend status:
   - the persisted `turn_id`
 
 Notes:
-- `signals` are backend-defined numeric signals associated with the turn.
-- In the SQLite backend, non-numeric signal values are skipped.
+- `signals` are backend-defined JSON-compatible values associated with the turn.
 
-`get_turns(session_id, limit=None) -> list[dict]`
+`get_turns(session_id, app_id, limit=None) -> list[dict]`
 - Returns conversation turns for one session.
 - Expected shape per item:
   - `turn_id`
@@ -97,9 +99,10 @@ Notes:
 
 Behavior:
 - The contract is chronological turn order.
+- `app_id` is required and scopes reads to one agent.
 - In SQLite, `limit=None` returns all turns ascending by time; limited reads still return ascending order after an internal reverse query.
 
-`get_turn_by_ids(pairs) -> list[dict] | None`
+`get_turn_by_ids(pairs, app_id) -> list[dict] | None`
 - Bulk lookup by exact `{session_id, turn_id}` pairs.
 - Expected shape per returned item:
   - `turn_id`
@@ -108,6 +111,7 @@ Behavior:
   - `agent_response`
 
 Behavior:
+- `app_id` is required and scopes reads to one agent.
 - Missing pairs are omitted.
 - Returns `None` when no requested pairs are valid or found.
 
@@ -169,6 +173,10 @@ SQLite behavior:
 - `metadata` is intended to be JSON-compatible.
 - Callers should not assume backend-specific extra keys beyond the documented shapes.
 
+## Backend Selection
+- `AgentSpec.build_memory_store()` uses `MASH_MEMORY_DATABASE_URL` when it is set.
+- When `MASH_MEMORY_DATABASE_URL` is unset, the default fallback is SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`.
+
 ## SQLite-Specific Notes
 - Thread safety is enforced with a store-level lock around DB operations.
 - `trace_id` is persisted as the canonical `turn_id`.
@@ -176,3 +184,8 @@ SQLite behavior:
 - The `logs` table uses an internal autoincrement `id` for stable ordering and streaming cursors.
 - FTS index rows are rebuilt automatically if the main `turns` table has data but the FTS table is empty.
 - Database files are created on demand; parent directories are also created automatically.
+
+## Postgres-Specific Notes
+- `PostgresStore` persists only the protocol-required storage objects: turns, signals, and logs.
+- Keyword search is column-scoped and implemented with Postgres full-text search.
+- `memory_logs.id` is the stable cursor for `after_log_id`.

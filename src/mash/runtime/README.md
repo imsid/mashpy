@@ -160,6 +160,8 @@ This store owns conversation-oriented state:
 - logs and search-oriented memory data
 
 This is the store used for conversation history and long-lived agent memory behavior.
+By default it uses `MASH_MEMORY_DATABASE_URL` when set, otherwise it falls back
+to the per-agent SQLite `state.db` file under `MASH_DATA_DIR`.
 
 ### `runtime_store`
 

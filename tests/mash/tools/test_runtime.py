@@ -23,7 +23,9 @@ class FakeStore:
     async def get_turn_by_ids(
         self,
         pairs: list[dict[str, str]],
+        app_id: str,
     ) -> list[dict[str, object]] | None:
+        del app_id
         self.turn_lookup_calls.append(list(pairs))
         if self.turn_lookup_error is not None:
             raise self.turn_lookup_error

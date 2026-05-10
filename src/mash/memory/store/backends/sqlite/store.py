@@ -433,30 +433,32 @@ class SQLiteStore(MemoryStore):
     async def get_turns(
         self,
         session_id: str,
+        app_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         await self.open()
+        params: list[Any] = [session_id, app_id]
         async with self._lock:
             if limit is None:
                 rows = await self._fetchall_unlocked(
                     """
                     SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
                     FROM turns
-                    WHERE session_id = ?
+                    WHERE session_id = ? AND app_id = ?
                     ORDER BY created_at ASC
                     """,
-                    (session_id,),
+                    params,
                 )
             else:
                 rows = await self._fetchall_unlocked(
                     """
                     SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
                     FROM turns
-                    WHERE session_id = ?
+                    WHERE session_id = ? AND app_id = ?
                     ORDER BY created_at DESC
                     LIMIT ?
                     """,
-                    (session_id, max(0, int(limit))),
+                    [*params, max(0, int(limit))],
                 )
                 rows = list(reversed(rows))
 
@@ -578,6 +580,7 @@ class SQLiteStore(MemoryStore):
     async def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],
+        app_id: str,
     ) -> Optional[List[Dict[str, Any]]]:
         await self.open()
         if not pairs:
@@ -606,10 +609,12 @@ class SQLiteStore(MemoryStore):
             where_clauses.append("(session_id = ? AND turn_id = ?)")
             params.extend([session_id, turn_id])
 
+        params.append(app_id)
+
         sql = f"""
             SELECT turn_id, session_id, user_message, agent_response
             FROM turns
-            WHERE {' OR '.join(where_clauses)}
+            WHERE ({' OR '.join(where_clauses)}) AND app_id = ?
         """
 
         async with self._lock:
@@ -717,7 +722,7 @@ class SQLiteStore(MemoryStore):
         conn = await self._get_conn()
         cursor = await conn.execute(sql, params)
         try:
-            return await cursor.fetchall()
+            return list(await cursor.fetchall())
         finally:
             await cursor.close()
 

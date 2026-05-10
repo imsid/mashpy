@@ -141,6 +141,7 @@ class RuntimeToolBuilder:
         async def execute(args: Dict[str, Any]) -> ToolResult:
             turns = await self._store.get_turns(
                 session_id=self._session_id(),
+                app_id=self._app_id,
                 limit=args.get("limit"),
             )
             messages = []
@@ -276,7 +277,10 @@ class RuntimeToolBuilder:
                 )
 
             try:
-                turns = await self._store.get_turn_by_ids(pairs=normalized_pairs)
+                turns = await self._store.get_turn_by_ids(
+                    pairs=normalized_pairs,
+                    app_id=self._app_id,
+                )
             except Exception as exc:  # pragma: no cover
                 return ToolResult.error(f"failed to fetch turns: {exc}")
 

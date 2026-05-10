@@ -55,7 +55,7 @@ RUNTIME_DOC_ROOTS = ("src/mash/runtime",)
 
 def _load_pilot_env() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    load_dotenv(repo_root / "pilot" / ".env")
+    load_dotenv(repo_root / ".env")
 
 
 def _scope_doc_paths(

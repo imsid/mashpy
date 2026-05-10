@@ -117,6 +117,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
+                        app_id=research.app_id,
                         limit=1,
                     )
                     self.assertEqual(turns[-1]["user_message"], "analyze")

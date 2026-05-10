@@ -70,6 +70,7 @@ class MemoryStore(Protocol):
     async def get_turns(
         self,
         session_id: str,
+        app_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Get conversation turns for a session."""
@@ -109,6 +110,7 @@ class MemoryStore(Protocol):
     async def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],
+        app_id: str,
     ) -> Optional[List[Dict[str, Any]]]:
         """Get turns by exact session/turn identifier pairs in one lookup."""
         ...

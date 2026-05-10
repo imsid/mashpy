@@ -37,19 +37,20 @@ The architecture is:
 - `mash` talks to a running Mash API deployment
 - deployments are expected to run in a container
 
-Mash stores agent state under:
+Mash stores agent memory in one of two ways:
 
-- `<MASH_DATA_DIR>/<agent_id>/state.db`
+- Postgres when `MASH_MEMORY_DATABASE_URL` is set
+- otherwise SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`
 
-`state.db` is the per-agent memory store. It contains:
+That memory store contains:
 
 - conversation turns and signals
-- preferences and app/runtime data
-- memory-search data and other local SQLite-backed state
+- memory-search data
+- structured memory logs
 
-If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
+If `MASH_DATA_DIR` is not set, the SQLite fallback root is `/var/lib/mash`.
 
-Hosted runtime durability and observability events require Postgres via `MASH_RUNTIME_DATABASE_URL`.
+Hosted runtime durability and observability events are separate and use Postgres via `MASH_RUNTIME_DATABASE_URL`.
 
 ## Local setup
 
@@ -88,17 +89,13 @@ flowchart TD
     D --> F["MashAgent"]
 ```
 
-Persistence is runtime-level, not app-level. Each agent stores state under:
+Persistence is runtime-level, not app-level. Each agent gets a `memory_store`
+from `AgentSpec.build_memory_store()`, which defaults to:
 
-- `<MASH_DATA_DIR>/<agent_id>/state.db`
+- Postgres when `MASH_MEMORY_DATABASE_URL` is set
+- otherwise SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`
 
-That SQLite database now carries multiple persistence concerns:
-
-- conversation turns and signals
-- app/runtime data
-- memory-search data and other local SQLite-backed state
-
-If `MASH_DATA_DIR` is not set, the runtime falls back to `/var/lib/mash`.
+If `MASH_DATA_DIR` is not set, the SQLite fallback root is `/var/lib/mash`.
 
 ## Agent Runtime
 
@@ -301,6 +298,7 @@ Run Pilot from the activated repo environment:
 export OPENAI_API_KEY=...
 export MASH_DATA_DIR=.mash
 export MASH_RUNTIME_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime
+export MASH_MEMORY_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash_memory
 
 python -m pilot.spec \
   --workspace-root /Users/sid/Projects/mashpy \
@@ -361,6 +359,7 @@ from mash.api import MashHostConfig, run_host
 from my_app import build_host
 
 os.environ["MASH_RUNTIME_DATABASE_URL"] = "postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime"
+os.environ["MASH_MEMORY_DATABASE_URL"] = "postgresql://postgres:postgres@127.0.0.1:5432/mash_memory"
 run_host(build_host(), config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
 ```
 
@@ -372,6 +371,7 @@ MASH_API_HOST=0.0.0.0 \
 MASH_API_PORT=8000 \
 MASH_DATA_DIR=/var/lib/mash \
 MASH_RUNTIME_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime \
+MASH_MEMORY_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash_memory \
 mash host serve
 ```
 
@@ -400,6 +400,7 @@ docker run \
   -e MASH_API_KEY=secret \
   -e MASH_DATA_DIR=/var/lib/mash \
   -e MASH_RUNTIME_DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/mash_runtime \
+  -e MASH_MEMORY_DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/mash_memory \
   -v $(pwd)/data:/var/lib/mash \
   mashpy/pilot:latest
 ```
@@ -407,8 +408,9 @@ docker run \
 The container contract is:
 
 - `MASH_HOST_APP` points at `module:build_host`
-- `MASH_DATA_DIR` points at the persistent state root
+- `MASH_DATA_DIR` points at the SQLite fallback state root
 - `MASH_RUNTIME_DATABASE_URL` points at the Postgres database used for hosted runtime durability and runtime events
+- `MASH_MEMORY_DATABASE_URL` points at the Postgres database used for agent memory when Postgres-backed memory is desired
 - port `8000` is exposed by default
 - operators mount persistent storage at `/var/lib/mash`
 

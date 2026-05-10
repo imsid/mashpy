@@ -246,4 +246,4 @@ Typical metadata:
 - Expect sparse records: many top-level optional fields are `null`.
 - Expect richer details in `payload` and class-specific `metadata`.
 - `trace_id`, `session_id`, and `query_id` are the main correlation keys across related events.
-- For storage-level debugging, inspect the agent's `state.db` `logs` table rather than looking for a standalone JSONL log file.
+- For storage-level debugging, inspect the agent memory store's logs table rather than looking for a standalone JSONL log file.

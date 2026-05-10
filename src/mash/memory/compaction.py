@@ -41,7 +41,7 @@ async def compact_conversation(
     if turn_limit <= 0:
         raise ValueError("turn_limit must be > 0")
 
-    turns = await store.get_turns(session_id=session_id, limit=None)
+    turns = await store.get_turns(session_id=session_id, app_id=app_id, limit=None)
     if not turns:
         return "", ""
 

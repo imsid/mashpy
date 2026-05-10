@@ -500,6 +500,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["session_total_tokens"], 3)
                 turns = await runtime.store.get_turns(
                     session_id=runtime.session_id,
+                    app_id=runtime.app_id,
                     limit=1,
                 )
                 self.assertEqual(turns[-1]["user_message"], "hi")
@@ -673,7 +674,11 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         0,
                     )
 
-                    turns = await runtime.store.get_turns(session_id="s-tools", limit=1)
+                    turns = await runtime.store.get_turns(
+                        session_id="s-tools",
+                        app_id=runtime.app_id,
+                        limit=1,
+                    )
                     self.assertEqual(len(turns), 1)
                     stored_turn = turns[0]
                     self.assertNotIn("tool_usage", stored_turn["metadata"])

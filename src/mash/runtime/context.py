@@ -45,7 +45,11 @@ async def get_history_turns(
     *,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    return await self.store.get_turns(session_id=session_id, limit=limit)
+    return await self.store.get_turns(
+        session_id=session_id,
+        app_id=self.app_id,
+        limit=limit,
+    )
 
 
 async def list_sessions(self: "AgentRuntime") -> list[dict[str, Any]]:
@@ -62,7 +66,11 @@ async def get_session_total_tokens(
     if not session_id_value:
         raise ValueError("session_id is required")
 
-    turns = await self.store.get_turns(session_id=session_id_value, limit=1)
+    turns = await self.store.get_turns(
+        session_id=session_id_value,
+        app_id=self.app_id,
+        limit=1,
+    )
     if not turns:
         return 0
     value = turns[-1].get("session_total_tokens", 0)
@@ -108,7 +116,11 @@ async def build_context_with_history(
     context = Context(system_prompt=self.system_prompt)
 
     if self.agent.config.conversation_history_turns > 0:
-        turns = await self.store.get_turns(session_id=session_id, limit=None)
+        turns = await self.store.get_turns(
+            session_id=session_id,
+            app_id=self.app_id,
+            limit=None,
+        )
         if turns:
             summary_index = None
             for idx in range(len(turns) - 1, -1, -1):

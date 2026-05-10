@@ -58,9 +58,49 @@ class SQLiteStoreSignalsTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ],
         )
-        turns = await store.get_turns(session_id="session-1", limit=1)
+        turns = await store.get_turns(
+            session_id="session-1",
+            app_id="app-1",
+            limit=1,
+        )
         self.assertEqual(turns[0]["signals"]["unused_tool_tokens"], 42)
         self.assertEqual(turns[0]["signals"]["unused_tools"], ["alpha", "beta"])
+
+    async def test_get_turns_honors_optional_app_id_filter(self) -> None:
+        store = SQLiteStore(":memory:")
+        await store.save_turn(
+            trace_id="turn-app-a",
+            session_id="session-1",
+            app_id="app-a",
+            user_message="hello from a",
+            agent_response="world a",
+            signals={},
+            session_total_tokens=0,
+            metadata={},
+        )
+        await store.save_turn(
+            trace_id="turn-app-b",
+            session_id="session-1",
+            app_id="app-b",
+            user_message="hello from b",
+            agent_response="world b",
+            signals={},
+            session_total_tokens=0,
+            metadata={},
+        )
+
+        filtered = await store.get_turns(
+            session_id="session-1",
+            app_id="app-a",
+            limit=None,
+        )
+        self.assertEqual([turn["turn_id"] for turn in filtered], ["turn-app-a"])
+        other = await store.get_turns(
+            session_id="session-1",
+            app_id="app-b",
+            limit=None,
+        )
+        self.assertEqual([turn["turn_id"] for turn in other], ["turn-app-b"])
 
 if __name__ == "__main__":
     unittest.main()
