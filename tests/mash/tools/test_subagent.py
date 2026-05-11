@@ -160,6 +160,16 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error_source"], "timeout")
         self.assertIn("timed out", payload["error"])
 
+    async def test_error_result_preserves_exception_type_when_message_is_empty(self) -> None:
+        self.client._error = AssertionError()
+
+        result = await self.tool.execute({"agent_id": "research", "prompt": "hello"})
+
+        self.assertTrue(result.is_error)
+        payload = json.loads(result.content)
+        self.assertEqual(payload["error"], "AssertionError")
+        self.assertEqual(payload["error_type"], "AssertionError")
+
     async def test_request_error_returns_structured_payload(self) -> None:
         self.client._events = [
             {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},

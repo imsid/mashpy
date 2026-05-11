@@ -24,6 +24,41 @@ def workflow_id_for(agent_id: str, request_id: str) -> str:
     return f"{agent_id}:{request_id}"
 
 
+async def _run_tool_call_for_workflow(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    workflow_state: dict[str, Any],
+    *,
+    loop_index: int,
+    call_index: int,
+    tool_call: dict[str, Any],
+) -> dict[str, Any]:
+    if str(tool_call.get("name") or "") == "InvokeSubagent":
+        # InvokeSubagent starts a child DBOS workflow. DBOS rejects that when the
+        # call happens from step context, so keep this one tool invocation at
+        # workflow scope while preserving the same result/event behavior.
+        return await run_step_tool_call(
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            workflow_state,
+            tool_call,
+        )
+    return await DBOS.run_step_async(
+        {"name": f"tool.call.{loop_index}.{call_index}"},
+        run_step_tool_call,
+        agent_id,
+        request_id,
+        session_id,
+        trace_id,
+        workflow_state,
+        tool_call,
+    )
+
+
 async def execute_request_workflow(
     agent_id: str,
     request_id: str,
@@ -77,15 +112,15 @@ async def execute_request_workflow(
                     existing_results = list(workflow_state.get("result_payloads") or [])
                     if call_index < len(existing_results):
                         continue
-                    workflow_state = await DBOS.run_step_async(
-                        {"name": f"tool.call.{loop_index}.{call_index}"},
-                        run_step_tool_call,
+                    workflow_state = await _run_tool_call_for_workflow(
                         agent_id,
                         request_id,
                         session_id,
                         trace_id,
                         workflow_state,
-                        {
+                        loop_index=loop_index,
+                        call_index=call_index,
+                        tool_call={
                             "id": tool_call.id,
                             "name": tool_call.name,
                             "arguments": dict(tool_call.arguments or {}),

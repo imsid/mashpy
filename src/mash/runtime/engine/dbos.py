@@ -136,15 +136,23 @@ class DBOSRequestEngine(RequestEngine):
         workflow = _STATE.registered_workflow
         if workflow is None:
             raise RuntimeError("DBOS workflow is not registered")
-        with set_workflow_id(workflow_id_for(self._runtime.app_id, request_id)):
-            await dbos_class.start_workflow_async(
-                workflow,
-                self._runtime.app_id,
-                request_id,
-                message,
-                session_id,
-                dict(request_metadata or {}),
-            )
+        workflow_id = workflow_id_for(self._runtime.app_id, request_id)
+        try:
+            with set_workflow_id(workflow_id):
+                await dbos_class.start_workflow_async(
+                    workflow,
+                    self._runtime.app_id,
+                    request_id,
+                    message,
+                    session_id,
+                    dict(request_metadata or {}),
+                )
+        except Exception as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            raise RuntimeError(
+                f"failed to start DBOS workflow '{workflow_id}' for session "
+                f"'{session_id}': {detail}"
+            ) from exc
 
 
 __all__ = [
