@@ -58,6 +58,19 @@ async def list_sessions(self: "AgentRuntime") -> list[dict[str, Any]]:
     return await self.store.list_sessions(app_id=self.app_id)
 
 
+async def get_session_signals(
+    self: "AgentRuntime",
+    session_id: str,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    return await self.store.get_session_signals(
+        session_id=session_id,
+        app_id=self.app_id,
+        limit=limit,
+    )
+
+
 async def get_session_total_tokens(
     self: "AgentRuntime",
     session_id: str | None = None,

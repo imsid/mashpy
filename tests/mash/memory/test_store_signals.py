@@ -102,5 +102,55 @@ class SQLiteStoreSignalsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([turn["turn_id"] for turn in other], ["turn-app-b"])
 
+    async def test_get_session_signals_returns_chronological_turn_rows(self) -> None:
+        store = SQLiteStore(":memory:")
+        await store.save_turn(
+            trace_id="turn-1",
+            session_id="session-1",
+            app_id="app-a",
+            user_message="hello 1",
+            agent_response="world 1",
+            signals={"unused_tool_tokens": 42, "unused_tools": ["alpha"]},
+            session_total_tokens=0,
+            metadata={},
+        )
+        await store.save_turn(
+            trace_id="turn-2",
+            session_id="session-1",
+            app_id="app-a",
+            user_message="hello 2",
+            agent_response="world 2",
+            signals={},
+            session_total_tokens=0,
+            metadata={},
+        )
+        await store.save_turn(
+            trace_id="turn-3",
+            session_id="session-1",
+            app_id="app-b",
+            user_message="hello 3",
+            agent_response="world 3",
+            signals={"unused_tool_tokens": 7},
+            session_total_tokens=0,
+            metadata={},
+        )
+
+        rows = await store.get_session_signals(
+            session_id="session-1",
+            app_id="app-a",
+            limit=None,
+        )
+        limited = await store.get_session_signals(
+            session_id="session-1",
+            app_id="app-a",
+            limit=1,
+        )
+
+        self.assertEqual([row["turn_id"] for row in rows], ["turn-1", "turn-2"])
+        self.assertEqual(rows[0]["signals"]["unused_tool_tokens"], 42)
+        self.assertEqual(rows[0]["signals"]["unused_tools"], ["alpha"])
+        self.assertEqual(rows[1]["signals"], {})
+        self.assertEqual([row["turn_id"] for row in limited], ["turn-2"])
+
 if __name__ == "__main__":
     unittest.main()

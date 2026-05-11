@@ -76,6 +76,15 @@ class MemoryStore(Protocol):
         """Get conversation turns for a session."""
         ...
 
+    async def get_session_signals(
+        self,
+        session_id: str,
+        app_id: str,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get chronological per-turn signal payloads for a session."""
+        ...
+
     async def list_sessions(
         self,
         app_id: str,

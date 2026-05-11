@@ -259,6 +259,44 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(other), 1)
 
+    async def test_get_session_signals_returns_chronological_turn_rows(self) -> None:
+        first = await self._save_turn(
+            session_id="session-a",
+            user_message="first",
+            agent_response="one",
+            signals={"unused_tool_tokens": 42, "unused_tools": ["alpha"]},
+        )
+        second = await self._save_turn(
+            session_id="session-a",
+            user_message="second",
+            agent_response="two",
+            signals={},
+        )
+        await self._save_turn(
+            session_id="session-a",
+            user_message="other app",
+            agent_response="skip",
+            app_id=self.other_app_id,
+            signals={"unused_tool_tokens": 7},
+        )
+
+        rows = await self.store.get_session_signals(
+            session_id="session-a",
+            app_id=self.app_id,
+            limit=None,
+        )
+        limited = await self.store.get_session_signals(
+            session_id="session-a",
+            app_id=self.app_id,
+            limit=1,
+        )
+
+        self.assertEqual([row["turn_id"] for row in rows], [first, second])
+        self.assertEqual(rows[0]["signals"]["unused_tool_tokens"], 42)
+        self.assertEqual(rows[0]["signals"]["unused_tools"], ["alpha"])
+        self.assertEqual(rows[1]["signals"], {})
+        self.assertEqual([row["turn_id"] for row in limited], [second])
+
     async def test_list_sessions_and_latest_session_are_app_scoped(self) -> None:
         await self._save_turn(
             session_id="session-a",

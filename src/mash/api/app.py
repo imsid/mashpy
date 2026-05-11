@@ -357,6 +357,26 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
         return _success({"turns": await agent.get_history_turns(session_id, limit=limit)})
 
+    @api.get("/agent/{agent_id}/sessions/{session_id}/signals")
+    async def get_session_signals(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        limit: Optional[int] = Query(default=None),
+    ) -> dict[str, Any]:
+        agent = _get_agent(request, agent_id)
+        normalized_session_id = session_id.strip()
+        if not normalized_session_id:
+            raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
+        return _success(
+            {
+                "agent_id": agent.app_id,
+                "session_id": normalized_session_id,
+                "definitions": agent.get_signal_definitions(),
+                "turns": await agent.get_session_signals(normalized_session_id, limit=limit),
+            }
+        )
+
     @api.post("/agent/{agent_id}/sessions/{session_id}/compact")
     async def compact_session(
         request: Request,

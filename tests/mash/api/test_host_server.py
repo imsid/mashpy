@@ -106,6 +106,83 @@ def test_agent_scoped_request_and_session_routes() -> None:
             assert len(history.json()["data"]["turns"]) == 1
 
 
+def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            first = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s1"},
+            )
+            assert first.status_code == 200
+            first_request_id = first.json()["data"]["request_id"]
+            first_payload = _collect_terminal_response(client, "primary", first_request_id)
+
+            second = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello again", "session_id": "s1"},
+            )
+            assert second.status_code == 200
+            second_request_id = second.json()["data"]["request_id"]
+            second_payload = _collect_terminal_response(client, "primary", second_request_id)
+
+            response = client.get("/api/v1/agent/primary/sessions/s1/signals")
+            assert response.status_code == 200
+            payload = response.json()["data"]
+            assert payload["agent_id"] == "primary"
+            assert payload["session_id"] == "s1"
+            assert set(payload["definitions"].keys()) == {"unused_tools", "unused_tool_tokens"}
+            assert payload["definitions"]["unused_tools"]["value_type"] == "string_list"
+            assert payload["definitions"]["unused_tool_tokens"]["computed_at"] == "turn_complete"
+            assert [turn["turn_id"] for turn in payload["turns"]] == [
+                first_payload["turn_id"],
+                second_payload["turn_id"],
+            ]
+            assert "unused_tools" in payload["turns"][0]["signals"]
+            assert "unused_tool_tokens" in payload["turns"][0]["signals"]
+
+            limited = client.get("/api/v1/agent/primary/sessions/s1/signals", params={"limit": 1})
+            assert limited.status_code == 200
+            limited_payload = limited.json()["data"]
+            assert [turn["turn_id"] for turn in limited_payload["turns"]] == [
+                second_payload["turn_id"]
+            ]
+
+
+def test_session_signals_route_returns_definitions_for_empty_session() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.get("/api/v1/agent/primary/sessions/missing/signals")
+            assert response.status_code == 200
+            payload = response.json()["data"]
+            assert payload["agent_id"] == "primary"
+            assert payload["session_id"] == "missing"
+            assert set(payload["definitions"].keys()) == {"unused_tools", "unused_tool_tokens"}
+            assert payload["turns"] == []
+
+
+def test_session_signals_route_rejects_blank_session_id() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.get("/api/v1/agent/primary/sessions/%20/signals")
+            assert response.status_code == 400
+            payload = response.json()["error"]
+            assert payload["code"] == "INVALID_REQUEST"
+            assert payload["message"] == "session_id is required"
+
+
+def test_session_signals_route_returns_not_found_for_unknown_agent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.get("/api/v1/agent/missing/sessions/s1/signals")
+            assert response.status_code == 404
+            payload = response.json()["error"]
+            assert payload["code"] == "AGENT_NOT_FOUND"
+
+
 def test_invoke_route_is_removed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

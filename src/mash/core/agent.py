@@ -88,6 +88,12 @@ class Agent:
         """Set the signal collector for automatic signal collection."""
         self._signal_collector = collector
 
+    def get_signal_definitions(self) -> Dict[str, Dict[str, Any]]:
+        """Return registered signal definitions keyed by signal name."""
+        if self._signal_collector is None:
+            return {}
+        return self._signal_collector.get_signal_definitions()
+
     def set_event_logger(self, logger: EventLogger, session_id: str) -> None:
         """Set the event logger for automatic event logging.
 

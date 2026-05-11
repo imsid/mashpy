@@ -8,6 +8,35 @@ from mash.memory.signals import build_default_signal_collector
 
 
 class DefaultSignalCollectorTests(unittest.TestCase):
+    def test_default_collector_exposes_built_in_signal_definitions(self) -> None:
+        collector = build_default_signal_collector()
+
+        self.assertEqual(
+            collector.get_signal_definitions(),
+            {
+                "unused_tools": {
+                    "name": "unused_tools",
+                    "value_type": "string_list",
+                    "description": (
+                        "Tools offered to the model but never invoked during the "
+                        "completed trace."
+                    ),
+                    "computed_at": "turn_complete",
+                    "persisted": True,
+                },
+                "unused_tool_tokens": {
+                    "name": "unused_tool_tokens",
+                    "value_type": "integer",
+                    "description": (
+                        "Estimated token footprint of tool definitions offered but "
+                        "never invoked during the completed trace."
+                    ),
+                    "computed_at": "turn_complete",
+                    "persisted": True,
+                },
+            },
+        )
+
     def test_all_tools_are_unused_when_trace_never_calls_any_tool(self) -> None:
         collector = build_default_signal_collector()
         signals = collector.collect(

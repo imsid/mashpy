@@ -61,6 +61,7 @@ What it stores:
 Main readers:
 - `_get_signals_for_turn()`
 - indirectly `get_turns()`
+- indirectly `get_session_signals()`
 
 ### `fts_turns`
 SQLite FTS5 virtual table used for keyword search.
@@ -105,6 +106,11 @@ Why they exist:
 `get_turns(session_id, ...)`
 - Reads from `turns`
 - Hydrates signals from `signals`
+
+`get_session_signals(session_id, ...)`
+- Reads turn ids/timestamps from `turns`
+- Hydrates grouped per-turn signal payloads from `signals`
+- Returns turns with empty `signals` objects when no signal rows exist
 
 `list_sessions(app_id)`
 - Aggregates from `turns`

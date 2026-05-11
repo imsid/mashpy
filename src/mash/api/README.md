@@ -136,6 +136,22 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `limit` optional
 - Returns `turns`.
 
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}/signals`
+- Returns the session's signal surface for one agent.
+- Path params:
+  - `agent_id`
+  - `session_id`
+- Query params:
+  - `limit` optional
+- Returns:
+  - `agent_id`
+  - `session_id`
+  - `definitions`: map keyed by signal name describing the runtime's built-in signals
+  - `turns`: chronological per-turn signal payloads with `turn_id`, `created_at`, and `signals`
+- Notes:
+  - `definitions` is always returned, even when the session has no turns.
+  - `turns[*].signals` contains the persisted per-turn values and may be `{}`.
+
 `POST /api/v1/agent/{agent_id}/sessions/{session_id}/compact`
 - Compacts a session and resets token accounting if requested.
 - Path params:

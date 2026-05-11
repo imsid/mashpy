@@ -460,6 +460,50 @@ class SQLiteStore(MemoryStore):
             )
         return turns
 
+    async def get_session_signals(
+        self,
+        session_id: str,
+        app_id: str,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        await self.open()
+        params: list[Any] = [session_id, app_id]
+        async with self._lock:
+            if limit is None:
+                rows = await self._fetchall_unlocked(
+                    """
+                    SELECT turn_id, created_at
+                    FROM turns
+                    WHERE session_id = ? AND app_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    params,
+                )
+            else:
+                rows = await self._fetchall_unlocked(
+                    """
+                    SELECT turn_id, created_at
+                    FROM turns
+                    WHERE session_id = ? AND app_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    [*params, max(0, int(limit))],
+                )
+                rows = list(reversed(rows))
+
+            turn_ids = [str(row["turn_id"]) for row in rows]
+            signals_by_turn = await self._get_signals_for_turn_ids_unlocked(turn_ids)
+
+        return [
+            {
+                "turn_id": str(row["turn_id"]),
+                "created_at": float(row["created_at"] or 0.0),
+                "signals": signals_by_turn.get(str(row["turn_id"]), {}),
+            }
+            for row in rows
+        ]
+
     async def list_sessions(self, app_id: str) -> List[Dict[str, Any]]:
         await self.open()
         async with self._lock:

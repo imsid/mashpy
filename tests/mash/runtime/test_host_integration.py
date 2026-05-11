@@ -58,6 +58,17 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     sessions = await primary.list_sessions()
                     self.assertEqual(len(sessions), 1)
                     self.assertEqual(sessions[0]["session_id"], "s-1")
+
+                    definitions = primary.get_signal_definitions()
+                    self.assertEqual(set(definitions.keys()), {"unused_tools", "unused_tool_tokens"})
+                    self.assertEqual(definitions["unused_tools"]["value_type"], "string_list")
+                    self.assertEqual(definitions["unused_tool_tokens"]["computed_at"], "turn_complete")
+
+                    signal_rows = await primary.get_session_signals("s-1")
+                    self.assertGreaterEqual(len(signal_rows), 1)
+                    self.assertEqual(signal_rows[-1]["turn_id"], result["turn_id"])
+                    self.assertIn("unused_tools", signal_rows[-1]["signals"])
+                    self.assertIn("unused_tool_tokens", signal_rows[-1]["signals"])
                 finally:
                     await host.close()
 

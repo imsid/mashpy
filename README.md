@@ -77,7 +77,7 @@ The normal execution path is:
 
 1. An app defines one or more `AgentSpec`s.
 2. `MashAgentHostBuilder` composes those specs into a `MashAgentHost`.
-3. `mash.api` starts the host and exposes HTTP endpoints for agent requests, sessions, history, and telemetry.
+3. `mash.api` starts the host and exposes HTTP endpoints for agent requests, sessions, session signals, history, and telemetry.
 4. `mash.cli` talks to that HTTP API as a remote client.
 
 ```mermaid

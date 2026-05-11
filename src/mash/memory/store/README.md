@@ -115,6 +115,19 @@ Behavior:
 - Missing pairs are omitted.
 - Returns `None` when no requested pairs are valid or found.
 
+`get_session_signals(session_id, app_id, limit=None) -> list[dict]`
+- Returns chronological per-turn signal payloads for one session.
+- Expected shape per item:
+  - `turn_id`
+  - `created_at`
+  - `signals`
+
+Behavior:
+- The contract is chronological turn order.
+- `app_id` is required and scopes reads to one agent.
+- Turns with no persisted signals must still be returned with `signals = {}`.
+- This method returns signal values only; signal definitions are runtime-owned metadata surfaced by the runtime/API layer.
+
 ### Session Listing And Trace Lookup
 
 `list_sessions(app_id) -> list[dict]`

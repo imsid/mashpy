@@ -11,6 +11,7 @@ from mash.mcp.types import MCPServerConfig
 
 from ..core.config import SystemPrompt
 from ..logging import EventLogger
+from ..memory.signals import build_default_signal_collector
 from . import context as context_helpers
 from . import factory as factory_helpers
 from . import requests as request_helpers
@@ -55,6 +56,7 @@ class AgentRuntime:
         )
         self.store = self.memory_store
         self.event_logger = EventLogger(self.runtime_store)
+        self.signal_collector = build_default_signal_collector()
 
         self._is_open = False
         self._shutdown_started = False
@@ -162,6 +164,17 @@ class AgentRuntime:
 
     async def list_sessions(self) -> list[dict[str, Any]]:
         return await context_helpers.list_sessions(self)
+
+    async def get_session_signals(
+        self,
+        session_id: str,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return await context_helpers.get_session_signals(self, session_id, limit=limit)
+
+    def get_signal_definitions(self) -> dict[str, dict[str, Any]]:
+        return dict(self.signal_collector.get_signal_definitions())
 
     async def get_session_total_tokens(
         self,

@@ -163,6 +163,11 @@ This is the store used for conversation history and long-lived agent memory beha
 By default it uses `MASH_MEMORY_DATABASE_URL` when set, otherwise it falls back
 to the per-agent SQLite `state.db` file under `MASH_DATA_DIR`.
 
+Signal definitions are runtime-owned metadata, not persisted rows. Hosted
+runtimes expose those definitions from the same collector used during terminal
+signal collection so session-signal readers see the exact built-in signal set
+the runtime computes.
+
 ### `runtime_store`
 
 Built in `service.py` as a `RuntimeStore` implementation.
@@ -183,6 +188,7 @@ This is intentionally append-only and request-scoped.
 - [`service.py`](./service.py)
   - `AgentRuntime`
   - runtime lifecycle, owned state, public runtime API
+  - includes session history reads, session signal reads, and signal definition reads
 
 - [`factory.py`](./factory.py)
   - builds/configures the in-process `Agent`

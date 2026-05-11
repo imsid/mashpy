@@ -41,7 +41,11 @@ def build_agent_instance(
         config.system_prompt = configured_prompt
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
-    agent.set_signal_collector(build_default_signal_collector())
+    collector = getattr(self, "signal_collector", None)
+    if collector is None:
+        collector = build_default_signal_collector()
+        self.signal_collector = collector
+    agent.set_signal_collector(collector)
     chain_renderer = self.get_chain_renderer()
     if chain_renderer is not None:
         agent.set_chain_renderer(chain_renderer)

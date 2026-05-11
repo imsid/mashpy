@@ -12,7 +12,7 @@
 - `store/`: storage protocol and concrete backends such as SQLite.
 - `search/`: retrieval service, parser/rerank logic, and typed search results.
 - `compaction.py`: memory compaction support.
-- `signals.py`: memory-related signaling hooks.
+- `signals.py`: memory-related signaling hooks plus typed signal definitions.
 
 ## Public Exports
 - `MemorySearchService`
@@ -24,3 +24,5 @@
 ## Role In The System
 - Memory is shared infrastructure for hosted agents and built-in specialists.
 - Persistence concerns belong in `store/`, while retrieval concerns belong in `search/`.
+- Signal values are persisted per turn by the active memory-store backend.
+- Signal definitions are runtime-owned metadata returned alongside per-turn signal reads; they are not persisted as store rows.
