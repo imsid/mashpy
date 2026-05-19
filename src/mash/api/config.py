@@ -27,6 +27,18 @@ class MashHostConfig:
     enable_observability: bool = True
     default_events_limit: int = 2000
     default_search_limit: int = 10
+    api_logging_enabled: bool = True
+    api_log_api_only: bool = True
+    api_log_body_enabled: bool = True
+    api_log_body_max_bytes: int = 8192
+    api_log_response_body_max_bytes: int = 2048
+    api_log_excluded_paths: Sequence[str] = ("/api/v1/health",)
+    api_log_redacted_headers: Sequence[str] = (
+        "authorization",
+        "x-api-key",
+        "cookie",
+        "set-cookie",
+    )
 
     def resolved_api_key(self) -> Optional[str]:
         value = (self.api_key or "").strip()

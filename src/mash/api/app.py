@@ -15,6 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from mash.api.logging import (
+    PostgresAPIEventStore,
+    build_api_event_filter,
+    serialize_api_event,
+)
+from mash.api.middleware import APILoggingMiddleware
 from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
@@ -48,6 +54,7 @@ class APIError(RuntimeError):
 @dataclass
 class _AppRuntimeState:
     host: AgentHost
+    api_event_store: Any
     api_key: Optional[str]
     observability_enabled: bool
     default_events_limit: int
@@ -67,6 +74,19 @@ class CompactSessionRequest(BaseModel):
 class RunWorkflowRequest(BaseModel):
     dedup_key: Optional[str] = None
     input: dict[str, Any] = Field(default_factory=dict)
+
+
+class APIEventSearchRequest(BaseModel):
+    method: Optional[str] = None
+    path: Optional[str] = None
+    path_prefix: Optional[str] = None
+    status_code: Optional[int] = None
+    status_code_min: Optional[int] = None
+    status_code_max: Optional[int] = None
+    from_ts: Optional[float] = None
+    to_ts: Optional[float] = None
+    after_event_id: int = 0
+    limit: Optional[int] = None
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -159,6 +179,10 @@ def _telemetry_event_source() -> str:
     return "runtime_event_log"
 
 
+def _api_event_source() -> str:
+    return "api_event_log"
+
+
 def _build_memory_search_service(agent: Any) -> MemorySearchService:
     return MemorySearchService(
         agent.memory_store,
@@ -200,8 +224,13 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             resolved_config.resolved_runtime_database_url()
         )
         await host.start()
+        api_event_store = PostgresAPIEventStore(
+            resolved_config.resolved_runtime_database_url() or ""
+        )
+        await api_event_store.open()
         application.state.runtime_state = _AppRuntimeState(
             host=host,
+            api_event_store=api_event_store,
             api_key=resolved_config.resolved_api_key(),
             observability_enabled=resolved_config.enable_observability,
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
@@ -212,6 +241,7 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
         finally:
             state = getattr(application.state, "runtime_state", None)
             if state is not None:
+                await state.api_event_store.close()
                 await state.host.close()
             application.state.runtime_state = None
 
@@ -227,6 +257,8 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             allow_headers=["*"],
             allow_credentials=False,
         )
+
+    app.add_middleware(APILoggingMiddleware, config=resolved_config)
 
     @app.exception_handler(APIError)
     async def _api_error_handler(_: Request, exc: APIError) -> JSONResponse:
@@ -601,6 +633,117 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                         pass
                     yield _build_observability_sse_payload(
                         json.dumps(_serialize_runtime_event(event), ensure_ascii=True)
+                    )
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    @api.get("/telemetry/api/events")
+    async def get_api_events(
+        request: Request,
+        method: Optional[str] = Query(default=None),
+        path: Optional[str] = Query(default=None),
+        status_code: Optional[int] = Query(default=None),
+        from_ts: Optional[float] = Query(default=None),
+        to_ts: Optional[float] = Query(default=None),
+        limit: Optional[int] = Query(default=None),
+        after_event_id: int = Query(default=0),
+    ) -> dict[str, Any]:
+        state = _state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+        filters = build_api_event_filter(
+            method=method,
+            path=path,
+            status_code=status_code,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            limit=limit or state.default_events_limit,
+            after_event_id=after_event_id,
+        )
+        events = [serialize_api_event(item) for item in await state.api_event_store.list_events(filters)]
+        return _success(
+            {
+                "events": events,
+                "source": _api_event_source(),
+                "limit": filters.limit,
+            }
+        )
+
+    @api.post("/telemetry/api/events/search")
+    async def search_api_events(request: Request, body: APIEventSearchRequest) -> dict[str, Any]:
+        state = _state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+        filters = build_api_event_filter(
+            method=body.method,
+            path=body.path,
+            path_prefix=body.path_prefix,
+            status_code=body.status_code,
+            status_code_min=body.status_code_min,
+            status_code_max=body.status_code_max,
+            from_ts=body.from_ts,
+            to_ts=body.to_ts,
+            limit=body.limit or state.default_events_limit,
+            after_event_id=body.after_event_id,
+        )
+        events = [serialize_api_event(item) for item in await state.api_event_store.list_events(filters)]
+        return _success(
+            {
+                "events": events,
+                "source": _api_event_source(),
+                "limit": filters.limit,
+            }
+        )
+
+    @api.get("/telemetry/api/events/stream")
+    async def stream_api_events(
+        request: Request,
+        method: Optional[str] = Query(default=None),
+        path: Optional[str] = Query(default=None),
+        status_code: Optional[int] = Query(default=None),
+        from_ts: Optional[float] = Query(default=None),
+        to_ts: Optional[float] = Query(default=None),
+    ) -> StreamingResponse:
+        state = _state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        async def _generate() -> AsyncIterator[str]:
+            latest_filters = build_api_event_filter(
+                method=method,
+                path=path,
+                status_code=status_code,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                limit=1,
+            )
+            latest = await state.api_event_store.list_events(latest_filters)
+            last_seen = int(latest[-1].api_event_id) if latest else 0
+            while True:
+                if await request.is_disconnected():
+                    break
+                filters = build_api_event_filter(
+                    method=method,
+                    path=path,
+                    status_code=status_code,
+                    from_ts=from_ts,
+                    to_ts=to_ts,
+                    after_event_id=last_seen,
+                    limit=state.default_events_limit,
+                )
+                events = await state.api_event_store.list_events(filters)
+                if not events:
+                    yield ": keep-alive\n\n"
+                    await asyncio.sleep(0.25)
+                    continue
+                for event in events:
+                    last_seen = max(last_seen, int(event.api_event_id))
+                    yield _build_observability_sse_payload(
+                        json.dumps(serialize_api_event(event), ensure_ascii=True)
                     )
 
         return StreamingResponse(

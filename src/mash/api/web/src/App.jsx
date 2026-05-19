@@ -12,10 +12,12 @@ const EVENT_STYLES = {
   debug: 'bg-rose-100 text-rose-800 border-rose-200',
   mcp: 'bg-indigo-100 text-indigo-800 border-indigo-200',
   memory: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+  api: 'bg-violet-100 text-violet-800 border-violet-200',
   default: 'border-slate-200 bg-slate-100 text-slate-600'
 };
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState('traces');
   const [events, setEvents] = useState([]);
   const [selectedTraceId, setSelectedTraceId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
@@ -25,6 +27,15 @@ export default function App() {
   const [eventSource, setEventSource] = useState('');
   const [health, setHealth] = useState({ memorySearchAvailable: false });
   const [telemetryAgentId, setTelemetryAgentId] = useState(null);
+  const [apiEvents, setApiEvents] = useState([]);
+  const [apiStatus, setApiStatus] = useState({ connected: false, error: null });
+  const [apiFilters, setApiFilters] = useState({
+    method: '',
+    statusFamily: '',
+    path: ''
+  });
+  const [selectedApiEventId, setSelectedApiEventId] = useState(null);
+  const [apiLive, setApiLive] = useState(true);
 
   const [searchText, setSearchText] = useState('');
   const [searchTarget, setSearchTarget] = useState('user');
@@ -61,6 +72,16 @@ export default function App() {
         }
 
         const eventsData = apiData(eventsPayload) || {};
+        const apiEventsResponse = await fetch(
+          `${API_BASE}/telemetry/api/events?${new URLSearchParams({
+            limit: String(DEFAULT_LIMIT)
+          }).toString()}`
+        );
+        const apiEventsPayload = await apiEventsResponse.json().catch(() => ({}));
+        if (!apiEventsResponse.ok) {
+          throw new Error(apiErrorMessage(apiEventsPayload, `API events request failed (${apiEventsResponse.status})`));
+        }
+        const apiEventsData = apiData(apiEventsPayload) || {};
         if (cancelled) {
           return;
         }
@@ -72,6 +93,7 @@ export default function App() {
           )
         });
         setEvents(Array.isArray(eventsData.events) ? eventsData.events : []);
+        setApiEvents(Array.isArray(apiEventsData.events) ? apiEventsData.events : []);
         setEventSource(eventsData.source || '');
       } catch (err) {
         if (cancelled) {
@@ -110,6 +132,30 @@ export default function App() {
 
     return () => stream.close();
   }, [telemetryAgentId]);
+
+  useEffect(() => {
+    if (!apiLive) {
+      setApiStatus((prev) => ({ ...prev, connected: false }));
+      return undefined;
+    }
+
+    const stream = new EventSource(`${API_BASE}/telemetry/api/events/stream`);
+    stream.onopen = () => setApiStatus({ connected: true, error: null });
+    stream.onerror = () => setApiStatus({ connected: false, error: 'API stream disconnected' });
+    stream.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        setApiEvents((prev) => {
+          const next = upsertById(prev, event, 'api_event_id');
+          return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
+        });
+      } catch (err) {
+        setApiStatus((prev) => ({ ...prev, error: String(err) }));
+      }
+    };
+
+    return () => stream.close();
+  }, [apiLive]);
 
   const sessionMap = useMemo(() => {
     const map = new Map();
@@ -217,6 +263,27 @@ export default function App() {
   );
   const baseTs = selectedEvents.length ? timestamp(selectedEvents[0]) : null;
   const canSearch = Boolean(selectedSessionId && selectedSessionAppId && health.memorySearchAvailable);
+  const filteredApiEvents = useMemo(
+    () => filterApiEvents(apiEvents, apiFilters),
+    [apiEvents, apiFilters]
+  );
+  const selectedApiEvent =
+    filteredApiEvents.find((event) => String(event.api_event_id) === String(selectedApiEventId)) ||
+    filteredApiEvents[0] ||
+    null;
+
+  useEffect(() => {
+    if (!selectedApiEventId && filteredApiEvents.length > 0) {
+      setSelectedApiEventId(filteredApiEvents[0].api_event_id);
+    }
+    if (
+      selectedApiEventId &&
+      filteredApiEvents.length > 0 &&
+      !filteredApiEvents.some((event) => String(event.api_event_id) === String(selectedApiEventId))
+    ) {
+      setSelectedApiEventId(filteredApiEvents[0].api_event_id);
+    }
+  }, [filteredApiEvents, selectedApiEventId]);
 
   const toggleExpand = (key) => {
     setExpanded((prev) => {
@@ -319,6 +386,10 @@ export default function App() {
     setSearchError('Selected memory hit is not present in the loaded telemetry trace list for this session.');
   };
 
+  const handleApiFilterChange = (key, value) => {
+    setApiFilters((prev) => ({ ...prev, [key]: value }));
+  };
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#f8fafc,_#fef3c7_45%,_#f1f5f9)] text-slate-900">
       <header className="border-b border-slate-200/70 bg-white/70 backdrop-blur">
@@ -332,23 +403,51 @@ export default function App() {
               <p className="text-xs text-slate-500">Trace debugger - {eventSource || 'loading event source'}</p>
             </div>
           </div>
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+              {['traces', 'api'].map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                    activeTab === tab
+                      ? 'bg-slate-900 text-amber-50'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                  onClick={() => setActiveTab(tab)}
+                >
+                  {tab === 'traces' ? 'Traces' : 'API'}
+                </button>
+              ))}
+            </div>
             <span
               className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 ${
-                status.connected
+                activeTab === 'api'
+                  ? apiStatus.connected
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-slate-200 bg-slate-100 text-slate-500'
+                  : status.connected
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                   : 'border-slate-200 bg-slate-100 text-slate-500'
               }`}
             >
-              <span className={`h-2 w-2 rounded-full ${status.connected ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-              {status.connected ? 'Live' : 'Paused'}
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  (activeTab === 'api' ? apiStatus.connected : status.connected) ? 'bg-emerald-500' : 'bg-slate-400'
+                }`}
+              />
+              {(activeTab === 'api' ? apiStatus.connected : status.connected) ? 'Live' : 'Paused'}
             </span>
           </div>
         </div>
       </header>
 
       <main className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-6 py-6 lg:grid-cols-[320px_1fr]">
-        <aside className="rounded-3xl border border-slate-200/70 bg-white/80 p-4 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.4)]">
+        <aside
+          className={`rounded-3xl border border-slate-200/70 bg-white/80 p-4 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.4)] ${
+            activeTab === 'traces' ? '' : 'hidden'
+          }`}
+        >
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
               Sessions
@@ -420,7 +519,11 @@ export default function App() {
           </div>
         </aside>
 
-        <section className="rounded-3xl border border-slate-200/70 bg-white/80 p-6 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.4)]">
+        <section
+          className={`rounded-3xl border border-slate-200/70 bg-white/80 p-6 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.4)] ${
+            activeTab === 'traces' ? '' : 'hidden'
+          }`}
+        >
           <div className="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -616,12 +719,185 @@ export default function App() {
             })}
           </div>
         </section>
+        <section
+          className={`lg:col-span-2 rounded-3xl border border-slate-200/70 bg-white/80 p-6 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.4)] ${
+            activeTab === 'api' ? '' : 'hidden'
+          }`}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/70 pb-4">
+            <div>
+              <h2 className="text-xl font-semibold tracking-tight font-display">API Requests</h2>
+              <p className="text-sm text-slate-500">
+                {filteredApiEvents.length} shown from {apiEvents.length} logged requests
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <button
+                type="button"
+                className={`rounded-full border px-3 py-1 shadow-sm transition ${
+                  apiLive
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+                onClick={() => setApiLive((value) => !value)}
+              >
+                {apiLive ? 'Live' : 'Paused'}
+              </button>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+                {apiStatus.connected ? 'stream connected' : 'stream idle'}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <select
+              value={apiFilters.method}
+              onChange={(event) => handleApiFilterChange('method', event.target.value)}
+              className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400"
+            >
+              <option value="">All methods</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+            <select
+              value={apiFilters.statusFamily}
+              onChange={(event) => handleApiFilterChange('statusFamily', event.target.value)}
+              className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400"
+            >
+              <option value="">All statuses</option>
+              <option value="2">2xx</option>
+              <option value="3">3xx</option>
+              <option value="4">4xx</option>
+              <option value="5">5xx</option>
+            </select>
+            <input
+              value={apiFilters.path}
+              onChange={(event) => handleApiFilterChange('path', event.target.value)}
+              placeholder="Path contains"
+              className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-slate-400"
+            />
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-[0.2em] text-slate-500">
+                  <tr>
+                    <th className="px-3 py-3 font-semibold">Method</th>
+                    <th className="px-3 py-3 font-semibold">Path</th>
+                    <th className="px-3 py-3 font-semibold">Status</th>
+                    <th className="px-3 py-3 font-semibold">Duration</th>
+                    <th className="px-3 py-3 font-semibold">Event</th>
+                    <th className="px-3 py-3 font-semibold">Time</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredApiEvents.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-8 text-center text-sm text-slate-500" colSpan={6}>
+                        No API requests match the current filters.
+                      </td>
+                    </tr>
+                  )}
+                  {filteredApiEvents.map((event) => {
+                    const selected = String(event.api_event_id) === String(selectedApiEvent?.api_event_id);
+                    return (
+                      <tr
+                        key={event.api_event_id}
+                        className={`cursor-pointer transition ${
+                          selected ? 'bg-sky-50' : 'hover:bg-slate-50'
+                        }`}
+                        onClick={() => setSelectedApiEventId(event.api_event_id)}
+                      >
+                        <td className="px-3 py-3 font-mono text-xs text-slate-700">{event.method}</td>
+                        <td className="max-w-[280px] truncate px-3 py-3 font-mono text-xs text-slate-800">
+                          {event.path}
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(event.status_code)}`}>
+                            {event.status_code}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 text-xs text-slate-600">{event.duration_ms}ms</td>
+                        <td className="max-w-[160px] truncate px-3 py-3 font-mono text-[11px] text-slate-500">
+                          {event.api_event_id}
+                        </td>
+                        <td className="px-3 py-3 text-xs text-slate-500">{formatTime(timestamp(event))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              {selectedApiEvent ? (
+                <div>
+                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-violet-200 bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-800">
+                          {selectedApiEvent.method}
+                        </span>
+                        <span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(selectedApiEvent.status_code)}`}>
+                          {selectedApiEvent.status_code}
+                        </span>
+                      </div>
+                      <p className="mt-2 break-all font-mono text-sm text-slate-800">{selectedApiEvent.path}</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-600">
+                      {selectedApiEvent.duration_ms}ms
+                    </span>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-3 text-xs text-slate-600 sm:grid-cols-2">
+                    <Detail label="API Event ID" value={selectedApiEvent.api_event_id} />
+                    <Detail label="Client" value={selectedApiEvent.client_host || 'unknown'} />
+                    <Detail label="Captured" value={bodyStatus(selectedApiEvent.request_body)} />
+                  </div>
+                  <JsonBlock title="Query Params" value={selectedApiEvent.query_params} />
+                  <JsonBlock title="Request Headers" value={selectedApiEvent.request_headers} />
+                  <JsonBlock title="Request Body" value={selectedApiEvent.request_body} />
+                  <JsonBlock title="Response Headers" value={selectedApiEvent.response_headers} />
+                  <JsonBlock title="Response Body" value={selectedApiEvent.response_body} />
+                  <JsonBlock title="Raw Event" value={selectedApiEvent} />
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                  Select an API request to inspect.
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
       </main>
-      {status.error && (
+      {(activeTab === 'api' ? apiStatus.error : status.error) && (
         <div className="mx-auto max-w-6xl px-6 pb-6 text-xs text-rose-600">
-          {status.error}
+          {activeTab === 'api' ? apiStatus.error : status.error}
         </div>
       )}
+    </div>
+  );
+}
+
+function Detail({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">{label}</div>
+      <div className="mt-1 break-all font-mono text-xs text-slate-700">{value}</div>
+    </div>
+  );
+}
+
+function JsonBlock({ title, value }) {
+  return (
+    <div className="mt-4">
+      <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{title}</h3>
+      <pre className="mt-2 max-h-64 overflow-x-auto rounded-2xl border border-slate-200 bg-slate-950/95 p-3 text-xs text-slate-100">
+        {JSON.stringify(value || {}, null, 2)}
+      </pre>
     </div>
   );
 }
@@ -699,6 +975,42 @@ function formatDelta(base, current) {
 
 function eventKey(event, idx) {
   return `${event.event_id || idx}`;
+}
+
+function upsertById(items, item, idKey) {
+  const id = item?.[idKey];
+  if (id == null) return items;
+  const idx = items.findIndex((existing) => String(existing?.[idKey]) === String(id));
+  if (idx === -1) return [...items, item];
+  const next = [...items];
+  next[idx] = item;
+  return next;
+}
+
+function filterApiEvents(events, filters) {
+  return [...events]
+    .filter((event) => {
+      if (filters.method && event.method !== filters.method) return false;
+      if (filters.statusFamily && String(event.status_code || '')[0] !== filters.statusFamily) return false;
+      if (filters.path && !String(event.path || '').toLowerCase().includes(filters.path.toLowerCase())) return false;
+      return true;
+    })
+    .sort((a, b) => (Number(b.api_event_id) || 0) - (Number(a.api_event_id) || 0));
+}
+
+function statusClass(statusCode) {
+  const status = Number(statusCode);
+  if (status >= 500) return 'border-rose-200 bg-rose-100 text-rose-800';
+  if (status >= 400) return 'border-amber-200 bg-amber-100 text-amber-800';
+  if (status >= 300) return 'border-sky-200 bg-sky-100 text-sky-800';
+  if (status >= 200) return 'border-emerald-200 bg-emerald-100 text-emerald-800';
+  return 'border-slate-200 bg-slate-100 text-slate-600';
+}
+
+function bodyStatus(body) {
+  if (!body || typeof body !== 'object') return 'unknown';
+  const status = body.capture_status || 'unknown';
+  return body.truncated ? `${status}, truncated` : status;
 }
 
 function eventSummary(event) {

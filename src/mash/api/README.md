@@ -166,6 +166,8 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 
 These endpoints require `enable_observability = True`. Memory search uses the target agent's `memory_store`.
 
+Backend API request logs are persisted separately in `api_event_log` when `api_logging_enabled = True`.
+
 `GET /api/v1/telemetry/events`
 - Reads recent canonical runtime events for one agent.
 - Query params:
@@ -184,6 +186,35 @@ These endpoints require `enable_observability = True`. Memory search uses the ta
 - Response type: `text/event-stream`
 - Emits:
   - `data: <serialized runtime event>`
+- Emits `: keep-alive` frames while idle.
+
+`GET /api/v1/telemetry/api/events`
+- Reads recent backend API request/response events.
+- Query params:
+  - `method` optional
+  - `path` optional exact path
+  - `status_code` optional
+  - `from_ts`, `to_ts` optional Unix timestamp bounds
+  - `after_event_id` optional cursor
+  - `limit` optional, clamped to `1..20000`
+- Returns:
+  - `events`
+  - `source = "api_event_log"`
+  - `limit`
+
+`POST /api/v1/telemetry/api/events/search`
+- Searches backend API request/response events with structured filters.
+- Body fields:
+  - same fields as `GET /telemetry/api/events`
+  - `path_prefix` optional
+  - `status_code_min`, `status_code_max` optional
+
+`GET /api/v1/telemetry/api/events/stream`
+- Tails backend API request/response events as SSE.
+- Query params:
+  - same filters as `GET /telemetry/api/events`
+- Emits:
+  - `data: <serialized API event>`
 - Emits `: keep-alive` frames while idle.
 
 `GET /api/v1/telemetry/reasoning-trace`

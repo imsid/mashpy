@@ -402,6 +402,104 @@ def test_telemetry_events_filter_by_agent() -> None:
             assert payload["source"] == "runtime_event_log"
 
 
+def test_api_event_logging_captures_api_request_metadata_and_body() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret") as client:
+            headers = {"X-API-Key": "secret"}
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-1"},
+                headers=headers,
+            )
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", request_id, headers=headers)
+
+            events = client.get(
+                "/api/v1/telemetry/api/events",
+                params={"path": "/api/v1/agent/primary/request"},
+                headers=headers,
+            )
+            assert events.status_code == 200
+            payload = events.json()["data"]
+            assert payload["source"] == "api_event_log"
+            logged = payload["events"][-1]
+            assert logged["event_type"] == "api.request.complete"
+            assert logged["method"] == "POST"
+            assert logged["path"] == "/api/v1/agent/primary/request"
+            assert logged["status_code"] == 200
+            assert logged["request_headers"]["x-api-key"] == "[REDACTED]"
+            assert logged["request_body"]["capture_status"] == "captured"
+            assert logged["request_body"]["json"] == {"message": "hello", "session_id": "s-1"}
+            assert "request_id" not in logged
+            assert "trace_id" not in logged
+            assert "x-mash-request-id" not in logged["request_headers"]
+            assert "x-mash-trace-id" not in logged["request_headers"]
+
+
+def test_api_event_search_filters_by_status_and_prefix() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            missing = client.get("/api/v1/agent/missing")
+            assert missing.status_code == 404
+            ok = client.get("/api/v1/agent")
+            assert ok.status_code == 200
+
+            search = client.post(
+                "/api/v1/telemetry/api/events/search",
+                json={"path_prefix": "/api/v1/agent", "status_code_min": 400, "status_code_max": 499},
+            )
+            assert search.status_code == 200
+            events = search.json()["data"]["events"]
+            assert any(event["path"] == "/api/v1/agent/missing" for event in events)
+            assert all(400 <= event["status_code"] <= 499 for event in events)
+
+
+def test_api_logging_skips_configured_paths_and_truncates_body() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch.dict(
+            os.environ,
+            {
+                "MASH_DATA_DIR": str(root),
+                "MASH_MEMORY_DATABASE_URL": "",
+            },
+        ):
+            host = HostBuilder().primary(build_spec(agent_id="primary", response_text="ok")).build()
+            app = create_app(
+                host,
+                config=MashHostConfig(
+                    api_log_body_max_bytes=12,
+                    api_log_excluded_paths=("/api/v1/health",),
+                ),
+            )
+            with TestClient(app) as client:
+                health = client.get("/api/v1/health")
+                assert health.status_code == 200
+                submitted = client.post(
+                    "/api/v1/agent/primary/request",
+                    json={"message": "this body should be truncated", "session_id": "s-1"},
+                )
+                assert submitted.status_code == 200
+
+                health_logs = client.get(
+                    "/api/v1/telemetry/api/events",
+                    params={"path": "/api/v1/health"},
+                )
+                assert health_logs.status_code == 200
+                assert health_logs.json()["data"]["events"] == []
+
+                request_logs = client.get(
+                    "/api/v1/telemetry/api/events",
+                    params={"path": "/api/v1/agent/primary/request"},
+                )
+                logged = request_logs.json()["data"]["events"][-1]
+                assert logged["request_body"]["truncated"] is True
+                assert logged["request_body"]["captured_bytes"] == 12
+
+
 def test_reasoning_trace_route_returns_compact_trace() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -649,10 +747,17 @@ def test_missing_telemetry_assets_fail_fast() -> None:
                     raise AssertionError("expected create_app() to fail when telemetry assets are missing")
 
 
-def _collect_terminal_response(client: TestClient, agent_id: str, request_id: str) -> dict[str, object]:
+def _collect_terminal_response(
+    client: TestClient,
+    agent_id: str,
+    request_id: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object]:
     with client.stream(
         "GET",
         f"/api/v1/agent/{agent_id}/request/{request_id}/events",
+        headers=headers,
     ) as stream:
         assert stream.status_code == 200
         current_event = None
