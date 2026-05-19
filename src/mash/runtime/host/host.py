@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import uuid
 from dataclasses import asdict
 from typing import Dict, Optional
 
 from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
+from mash.workflows.dbos import make_host_id
 from mash.workflows.dbos import register_host as register_workflow_host
 from mash.workflows.dbos import unregister_host as unregister_workflow_host
 
@@ -27,7 +27,7 @@ class AgentHost:
         *,
         runtime_database_url: str | None = None,
     ) -> None:
-        self.host_id = f"host-{uuid.uuid4().hex}"
+        self.host_id = make_host_id()
         self.runtime_database_url = str(runtime_database_url or "").strip() or None
         self._primary_agent_id: Optional[str] = None
         self._registered: Dict[str, AgentRegistration] = {}

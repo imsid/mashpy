@@ -11,6 +11,7 @@
 - `runtime-copilot`: specialist for `src/mash/runtime`
 - `workflow-copilot`: specialist for `src/mash/workflows`
 - `masher-trace-digest`: built-in workflow for trace digest generation
+- `masher-online-eval-curation`: built-in workflow to convert a trace to an online eval
 
 ## Prompt Scope
 

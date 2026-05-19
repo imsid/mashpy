@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 _WORKFLOW_NAME = "mash.workflow.execute"
 _QUEUE_NAME = "mash.workflow.runs"
+_WORKFLOW_RUN_ID_PREFIX = "mw"
 
 
 @dataclass
@@ -58,8 +60,20 @@ def _load_dbos_api() -> tuple[Any, Any, Any, Any, Any]:
     return dbos_class, queue_class, set_workflow_id, set_enqueue_options, dedup_error
 
 
+def _compact_token(num_bytes: int) -> str:
+    return secrets.token_urlsafe(num_bytes).rstrip("=")
+
+
+def make_host_id() -> str:
+    return f"h_{_compact_token(9)}"
+
+
+def workflow_run_id_prefix(host_id: str, workflow_id: str) -> str:
+    return f"{_WORKFLOW_RUN_ID_PREFIX}:{host_id}:{workflow_id}:"
+
+
 def make_run_id(host_id: str, workflow_id: str) -> str:
-    return f"mash.workflow:{host_id}:{workflow_id}:{uuid.uuid4().hex}"
+    return f"{workflow_run_id_prefix(host_id, workflow_id)}{_compact_token(12)}"
 
 
 def register_host(host_id: str, host: "AgentHost") -> None:
@@ -222,7 +236,7 @@ async def load_previous_task_state(
     dbos_class, _, _, _, _ = _load_dbos_api()
     statuses = await dbos_class.list_workflows_async(
         name=_WORKFLOW_NAME,
-        workflow_id_prefix=f"mash.workflow:{host_id}:{workflow_id}:",
+        workflow_id_prefix=workflow_run_id_prefix(host_id, workflow_id),
         status="SUCCESS",
         sort_desc=True,
         limit=20,
@@ -419,9 +433,12 @@ __all__ = [
     "execute_registered_workflow",
     "get_workflow_status",
     "load_previous_task_state",
+    "make_host_id",
+    "make_run_id",
     "register_host",
     "register_workflow",
     "require_host",
     "start_workflow_run",
     "unregister_host",
+    "workflow_run_id_prefix",
 ]

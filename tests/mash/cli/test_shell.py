@@ -10,8 +10,7 @@ from rich.console import Console
 
 from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
-from mash.logging.events import AgentTraceEvent
-from mash.runtime.events import runtime_trace_payload_to_trace_payload
+from mash.runtime.events import RuntimeEvent, RuntimeEventType, build_runtime_trace
 from mash.tools.subagent import derive_subagent_session_id
 
 
@@ -66,7 +65,7 @@ class _FakeClient:
         )
         return {
             "workflow_id": workflow_id,
-            "run_id": "mash.workflow:host:changelog:abc",
+            "run_id": "mw:host:changelog:abc",
             "status": "queued",
         }
 
@@ -236,7 +235,7 @@ class MashRemoteShellTests(unittest.TestCase):
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow: changelog", lines)
-        self.assertIn("Run ID: mash.workflow:host:changelog:abc", lines)
+        self.assertIn("Run ID: mw:host:changelog:abc", lines)
         self.assertIn("Status: queued", lines)
 
     def test_workflow_run_forwards_input_json(self) -> None:
@@ -272,7 +271,7 @@ class MashRemoteShellTests(unittest.TestCase):
 
     def test_workflow_status_fetches_run(self) -> None:
         shell = self._build_shell()
-        run_id = "mash.workflow:host:changelog:abc"
+        run_id = "mw:host:changelog:abc"
         with patch.object(shell.context.renderer, "table") as table, patch.object(
             shell.context.renderer,
             "print",
@@ -414,52 +413,65 @@ class MashRemoteShellTests(unittest.TestCase):
             ["streamed from runtime", "final response"],
         )
 
-    def test_runtime_trace_payload_projection_preserves_durations(self) -> None:
-        think = runtime_trace_payload_to_trace_payload(
-            {
-                "event_type": "runtime.llm.think.completed",
-                "trace_id": "trace-1",
-                "session_id": "s-1",
-                "loop_index": 2,
-                "created_at": 100.0,
-                "payload": {
+    def test_chain_renderer_runtime_events_preserve_durations(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console)
+
+        renderer.on_runtime_event(
+            RuntimeEvent(
+                app_id="primary",
+                agent_id="primary",
+                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                trace_id="trace-1",
+                session_id="s-1",
+                loop_index=2,
+                created_at=100.0,
+                payload={
                     "action_type": "tool_call",
                     "assistant_text": "thinking",
                     "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
                     "token_usage": {"input": 2, "output": 1},
                     "duration_ms": 123,
                 },
-            }
+            )
         )
-        act = runtime_trace_payload_to_trace_payload(
-            {
-                "event_type": "runtime.tool.call.completed",
-                "trace_id": "trace-1",
-                "session_id": "s-1",
-                "loop_index": 2,
-                "created_at": 101.0,
-                "payload": {
+        renderer.on_runtime_event(
+            RuntimeEvent(
+                app_id="primary",
+                agent_id="primary",
+                event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+                trace_id="trace-1",
+                session_id="s-1",
+                loop_index=2,
+                created_at=101.0,
+                payload={
                     "tool_name": "bash",
                     "duration_ms": 45,
                 },
-            }
+            )
         )
 
-        assert think is not None
-        assert act is not None
-        self.assertEqual(think["event_type"], "agent.think.complete")
-        self.assertEqual(think["duration_ms"], 123)
-        self.assertEqual(act["event_type"], "agent.act.complete")
-        self.assertEqual(act["duration_ms"], 45)
+        output = console.export_text()
+        self.assertIn("123ms", output)
+        self.assertIn("45ms", output)
 
     def test_handle_repl_message_streams_chain_events(self) -> None:
         shell = self._build_shell()
-        with patch.object(shell.chain_renderer, "on_think_complete") as think_complete:
-            with patch.object(shell.chain_renderer, "on_step_complete") as step_complete:
-                with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
-                    shell.handle_repl_message(shell.context, "hello")
-        self.assertEqual(think_complete.call_count, 2)
-        step_complete.assert_called_once()
+        with patch.object(shell.chain_renderer, "on_runtime_event") as runtime_event:
+            with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
+                shell.handle_repl_message(shell.context, "hello")
+        self.assertEqual(runtime_event.call_count, 3)
+        self.assertEqual(
+            [
+                call.args[0].event_type
+                for call in runtime_event.call_args_list
+            ],
+            [
+                RuntimeEventType.LLM_THINK_COMPLETED.value,
+                RuntimeEventType.LLM_THINK_COMPLETED.value,
+                RuntimeEventType.STEP_COMPLETED.value,
+            ],
+        )
         finish_trace.assert_called_once()
 
     def test_handle_repl_message_renders_subagent_lifecycle(self) -> None:
@@ -495,30 +507,36 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
     def test_think_events_use_step_id_for_display_when_step_complete_is_missing(self) -> None:
         console = Console(record=True, width=120)
         renderer = ChainOfThoughtRenderer(console)
-        renderer.on_think_complete(
-            AgentTraceEvent(
-                event_type="agent.think.complete",
+        renderer.on_runtime_event(
+            RuntimeEvent(
                 app_id="primary",
+                agent_id="primary",
+                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
                 session_id="s-1",
                 trace_id="trace-1",
-                step_id=0,
-                duration_ms=10,
-                action_type="tool_call",
-                tool_calls=["bash"],
-                token_usage={"input": 10, "output": 1},
+                loop_index=0,
+                payload={
+                    "duration_ms": 10,
+                    "action_type": "tool_call",
+                    "tool_calls": [{"name": "bash", "arguments": {}}],
+                    "token_usage": {"input": 10, "output": 1},
+                },
             )
         )
-        renderer.on_think_complete(
-            AgentTraceEvent(
-                event_type="agent.think.complete",
+        renderer.on_runtime_event(
+            RuntimeEvent(
                 app_id="primary",
+                agent_id="primary",
+                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
                 session_id="s-1",
                 trace_id="trace-1",
-                step_id=1,
-                duration_ms=12,
-                action_type="tool_call",
-                tool_calls=["bash"],
-                token_usage={"input": 12, "output": 1},
+                loop_index=1,
+                payload={
+                    "duration_ms": 12,
+                    "action_type": "tool_call",
+                    "tool_calls": [{"name": "bash", "arguments": {}}],
+                    "token_usage": {"input": 12, "output": 1},
+                },
             )
         )
 
@@ -529,17 +547,20 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
     def test_summary_uses_think_duration_when_step_complete_is_missing(self) -> None:
         console = Console(record=True, width=120)
         renderer = ChainOfThoughtRenderer(console)
-        renderer.on_think_complete(
-            AgentTraceEvent(
-                event_type="agent.think.complete",
+        renderer.on_runtime_event(
+            RuntimeEvent(
                 app_id="primary",
+                agent_id="primary",
+                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
                 session_id="s-1",
                 trace_id="trace-1",
-                step_id=0,
-                duration_ms=13447,
-                action_type="finish",
-                tool_calls=[],
-                token_usage={"input": 1320, "output": 1406},
+                loop_index=0,
+                payload={
+                    "duration_ms": 13447,
+                    "action_type": "finish",
+                    "tool_calls": [],
+                    "token_usage": {"input": 1320, "output": 1406},
+                },
             )
         )
 
@@ -549,3 +570,41 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
         self.assertIn("Agent Execution Complete:", output)
         self.assertIn("2,726 tokens", output)
         self.assertIn("13,447ms", output)
+
+    def test_render_runtime_trace_uses_runtime_trace_events(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console)
+        trace = build_runtime_trace(
+            [
+                RuntimeEvent(
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    session_id="s-1",
+                    trace_id="trace-1",
+                    loop_index=0,
+                    payload={
+                        "duration_ms": 10,
+                        "action_type": "tool_call",
+                        "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
+                        "token_usage": {"input": 3, "output": 2},
+                    },
+                ),
+                RuntimeEvent(
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.STEP_COMPLETED.value,
+                    session_id="s-1",
+                    trace_id="trace-1",
+                    loop_index=0,
+                    payload={"duration_ms": 12},
+                ),
+            ]
+        )
+
+        renderer.render_runtime_trace(trace)
+
+        output = console.export_text()
+        self.assertIn("Step 1:", output)
+        self.assertIn("$ pwd", output)
+        self.assertIn("Agent Execution Complete:", output)

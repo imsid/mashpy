@@ -5,17 +5,17 @@ description: Build normalized online eval JSONL rows from Mash log files.
 
 # Online Eval Curation
 
-Use this skill only for workflow id `{{workflow_id}}` and task id `{{task_id}}`.
+Use this skill only for workflow id `masher-online-eval-curation` and task id `curate-online-evals`.
 
 Purpose:
 - Build normalized online eval JSONL rows from Mash runtime trace events.
 - Curate dataset examples only; do not judge or score output quality.
-- In trace and incremental mode, append eval rows to `{{artifact_path}}`.
+- In trace and incremental mode, append eval rows to Masher's configured online eval JSONL artifact.
 
 Workflow contract:
 1. Parse the request JSON.
 2. Read `workflow_input` and `task_state` exactly as provided.
-3. Call `{{tool_name}}` with the exact `workflow_input` and `task_state`.
+3. Call `run_online_eval_curation_workflow` with the exact `workflow_input` and `task_state`.
 4. Return the tool result JSON text exactly and nothing else.
 
 Required output shape:

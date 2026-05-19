@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from unittest.mock import patch
 
 from mash.core.config import AgentConfig

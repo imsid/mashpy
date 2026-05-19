@@ -288,10 +288,11 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         assert "bash" in mcp_agent.agent.tools
                         assert "bash" in runtime_agent.agent.tools
                         assert "bash" in workflow_agent.agent.tools
-                        assert "get_latest_session" in masher.agent.tools
-                        assert "get_trace_events" in masher.agent.tools
-                        assert "run_trace_digest_workflow" in masher.agent.tools
-                        assert "run_online_eval_curation_workflow" in masher.agent.tools
+                        assert sorted(masher.agent.tools.list_tools()) == [
+                            "Skill",
+                            "run_online_eval_curation_workflow",
+                            "run_trace_digest_workflow",
+                        ]
                     finally:
                         await host.close()
 

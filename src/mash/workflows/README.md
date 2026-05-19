@@ -107,7 +107,7 @@ message is JSON text with this shape:
 ```json
 {
   "workflow_id": "changelog",
-  "workflow_run_id": "mash.workflow:host-1:changelog:abc",
+  "workflow_run_id": "mw:h_example:changelog:abc",
   "task_id": "scan-codebase-and-append-changelog",
   "workflow_input": {
     "target_agent_id": "primary"

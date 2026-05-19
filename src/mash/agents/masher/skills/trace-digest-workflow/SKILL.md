@@ -5,17 +5,17 @@ description: Run Masher's diagnostic trace digest workflow.
 
 # Trace Digest Workflow
 
-Use this skill only for workflow id `{{workflow_id}}` and task id `{{task_id}}`.
+Use this skill only for workflow id `masher-trace-digest` and task id `digest-traces`.
 
 Purpose:
 - Explain and debug agent execution traces.
 - Summarize status, metrics, and notable failure/error events.
-- In incremental mode, append diagnostic digest records to `{{artifact_path}}`.
+- In incremental mode, append diagnostic digest records to Masher's configured trace digest JSONL artifact.
 
 Workflow contract:
 1. Parse the request JSON.
 2. Read `workflow_input` and `task_state` exactly as provided.
-3. Call `{{tool_name}}` with the exact `workflow_input` and `task_state`.
+3. Call `run_trace_digest_workflow` with the exact `workflow_input` and `task_state`.
 4. Return the tool result JSON text exactly and nothing else.
 
 Input modes:

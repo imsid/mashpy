@@ -126,7 +126,10 @@ class WorkflowService:
         resolved_run_id = str(run_id or "").strip()
         if not resolved_run_id:
             raise ValueError("run_id is required")
-        expected_prefix = f"mash.workflow:{self._host_id}:{resolved_workflow_id}:"
+        expected_prefix = workflow_dbos.workflow_run_id_prefix(
+            self._host_id,
+            resolved_workflow_id,
+        )
         if not resolved_run_id.startswith(expected_prefix):
             raise WorkflowNotFoundError(
                 f"workflow run '{resolved_run_id}' is not registered for workflow '{resolved_workflow_id}'"

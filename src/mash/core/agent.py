@@ -12,6 +12,7 @@ from mash.skills.registry import SkillRegistry
 from mash.skills.tool import SkillTool
 
 from ..logging import AgentTraceEvent, clear_trace_id, set_trace_id
+from ..runtime.events import RuntimeEvent, RuntimeEventType
 from .config import AgentConfig, SystemPrompt
 from .context import (
     Action,
@@ -398,7 +399,22 @@ class Agent:
 
             # Render thinking
             if self._chain_renderer:
-                self._chain_renderer.on_think_complete(think_event)
+                self._chain_renderer.on_runtime_event(
+                    RuntimeEvent(
+                        app_id=self.config.app_id,
+                        agent_id=self.config.app_id,
+                        session_id=self._session_id,
+                        trace_id=self._trace_id,
+                        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                        payload={
+                            "duration_ms": think_event.duration_ms,
+                            "action_type": think_event.action_type,
+                            "tool_calls": tool_calls_detail,
+                            "assistant_text": assistant_text,
+                            "token_usage": token_usage,
+                        },
+                    )
+                )
 
         return action
 
@@ -437,7 +453,20 @@ class Agent:
 
             # Render action
             if self._chain_renderer:
-                self._chain_renderer.on_act_complete(act_event)
+                self._chain_renderer.on_runtime_event(
+                    RuntimeEvent(
+                        app_id=self.config.app_id,
+                        agent_id=self.config.app_id,
+                        session_id=self._session_id,
+                        trace_id=self._trace_id,
+                        event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+                        payload={
+                            "duration_ms": act_event.duration_ms,
+                            "action_type": act_event.action_type,
+                            "tool_calls": act_event.tool_calls,
+                        },
+                    )
+                )
 
         return results
 
@@ -653,10 +682,10 @@ class Agent:
             return True
 
         args = tool_call.arguments or {}
-        for field in required:
-            if field not in args:
+        for field_name in required:
+            if field_name not in args:
                 return False
-            value = args.get(field)
+            value = args.get(field_name)
             if value is None:
                 return False
             if isinstance(value, str) and not value.strip():
@@ -715,7 +744,21 @@ class Agent:
         )
         await self._event_logger.emit(step_event)
         if self._chain_renderer:
-            self._chain_renderer.on_step_complete(step_event)
+            self._chain_renderer.on_runtime_event(
+                RuntimeEvent(
+                    app_id=self.config.app_id,
+                    agent_id=self.config.app_id,
+                    session_id=self._session_id,
+                    trace_id=self._trace_id,
+                    event_type=RuntimeEventType.STEP_COMPLETED.value,
+                    loop_index=step_index,
+                    payload={
+                        "duration_ms": step_event.duration_ms,
+                        "action_type": step_event.action_type,
+                        "tool_calls": step_event.tool_calls,
+                    },
+                )
+            )
 
     def _apply_max_steps_exhausted(self, context: Context) -> None:
         """Apply the canonical max-step exhaustion behavior."""

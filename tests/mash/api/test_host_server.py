@@ -613,11 +613,11 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
 
             async def start_workflow_run(**kwargs):
                 assert kwargs["workflow_input"] == {}
-                return "mash.workflow:host-1:changelog:abc"
+                return "mw:host-1:changelog:abc"
 
             async def get_workflow_status(_run_id):
                 return _FakeWorkflowStatus(
-                    workflow_id="mash.workflow:host-1:changelog:abc",
+                    workflow_id="mw:host-1:changelog:abc",
                     status="ENQUEUED",
                 )
 
@@ -631,7 +631,7 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
             payload = submitted.json()["data"]
             assert payload["workflow_id"] == "changelog"
             assert payload["status"] == "queued"
-            assert payload["run_id"] == "mash.workflow:host-1:changelog:abc"
+            assert payload["run_id"] == "mw:host-1:changelog:abc"
 
 
 def test_workflow_run_accepts_input_object() -> None:
@@ -640,11 +640,11 @@ def test_workflow_run_accepts_input_object() -> None:
         with _build_test_client(root, workflow_enabled=True) as client:
             async def start_workflow_run(**kwargs):
                 assert kwargs["workflow_input"] == {"target_agent_id": "primary"}
-                return "mash.workflow:host-1:changelog:abc"
+                return "mw:host-1:changelog:abc"
 
             async def get_workflow_status(_run_id):
                 return _FakeWorkflowStatus(
-                    workflow_id="mash.workflow:host-1:changelog:abc",
+                    workflow_id="mw:host-1:changelog:abc",
                     status="ENQUEUED",
                 )
 
@@ -686,7 +686,7 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
         with _build_test_client(root, workflow_enabled=True) as client:
             async def start_workflow_run(**_kwargs):
                 raise workflow_dbos.WorkflowDeduplicatedError(
-                    "mash.workflow:host-1:changelog:old"
+                    "mw:host-1:changelog:old"
                 )
 
             with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
@@ -697,7 +697,7 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
             assert response.status_code == 409
             payload = response.json()["error"]
             assert payload["code"] == "WORKFLOW_DUPLICATE_RUN"
-            assert payload["details"]["run_id"] == "mash.workflow:host-1:changelog:old"
+            assert payload["details"]["run_id"] == "mw:host-1:changelog:old"
 
 
 def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
@@ -705,7 +705,7 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
             host_id = client.app.state.runtime_state.host.host_id
-            run_id = f"mash.workflow:{host_id}:changelog:abc"
+            run_id = f"mw:{host_id}:changelog:abc"
 
             async def get_workflow_status(_run_id):
                 return _FakeWorkflowStatus(

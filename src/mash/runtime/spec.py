@@ -52,10 +52,6 @@ class AgentSpec(ABC):
             return PostgresStore(memory_database_url)
         return SQLiteStore(self.get_agent_data_dir() / "state.db")
 
-    def build_store(self) -> MemoryStore:
-        """Compatibility alias for the agent memory store."""
-        return self.build_memory_store()
-
     @abstractmethod
     def build_tools(self) -> ToolRegistry:
         """Construct the agent tool registry."""

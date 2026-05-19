@@ -258,7 +258,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(listed), 1)
 
                     async def start_workflow_run(**_kwargs):
-                        return f"mash.workflow:{host.host_id}:changelog:abc"
+                        return f"mw:{host.host_id}:changelog:abc"
 
                     async def get_workflow_status(_run_id):
                         return None
@@ -309,7 +309,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             output = await workflow_dbos.execute_registered_workflow(
                                 host.host_id,
                                 "wf",
-                                f"mash.workflow:{host.host_id}:wf:test",
+                                f"mw:{host.host_id}:wf:test",
                                 workflow_input={"target_agent_id": "primary"},
                             )
 

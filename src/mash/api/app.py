@@ -26,7 +26,7 @@ from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import AgentClientError, AgentHost
 from mash.runtime.client import AgentClientLike
-from mash.runtime.events import RuntimeEvent, build_reasoning_trace
+from mash.runtime.events import build_reasoning_trace, serialize_runtime_event
 from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
 
 from .config import MashHostConfig
@@ -194,23 +194,6 @@ def _build_memory_search_service(agent: Any) -> MemorySearchService:
 
 def _memory_search_available(agent: Any) -> bool:
     return hasattr(agent, "memory_store") and hasattr(agent, "runtime_store")
-
-
-def _serialize_runtime_event(event: RuntimeEvent) -> dict[str, Any]:
-    return {
-        "event_id": int(event.event_id),
-        "request_id": event.request_id,
-        "request_seq": event.request_seq,
-        "trace_id": event.trace_id,
-        "app_id": event.app_id,
-        "agent_id": event.agent_id,
-        "session_id": event.session_id,
-        "event_type": event.event_type,
-        "loop_index": event.loop_index,
-        "step_key": event.step_key,
-        "payload": dict(event.payload or {}),
-        "created_at": float(event.created_at),
-    }
 
 
 def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> FastAPI:
@@ -527,7 +510,7 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
 
         resolved_limit = _parse_limit(limit, default=state.default_events_limit, max_value=20000)
         events = [
-            _serialize_runtime_event(item)
+            serialize_runtime_event(item)
             for item in await agent.runtime_store.list_events(
                 app_id=agent_id,
                 session_id=_normalize_optional_text(session_id),
@@ -632,7 +615,7 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                     except (TypeError, ValueError):
                         pass
                     yield _build_observability_sse_payload(
-                        json.dumps(_serialize_runtime_event(event), ensure_ascii=True)
+                        json.dumps(serialize_runtime_event(event), ensure_ascii=True)
                     )
 
         return StreamingResponse(

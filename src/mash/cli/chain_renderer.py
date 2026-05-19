@@ -8,6 +8,14 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
+from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
+from mash.runtime.events.trace import (
+    _as_int,
+    _clean_text,
+    _dict_value,
+    _tool_call_names,
+    _tool_calls_detail,
+)
 
 
 class ChainOfThoughtRenderer:
@@ -57,72 +65,100 @@ class ChainOfThoughtRenderer:
             title = f"{label} Execution Started"
         self._console.print(f"\n[bold cyan]{title}[/bold cyan]")
 
-    def on_think_complete(self, event: Any) -> None:
-        """Handle think complete event.
-
-        Args:
-            event: Agent trace event.
-        """
+    def on_runtime_event(
+        self,
+        event: RuntimeEvent,
+        *,
+        trace_label: str | None = None,
+    ) -> None:
+        """Render one canonical runtime event."""
         if not self._enabled:
             return
+        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+            self._on_runtime_think_complete(event, trace_label=trace_label)
+            return
+        if event.event_type in {
+            RuntimeEventType.TOOL_CALL_COMPLETED.value,
+            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
+        }:
+            self._on_runtime_act_complete(event)
+            return
+        if event.event_type == RuntimeEventType.STEP_COMPLETED.value:
+            self._on_runtime_step_complete(event)
 
-        # Start new trace if needed
+    def render_runtime_trace(
+        self,
+        trace: RuntimeTrace,
+        *,
+        trace_label: str | None = None,
+    ) -> None:
+        """Render a parsed runtime trace."""
+        for raw_event in trace.events:
+            self.on_runtime_event(
+                RuntimeEvent(
+                    event_id=int(raw_event.get("event_id") or 0),
+                    request_id=raw_event.get("request_id"),
+                    request_seq=raw_event.get("request_seq"),
+                    trace_id=raw_event.get("trace_id"),
+                    app_id=str(raw_event.get("app_id") or trace.target_agent_id),
+                    agent_id=str(raw_event.get("agent_id") or trace.target_agent_id),
+                    session_id=raw_event.get("session_id"),
+                    event_type=str(raw_event.get("event_type") or ""),
+                    loop_index=raw_event.get("loop_index"),
+                    step_key=raw_event.get("step_key"),
+                    payload=dict(raw_event.get("payload") or {}),
+                    created_at=float(raw_event.get("created_at") or 0.0),
+                ),
+                trace_label=trace_label,
+            )
+        self.finish_trace()
+
+    def _on_runtime_think_complete(
+        self,
+        event: RuntimeEvent,
+        *,
+        trace_label: str | None = None,
+    ) -> None:
         if event.trace_id != self._current_trace_id:
-            trace_label = None
-            if hasattr(event, "payload") and event.payload:
-                trace_label = event.payload.get("trace_label")
             self.start_trace(event.trace_id, label=trace_label)
 
-        # Extract tool_calls_detail from payload if available
-        tool_calls_detail = None
-        assistant_text = None
-        if hasattr(event, "payload") and event.payload:
-            tool_calls_detail = event.payload.get("tool_calls_detail")
-            assistant_text = event.payload.get("assistant_text")
-
+        payload = dict(event.payload or {})
+        tool_calls_detail = _tool_calls_detail(payload)
         step_info = {
-            "step": event.step_id,
-            "action_type": event.action_type,
-            "tool_calls": event.tool_calls,
+            "step": event.loop_index,
+            "action_type": _clean_text(payload.get("action_type")),
+            "tool_calls": _tool_call_names(tool_calls_detail),
             "tool_calls_detail": tool_calls_detail,
-            "assistant_text": assistant_text,
-            "token_usage": event.token_usage,
-            "think_duration": event.duration_ms,
+            "assistant_text": _clean_text(payload.get("assistant_text")),
+            "token_usage": _dict_value(payload.get("token_usage")),
+            "think_duration": _as_int(payload.get("duration_ms")) or 0,
         }
-        if isinstance(event.step_id, int) and event.step_id >= 0:
-            step_info["display_step"] = event.step_id + 1
+        if isinstance(event.loop_index, int) and event.loop_index >= 0:
+            step_info["display_step"] = event.loop_index + 1
         self._steps.append(step_info)
-
-        # Render thinking
         self._render_think(step_info)
 
-    def on_act_complete(self, event: Any) -> None:
-        """Handle act complete event.
-
-        Args:
-            event: Agent trace event.
-        """
-        if not self._enabled or not self._steps:
+    def _on_runtime_act_complete(self, event: RuntimeEvent) -> None:
+        if not self._steps:
             return
-
-        # Update last step with act duration
-        self._steps[-1]["act_duration"] = event.duration_ms
+        payload = dict(event.payload or {})
+        tool_calls = _tool_call_names(payload.get("tool_calls"))
+        tool_name = _clean_text(payload.get("tool_name"))
+        if not tool_calls and tool_name:
+            tool_calls = [tool_name]
+        if tool_calls:
+            self._steps[-1]["tool_calls"] = tool_calls
+        self._steps[-1]["act_duration"] = _as_int(payload.get("duration_ms")) or 0
         self._render_act(self._steps[-1])
 
-    def on_step_complete(self, event: Any) -> None:
-        """Handle step complete event.
-
-        Args:
-            event: Agent trace event.
-        """
-        if not self._enabled or not self._steps:
+    def _on_runtime_step_complete(self, event: RuntimeEvent) -> None:
+        if not self._steps:
             return
-
-        # Update last step with total duration
-        self._steps[-1]["total_duration"] = event.duration_ms
+        payload = dict(event.payload or {})
+        self._steps[-1]["total_duration"] = _as_int(payload.get("duration_ms")) or 0
         self._render_step_complete(self._steps[-1])
-        if isinstance(event.step_id, int) and event.step_id >= 0:
-            self._current_step = max(self._current_step, event.step_id + 1)
+        if isinstance(event.loop_index, int) and event.loop_index >= 0:
+            self._current_step = max(self._current_step, event.loop_index + 1)
         else:
             self._current_step += 1
 
@@ -316,16 +352,27 @@ class CompactChainRenderer:
         self._current_step = 0
         self._console.print("[dim]Thinking...[/dim]", end=" ")
 
-    def on_think_complete(self, event: Any) -> None:
-        """Handle think complete."""
+    def on_runtime_event(
+        self,
+        event: RuntimeEvent,
+        *,
+        trace_label: str | None = None,
+    ) -> None:
+        """Render one canonical runtime event."""
+        del trace_label
         if not self._enabled:
             return
+        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+            self._on_runtime_think_complete(event)
+            return
+        if event.event_type == RuntimeEventType.STEP_COMPLETED.value:
+            self._on_runtime_step_complete()
 
-        action_type = event.action_type
-        tool_calls = event.tool_calls or []
+    def _on_runtime_think_complete(self, event: RuntimeEvent) -> None:
+        action_type = (event.payload or {}).get("action_type")
+        tool_calls = _tool_call_names((event.payload or {}).get("tool_calls"))
 
         if action_type == "tool_call" and tool_calls:
-            # Show tool icons
             for _ in tool_calls:
                 self._console.print("[yellow]⚡[/yellow]", end="")
         elif action_type == "response":
@@ -333,11 +380,7 @@ class CompactChainRenderer:
         elif action_type == "finish":
             self._console.print("[blue]✓[/blue]", end="")
 
-    def on_act_complete(self) -> None:
-        """Handle act complete."""
-        # Compact mode doesn't show act separately
-
-    def on_step_complete(self) -> None:
+    def _on_runtime_step_complete(self) -> None:
         """Handle step complete."""
         if not self._enabled:
             return

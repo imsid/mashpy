@@ -181,7 +181,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         host = _FakeHost(registry, {})
         service = WorkflowService(registry, host, host_id="host-1")
         status = _FakeWorkflowStatus(
-            workflow_id="mash.workflow:host-1:wf:abc",
+            workflow_id="mw:host-1:wf:abc",
             status="ENQUEUED",
             deduplication_id="wf:manual",
         )
@@ -192,10 +192,10 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["workflow"].workflow_id, "wf")
             self.assertEqual(kwargs["dedup_key"], "manual")
             self.assertEqual(kwargs["workflow_input"], {})
-            return "mash.workflow:host-1:wf:abc"
+            return "mw:host-1:wf:abc"
 
         async def get_workflow_status(run_id):
-            self.assertEqual(run_id, "mash.workflow:host-1:wf:abc")
+            self.assertEqual(run_id, "mw:host-1:wf:abc")
             return status
 
         with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
@@ -205,7 +205,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         ):
             run = await service.run_workflow("wf", dedup_key="manual")
 
-        self.assertEqual(run.run_id, "mash.workflow:host-1:wf:abc")
+        self.assertEqual(run.run_id, "mw:host-1:wf:abc")
         self.assertEqual(run.workflow_id, "wf")
         self.assertEqual(run.dedup_key, "manual")
         self.assertEqual(run.status, "queued")
@@ -223,11 +223,11 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def start_workflow_run(**kwargs):
             self.assertEqual(kwargs["workflow_input"], workflow_input)
-            return "mash.workflow:host-1:wf:abc"
+            return "mw:host-1:wf:abc"
 
         async def get_workflow_status(_run_id):
             return _FakeWorkflowStatus(
-                workflow_id="mash.workflow:host-1:wf:abc",
+                workflow_id="mw:host-1:wf:abc",
                 status="ENQUEUED",
             )
 
@@ -262,12 +262,12 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
 
         async def start_workflow_run(**_kwargs):
-            raise workflow_dbos.WorkflowDeduplicatedError("mash.workflow:host-1:wf:old")
+            raise workflow_dbos.WorkflowDeduplicatedError("mw:host-1:wf:old")
 
         with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
             with self.assertRaises(DuplicateWorkflowRunError) as raised:
                 await service.run_workflow("wf", dedup_key="manual")
-        self.assertEqual(raised.exception.existing_run.run_id, "mash.workflow:host-1:wf:old")
+        self.assertEqual(raised.exception.existing_run.run_id, "mw:host-1:wf:old")
 
     async def test_get_run_maps_dbos_status(self) -> None:
         registry = WorkflowRegistry()
@@ -280,7 +280,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
 
         async def get_workflow_status(run_id):
-            self.assertEqual(run_id, "mash.workflow:host-1:wf:abc")
+            self.assertEqual(run_id, "mw:host-1:wf:abc")
             return _FakeWorkflowStatus(
                 workflow_id=run_id,
                 status="SUCCESS",
@@ -289,7 +289,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-            run = await service.get_run("wf", "mash.workflow:host-1:wf:abc")
+            run = await service.get_run("wf", "mw:host-1:wf:abc")
         self.assertEqual(run.status, "completed")
         self.assertEqual(run.finished_at, 1_700_000_001.0)
         self.assertEqual(run.output, {"task_states": {"task-1": {"ok": True}}})
@@ -308,6 +308,19 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         workflow_dbos.unregister_host("host-1", getattr(self, "host", None))
 
+    async def test_compact_id_helpers_preserve_prefix_semantics(self) -> None:
+        host_id = workflow_dbos.make_host_id()
+        run_id = workflow_dbos.make_run_id(host_id, "wf")
+
+        self.assertRegex(host_id, r"^h_[A-Za-z0-9_-]{12}$")
+        self.assertTrue(run_id.startswith(f"mw:{host_id}:wf:"))
+        legacy_run_id_length = 14 + len(host_id) + len(":wf:") + 32
+        self.assertLess(len(run_id), legacy_run_id_length)
+        self.assertEqual(
+            workflow_dbos.workflow_run_id_prefix(host_id, "wf"),
+            f"mw:{host_id}:wf:",
+        )
+
     async def test_execute_workflow_passes_previous_task_state(self) -> None:
         registry = WorkflowRegistry()
         registry.register(
@@ -321,7 +334,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         workflow_dbos.register_host("host-1", self.host)
         _FakeDBOS.statuses = [
             _FakeWorkflowStatus(
-                workflow_id="mash.workflow:host-1:wf:old",
+                workflow_id="mw:host-1:wf:old",
                 status="SUCCESS",
                 output={"task_states": {"task-1": {"count": 1}}},
             )
@@ -331,7 +344,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             output = await workflow_dbos.execute_registered_workflow(
                 "host-1",
                 "wf",
-                "mash.workflow:host-1:wf:new",
+                "mw:host-1:wf:new",
                 workflow_input={"target_agent_id": "primary"},
             )
 
@@ -365,7 +378,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             await workflow_dbos.execute_registered_workflow(
                 "host-1",
                 "wf",
-                "mash.workflow:host-1:wf:new",
+                "mw:host-1:wf:new",
                 workflow_input=workflow_input,
             )
 
@@ -388,5 +401,5 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
                 await workflow_dbos.execute_registered_workflow(
                     "host-1",
                     "wf",
-                    "mash.workflow:host-1:wf:new",
+                    "mw:host-1:wf:new",
                 )

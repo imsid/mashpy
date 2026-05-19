@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from mash.runtime.events import (
-    runtime_trace_payload_response_preview,
-    runtime_trace_payload_to_trace_payload,
+    runtime_event_from_stream_payload,
+    runtime_event_response_preview,
 )
 
 from .chain_renderer import ChainOfThoughtRenderer
@@ -57,19 +57,6 @@ class MashRemoteShell:
         self.command_registry.register(command)
 
     @staticmethod
-    def _build_trace_event(payload: dict[str, Any]) -> SimpleNamespace:
-        return SimpleNamespace(
-            event_type=payload.get("event_type"),
-            trace_id=payload.get("trace_id"),
-            step_id=payload.get("step_id"),
-            duration_ms=payload.get("duration_ms"),
-            action_type=payload.get("action_type"),
-            tool_calls=payload.get("tool_calls"),
-            token_usage=payload.get("token_usage"),
-            payload=payload.get("payload") or {},
-        )
-
-    @staticmethod
     def _build_llm_event(payload: dict[str, Any]) -> SimpleNamespace:
         return SimpleNamespace(
             event_type=payload.get("event_type"),
@@ -91,23 +78,16 @@ class MashRemoteShell:
         payload: dict[str, Any],
         *,
         trace_label: str | None = None,
+        agent_id: str | None = None,
     ) -> None:
-        trace_payload = runtime_trace_payload_to_trace_payload(
+        event = runtime_event_from_stream_payload(
             payload,
-            trace_label=trace_label,
+            app_id=agent_id or self.target.agent_id,
+            agent_id=agent_id or self.target.agent_id,
         )
-        if trace_payload is None:
+        if event is None:
             return
-        event_type = str(trace_payload.get("event_type") or "")
-        trace_event = self._build_trace_event(trace_payload)
-        if event_type == "agent.think.complete":
-            self.chain_renderer.on_think_complete(trace_event)
-            return
-        if event_type == "agent.act.complete":
-            self.chain_renderer.on_act_complete(trace_event)
-            return
-        if event_type == "agent.step.complete":
-            self.chain_renderer.on_step_complete(trace_event)
+        self.chain_renderer.on_runtime_event(event, trace_label=trace_label)
 
     def _render_trace_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
@@ -119,8 +99,19 @@ class MashRemoteShell:
             self.chain_renderer.on_llm_request_complete(self._build_llm_event(payload))
 
     @staticmethod
-    def _extract_streamed_response_text(payload: dict[str, Any]) -> str:
-        return runtime_trace_payload_response_preview(payload)
+    def _extract_streamed_response_text(
+        payload: dict[str, Any],
+        *,
+        agent_id: str,
+    ) -> str:
+        event = runtime_event_from_stream_payload(
+            payload,
+            app_id=agent_id,
+            agent_id=agent_id,
+        )
+        if event is None:
+            return ""
+        return runtime_event_response_preview(event)
 
     def _render_subagent_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
@@ -136,6 +127,7 @@ class MashRemoteShell:
             self._render_runtime_trace_payload(
                 nested_payload,
                 trace_label=trace_label,
+                agent_id=agent_id,
             )
             return
 
@@ -169,7 +161,10 @@ class MashRemoteShell:
 
                 if event_name == "agent.trace":
                     self._render_trace_event(payload)
-                    streamed_text = self._extract_streamed_response_text(payload)
+                    streamed_text = self._extract_streamed_response_text(
+                        payload,
+                        agent_id=ctx.agent_id,
+                    )
                     if streamed_text:
                         streamed_response_text = streamed_text
                         ctx.renderer.markdown(streamed_text)
