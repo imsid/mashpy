@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import asdict
 from typing import Dict, Optional
+
+from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
+from mash.workflows.dbos import register_host as register_workflow_host
+from mash.workflows.dbos import unregister_host as unregister_workflow_host
 
 from ..client import AgentClientLike, InProcessAgentClient
 from ..factory import configure_subagent_tools
@@ -22,11 +27,18 @@ class AgentHost:
         *,
         runtime_database_url: str | None = None,
     ) -> None:
+        self.host_id = f"host-{uuid.uuid4().hex}"
         self.runtime_database_url = str(runtime_database_url or "").strip() or None
         self._primary_agent_id: Optional[str] = None
         self._registered: Dict[str, AgentRegistration] = {}
         self._agents: Dict[str, AgentRuntime] = {}
         self._clients: Dict[str, AgentClientLike] = {}
+        self._workflow_registry = WorkflowRegistry()
+        self._workflow_service = WorkflowService(
+            self._workflow_registry,
+            self,
+            host_id=self.host_id,
+        )
 
     def configure_runtime_database_url(self, database_url: str | None) -> None:
         value = str(database_url or "").strip()
@@ -76,6 +88,34 @@ class AgentHost:
         )
         return resolved_agent_id
 
+    def register_workflow_agent(
+        self,
+        definition: AgentSpec,
+        *,
+        agent_id: str | None = None,
+    ) -> str:
+        resolved_agent_id = (agent_id or definition.get_agent_id()).strip()
+        if not resolved_agent_id:
+            raise ValueError("agent_id is required")
+        if resolved_agent_id in self._registered:
+            raise ValueError(f"agent '{resolved_agent_id}' is already registered")
+
+        self._registered[resolved_agent_id] = AgentRegistration(
+            agent_id=resolved_agent_id,
+            definition=definition,
+            metadata=None,
+            is_primary=False,
+            is_workflow_agent=True,
+        )
+        return resolved_agent_id
+
+    def register_workflow(self, workflow: WorkflowSpec) -> None:
+        self._workflow_registry.register(workflow)
+
+    def get_registered_agent_spec(self, agent_id: str) -> AgentSpec | None:
+        registered = self._registered.get(str(agent_id or "").strip())
+        return registered.definition if registered is not None else None
+
     async def start(self) -> None:
         if self._clients:
             return
@@ -87,6 +127,7 @@ class AgentHost:
             raise RuntimeError(
                 "MASH_RUNTIME_DATABASE_URL is required to start hosted Mash runtimes"
             )
+        register_workflow_host(self.host_id, self)
         try:
             for registered in self._registered.values():
                 runtime = AgentRuntime.from_spec(
@@ -101,7 +142,11 @@ class AgentHost:
                 subagent_metadata = {
                     registered.agent_id: registered.metadata
                     for registered in self._registered.values()
-                    if not registered.is_primary and registered.metadata is not None
+                    if (
+                        not registered.is_primary
+                        and not registered.is_workflow_agent
+                        and registered.metadata is not None
+                    )
                 }
                 primary.set_subagent_ids(sorted(subagent_metadata.keys()))
                 if subagent_metadata:
@@ -142,8 +187,18 @@ class AgentHost:
             raise ValueError(f"agent '{agent_id}' is not registered")
         return agent
 
+    def get_workflow_registry(self) -> WorkflowRegistry:
+        return self._workflow_registry
+
+    def get_workflow_service(self) -> WorkflowService:
+        return self._workflow_service
+
     def list_agents(self) -> list[str]:
-        return list(self._registered.keys())
+        return [
+            agent_id
+            for agent_id, registered in self._registered.items()
+            if not registered.is_workflow_agent
+        ]
 
     def get_primary_agent_id(self) -> str:
         if self._primary_agent_id is None:
@@ -153,6 +208,8 @@ class AgentHost:
     def describe_agents(self) -> list[dict[str, object]]:
         described: list[dict[str, object]] = []
         for registered in self._registered.values():
+            if registered.is_workflow_agent:
+                continue
             described.append(
                 {
                     "agent_id": registered.agent_id,
@@ -167,6 +224,7 @@ class AgentHost:
         return described
 
     async def close(self) -> None:
+        unregister_workflow_host(self.host_id, self)
         for client in self._clients.values():
             await client.close()
         self._clients.clear()

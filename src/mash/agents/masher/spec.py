@@ -1,4 +1,4 @@
-"""Built-in Masher subagent spec."""
+"""Built-in Masher workflow worker spec."""
 
 from __future__ import annotations
 
@@ -18,24 +18,38 @@ from mash.skills.registry import SkillRegistry
 from mash.tools.bash import BashTool
 from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
+from mash.workflows import TaskSpec, WorkflowSpec
 
 from .tool import (
     AppendJsonlTool,
     GetLatestTraceTool,
     GetTraceEventsTool,
+    ListTracesSinceTool,
     ListRecentTracesTool,
+    OnlineEvalCurationWorkflowTool,
+    TraceDigestWorkflowTool,
 )
 
 MASHER_AGENT_ID = "masher"
+MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
+MASHER_TRACE_DIGEST_TASK_ID = "digest-traces"
+MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
+MASHER_ONLINE_EVAL_TASK_ID = "curate-online-evals"
 
-_PROMPT_TEMPLATE = """You are Masher, Mash's built-in trace diagnosis specialist.
+_PROMPT_HEADER_TEMPLATE = """You are Masher, Mash's built-in workflow-only worker.
 
 Configured event store:
 - {event_source}
 
-Your roles:
-1. Analyze canonical Mash trace events and answer questions about agent performance.
-2. Curate normalized online eval records from those trace events and append JSONL records to files.
+Configured trace digest JSONL artifact:
+- {trace_digest_jsonl_path}
+
+Configured online eval JSONL artifact:
+- {online_eval_jsonl_path}
+
+You are invoked only by Mash workflows. Do not answer free-form diagnostic chat.
+Every request is JSON with workflow_id, workflow_run_id, task_id, workflow_input,
+and task_state.
 
 Structured event schema:
 - Common envelope fields: event_id, event_type, app_id, session_id, trace_id, payload, created_at
@@ -47,47 +61,24 @@ Structured event schema:
   - mcp.* for MCP tool/server operations
   - command.* for command lifecycle events
 
-When analyzing performance:
-- The configured event store above is the source of truth for analysis unless the prompt explicitly says otherwise.
-- Treat the delegated prompt as a free-form question about that event store.
-- First resolve the target session or trace with deterministic store tools.
-- Use `get_latest_session` for questions about the most recent session.
-- Use `get_latest_trace` to select the latest trace within a session.
-- Use `list_recent_traces` when the user asks to compare recent runs.
-- After resolving identifiers, call `get_trace_events` and analyze the raw returned events.
-- Treat InvokeSubagent opts as invocation controls only, such as timeout_ms. Do not expect task inputs in opts.
-- Use raw facts first: session ids, trace ids, counts, durations, token usage, stop reasons.
-- Infer any needed metrics from the raw trace events returned by the tool.
-- Use bash only as a fallback when the deterministic store tools or trace event tool are insufficient.
-- Keep bash reads small with rg, tail, head, sed, or context flags.
-- Do not dump the whole event store.
-- Inspect only the configured event store and nearby eval files unless the prompt asks otherwise.
-
-When creating eval records:
-- This is curation only. Do not perform or claim evaluation results.
-- Use session_id and trace_id together as the unique run key.
-- Include the source event store, app_id, session_id, trace_id, user prompt, assistant response,
-  tools_called, step_count, and token usage when present.
-- Use append_jsonl to write JSONL output.
+Workflow skills:
+{workflow_skills}
 """
 
 
 def build_masher_metadata() -> SubAgentMetadata:
     return SubAgentMetadata(
         display_name="Masher",
-        description="Analyzes Mash trace events and curates online eval rows.",
+        description="Workflow-only Mash trace digest worker.",
         capabilities=[
-            "trace and session analysis",
-            "run diagnostics",
-            "online eval generation",
+            "trace digest generation",
+            "incremental trace checkpointing",
+            "trace digest JSONL artifacts",
         ],
         usage_guidance=(
-            "Use for Mash trace diagnosis or eval-record curation against the host-"
-            "configured event store. Ask free-form questions about that store. For "
-            "analysis, Masher should first resolve the target session or trace "
-            "with its deterministic store tools, then fetch raw trace events, and "
-            "only fall back to bash when needed. Use opts only for invocation "
-            "controls such as timeout_ms."
+            "Masher is registered by HostBuilder.enable_masher() as an internal "
+            "workflow worker for the masher-trace-digest workflow. It should not "
+            "be exposed as a user-invokable subagent."
         ),
     )
 
@@ -102,6 +93,8 @@ class MasherAgentSpec(AgentSpec):
         target_app_id: str | None = None,
         runtime_store: RuntimeStore | None = None,
         runtime_database_url: str | None = None,
+        trace_digest_jsonl_path: str | Path | None = None,
+        online_eval_jsonl_path: str | Path | None = None,
     ) -> None:
         self.log_store = log_store
         self.target_app_id = (
@@ -114,6 +107,16 @@ class MasherAgentSpec(AgentSpec):
         self.store_path = (
             AgentSpec.get_data_root() / self.target_app_id / "state.db"
         ).resolve()
+        self.trace_digest_jsonl_path = (
+            Path(trace_digest_jsonl_path).expanduser().resolve()
+            if trace_digest_jsonl_path is not None
+            else (AgentSpec.get_data_root() / "masher" / "trace-digests.jsonl").resolve()
+        )
+        self.online_eval_jsonl_path = (
+            Path(online_eval_jsonl_path).expanduser().resolve()
+            if online_eval_jsonl_path is not None
+            else (AgentSpec.get_data_root() / "masher" / "online-evals.jsonl").resolve()
+        )
 
     def _build_target_store(self) -> MemoryStore:
         return self.log_store
@@ -148,6 +151,29 @@ class MasherAgentSpec(AgentSpec):
                 app_id=self.target_app_id,
             )
         )
+        tools.register(
+            ListTracesSinceTool(
+                runtime_store=self.runtime_store,
+                runtime_database_url=self.runtime_database_url,
+                app_id=self.target_app_id,
+            )
+        )
+        tools.register(
+            TraceDigestWorkflowTool(
+                runtime_store=self.runtime_store,
+                runtime_database_url=self.runtime_database_url,
+                default_target_agent_id=self.target_app_id,
+                trace_digest_jsonl_path=self.trace_digest_jsonl_path,
+            )
+        )
+        tools.register(
+            OnlineEvalCurationWorkflowTool(
+                runtime_store=self.runtime_store,
+                runtime_database_url=self.runtime_database_url,
+                default_target_agent_id=self.target_app_id,
+                online_eval_jsonl_path=self.online_eval_jsonl_path,
+            )
+        )
         tools.register(BashTool(working_dir=str(self.store_path.parent)))
         tools.register(AppendJsonlTool())
         return tools
@@ -171,13 +197,23 @@ class MasherAgentSpec(AgentSpec):
 
     def build_skills(self) -> SkillRegistry:
         skills = SkillRegistry()
-        skill_dir = Path(__file__).resolve().parent / "skills" / "online-eval-curation"
+        skills_root = Path(__file__).resolve().parent / "skills"
+        trace_digest_skill_dir = skills_root / "trace-digest-workflow"
+        online_eval_skill_dir = skills_root / "online-eval-curation"
+        skills.register(
+            Skill(
+                type="custom",
+                name="trace-digest-workflow",
+                description="Run Masher's diagnostic trace digest workflow.",
+                location=str(trace_digest_skill_dir),
+            )
+        )
         skills.register(
             Skill(
                 type="custom",
                 name="online-eval-curation",
                 description="Build normalized online eval JSONL rows from Mash trace events.",
-                location=str(skill_dir),
+                location=str(online_eval_skill_dir),
             )
         )
         return skills
@@ -205,10 +241,85 @@ class MasherAgentSpec(AgentSpec):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
             app_id=MASHER_AGENT_ID,
-            system_prompt=_PROMPT_TEMPLATE.format(event_source="runtime_event_log"),
+            system_prompt=_PROMPT_HEADER_TEMPLATE.format(
+                event_source="runtime_event_log",
+                trace_digest_jsonl_path=str(self.trace_digest_jsonl_path),
+                online_eval_jsonl_path=str(self.online_eval_jsonl_path),
+                workflow_skills=self._build_workflow_skill_prompt(),
+            ),
             skills_enabled=True,
             max_steps=6,
         )
+
+    def _build_workflow_skill_prompt(self) -> str:
+        skills_root = Path(__file__).resolve().parent / "skills"
+        rendered = [
+            _render_skill(
+                skills_root / "trace-digest-workflow" / "SKILL.md",
+                {
+                    "workflow_id": MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                    "task_id": MASHER_TRACE_DIGEST_TASK_ID,
+                    "artifact_path": str(self.trace_digest_jsonl_path),
+                    "tool_name": "run_trace_digest_workflow",
+                },
+            ),
+            _render_skill(
+                skills_root / "online-eval-curation" / "SKILL.md",
+                {
+                    "workflow_id": MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                    "task_id": MASHER_ONLINE_EVAL_TASK_ID,
+                    "artifact_path": str(self.online_eval_jsonl_path),
+                    "tool_name": "run_online_eval_curation_workflow",
+                },
+            ),
+        ]
+        return "\n\n".join(rendered)
+
+
+def _render_skill(path: Path, values: dict[str, str]) -> str:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"failed to read Masher skill file: {path}") from exc
+    body = _strip_frontmatter(content)
+    for key, value in values.items():
+        body = body.replace("{{" + key + "}}", value)
+    if "{{" in body or "}}" in body:
+        raise RuntimeError(f"unresolved placeholder in Masher skill file: {path}")
+    return body.strip()
+
+
+def _strip_frontmatter(content: str) -> str:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return content
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join(lines[index + 1 :])
+    return content
+
+
+def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSpec]:
+    return [
+        WorkflowSpec(
+            workflow_id=MASHER_TRACE_DIGEST_WORKFLOW_ID,
+            tasks=[
+                TaskSpec(
+                    task_id=MASHER_TRACE_DIGEST_TASK_ID,
+                    agent_spec=masher_spec,
+                )
+            ],
+        ),
+        WorkflowSpec(
+            workflow_id=MASHER_ONLINE_EVAL_WORKFLOW_ID,
+            tasks=[
+                TaskSpec(
+                    task_id=MASHER_ONLINE_EVAL_TASK_ID,
+                    agent_spec=masher_spec,
+                )
+            ],
+        ),
+    ]
 
 
 def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgentSpec:
@@ -232,7 +343,12 @@ def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgent
 
 __all__ = [
     "MASHER_AGENT_ID",
+    "MASHER_ONLINE_EVAL_TASK_ID",
+    "MASHER_ONLINE_EVAL_WORKFLOW_ID",
+    "MASHER_TRACE_DIGEST_TASK_ID",
+    "MASHER_TRACE_DIGEST_WORKFLOW_ID",
     "MasherAgentSpec",
+    "build_masher_workflow_specs",
     "build_masher_metadata",
     "create_masher_agent_spec",
 ]

@@ -8,7 +8,7 @@
 - Keeps built-in agent prompts, tools, and module-specific behavior separate from generic runtime code.
 
 ## Current Built-In Agents
-- `masher`: bundled log-analysis specialist.
+- `masher`: bundled workflow-only trace digest worker.
 
 ## Package Boundary
 - Built-in agents should compose `mash.runtime`, `mash.tools`, `mash.memory`, and `mash.logging`.

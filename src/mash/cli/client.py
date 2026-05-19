@@ -190,5 +190,40 @@ class MashHostClient:
         )
         return response.json()["data"]
 
+    def list_workflows(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/workflows")
+        workflows = response.json()["data"].get("workflows")
+        if not isinstance(workflows, list):
+            return []
+        return [workflow for workflow in workflows if isinstance(workflow, dict)]
+
+    def run_workflow(
+        self,
+        workflow_id: str,
+        *,
+        dedup_key: str | None = None,
+        workflow_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if dedup_key is not None:
+            body["dedup_key"] = dedup_key
+        if workflow_input is not None:
+            body["input"] = workflow_input
+        response = self._request(
+            "POST",
+            f"/api/v1/workflows/{quote(workflow_id, safe='')}/run",
+            json_body=body,
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def get_workflow_run(self, workflow_id: str, run_id: str) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            f"/api/v1/workflows/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}",
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     def close(self) -> None:
         self._session.close()

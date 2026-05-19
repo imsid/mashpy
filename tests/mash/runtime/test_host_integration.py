@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import os
 import tempfile
 import unittest
@@ -18,6 +19,8 @@ from mash.testing.runtime_fixtures import (
     build_spec,
     metadata,
 )
+from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import dbos as workflow_dbos
 from mash.tools.subagent import derive_subagent_session_id
 
 _IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -31,9 +34,16 @@ class _FakeWorkflowDBOS:
     async def run_step_async(_config, func, *args, **kwargs):
         token = _IN_FAKE_DBOS_STEP.set(True)
         try:
-            return await func(*args, **kwargs)
+            result = func(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
         finally:
             _IN_FAKE_DBOS_STEP.reset(token)
+
+    @staticmethod
+    async def list_workflows_async(**_kwargs):
+        return []
 
 
 class _StepRestrictedRequestEngine:
@@ -88,7 +98,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_host_builder_composes_primary_and_subagent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
                 host = (
                     HostBuilder()
                     .primary(build_spec(agent_id="primary", response_text="primary-ok"))
@@ -105,9 +115,71 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(described["primary"]["role"], "primary")
                 self.assertEqual(described["research"]["role"], "subagent")
 
+    def test_host_builder_registers_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+                primary_spec = build_spec(agent_id="primary", response_text="primary-ok")
+                host = (
+                    HostBuilder()
+                    .primary(primary_spec)
+                    .workflow(
+                        WorkflowSpec(
+                            workflow_id="changelog",
+                            tasks=[
+                                TaskSpec(
+                                    task_id="scan",
+                                    agent_spec=primary_spec,
+                                )
+                            ],
+                        )
+                    )
+                    .build()
+                )
+                self.assertEqual(
+                    [item.workflow_id for item in host.get_workflow_registry().list()],
+                    ["changelog"],
+                )
+
+    async def test_host_builder_registers_multiple_workflow_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+                worker_a = build_spec(agent_id="worker-a", response_text="{}")
+                worker_b = build_spec(agent_id="worker-b", response_text="{}")
+                host = (
+                    HostBuilder()
+                    .primary(build_spec(agent_id="primary", response_text="primary-ok"))
+                    .workflow(
+                        WorkflowSpec(
+                            workflow_id="wf-a",
+                            tasks=[TaskSpec(task_id="task-a", agent_spec=worker_a)],
+                        )
+                    )
+                    .workflow(
+                        WorkflowSpec(
+                            workflow_id="wf-b",
+                            tasks=[TaskSpec(task_id="task-b", agent_spec=worker_b)],
+                        )
+                    )
+                    .build()
+                )
+
+                described = {item["agent_id"]: item for item in host.describe_agents()}
+                self.assertEqual(sorted(described.keys()), ["primary"])
+                self.assertEqual(host.list_agents(), ["primary"])
+                self.assertEqual(
+                    sorted(item.workflow_id for item in host.get_workflow_registry().list()),
+                    ["wf-a", "wf-b"],
+                )
+                await host.start()
+                try:
+                    self.assertIsNotNone(host.get_client("worker-a"))
+                    self.assertIsNotNone(host.get_client("worker-b"))
+                finally:
+                    await host.close()
+
     async def test_host_starts_runtime_servers_and_client_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
                 host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
@@ -138,7 +210,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_start_does_not_self_probe_runtime_health_over_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
                 host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
@@ -155,9 +227,103 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await host.close()
 
+    async def test_host_exposes_workflow_service_for_registered_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+                primary_spec = build_spec(
+                    agent_id="primary",
+                    response_text='{"last_run_ts":"2026-05-14T00:00:00Z"}',
+                )
+                host = (
+                    HostBuilder()
+                    .primary(primary_spec)
+                    .workflow(
+                        WorkflowSpec(
+                            workflow_id="changelog",
+                            tasks=[
+                                TaskSpec(
+                                    task_id="scan-codebase-and-append-changelog",
+                                    agent_spec=primary_spec,
+                                )
+                            ],
+                        )
+                    )
+                    .build()
+                )
+                await host.start()
+                try:
+                    workflow_service = host.get_workflow_service()
+                    self.assertIsNotNone(workflow_service)
+                    listed = await workflow_service.list_workflows()
+                    self.assertEqual(len(listed), 1)
+
+                    async def start_workflow_run(**_kwargs):
+                        return f"mash.workflow:{host.host_id}:changelog:abc"
+
+                    async def get_workflow_status(_run_id):
+                        return None
+
+                    with patch.object(
+                        workflow_dbos,
+                        "start_workflow_run",
+                        start_workflow_run,
+                    ), patch.object(
+                        workflow_dbos,
+                        "get_workflow_status",
+                        get_workflow_status,
+                    ):
+                        run = await workflow_service.run_workflow("changelog")
+                    self.assertEqual(run.status, "queued")
+                finally:
+                    await host.close()
+
+    async def test_workflow_task_request_runs_inline_from_host_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+                with patch(
+                    "mash.runtime.service.DBOSRequestEngine",
+                    _StepRestrictedRequestEngine,
+                ), patch("mash.runtime.engine.workflow.DBOS", _FakeWorkflowDBOS):
+                    worker_spec = build_spec(
+                        agent_id="worker",
+                        response_text='{"ok":true}',
+                    )
+                    host = (
+                        HostBuilder()
+                        .primary(build_spec(agent_id="primary", response_text="primary-ok"))
+                        .workflow(
+                            WorkflowSpec(
+                                workflow_id="wf",
+                                tasks=[TaskSpec(task_id="task", agent_spec=worker_spec)],
+                            )
+                        )
+                        .build()
+                    )
+                    await host.start()
+                    try:
+                        with patch.object(
+                            workflow_dbos,
+                            "_load_dbos_api",
+                            return_value=(_FakeWorkflowDBOS, None, None, None, None),
+                        ):
+                            output = await workflow_dbos.execute_registered_workflow(
+                                host.host_id,
+                                "wf",
+                                f"mash.workflow:{host.host_id}:wf:test",
+                                workflow_input={"target_agent_id": "primary"},
+                            )
+
+                        self.assertEqual(output["task_states"]["task"], {"ok": True})
+                        worker = host.get_agent("worker")
+                        sessions = await worker.list_sessions()
+                        self.assertEqual(len(sessions), 1)
+                        self.assertTrue(sessions[0]["session_id"].startswith("workflow:wf:task:task:run:"))
+                    finally:
+                        await host.close()
+
     async def test_subagent_invocation_uses_real_runtime_clients(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
                 host = (
                     HostBuilder()
                     .primary(
@@ -203,7 +369,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_subagent_invocation_starts_child_workflow_outside_step_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
                 with patch(
                     "mash.runtime.service.DBOSRequestEngine",
                     _StepRestrictedRequestEngine,
@@ -267,7 +433,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_request_error_emits_terminal_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
                 host = HostBuilder().primary(
                     build_spec(
                         agent_id="primary",

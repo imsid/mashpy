@@ -6,16 +6,23 @@ import asyncio
 import json
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import patch
 
 from mash.agents import MasherAgentSpec
-from mash.agents.masher.tool import AppendJsonlTool, GetTraceEventsTool
+from mash.agents.masher import (
+    MASHER_ONLINE_EVAL_WORKFLOW_ID,
+    MASHER_TRACE_DIGEST_WORKFLOW_ID,
+)
+from mash.agents.masher.tool import (
+    AppendJsonlTool,
+    GetTraceEventsTool,
+    _build_online_eval_row,
+    _load_trace_bundle,
+)
 from mash.core.config import AgentConfig
-from mash.core.context import Context, Response
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.memory.store import SQLiteStore
@@ -202,14 +209,20 @@ class MasherTests(unittest.TestCase):
         app_id: str = "primary",
         created_at: float = 1.0,
         payload: dict[str, object] | None = None,
+        loop_index: int | None = None,
     ) -> None:
-        store.append(
-            app_id=app_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            event_type=event_type,
-            created_at=created_at,
-            payload=dict(payload or {}),
+        store._events.append(
+            RuntimeEvent(
+                event_id=len(store._events) + 1,
+                app_id=app_id,
+                agent_id=app_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                event_type=event_type,
+                payload=dict(payload or {}),
+                created_at=created_at,
+                loop_index=loop_index,
+            )
         )
 
     def test_builder_enable_masher_false_leaves_builder_unchanged(self) -> None:
@@ -237,14 +250,19 @@ class MasherTests(unittest.TestCase):
                 self.assertIn("get_trace_events", tools)
                 self.assertIn("bash", tools)
                 self.assertIn("append_jsonl", tools)
+                self.assertIn("list_traces_since", tools)
+                self.assertIn("run_trace_digest_workflow", tools)
+                self.assertIn("run_online_eval_curation_workflow", tools)
                 self.assertEqual(
                     sorted(skill.name for skill in skills.list_skills()),
-                    ["online-eval-curation"],
+                    ["online-eval-curation", "trace-digest-workflow"],
                 )
                 prompt = spec.build_agent_config().system_prompt
                 self.assertIn("event_type", prompt)
-                self.assertIn("get_latest_session", prompt)
-                self.assertIn("get_trace_events", prompt)
+                self.assertIn("workflow_input", prompt)
+                self.assertIn("run_trace_digest_workflow", prompt)
+                self.assertIn("run_online_eval_curation_workflow", prompt)
+                self.assertIn("masher-online-eval-curation", prompt)
                 self.assertEqual(spec.build_agent_config().max_steps, 6)
 
     def test_relative_data_dir_resolves_once_for_primary_and_masher(self) -> None:
@@ -252,7 +270,11 @@ class MasherTests(unittest.TestCase):
             previous_cwd = Path.cwd()
             os.chdir(tmp)
             try:
-                with patch.dict(os.environ, {"MASH_DATA_DIR": ".mash"}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {"MASH_DATA_DIR": ".mash", "MASH_MEMORY_DATABASE_URL": ""},
+                    clear=False,
+                ):
                     primary = _PrimarySpec()
                     expected = (Path(tmp) / ".mash" / "primary" / "state.db").resolve()
                     self.assertIsInstance(primary.get_log_destination(), SQLiteStore)
@@ -351,6 +373,303 @@ class MasherTests(unittest.TestCase):
             self.assertEqual(len(payload["events"]), 2)
             self.assertEqual(payload["events"][1]["event_type"], "agent.tool.call")
 
+    def test_trace_digest_workflow_trace_mode_returns_digest_without_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_path, store, runtime_store = self._build_target_files(tmp)
+            self._save_turn(store, trace_id="t-1", session_id="s-1")
+            self._save_trace_log(runtime_store, session_id="s-1", trace_id="t-1", created_at=1.0)
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="llm.request.complete",
+                created_at=2.0,
+                payload={"input_tokens": 10, "output_tokens": 4},
+            )
+            artifact_path = Path(tmp) / "masher" / "trace-digests.jsonl"
+
+            spec = MasherAgentSpec(
+                log_store=store,
+                target_app_id="primary",
+                runtime_store=runtime_store,
+                trace_digest_jsonl_path=artifact_path,
+            )
+            result = asyncio.run(
+                spec.build_tools().get("run_trace_digest_workflow").execute(
+                    {
+                        "workflow_input": {
+                            "mode": "trace",
+                            "target_agent_id": "primary",
+                            "session_id": "s-1",
+                            "trace_id": "t-1",
+                        },
+                        "task_state": {},
+                    }
+                )
+            )
+
+            self.assertFalse(result.is_error)
+            digest = json.loads(result.content)
+            self.assertEqual(digest["target_agent_id"], "primary")
+            self.assertEqual(digest["session_id"], "s-1")
+            self.assertEqual(digest["trace_id"], "t-1")
+            self.assertEqual(digest["metrics"]["input_tokens"], 10)
+            self.assertFalse(artifact_path.exists())
+
+    def test_shared_trace_bundle_extracts_eval_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_path, _store, runtime_store = self._build_target_files(tmp)
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="agent.run.start",
+                created_at=1.0,
+                payload={"user_message": "How should this work?"},
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.tool.call.completed",
+                created_at=2.0,
+                payload={"tool_name": "bash"},
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.step.completed",
+                created_at=3.0,
+                payload={},
+                loop_index=0,
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="llm.request.complete",
+                created_at=4.0,
+                payload={"input_tokens": 12, "output_tokens": 5},
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.request.completed",
+                created_at=5.0,
+                payload={"response": {"text": "It works like this."}},
+            )
+
+            bundle = asyncio.run(
+                _load_trace_bundle(
+                    runtime_store,
+                    target_agent_id="primary",
+                    session_id="s-1",
+                    trace_id="t-1",
+                )
+            )
+            row = _build_online_eval_row(bundle)
+
+            self.assertEqual(row["user_message"], "How should this work?")
+            self.assertEqual(row["assistant_response"], "It works like this.")
+            self.assertEqual(row["tools_called"], ["bash"])
+            self.assertEqual(row["tool_call_count"], 1)
+            self.assertEqual(row["step_count"], 1)
+            self.assertEqual(row["input_tokens"], 12)
+            self.assertEqual(row["output_tokens"], 5)
+
+    def test_trace_digest_workflow_incremental_mode_writes_jsonl_and_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_path, store, runtime_store = self._build_target_files(tmp)
+            self._save_trace_log(runtime_store, session_id="s-old", trace_id="t-old", created_at=1.0)
+            self._save_trace_log(runtime_store, session_id="s-new", trace_id="t-new", created_at=3.0)
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-new",
+                trace_id="t-new",
+                event_type="agent.tool.error",
+                created_at=4.0,
+                payload={"error": "boom"},
+            )
+            artifact_path = Path(tmp) / "masher" / "trace-digests.jsonl"
+
+            spec = MasherAgentSpec(
+                log_store=store,
+                target_app_id="primary",
+                runtime_store=runtime_store,
+                trace_digest_jsonl_path=artifact_path,
+            )
+            result = asyncio.run(
+                spec.build_tools().get("run_trace_digest_workflow").execute(
+                    {
+                        "workflow_input": {
+                            "mode": "incremental",
+                            "target_agent_id": "primary",
+                        },
+                        "task_state": {
+                            "schema_version": 1,
+                            "checkpoints": {
+                                "primary": {
+                                    "last_run_ts": 2.0,
+                                    "last_trace_ids": ["t-old"],
+                                }
+                            },
+                        },
+                    }
+                )
+            )
+
+            self.assertFalse(result.is_error)
+            next_state = json.loads(result.content)
+            self.assertEqual(next_state["processed_trace_count"], 1)
+            self.assertEqual(next_state["appended_trace_count"], 1)
+            self.assertEqual(
+                next_state["checkpoints"]["primary"]["last_trace_ids"],
+                ["t-new"],
+            )
+            lines = artifact_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            digest = json.loads(lines[0])
+            self.assertEqual(digest["trace_id"], "t-new")
+            self.assertEqual(digest["status"], "failed")
+
+    def test_online_eval_workflow_trace_mode_writes_dataset_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_path, store, runtime_store = self._build_target_files(tmp)
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="agent.run.start",
+                created_at=1.0,
+                payload={"user_message": "Question"},
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.request.completed",
+                created_at=2.0,
+                payload={"response": {"text": "Answer"}},
+            )
+            artifact_path = Path(tmp) / "masher" / "online-evals.jsonl"
+
+            spec = MasherAgentSpec(
+                log_store=store,
+                target_app_id="primary",
+                runtime_store=runtime_store,
+                online_eval_jsonl_path=artifact_path,
+            )
+            result = asyncio.run(
+                spec.build_tools().get("run_online_eval_curation_workflow").execute(
+                    {
+                        "workflow_input": {
+                            "mode": "trace",
+                            "target_agent_id": "primary",
+                            "session_id": "s-1",
+                            "trace_id": "t-1",
+                        },
+                        "task_state": {},
+                    }
+                )
+            )
+
+            self.assertFalse(result.is_error)
+            payload = json.loads(result.content)
+            self.assertTrue(payload["appended"])
+            self.assertNotIn("summary", payload["record"])
+            self.assertEqual(payload["record"]["user_message"], "Question")
+            self.assertEqual(payload["record"]["assistant_response"], "Answer")
+            lines = artifact_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0])["trace_id"], "t-1")
+
+    def test_online_eval_workflow_incremental_skips_duplicate_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_path, store, runtime_store = self._build_target_files(tmp)
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-new",
+                trace_id="t-new",
+                event_type="agent.run.start",
+                created_at=3.0,
+                payload={"user_message": "Question"},
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-new",
+                trace_id="t-new",
+                event_type="runtime.request.completed",
+                created_at=4.0,
+                payload={"response": {"text": "Answer"}},
+            )
+            artifact_path = Path(tmp) / "masher" / "online-evals.jsonl"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "target_agent_id": "primary",
+                        "session_id": "s-new",
+                        "trace_id": "t-new",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            spec = MasherAgentSpec(
+                log_store=store,
+                target_app_id="primary",
+                runtime_store=runtime_store,
+                online_eval_jsonl_path=artifact_path,
+            )
+            result = asyncio.run(
+                spec.build_tools().get("run_online_eval_curation_workflow").execute(
+                    {
+                        "workflow_input": {
+                            "mode": "incremental",
+                            "target_agent_id": "primary",
+                        },
+                        "task_state": {"checkpoints": {"primary": {"last_run_ts": 2.0}}},
+                    }
+                )
+            )
+
+            self.assertFalse(result.is_error)
+            next_state = json.loads(result.content)
+            self.assertEqual(next_state["processed_trace_count"], 1)
+            self.assertEqual(next_state["appended_trace_count"], 0)
+            self.assertEqual(
+                next_state["checkpoints"]["primary"]["last_trace_ids"],
+                ["t-new"],
+            )
+            self.assertEqual(len(artifact_path.read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_trace_digest_workflow_rejects_missing_trace_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_path, store, runtime_store = self._build_target_files(tmp)
+            spec = MasherAgentSpec(
+                log_store=store,
+                target_app_id="primary",
+                runtime_store=runtime_store,
+            )
+            result = asyncio.run(
+                spec.build_tools().get("run_trace_digest_workflow").execute(
+                    {
+                        "workflow_input": {
+                            "mode": "trace",
+                            "target_agent_id": "primary",
+                            "session_id": "s-1",
+                        },
+                        "task_state": {},
+                    }
+                )
+            )
+
+            self.assertTrue(result.is_error)
+            self.assertIn("workflow_input.trace_id is required", result.content)
+
     def test_append_jsonl_appends_and_skips_duplicate_session_trace_pair(self) -> None:
         tool = AppendJsonlTool()
         with tempfile.TemporaryDirectory() as tmp:
@@ -374,18 +693,20 @@ class MasherTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["trace_id"], "trace-1")
 
-    def test_builder_enable_masher_registers_subagent_spec(self) -> None:
+    def test_builder_enable_masher_registers_hidden_workflow_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
                 host = HostBuilder().primary(self._primary_spec()).enable_masher().build()
                 try:
                     described = {item["agent_id"]: item for item in host.describe_agents()}
-                    self.assertIn("masher", described)
-                    self.assertEqual(described["masher"]["role"], "subagent")
-                    metadata_payload = described["masher"]["metadata"]
-                    self.assertIsInstance(metadata_payload, dict)
-                    assert isinstance(metadata_payload, dict)
-                    self.assertIn("trace and session analysis", metadata_payload["capabilities"])
+                    self.assertNotIn("masher", described)
+                    self.assertNotIn("masher", host.list_agents())
+                    workflows = {
+                        workflow.workflow_id
+                        for workflow in host.get_workflow_registry().list()
+                    }
+                    self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
+                    self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
                 finally:
                     asyncio.run(host.close())
 

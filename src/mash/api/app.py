@@ -21,6 +21,7 @@ from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import AgentClientError, AgentHost
 from mash.runtime.client import AgentClientLike
 from mash.runtime.events import RuntimeEvent, build_reasoning_trace
+from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
 
 from .config import MashHostConfig
 from .telemetry_ui import TELEMETRY_API_KEY_COOKIE, mount_telemetry_ui
@@ -61,6 +62,11 @@ class SubmitRequest(BaseModel):
 class CompactSessionRequest(BaseModel):
     reason: str = "manual"
     session_total_tokens_reset: int = 0
+
+
+class RunWorkflowRequest(BaseModel):
+    dedup_key: Optional[str] = None
+    input: dict[str, Any] = Field(default_factory=dict)
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -142,6 +148,11 @@ def _get_agent(request: Request, agent_id: str):
         return state.host.get_agent(agent_id.strip())
     except ValueError as exc:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+
+def _get_workflow_service(request: Request):
+    state = _state_from_request(request)
+    return state.host.get_workflow_service()
 
 
 def _telemetry_event_source() -> str:
@@ -231,6 +242,21 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
     @app.exception_handler(AgentClientError)
     async def _client_error_handler(_: Request, exc: AgentClientError) -> JSONResponse:
         return JSONResponse(status_code=502, content=_error_payload("RUNTIME_CLIENT_ERROR", str(exc)))
+
+    @app.exception_handler(WorkflowNotFoundError)
+    async def _workflow_not_found_handler(_: Request, exc: WorkflowNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content=_error_payload("WORKFLOW_NOT_FOUND", str(exc)))
+
+    @app.exception_handler(DuplicateWorkflowRunError)
+    async def _duplicate_workflow_run_handler(_: Request, exc: DuplicateWorkflowRunError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=_error_payload(
+                "WORKFLOW_DUPLICATE_RUN",
+                str(exc),
+                {"run_id": exc.existing_run.run_id},
+            ),
+        )
 
     async def _authorize(request: Request) -> None:
         state = _state_from_request(request)
@@ -393,6 +419,62 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             session_total_tokens_reset=body.session_total_tokens_reset,
         )
         return _success({"summary_text": summary_text, "turn_id": turn_id})
+
+    @api.get("/workflows")
+    async def list_workflows(request: Request) -> dict[str, Any]:
+        workflow_service = _get_workflow_service(request)
+        return _success({"workflows": await workflow_service.list_workflows()})
+
+    @api.post("/workflows/{workflow_id}/run")
+    async def run_workflow(
+        request: Request,
+        workflow_id: str,
+        body: RunWorkflowRequest,
+    ) -> dict[str, Any]:
+        workflow_service = _get_workflow_service(request)
+        try:
+            run = await workflow_service.run_workflow(
+                workflow_id.strip(),
+                dedup_key=_normalize_optional_text(body.dedup_key),
+                workflow_input=body.input,
+            )
+        except (WorkflowNotFoundError, DuplicateWorkflowRunError):
+            raise
+        except Exception as exc:
+            raise APIError(
+                code="WORKFLOW_RUN_FAILED",
+                message=str(exc),
+                status_code=500,
+            ) from exc
+        return _success(
+            {
+                "run_id": run.run_id,
+                "workflow_id": run.workflow_id,
+                "status": run.status,
+            }
+        )
+
+    @api.get("/workflows/{workflow_id}/runs/{run_id}")
+    async def get_workflow_run(
+        request: Request,
+        workflow_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow_service = _get_workflow_service(request)
+        run = await workflow_service.get_run(workflow_id.strip(), run_id.strip())
+        return _success(
+            {
+                "run_id": run.run_id,
+                "workflow_id": run.workflow_id,
+                "dedup_key": run.dedup_key,
+                "status": run.status,
+                "created_at": run.created_at,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
+                "error": run.error,
+                "output": run.output,
+            }
+        )
 
     @api.get("/telemetry/events")
     async def get_observability_events(

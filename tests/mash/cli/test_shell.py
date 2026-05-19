@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,10 @@ from mash.tools.subagent import derive_subagent_session_id
 
 
 class _FakeClient:
+    def __init__(self) -> None:
+        self.workflow_runs: list[dict[str, Any]] = []
+        self.workflow_status_requests: list[dict[str, str]] = []
+
     def health(self):
         return {"deployment": {"primary_agent_id": "primary", "agents": [{"agent_id": "primary", "role": "primary"}]}}
 
@@ -36,6 +41,48 @@ class _FakeClient:
     def get_history(self, agent_id: str, session_id: str, *, limit=None):
         del agent_id, session_id, limit
         return [{"user_message": "hello", "agent_response": "hi"}]
+
+    def list_workflows(self):
+        return [
+            {
+                "workflow_id": "changelog",
+                "tasks": [{"task_id": "scan", "agent_id": "worker"}],
+            }
+        ]
+
+    def run_workflow(
+        self,
+        workflow_id: str,
+        *,
+        dedup_key: str | None = None,
+        workflow_input: dict[str, Any] | None = None,
+    ):
+        self.workflow_runs.append(
+            {
+                "workflow_id": workflow_id,
+                "dedup_key": dedup_key,
+                "workflow_input": workflow_input,
+            }
+        )
+        return {
+            "workflow_id": workflow_id,
+            "run_id": "mash.workflow:host:changelog:abc",
+            "status": "queued",
+        }
+
+    def get_workflow_run(self, workflow_id: str, run_id: str):
+        self.workflow_status_requests.append({"workflow_id": workflow_id, "run_id": run_id})
+        return {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "dedup_key": "manual",
+            "status": "completed",
+            "created_at": 1.0,
+            "started_at": 2.0,
+            "finished_at": 3.0,
+            "error": None,
+            "output": {"task_states": {"digest-traces": {"status": "ok"}}},
+        }
 
     def submit_request(self, agent_id: str, *, message: str, session_id: str | None = None):
         del agent_id, message, session_id
@@ -138,6 +185,7 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertIn("agents", command_names)
         self.assertIn("sessions", command_names)
         self.assertIn("use", command_names)
+        self.assertIn("workflow", command_names)
 
     def test_session_command_reads_remote_session(self) -> None:
         shell = self._build_shell()
@@ -162,6 +210,102 @@ class MashRemoteShellTests(unittest.TestCase):
         shell.command_registry.execute(shell.context, "/use primary")
         self.assertEqual(shell.context.agent_id, "primary")
         self.assertEqual(shell.context.session_id, "s-1")
+
+    def test_workflow_command_lists_workflows(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "table") as table:
+            shell.command_registry.execute(shell.context, "/workflow list")
+        table.assert_called_once_with(
+            ["Workflow ID", "Tasks"],
+            [["changelog", "scan -> worker"]],
+        )
+
+    def test_workflows_alias_is_not_registered(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "warn") as warn:
+            shell.command_registry.execute(shell.context, "/workflows")
+        warn.assert_called_once_with("Unknown command: /workflows. Try /help.")
+
+    def test_workflow_run_starts_workflow(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "info") as info:
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        self.assertEqual(
+            shell.client.workflow_runs,
+            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None}],
+        )
+        lines = [call.args[0] for call in info.call_args_list]
+        self.assertIn("Workflow: changelog", lines)
+        self.assertIn("Run ID: mash.workflow:host:changelog:abc", lines)
+        self.assertIn("Status: queued", lines)
+
+    def test_workflow_run_forwards_input_json(self) -> None:
+        shell = self._build_shell()
+        shell.command_registry.execute(
+            shell.context,
+            "/workflow run changelog manual --input '{\"x\":1}'",
+        )
+        self.assertEqual(
+            shell.client.workflow_runs,
+            [
+                {
+                    "workflow_id": "changelog",
+                    "dedup_key": "manual",
+                    "workflow_input": {"x": 1},
+                }
+            ],
+        )
+
+    def test_workflow_run_rejects_invalid_input_json_locally(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/workflow run changelog --input '{bad}'")
+        self.assertEqual(shell.client.workflow_runs, [])
+        self.assertIn("Workflow input must be valid JSON", error.call_args.args[0])
+
+    def test_workflow_run_rejects_non_object_input_json_locally(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/workflow run changelog --input '[1]'")
+        self.assertEqual(shell.client.workflow_runs, [])
+        error.assert_called_once_with("Workflow input must be a JSON object")
+
+    def test_workflow_status_fetches_run(self) -> None:
+        shell = self._build_shell()
+        run_id = "mash.workflow:host:changelog:abc"
+        with patch.object(shell.context.renderer, "table") as table, patch.object(
+            shell.context.renderer,
+            "print",
+        ) as print_:
+            shell.command_registry.execute(shell.context, f"/workflow status changelog {run_id}")
+        self.assertEqual(
+            shell.client.workflow_status_requests,
+            [{"workflow_id": "changelog", "run_id": run_id}],
+        )
+        rows = table.call_args.args[1]
+        self.assertIn(["status", "completed"], rows)
+        self.assertIn('"digest-traces"', print_.call_args.args[0])
+
+    def test_workflow_run_usage_error_is_local(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/workflow run")
+        error.assert_called_once_with(
+            "Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]"
+        )
+        self.assertEqual(shell.client.workflow_runs, [])
+
+    def test_workflow_unknown_subcommand_usage_error_is_local(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/workflow nope")
+        error.assert_called_once_with("Usage: /workflow [list|run|status] ...")
+
+    def test_workflow_without_subcommand_usage_error_is_local(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/workflow")
+        error.assert_called_once_with("Usage: /workflow [list|run|status] ...")
 
     def test_handle_repl_message_renders_remote_response(self) -> None:
         shell = self._build_shell()

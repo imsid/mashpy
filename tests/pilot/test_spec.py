@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import asyncio
 import os
 import sys
@@ -14,6 +16,10 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from mash.agents import MasherAgentSpec
+from mash.agents.masher import (
+    MASHER_ONLINE_EVAL_WORKFLOW_ID,
+    MASHER_TRACE_DIGEST_WORKFLOW_ID,
+)
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.tools.bash import BashTool
@@ -24,11 +30,13 @@ from pilot.spec import (
     MCP_COPILOT_AGENT_ID,
     PILOT_AGENT_ID,
     RUNTIME_COPILOT_AGENT_ID,
+    WORKFLOW_COPILOT_AGENT_ID,
     ApiCopilotSpec,
     CliCopilotSpec,
     McpCopilotSpec,
     PilotSpec,
     RuntimeCopilotSpec,
+    WorkflowCopilotSpec,
     _cached_docs_for_scope,
     build_host,
 )
@@ -66,12 +74,14 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
         api_prompt = ApiCopilotSpec(workspace_root).build_system_prompt()
         mcp_prompt = McpCopilotSpec(workspace_root).build_system_prompt()
         runtime_prompt = RuntimeCopilotSpec(workspace_root).build_system_prompt()
+        workflow_prompt = WorkflowCopilotSpec(workspace_root).build_system_prompt()
 
     primary_text = str(primary_prompt)
     cli_text = str(cli_prompt)
     api_text = str(api_prompt)
     mcp_text = str(mcp_prompt)
     runtime_text = str(runtime_prompt)
+    workflow_text = str(workflow_prompt)
 
     assert APP_NAME in primary_text
     assert "primary Mash codebase guide" in primary_text
@@ -86,6 +96,7 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
     assert API_COPILOT_AGENT_ID in primary_text
     assert MCP_COPILOT_AGENT_ID in primary_text
     assert RUNTIME_COPILOT_AGENT_ID in primary_text
+    assert WORKFLOW_COPILOT_AGENT_ID in primary_text
 
     assert APP_NAME in cli_text
     assert "copilot for `src/mash/cli`" in cli_text
@@ -115,6 +126,12 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
     assert "Use the cached runtime docs before using bash." in runtime_text
     assert "DOC: `src/mash/runtime/README.md`" in runtime_text
     assert "DOC: `src/mash/runtime/AGENTS.md`" in runtime_text
+
+    assert APP_NAME in workflow_text
+    assert "copilot for `src/mash/workflows`" in workflow_text
+    assert "Use the cached workflow docs before using bash." in workflow_text
+    assert "DOC: `src/mash/workflows/README.md`" in workflow_text
+    assert "DOC: `src/mash/workflows/AGENTS.md`" in workflow_text
 
 
 def test_build_host_registers_primary_cli_api_and_masher() -> None:
@@ -150,6 +167,13 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     )
                 )
                 stack.enter_context(
+                    patch.object(
+                        WorkflowCopilotSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
@@ -166,25 +190,33 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         assert sorted(described.keys()) == [
                             API_COPILOT_AGENT_ID,
                             CLI_COPILOT_AGENT_ID,
-                            "masher",
                             MCP_COPILOT_AGENT_ID,
                             PILOT_AGENT_ID,
                             RUNTIME_COPILOT_AGENT_ID,
+                            WORKFLOW_COPILOT_AGENT_ID,
                         ]
+                        assert {
+                            workflow.workflow_id
+                            for workflow in host.get_workflow_registry().list()
+                        } == {
+                            MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                        }
 
                         primary = host.get_agent(PILOT_AGENT_ID)
                         assert primary.get_subagent_ids() == [
                             API_COPILOT_AGENT_ID,
                             CLI_COPILOT_AGENT_ID,
-                            "masher",
                             MCP_COPILOT_AGENT_ID,
                             RUNTIME_COPILOT_AGENT_ID,
+                            WORKFLOW_COPILOT_AGENT_ID,
                         ]
                         assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert RUNTIME_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert "masher" in str(primary.system_prompt)
+                        assert WORKFLOW_COPILOT_AGENT_ID in str(primary.system_prompt)
+                        assert "masher" not in str(primary.system_prompt)
                     finally:
                         await host.close()
 
@@ -224,6 +256,13 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     )
                 )
                 stack.enter_context(
+                    patch.object(
+                        WorkflowCopilotSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
@@ -239,6 +278,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         api_agent = host.get_agent(API_COPILOT_AGENT_ID)
                         mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
                         runtime_agent = host.get_agent(RUNTIME_COPILOT_AGENT_ID)
+                        workflow_agent = host.get_agent(WORKFLOW_COPILOT_AGENT_ID)
                         masher = host.get_agent("masher")
 
                         assert "bash" in primary.agent.tools
@@ -247,8 +287,11 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         assert "bash" in api_agent.agent.tools
                         assert "bash" in mcp_agent.agent.tools
                         assert "bash" in runtime_agent.agent.tools
+                        assert "bash" in workflow_agent.agent.tools
                         assert "get_latest_session" in masher.agent.tools
                         assert "get_trace_events" in masher.agent.tools
+                        assert "run_trace_digest_workflow" in masher.agent.tools
+                        assert "run_online_eval_curation_workflow" in masher.agent.tools
                     finally:
                         await host.close()
 
@@ -283,6 +326,13 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                 stack.enter_context(
                     patch.object(
                         RuntimeCopilotSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
+                    patch.object(
+                        WorkflowCopilotSpec,
                         "build_llm",
                         return_value=_FakeLLMProvider(),
                     )
@@ -323,8 +373,9 @@ def test_build_system_prompt_uses_cached_docs_helper() -> None:
         ApiCopilotSpec(workspace_root).build_system_prompt()
         McpCopilotSpec(workspace_root).build_system_prompt()
         RuntimeCopilotSpec(workspace_root).build_system_prompt()
+        WorkflowCopilotSpec(workspace_root).build_system_prompt()
 
-    assert cached_docs.call_count == 5
+    assert cached_docs.call_count == 6
     primary_call = cached_docs.call_args_list[0]
     assert "docs/rfcs/host-to-agent-protocol.md" in primary_call.kwargs["extra_doc_paths"]
 
@@ -421,19 +472,23 @@ def test_copilot_configs_limit_history_and_steps() -> None:
         api_config = ApiCopilotSpec(workspace_root).build_agent_config()
         mcp_config = McpCopilotSpec(workspace_root).build_agent_config()
         runtime_config = RuntimeCopilotSpec(workspace_root).build_agent_config()
+        workflow_config = WorkflowCopilotSpec(workspace_root).build_agent_config()
 
     assert cli_config.conversation_history_turns == 0
     assert api_config.conversation_history_turns == 0
     assert mcp_config.conversation_history_turns == 0
     assert runtime_config.conversation_history_turns == 0
+    assert workflow_config.conversation_history_turns == 0
     assert cli_config.max_steps == 10
     assert api_config.max_steps == 10
     assert mcp_config.max_steps == 10
     assert runtime_config.max_steps == 10
+    assert workflow_config.max_steps == 10
     assert cli_config.temperature == 0.2
     assert api_config.temperature == 0.2
     assert mcp_config.temperature == 0.2
     assert runtime_config.temperature == 0.2
+    assert workflow_config.temperature == 0.2
 
 
 def test_missing_docs_do_not_break_prompt_building() -> None:
@@ -467,6 +522,7 @@ def test_top_level_src_mash_packages_have_required_docs() -> None:
         "mcp",
         "memory",
         "runtime",
+        "workflows",
         "skills",
         "tools",
     ]

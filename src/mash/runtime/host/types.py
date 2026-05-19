@@ -16,4 +16,5 @@ class AgentRegistration:
     definition: AgentSpec
     metadata: Optional[SubAgentMetadata]
     is_primary: bool
+    is_workflow_agent: bool = False
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))

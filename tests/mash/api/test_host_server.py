@@ -6,7 +6,9 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -15,10 +17,18 @@ from mash.api import MashHostConfig, create_app
 from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE, get_telemetry_static_dir
 from mash.runtime import HostBuilder
 from mash.testing.runtime_fixtures import build_spec, metadata
+from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import dbos as workflow_dbos
 
 
 @contextmanager
-def _build_test_client(root: Path, *, api_key: str | None = None):
+def _build_test_client(
+    root: Path,
+    *,
+    api_key: str | None = None,
+    workflow_enabled: bool = False,
+    workflow_response_text: str = '{"last_run_ts":"2026-05-14T00:00:00Z"}',
+):
     with patch.dict(
         os.environ,
         {
@@ -26,7 +36,7 @@ def _build_test_client(root: Path, *, api_key: str | None = None):
             "MASH_MEMORY_DATABASE_URL": "",
         },
     ):
-        host = (
+        builder = (
             HostBuilder()
             .primary(build_spec(agent_id="primary", response_text="primary-ok"))
             .subagent(
@@ -36,8 +46,26 @@ def _build_test_client(root: Path, *, api_key: str | None = None):
                 ),
                 metadata=metadata(),
             )
-            .build()
         )
+        if workflow_enabled:
+            changelog_spec = build_spec(
+                agent_id="changelog-agent",
+                response_text=workflow_response_text,
+            )
+            builder = (
+                builder.workflow(
+                    WorkflowSpec(
+                        workflow_id="changelog",
+                        tasks=[
+                            TaskSpec(
+                                task_id="scan-codebase-and-append-changelog",
+                                agent_spec=changelog_spec,
+                            )
+                        ],
+                    )
+                )
+            )
+        host = builder.build()
         app = create_app(
             host,
             config=MashHostConfig(
@@ -46,6 +74,17 @@ def _build_test_client(root: Path, *, api_key: str | None = None):
         )
         with TestClient(app) as client:
             yield client
+
+
+@dataclass
+class _FakeWorkflowStatus:
+    workflow_id: str
+    status: str
+    created_at: int = 1_700_000_000_000
+    updated_at: int = 1_700_000_001_000
+    output: dict[str, Any] | None = None
+    error: Exception | None = None
+    deduplication_id: str | None = None
 
 
 def test_health_and_agent_contract() -> None:
@@ -441,6 +480,151 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
             assert payload["session_id"] == "s-1"
             assert payload["results"]
             assert payload["results"][0]["preview"]
+
+
+def test_workflow_routes_are_available_without_registered_workflows() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            listed = client.get("/api/v1/workflows")
+            assert listed.status_code == 200
+            assert listed.json()["data"]["workflows"] == []
+
+            submitted = client.post("/api/v1/workflows/changelog/run", json={})
+            assert submitted.status_code == 404
+            assert submitted.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
+
+
+def test_workflow_routes_list_and_run_registered_workflows() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            listed = client.get("/api/v1/workflows")
+            assert listed.status_code == 200
+            assert listed.json()["data"]["workflows"] == [
+                {
+                    "workflow_id": "changelog",
+                    "tasks": [
+                        {
+                            "task_id": "scan-codebase-and-append-changelog",
+                            "agent_id": "changelog-agent",
+                        }
+                    ],
+                }
+            ]
+
+            async def start_workflow_run(**kwargs):
+                assert kwargs["workflow_input"] == {}
+                return "mash.workflow:host-1:changelog:abc"
+
+            async def get_workflow_status(_run_id):
+                return _FakeWorkflowStatus(
+                    workflow_id="mash.workflow:host-1:changelog:abc",
+                    status="ENQUEUED",
+                )
+
+            with patch.object(
+                workflow_dbos,
+                "start_workflow_run",
+                start_workflow_run,
+            ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+                submitted = client.post("/api/v1/workflows/changelog/run", json={})
+            assert submitted.status_code == 200
+            payload = submitted.json()["data"]
+            assert payload["workflow_id"] == "changelog"
+            assert payload["status"] == "queued"
+            assert payload["run_id"] == "mash.workflow:host-1:changelog:abc"
+
+
+def test_workflow_run_accepts_input_object() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            async def start_workflow_run(**kwargs):
+                assert kwargs["workflow_input"] == {"target_agent_id": "primary"}
+                return "mash.workflow:host-1:changelog:abc"
+
+            async def get_workflow_status(_run_id):
+                return _FakeWorkflowStatus(
+                    workflow_id="mash.workflow:host-1:changelog:abc",
+                    status="ENQUEUED",
+                )
+
+            with patch.object(
+                workflow_dbos,
+                "start_workflow_run",
+                start_workflow_run,
+            ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+                submitted = client.post(
+                    "/api/v1/workflows/changelog/run",
+                    json={"input": {"target_agent_id": "primary"}},
+                )
+            assert submitted.status_code == 200
+
+
+def test_workflow_run_rejects_non_object_input() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            response = client.post(
+                "/api/v1/workflows/changelog/run",
+                json={"input": ["bad"]},
+            )
+            assert response.status_code == 422
+
+
+def test_workflow_run_returns_not_found_for_unknown_workflow() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            response = client.post("/api/v1/workflows/missing/run", json={})
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
+
+
+def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            async def start_workflow_run(**_kwargs):
+                raise workflow_dbos.WorkflowDeduplicatedError(
+                    "mash.workflow:host-1:changelog:old"
+                )
+
+            with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
+                response = client.post(
+                    "/api/v1/workflows/changelog/run",
+                    json={"dedup_key": "manual"},
+                )
+            assert response.status_code == 409
+            payload = response.json()["error"]
+            assert payload["code"] == "WORKFLOW_DUPLICATE_RUN"
+            assert payload["details"]["run_id"] == "mash.workflow:host-1:changelog:old"
+
+
+def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            host_id = client.app.state.runtime_state.host.host_id
+            run_id = f"mash.workflow:{host_id}:changelog:abc"
+
+            async def get_workflow_status(_run_id):
+                return _FakeWorkflowStatus(
+                    workflow_id=run_id,
+                    status="SUCCESS",
+                    output={"task_states": {"digest-traces": {"status": "ok"}}},
+                    deduplication_id=None,
+                )
+
+            with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+                response = client.get(f"/api/v1/workflows/changelog/runs/{run_id}")
+            assert response.status_code == 200
+            payload = response.json()["data"]
+            assert payload["run_id"] == run_id
+            assert payload["workflow_id"] == "changelog"
+            assert payload["status"] == "completed"
+            assert payload["output"] == {"task_states": {"digest-traces": {"status": "ok"}}}
 
 
 def test_missing_telemetry_assets_fail_fast() -> None:

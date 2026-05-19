@@ -86,7 +86,10 @@ async def ensure_dbos_ready(database_url: str) -> None:
 
 
 def register_workflow(dbos_class: Any) -> None:
+    from mash.workflows.dbos import register_workflow as register_host_workflow
+
     if _STATE.registered_workflow is not None:
+        register_host_workflow(dbos_class)
         return
 
     async def _workflow(
@@ -108,6 +111,7 @@ def register_workflow(dbos_class: Any) -> None:
     _STATE.registered_workflow = dbos_class.workflow(
         name="mash.runtime.execute_request"
     )(_workflow)
+    register_host_workflow(dbos_class)
 
 
 class DBOSRequestEngine(RequestEngine):

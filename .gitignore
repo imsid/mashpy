@@ -54,6 +54,7 @@ dmypy.json
 # uv build artifacts
 .tmp/
 .uv/
+build/
 
 # Frontend (Next.js) build and config files
 node_modules/

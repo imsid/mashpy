@@ -69,15 +69,15 @@ At a high level, `mashpy` is one distribution with three cooperating surfaces:
 - `mash.core`
   The agent loop itself: config, context, provider adapters, and think/act/observe execution.
 - `mash.runtime`
-  Host-side orchestration: `AgentSpec`, runtime servers, host/client wiring, request streaming, session storage, and subagent delegation.
+  Host-side orchestration: `AgentSpec`, runtime servers, host/client wiring, request streaming, session storage, subagent delegation, and workflow-only agents.
 - `mash.api` and `mash.cli`
   App facing surfaces built on top of the runtime. `mash.api` exposes the FastAPI host service and telemetry UI; `mash.cli` is the remote client.
 
 The normal execution path is:
 
 1. An app defines one or more `AgentSpec`s.
-2. `MashAgentHostBuilder` composes those specs into a `MashAgentHost`.
-3. `mash.api` starts the host and exposes HTTP endpoints for agent requests, sessions, session signals, history, and telemetry.
+2. `MashAgentHostBuilder` composes those specs into a `MashAgentHost`, including optional subagents and code-defined workflows.
+3. `mash.api` starts the host and exposes HTTP endpoints for agent requests, sessions, session signals, history, workflows, and telemetry.
 4. `mash.cli` talks to that HTTP API as a remote client.
 
 ```mermaid
@@ -104,7 +104,7 @@ The core execution stack is:
 - [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
   `AgentSpec` is the transport-agnostic contract app authors implement, including `build_memory_store()`.
 - [src/mash/runtime/host.py](src/mash/runtime/host.py)
-  `MashAgentHost` and `MashAgentHostBuilder` register the primary agent and subagents, start one in-process uvicorn-backed runtime server per agent, and wire host-managed delegation.
+  `MashAgentHost` and `MashAgentHostBuilder` register the primary agent, subagents, workflow-only agents, and workflows, start one runtime per agent, and wire host-managed delegation.
 - [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
   `MashAgentRuntime` is the async execution core for one agent: hosted request execution, per-session serialization, runtime event emission, replay-derived request state, recovery hooks, persistence orchestration, and trace fanout.
 - [src/mash/runtime/execution](src/mash/runtime/execution)
@@ -161,6 +161,8 @@ Important runtime properties:
 - Each runtime uses separate `memory_store` and `runtime_store` persistence roles.
 - The runtime H2A surface is:
   `GET /health`, `POST /agent/{agent_id}/request`, `GET /agent/{agent_id}/request/{request_id}`.
+- Host-level workflows are exposed through:
+  `GET /api/v1/workflows`, `POST /api/v1/workflows/{workflow_id}/run`, and `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`.
 
 ## Working on the SDK
 
@@ -334,16 +336,44 @@ Pilot is useful as both:
 
 ## Masher
 
-Masher is another agent built on Mash, implemented in [src/mash/agents/masher/spec.py](src/mash/agents/masher/spec.py).
+Masher is Mash's built-in workflow-only trace processing worker, implemented in [src/mash/agents/masher/spec.py](src/mash/agents/masher/spec.py).
 
-It is a built-in diagnosis specialist that uses the normal Mash runtime contracts:
+Masher is not exposed as a user-invokable subagent. `HostBuilder.enable_masher()` registers Masher as a workflow-only runtime and registers Masher workflows. It is hidden from public agent listings and from `InvokeSubagent`, but workflow tasks can still call it through the host runtime client.
 
-- `MasherAgentSpec` is a regular `AgentSpec`.
-- it uses stable runtime/session tools to resolve recent sessions and traces
-- it reads canonical trace events from the target agent's runtime event store
-- it can append normalized online-eval rows with `append_jsonl`
+The built-in workflows each have one task backed by `TaskSpec(agent_spec=masher_spec)` and support two modes through workflow input.
 
-Pilot enables Masher by default with `.enable_masher()`, but Masher can also be registered in any other Mash host that wants a diagnosis subagent.
+`masher-trace-digest` is diagnostic:
+
+- trace mode: digest one explicit `target_agent_id` / `session_id` / `trace_id` and return the digest in completed workflow output
+- incremental mode: use workflow task state as a per-target checkpoint, digest traces after the last checkpoint timestamp, append digest rows to Masher's JSONL artifact, and return updated checkpoint state only
+
+`masher-online-eval-curation` is dataset-focused:
+
+- trace mode: curate one explicit `target_agent_id` / `session_id` / `trace_id` into a normalized eval row
+- incremental mode: use workflow task state as a per-target checkpoint, curate traces after the last checkpoint timestamp, append eval rows to Masher's JSONL artifact, and return updated checkpoint state only
+
+Example trace-mode invocation through the REPL:
+
+```text
+/workflow run masher-trace-digest --input '{"mode":"trace","target_agent_id":"primary","session_id":"...","trace_id":"..."}'
+/workflow status masher-trace-digest <run_id>
+/workflow run masher-online-eval-curation --input '{"mode":"trace","target_agent_id":"primary","session_id":"...","trace_id":"..."}'
+/workflow status masher-online-eval-curation <run_id>
+```
+
+Example incremental invocation:
+
+```text
+/workflow run masher-trace-digest daily-primary --input '{"mode":"incremental","target_agent_id":"primary"}'
+/workflow run masher-online-eval-curation daily-primary-evals --input '{"mode":"incremental","target_agent_id":"primary"}'
+```
+
+Incremental artifacts are written to Masher's configured JSONL artifacts, which default to:
+
+```text
+<MASH_DATA_DIR>/masher/trace-digests.jsonl
+<MASH_DATA_DIR>/masher/online-evals.jsonl
+```
 
 ## Running the host API directly
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from mash.tools.subagent import derive_subagent_session_id
 
 from .commands import Command
@@ -128,6 +130,116 @@ def register_default_commands(shell) -> None:
         ctx.session_ids[target_agent_id] = next_session_id
         ctx.renderer.info(f"Switched to agent: {ctx.agent_id}")
 
+    def workflow_command(ctx, args: list[str]) -> None:
+        if not args:
+            ctx.renderer.error("Usage: /workflow [list|run|status] ...")
+            return
+        subcommand = args[0].strip().lower()
+        if subcommand == "list":
+            workflows = ctx.client.list_workflows()
+            if not workflows:
+                ctx.renderer.warn("No workflows registered.")
+                return
+            rows = []
+            for workflow in workflows:
+                tasks = workflow.get("tasks")
+                rendered_tasks = []
+                if isinstance(tasks, list):
+                    for task in tasks:
+                        if not isinstance(task, dict):
+                            continue
+                        task_id = str(task.get("task_id") or "")
+                        agent_id = str(task.get("agent_id") or "")
+                        rendered_tasks.append(f"{task_id} -> {agent_id}")
+                rows.append(
+                    [
+                        str(workflow.get("workflow_id") or ""),
+                        ", ".join(rendered_tasks),
+                    ]
+                )
+            ctx.renderer.table(["Workflow ID", "Tasks"], rows)
+            return
+
+        if subcommand == "run":
+            if len(args) < 2:
+                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                return
+            workflow_id = args[1].strip()
+            dedup_key = None
+            workflow_input = None
+            remaining = list(args[2:])
+            input_index = None
+            for index, value in enumerate(remaining):
+                if value == "--input":
+                    input_index = index
+                    break
+            if input_index is not None:
+                if input_index + 1 >= len(remaining):
+                    ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                    return
+                raw_input = " ".join(remaining[input_index + 1 :]).strip()
+                if (
+                    len(raw_input) >= 2
+                    and raw_input[0] == raw_input[-1]
+                    and raw_input[0] in {"'", '"'}
+                ):
+                    raw_input = raw_input[1:-1]
+                remaining = remaining[:input_index]
+                try:
+                    decoded_input = json.loads(raw_input)
+                except json.JSONDecodeError as exc:
+                    ctx.renderer.error(f"Workflow input must be valid JSON: {exc.msg}")
+                    return
+                if not isinstance(decoded_input, dict):
+                    ctx.renderer.error("Workflow input must be a JSON object")
+                    return
+                workflow_input = decoded_input
+            if len(remaining) > 1:
+                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                return
+            if remaining:
+                dedup_key = remaining[0].strip() or None
+            if not workflow_id:
+                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                return
+            run = ctx.client.run_workflow(
+                workflow_id,
+                dedup_key=dedup_key,
+                workflow_input=workflow_input,
+            )
+            ctx.renderer.info(f"Workflow: {run.get('workflow_id') or workflow_id}")
+            ctx.renderer.info(f"Run ID: {run.get('run_id') or ''}")
+            ctx.renderer.info(f"Status: {run.get('status') or ''}")
+            return
+
+        if subcommand == "status":
+            if len(args) < 3:
+                ctx.renderer.error("Usage: /workflow status <workflow_id> <run_id>")
+                return
+            workflow_id = args[1].strip()
+            run_id = args[2].strip()
+            if not workflow_id or not run_id:
+                ctx.renderer.error("Usage: /workflow status <workflow_id> <run_id>")
+                return
+            run = ctx.client.get_workflow_run(workflow_id, run_id)
+            rows = [
+                ["run_id", str(run.get("run_id") or "")],
+                ["workflow_id", str(run.get("workflow_id") or workflow_id)],
+                ["dedup_key", str(run.get("dedup_key") or "")],
+                ["status", str(run.get("status") or "")],
+                ["created_at", str(run.get("created_at") or "")],
+                ["started_at", str(run.get("started_at") or "")],
+                ["finished_at", str(run.get("finished_at") or "")],
+                ["error", str(run.get("error") or "")],
+            ]
+            ctx.renderer.table(["Field", "Value"], rows)
+            output = run.get("output")
+            if isinstance(output, dict):
+                ctx.renderer.print(json.dumps(output, ensure_ascii=True, indent=2))
+            return
+
+        ctx.renderer.error("Usage: /workflow [list|run|status] ...")
+
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))
     )
@@ -154,4 +266,11 @@ def register_default_commands(shell) -> None:
     )
     shell.command_registry.register(
         Command(name="use", help="Switch to a different agent", handler=use_command)
+    )
+    shell.command_registry.register(
+        Command(
+            name="workflow",
+            help="List, run, and inspect workflows",
+            handler=workflow_command,
+        )
     )

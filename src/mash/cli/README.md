@@ -53,6 +53,9 @@ Notes
 - `/sessions`: list sessions for the current agent.
 - `/history [limit]`: show conversation history for the current session.
 - `/use <agent_id>`: switch to a different agent, deriving the subagent session ID when moving from the primary agent to a subagent.
+- `/workflow list`: list registered workflows.
+- `/workflow run <workflow_id> [dedup_key]`: start a workflow run.
+- `/workflow status <workflow_id> <run_id>`: show workflow run status.
 
 ## Main Components
 - `main.py`: top-level parser, command dispatch, and command execution.

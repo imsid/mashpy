@@ -29,6 +29,10 @@ Import the public API from `mash.runtime`:
 
 Everything else under `src/mash/runtime` is internal implementation detail unless a test is explicitly targeting internals.
 
+Workflow task `AgentSpec` objects passed through `HostBuilder.workflow(...)` are
+registered as workflow-only runtimes. They can be targeted by `mash.workflows`
+tasks but are hidden from public agent listings and subagent delegation.
+
 ## Architecture
 
 The runtime is intentionally split into four layers:
