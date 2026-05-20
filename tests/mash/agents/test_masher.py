@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.resources
 import json
 import os
 import tempfile
@@ -261,6 +262,16 @@ class MasherTests(unittest.TestCase):
                     )
             finally:
                 os.chdir(previous_cwd)
+
+    def test_masher_skill_files_are_package_resources(self) -> None:
+        masher_root = importlib.resources.files("mash.agents.masher")
+        trace_skill = masher_root / "skills" / "trace-digest-workflow" / "SKILL.md"
+        online_eval_skill = masher_root / "skills" / "online-eval-curation" / "SKILL.md"
+
+        self.assertTrue(trace_skill.is_file())
+        self.assertTrue(online_eval_skill.is_file())
+        self.assertIn("name: trace-digest-workflow", trace_skill.read_text(encoding="utf-8"))
+        self.assertIn("name: online-eval-curation", online_eval_skill.read_text(encoding="utf-8"))
 
     def test_trace_digest_workflow_trace_mode_returns_digest_without_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

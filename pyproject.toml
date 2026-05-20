@@ -1,6 +1,6 @@
 [project]
 name = "mashpy"
-version = "0.3.1"
+version = "0.3.2"
 description = "SDK for building hosted multi-agent Mash applications."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -60,3 +60,8 @@ exclude = ["apps*"]
 
 [tool.setuptools.package-data]
 "mash.api" = ["static/telemetry/**/*"]
+"mash.agents.masher" = [
+  "skills/*/SKILL.md",
+  "skills/*/references/**/*",
+  "skills/*/assets/**/*",
+]
