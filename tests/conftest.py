@@ -249,7 +249,10 @@ async def _execute_request_inline(
                 request_id,
                 session_id,
                 trace_id,
-                exc,
+                {
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                },
             )
 
 

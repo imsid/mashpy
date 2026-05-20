@@ -26,13 +26,6 @@ def _require_runtime(agent_id: str) -> "AgentRuntime":
     return resolve_runtime(agent_id)
 
 
-def _serialize_error(exc: BaseException) -> dict[str, Any]:
-    return {
-        "error": str(exc),
-        "error_type": exc.__class__.__name__,
-    }
-
-
 def _merge_tool_usage(
     existing: dict[str, Any] | None,
     snapshot: dict[str, Any] | None,
@@ -588,7 +581,7 @@ async def fail_request(
     request_id: str,
     session_id: str,
     trace_id: str | None,
-    exc: BaseException,
+    error_payload: dict[str, Any],
 ) -> None:
     runtime = _require_runtime(agent_id)
     await append_runtime_event(
@@ -606,7 +599,7 @@ async def fail_request(
                 "agent_id": runtime.app_id,
                 "session_id": session_id,
                 "status": "error",
-                **_serialize_error(exc),
+                **dict(error_payload or {}),
             },
         ),
     )

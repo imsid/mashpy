@@ -160,6 +160,10 @@ async def execute_request_workflow(
                     )
                     return
         except Exception as exc:
+            error_payload = {
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+            }
             await DBOS.run_step_async(
                 {"name": "request.fail"},
                 fail_request,
@@ -167,6 +171,6 @@ async def execute_request_workflow(
                 request_id,
                 session_id,
                 trace_id,
-                exc,
+                error_payload,
             )
-            raise
+            raise RuntimeError(str(exc)) from None

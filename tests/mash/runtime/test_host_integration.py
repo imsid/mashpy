@@ -46,6 +46,32 @@ class _FakeWorkflowDBOS:
         return []
 
 
+class _FailureInspectingWorkflowDBOS:
+    fail_payload: dict[str, object] | None = None
+
+    @classmethod
+    async def run_step_async(cls, config, func, *args, **kwargs):
+        if dict(config or {}).get("name") == "request.fail":
+            payload = args[-1]
+            if isinstance(payload, BaseException):
+                raise AssertionError("request.fail received a raw exception")
+            if not isinstance(payload, dict):
+                raise AssertionError("request.fail payload must be a dict")
+            cls.fail_payload = dict(payload)
+        token = _IN_FAKE_DBOS_STEP.set(True)
+        try:
+            result = func(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        finally:
+            _IN_FAKE_DBOS_STEP.reset(token)
+
+    @staticmethod
+    async def list_workflows_async(**_kwargs):
+        return []
+
+
 class _StepRestrictedRequestEngine:
     def __init__(self, runtime, *, database_url: str) -> None:
         self._runtime = runtime
@@ -318,6 +344,55 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         sessions = await worker.list_sessions()
                         self.assertEqual(len(sessions), 1)
                         self.assertTrue(sessions[0]["session_id"].startswith("workflow:wf:task:task:run:"))
+                    finally:
+                        await host.close()
+
+    async def test_provider_exception_is_surfaced_without_crossing_dbos_as_object(self) -> None:
+        class FakeProviderError(RuntimeError):
+            pass
+
+        provider_message = (
+            "Error code: 529 - {'type': 'error', 'error': "
+            "{'type': 'overloaded_error', 'message': 'Overloaded'}}"
+        )
+
+        async def raise_provider_error(*_args, **_kwargs):
+            raise FakeProviderError(provider_message)
+
+        _FailureInspectingWorkflowDBOS.fail_payload = None
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+                with patch(
+                    "mash.runtime.service.DBOSRequestEngine",
+                    _StepRestrictedRequestEngine,
+                ), patch(
+                    "mash.runtime.engine.workflow.DBOS",
+                    _FailureInspectingWorkflowDBOS,
+                ), patch(
+                    "mash.runtime.engine.workflow.plan_request_step",
+                    raise_provider_error,
+                ):
+                    host = HostBuilder().primary(
+                        build_spec(agent_id="primary", response_text="unused")
+                    ).build()
+                    await host.start()
+                    try:
+                        client = host.get_client("primary")
+                        request_id = await client.post_request("hi", session_id="s-1")
+                        events = await _collect_events(client, request_id, timeout=5)
+
+                        self.assertEqual(events[-1]["event"], "request.error")
+                        payload = events[-1]["data"]
+                        self.assertEqual(payload["error"], provider_message)
+                        self.assertEqual(payload["error_type"], "FakeProviderError")
+                        self.assertEqual(
+                            _FailureInspectingWorkflowDBOS.fail_payload,
+                            {
+                                "error": provider_message,
+                                "error_type": "FakeProviderError",
+                            },
+                        )
+                        self.assertNotIn("gASV", str(payload.get("error")))
                     finally:
                         await host.close()
 
