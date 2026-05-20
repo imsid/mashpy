@@ -20,8 +20,8 @@ except ImportError:  # pragma: no cover - exercised when optional deps are missi
 
 def _memory_database_url() -> str:
     return os.environ.get(
-        "MASH_REAL_MEMORY_DATABASE_URL",
-        "postgresql://postgres:postgres@127.0.0.1:5432/mash_memory",
+        "MASH_REAL_DATABASE_URL",
+        "postgresql://postgres:postgres@127.0.0.1:5432/mash",
     )
 
 

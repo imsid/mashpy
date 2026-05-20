@@ -77,6 +77,40 @@ class WorkflowService:
     async def list_workflows(self) -> list[dict[str, Any]]:
         return [self._serialize_workflow(item) for item in self._workflow_registry.list()]
 
+    async def list_runs(
+        self,
+        workflow_id: str,
+        *,
+        status: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_desc: bool = True,
+    ) -> list[WorkflowRun]:
+        resolved_workflow_id = str(workflow_id or "").strip()
+        if not resolved_workflow_id:
+            raise ValueError("workflow_id is required")
+        self._require_workflow(resolved_workflow_id)
+        statuses = await workflow_dbos.list_workflow_statuses(
+            host_id=self._host_id,
+            workflow_id=resolved_workflow_id,
+            status=_dbos_status_filter(status),
+            start_time=_normalize_optional_text(start_time),
+            end_time=_normalize_optional_text(end_time),
+            limit=max(1, int(limit)),
+            offset=max(0, int(offset)),
+            sort_desc=bool(sort_desc),
+        )
+        return [
+            _run_from_status(
+                item,
+                workflow_id=resolved_workflow_id,
+                dedup_key=_dedup_key_from_status(item, resolved_workflow_id),
+            )
+            for item in statuses
+        ]
+
     async def run_workflow(
         self,
         workflow_id: str,
@@ -92,7 +126,7 @@ class WorkflowService:
         workflow = self._require_workflow(resolved_workflow_id)
         database_url = str(getattr(self._host, "runtime_database_url", "") or "").strip()
         if not database_url:
-            raise RuntimeError("MASH_RUNTIME_DATABASE_URL is required")
+            raise RuntimeError("MASH_DATABASE_URL is required")
 
         try:
             run_id = await workflow_dbos.start_workflow_run(
@@ -412,6 +446,18 @@ def _map_dbos_status(status: str) -> str:
         "MAX_RECOVERY_ATTEMPTS_EXCEEDED": "failed",
         "CANCELLED": "cancelled",
     }.get(status, status.lower() or "unknown")
+
+
+def _dbos_status_filter(status: str | None) -> str | list[str] | None:
+    normalized = _normalize_optional_text(status)
+    if normalized is None:
+        return None
+    return {
+        "queued": ["PENDING", "ENQUEUED", "DELAYED"],
+        "completed": "SUCCESS",
+        "failed": ["ERROR", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
+        "cancelled": "CANCELLED",
+    }.get(normalized.lower(), normalized.upper())
 
 
 def _millis_to_seconds(value: Any) -> float | None:

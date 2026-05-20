@@ -24,8 +24,8 @@ except ImportError:  # pragma: no cover - exercised when optional deps are missi
 
 def _runtime_database_url() -> str:
     return os.environ.get(
-        "MASH_REAL_RUNTIME_DATABASE_URL",
-        "postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime",
+        "MASH_REAL_DATABASE_URL",
+        "postgresql://postgres:postgres@127.0.0.1:5432/mash",
     )
 
 
@@ -191,7 +191,7 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
                 os.environ,
                 {
                     "MASH_DATA_DIR": tmp,
-                    "MASH_RUNTIME_DATABASE_URL": database_url,
+                    "MASH_DATABASE_URL": database_url,
                 },
             ):
                 with patch(

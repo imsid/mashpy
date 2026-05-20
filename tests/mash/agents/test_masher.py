@@ -248,7 +248,7 @@ class MasherTests(unittest.TestCase):
             try:
                 with patch.dict(
                     os.environ,
-                    {"MASH_DATA_DIR": ".mash", "MASH_MEMORY_DATABASE_URL": ""},
+                    {"MASH_DATA_DIR": ".mash", "MASH_DATABASE_URL": ""},
                     clear=False,
                 ):
                     spec = MasherAgentSpec()

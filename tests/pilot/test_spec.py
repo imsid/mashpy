@@ -140,7 +140,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
             os.environ,
             {
                 "MASH_DATA_DIR": tmp,
-                "MASH_MEMORY_DATABASE_URL": "",
+                "MASH_DATABASE_URL": "",
                 "ANTHROPIC_API_KEY": "test-key",
                 "OPENAI_API_KEY": "test-key",
             },
@@ -182,6 +182,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
 
                 async def _run() -> None:
                     host = build_host(Path.cwd())
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     try:
                         described = {
@@ -229,7 +230,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
             os.environ,
             {
                 "MASH_DATA_DIR": tmp,
-                "MASH_MEMORY_DATABASE_URL": "",
+                "MASH_DATABASE_URL": "",
                 "ANTHROPIC_API_KEY": "test-key",
                 "OPENAI_API_KEY": "test-key",
             },
@@ -271,6 +272,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
 
                 async def _run() -> None:
                     host = build_host(Path.cwd())
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     try:
                         primary = host.get_agent(PILOT_AGENT_ID)
@@ -305,7 +307,7 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
             os.environ,
             {
                 "MASH_DATA_DIR": tmp,
-                "MASH_MEMORY_DATABASE_URL": "",
+                "MASH_DATABASE_URL": "",
                 "ANTHROPIC_API_KEY": "test-key",
                 "OPENAI_API_KEY": "test-key",
             },
@@ -350,6 +352,7 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
 
                 async def _run() -> None:
                     host = build_host(Path.cwd())
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     await host.close()
 

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import importlib
-import os
 
+from mash.core.database import resolve_database_url
 from mash.workflows import WorkflowSpec
 
 from ..spec import AgentSpec
@@ -78,9 +78,7 @@ class HostBuilder:
         if self._primary is None:
             raise ValueError("primary agent is required")
 
-        host = AgentHost(
-            runtime_database_url=os.environ.get("MASH_RUNTIME_DATABASE_URL")
-        )
+        host = AgentHost(runtime_database_url=resolve_database_url())
         host.register_primary(
             self._primary.definition,
             agent_id=self._primary.agent_id,

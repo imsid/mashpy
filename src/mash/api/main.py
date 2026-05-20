@@ -6,6 +6,7 @@ import importlib
 import os
 from typing import Any, Sequence
 
+from mash.core.database import resolve_database_url
 from mash.runtime import AgentHost, HostBuilder
 
 from .app import run_host
@@ -62,9 +63,10 @@ def add_serve_parser(subparsers) -> None:
         help="API bind port",
     )
     parser.add_argument(
-        "--runtime-database-url",
-        default=os.environ.get("MASH_RUNTIME_DATABASE_URL"),
-        help="Required Postgres database URL for the hosted runtime request engine",
+        "--database-url",
+        dest="runtime_database_url",
+        default=resolve_database_url(),
+        help="Required shared Postgres database URL for Mash runtime, memory, and API tables.",
     )
     parser.add_argument(
         "--api-key",

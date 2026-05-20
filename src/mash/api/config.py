@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import os
 from typing import Optional, Sequence
+
+from mash.core.database import resolve_database_url
 
 _DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
@@ -45,8 +46,7 @@ class MashHostConfig:
         return value or None
 
     def resolved_runtime_database_url(self) -> Optional[str]:
-        value = (self.runtime_database_url or os.environ.get("MASH_RUNTIME_DATABASE_URL") or "").strip()
-        return value or None
+        return resolve_database_url(self.runtime_database_url)
 
     def resolved_cors_origins(self) -> list[str]:
         values: list[str] = []

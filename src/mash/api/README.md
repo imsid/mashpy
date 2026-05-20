@@ -162,6 +162,49 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `summary_text`
   - `turn_id`
 
+### Workflows
+
+`GET /api/v1/workflows`
+- Lists registered host workflows.
+- Returns `workflows`.
+
+`POST /api/v1/workflows/{workflow_id}/run`
+- Starts a workflow run.
+- Path params:
+  - `workflow_id`
+- Body fields:
+  - `dedup_key` optional string
+  - `input` optional JSON object
+- Returns:
+  - `run_id`
+  - `workflow_id`
+  - `status`
+
+`GET /api/v1/workflows/{workflow_id}/runs`
+- Lists previous run summaries for one workflow.
+- Path params:
+  - `workflow_id`
+- Query params:
+  - `status` optional public status filter (`queued`, `completed`, `failed`, `cancelled`) or DBOS status
+  - `start_time`, `end_time` optional DBOS time bounds
+  - `limit` optional, default `50`, clamped to `1..200`
+  - `offset` optional, default `0`
+  - `sort_desc` optional, default `true`
+- Returns `workflow_id` and `runs`; each run includes `run_id`, `workflow_id`, `dedup_key`, `status`, timestamps, and `error`.
+- Does not include run `output`; call the run detail endpoint for results.
+
+`GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
+- Returns one workflow run status and output.
+- Path params:
+  - `workflow_id`
+  - `run_id`
+
+`GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`
+- Server-Sent Events stream for workflow run progress.
+- Path params:
+  - `workflow_id`
+  - `run_id`
+
 ### Observability
 
 These endpoints require `enable_observability = True`. Memory search uses the target agent's `memory_store`.

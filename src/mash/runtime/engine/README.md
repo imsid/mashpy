@@ -82,8 +82,8 @@ Instead, the workflow checkpoints around canonical step primitives:
 
 [`dbos.py`](./dbos.py) is responsible for runtime initialization:
 
-- `ensure_dbos_ready(database_url)` validates `MASH_RUNTIME_DATABASE_URL`
-- DBOS is initialized with the `mash-runtime` system database config
+- `ensure_dbos_ready(database_url)` validates `MASH_DATABASE_URL`
+- DBOS is initialized with the shared Mash system database config
 - `register_workflow(...)` installs the workflow once
 - `DBOS.launch()` activates the runtime
 - live `AgentRuntime` objects are stored in `_STATE.runtime_registry`

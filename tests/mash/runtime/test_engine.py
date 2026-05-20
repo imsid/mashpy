@@ -431,10 +431,16 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._memory_env = patch.dict(
             os.environ,
-            {"MASH_MEMORY_DATABASE_URL": ""},
+            {"MASH_DATABASE_URL": ""},
         )
         self._memory_env.start()
         self.addCleanup(self._memory_env.stop)
+        self._runtime_database = patch(
+            "mash.runtime.service.resolve_database_url",
+            return_value="postgresql://test/runtime",
+        )
+        self._runtime_database.start()
+        self.addCleanup(self._runtime_database.stop)
 
     async def _collect_request_events(
         self,

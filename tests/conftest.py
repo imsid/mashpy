@@ -308,7 +308,7 @@ def _patch_hosted_runtime_for_tests():
     from _pytest.monkeypatch import MonkeyPatch
 
     patcher = MonkeyPatch()
-    patcher.setenv("MASH_RUNTIME_DATABASE_URL", "postgresql://test/runtime")
+    patcher.setenv("MASH_DATABASE_URL", "postgresql://test/runtime")
     patcher.setattr("mash.runtime.service.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.service.DBOSRequestEngine", _TestDBOSRequestEngine)
     yield

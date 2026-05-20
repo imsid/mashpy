@@ -216,6 +216,111 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_list_runs_uses_dbos_prefix_filters_and_maps_statuses(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        calls: list[dict[str, Any]] = []
+
+        async def list_workflow_statuses(**kwargs):
+            calls.append(kwargs)
+            return [
+                _FakeWorkflowStatus(
+                    workflow_id="mw:host-1:wf:abc",
+                    status="SUCCESS",
+                    deduplication_id="wf:manual",
+                )
+            ]
+
+        with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
+            runs = await service.list_runs(
+                "wf",
+                status="queued",
+                start_time="2026-05-01T00:00:00Z",
+                end_time="2026-05-20T00:00:00Z",
+                limit=25,
+                offset=5,
+                sort_desc=False,
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "host_id": "host-1",
+                    "workflow_id": "wf",
+                    "status": ["PENDING", "ENQUEUED", "DELAYED"],
+                    "start_time": "2026-05-01T00:00:00Z",
+                    "end_time": "2026-05-20T00:00:00Z",
+                    "limit": 25,
+                    "offset": 5,
+                    "sort_desc": False,
+                }
+            ],
+        )
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].run_id, "mw:host-1:wf:abc")
+        self.assertEqual(runs[0].workflow_id, "wf")
+        self.assertEqual(runs[0].dedup_key, "manual")
+        self.assertEqual(runs[0].status, "completed")
+        self.assertIsNone(runs[0].output)
+
+    async def test_list_runs_unknown_workflow_raises_not_found(self) -> None:
+        registry = WorkflowRegistry()
+        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+
+        with self.assertRaises(WorkflowNotFoundError):
+            await service.list_runs("missing")
+
+    async def test_dbos_list_workflow_statuses_uses_lightweight_listing(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        class _ListDBOS:
+            @staticmethod
+            async def list_workflows_async(**kwargs):
+                calls.append(kwargs)
+                return [_FakeWorkflowStatus(workflow_id="mw:host-1:wf:abc", status="SUCCESS")]
+
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_ListDBOS, None, None, None, None),
+        ):
+            statuses = await workflow_dbos.list_workflow_statuses(
+                host_id="host-1",
+                workflow_id="wf",
+                status="SUCCESS",
+                start_time="2026-05-01T00:00:00Z",
+                end_time="2026-05-20T00:00:00Z",
+                limit=25,
+                offset=5,
+                sort_desc=False,
+            )
+
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "name": "mash.workflow.execute",
+                    "workflow_id_prefix": "mw:host-1:wf:",
+                    "status": "SUCCESS",
+                    "start_time": "2026-05-01T00:00:00Z",
+                    "end_time": "2026-05-20T00:00:00Z",
+                    "limit": 25,
+                    "offset": 5,
+                    "sort_desc": False,
+                    "load_input": False,
+                    "load_output": False,
+                }
+            ],
+        )
+
     async def test_run_workflow_starts_dbos_workflow_and_returns_status(self) -> None:
         registry = WorkflowRegistry()
         registry.register(

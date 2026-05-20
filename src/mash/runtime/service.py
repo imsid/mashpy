@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import inspect
-import os
 from typing import Any, Optional, Sequence
 
+from mash.core.database import resolve_database_url
 from mash.mcp.manager import MCPManager
 from mash.mcp.types import MCPServerConfig
 
@@ -21,11 +21,9 @@ from .spec import AgentSpec
 
 
 def _resolve_runtime_database_url(explicit_value: str | None = None) -> str:
-    value = str(explicit_value or os.getenv("MASH_RUNTIME_DATABASE_URL") or "").strip()
+    value = resolve_database_url(explicit_value)
     if not value:
-        raise RuntimeError(
-            "MASH_RUNTIME_DATABASE_URL is required for hosted runtime execution"
-        )
+        raise RuntimeError("MASH_DATABASE_URL is required for hosted runtime execution")
     return value
 
 

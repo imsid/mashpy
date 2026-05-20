@@ -154,8 +154,13 @@ When the host is wrapped by `mash.api`, workflows are exposed through:
 
 - `GET /api/v1/workflows`
 - `POST /api/v1/workflows/{workflow_id}/run`
+- `GET /api/v1/workflows/{workflow_id}/runs`
 - `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
 - `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`
+
+The run list endpoint returns lightweight run summaries and supports DBOS-native
+filters: `status`, `start_time`, `end_time`, `limit`, `offset`, and `sort_desc`.
+Call the run detail endpoint with a returned `run_id` to fetch run output.
 
 The events endpoint streams workflow status, task lifecycle events, and each
 task agent's normal request events over SSE.

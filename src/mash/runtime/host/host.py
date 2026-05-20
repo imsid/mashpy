@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict
 from typing import Dict, Optional
 
+from mash.core.database import resolve_database_url
 from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import make_host_id
 from mash.workflows.dbos import register_host as register_workflow_host
@@ -120,13 +120,9 @@ class AgentHost:
         if self._clients:
             return
         if not self.runtime_database_url:
-            env_value = os.environ.get("MASH_RUNTIME_DATABASE_URL", "").strip()
-            if env_value:
-                self.runtime_database_url = env_value
+            self.runtime_database_url = resolve_database_url()
         if not self.runtime_database_url:
-            raise RuntimeError(
-                "MASH_RUNTIME_DATABASE_URL is required to start hosted Mash runtimes"
-            )
+            raise RuntimeError("MASH_DATABASE_URL is required to start hosted Mash runtimes")
         register_workflow_host(self.host_id, self)
         try:
             for registered in self._registered.values():

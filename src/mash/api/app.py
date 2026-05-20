@@ -469,6 +469,48 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             }
         )
 
+    @api.get("/workflows/{workflow_id}/runs")
+    async def list_workflow_runs(
+        request: Request,
+        workflow_id: str,
+        status: Optional[str] = Query(default=None),
+        start_time: Optional[str] = Query(default=None),
+        end_time: Optional[str] = Query(default=None),
+        limit: Optional[int] = Query(default=50),
+        offset: Optional[int] = Query(default=0),
+        sort_desc: bool = Query(default=True),
+    ) -> dict[str, Any]:
+        workflow_service = _get_workflow_service(request)
+        resolved_limit = _parse_limit(limit, default=50, max_value=200)
+        resolved_offset = max(0, int(offset or 0))
+        runs = await workflow_service.list_runs(
+            workflow_id.strip(),
+            status=status,
+            start_time=start_time,
+            end_time=end_time,
+            limit=resolved_limit,
+            offset=resolved_offset,
+            sort_desc=sort_desc,
+        )
+        return _success(
+            {
+                "workflow_id": workflow_id.strip(),
+                "runs": [
+                    {
+                        "run_id": run.run_id,
+                        "workflow_id": run.workflow_id,
+                        "dedup_key": run.dedup_key,
+                        "status": run.status,
+                        "created_at": run.created_at,
+                        "started_at": run.started_at,
+                        "finished_at": run.finished_at,
+                        "error": run.error,
+                    }
+                    for run in runs
+                ],
+            }
+        )
+
     @api.get("/workflows/{workflow_id}/runs/{run_id}")
     async def get_workflow_run(
         request: Request,

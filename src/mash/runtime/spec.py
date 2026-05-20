@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
+from mash.core.database import resolve_database_url
 from mash.mcp.types import MCPServerConfig
 
 from ..core.config import AgentConfig
@@ -44,10 +45,10 @@ class AgentSpec(ABC):
         """Construct the agent memory store.
 
         By default, Mash provisions:
-        - a Postgres store when `MASH_MEMORY_DATABASE_URL` is set
+        - a Postgres store when `MASH_DATABASE_URL` is set
         - otherwise a SQLite store at `<data_root>/<agent_id>/state.db`
         """
-        memory_database_url = os.getenv("MASH_MEMORY_DATABASE_URL", "").strip()
+        memory_database_url = resolve_database_url()
         if memory_database_url:
             return PostgresStore(memory_database_url)
         return SQLiteStore(self.get_agent_data_dir() / "state.db")

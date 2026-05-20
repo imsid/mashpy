@@ -61,7 +61,7 @@ async def ensure_dbos_ready(database_url: str) -> None:
     resolved_url = str(database_url or "").strip()
     conductor_key = os.getenv("DBOS_CONDUCTOR_KEY")
     if not resolved_url:
-        raise RuntimeError("MASH_RUNTIME_DATABASE_URL is required")
+        raise RuntimeError("MASH_DATABASE_URL is required")
     if not conductor_key:
         raise RuntimeError("DBOS_CONDUCTOR_KEY is required")
     if _STATE.ready:

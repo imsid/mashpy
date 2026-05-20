@@ -124,7 +124,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_host_builder_composes_primary_and_subagent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 host = (
                     HostBuilder()
                     .primary(build_spec(agent_id="primary", response_text="primary-ok"))
@@ -143,7 +143,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_host_builder_registers_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 primary_spec = build_spec(agent_id="primary", response_text="primary-ok")
                 host = (
                     HostBuilder()
@@ -168,7 +168,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_builder_registers_multiple_workflow_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 worker_a = build_spec(agent_id="worker-a", response_text="{}")
                 worker_b = build_spec(agent_id="worker-b", response_text="{}")
                 host = (
@@ -196,6 +196,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     sorted(item.workflow_id for item in host.get_workflow_registry().list()),
                     ["wf-a", "wf-b"],
                 )
+                host.configure_runtime_database_url("postgresql://test/runtime")
                 await host.start()
                 try:
                     self.assertIsNotNone(host.get_client("worker-a"))
@@ -205,10 +206,11 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_starts_runtime_servers_and_client_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
+                host.configure_runtime_database_url("postgresql://test/runtime")
                 await host.start()
                 try:
                     client = host.get_client("primary")
@@ -236,7 +238,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_start_does_not_self_probe_runtime_health_over_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
@@ -244,6 +246,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "mash.runtime.client.AgentClient.health",
                     side_effect=AgentClientError("unexpected health probe"),
                 ):
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                 try:
                     client = host.get_client("primary")
@@ -255,7 +258,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_exposes_workflow_service_for_registered_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 primary_spec = build_spec(
                     agent_id="primary",
                     response_text='{"last_run_ts":"2026-05-14T00:00:00Z"}',
@@ -276,6 +279,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     .build()
                 )
+                host.configure_runtime_database_url("postgresql://test/runtime")
                 await host.start()
                 try:
                     workflow_service = host.get_workflow_service()
@@ -305,7 +309,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_workflow_task_request_runs_inline_from_host_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 with patch(
                     "mash.runtime.service.DBOSRequestEngine",
                     _StepRestrictedRequestEngine,
@@ -325,6 +329,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         )
                         .build()
                     )
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     try:
                         with patch.object(
@@ -361,7 +366,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         _FailureInspectingWorkflowDBOS.fail_payload = None
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 with patch(
                     "mash.runtime.service.DBOSRequestEngine",
                     _StepRestrictedRequestEngine,
@@ -375,6 +380,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     host = HostBuilder().primary(
                         build_spec(agent_id="primary", response_text="unused")
                     ).build()
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     try:
                         client = host.get_client("primary")
@@ -398,7 +404,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_subagent_invocation_uses_real_runtime_clients(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 host = (
                     HostBuilder()
                     .primary(
@@ -418,6 +424,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     .build()
                 )
+                host.configure_runtime_database_url("postgresql://test/runtime")
                 await host.start()
                 try:
                     client = host.get_client("primary-app")
@@ -444,7 +451,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_subagent_invocation_starts_child_workflow_outside_step_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 with patch(
                     "mash.runtime.service.DBOSRequestEngine",
                     _StepRestrictedRequestEngine,
@@ -468,6 +475,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         )
                         .build()
                     )
+                    host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     try:
                         client = host.get_client("primary-app")
@@ -508,7 +516,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_request_error_emits_terminal_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_MEMORY_DATABASE_URL": ""}):
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 host = HostBuilder().primary(
                     build_spec(
                         agent_id="primary",
@@ -516,6 +524,7 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         fail_on_message="boom",
                     )
                 ).build()
+                host.configure_runtime_database_url("postgresql://test/runtime")
                 await host.start()
                 try:
                     client = host.get_client("primary")

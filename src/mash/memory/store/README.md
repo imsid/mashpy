@@ -187,8 +187,8 @@ SQLite behavior:
 - Callers should not assume backend-specific extra keys beyond the documented shapes.
 
 ## Backend Selection
-- `AgentSpec.build_memory_store()` uses `MASH_MEMORY_DATABASE_URL` when it is set.
-- When `MASH_MEMORY_DATABASE_URL` is unset, the default fallback is SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`.
+- `AgentSpec.build_memory_store()` uses `MASH_DATABASE_URL` when it is set.
+- When `MASH_DATABASE_URL` is unset, the default fallback is SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`.
 
 ## SQLite-Specific Notes
 - Thread safety is enforced with a store-level lock around DB operations.

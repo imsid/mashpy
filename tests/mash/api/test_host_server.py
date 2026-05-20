@@ -35,7 +35,7 @@ def _build_test_client(
         os.environ,
         {
             "MASH_DATA_DIR": str(root),
-            "MASH_MEMORY_DATABASE_URL": "",
+            "MASH_DATABASE_URL": "",
         },
     ):
         builder = (
@@ -71,6 +71,7 @@ def _build_test_client(
         app = create_app(
             host,
             config=MashHostConfig(
+                runtime_database_url="postgresql://test/runtime",
                 api_key=api_key,
             ),
         )
@@ -316,7 +317,7 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
             os.environ,
             {
                 "MASH_DATA_DIR": str(root),
-                "MASH_MEMORY_DATABASE_URL": "",
+                "MASH_DATABASE_URL": "",
             },
         ):
             host = (
@@ -332,7 +333,7 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
             )
             app = create_app(
                 host,
-                config=MashHostConfig(),
+                config=MashHostConfig(runtime_database_url="postgresql://test/runtime"),
             )
             with TestClient(app) as client:
                 first = client.post(
@@ -466,13 +467,14 @@ def test_api_logging_skips_configured_paths_and_truncates_body() -> None:
             os.environ,
             {
                 "MASH_DATA_DIR": str(root),
-                "MASH_MEMORY_DATABASE_URL": "",
+                "MASH_DATABASE_URL": "",
             },
         ):
             host = HostBuilder().primary(build_spec(agent_id="primary", response_text="ok")).build()
             app = create_app(
                 host,
                 config=MashHostConfig(
+                    runtime_database_url="postgresql://test/runtime",
                     api_log_body_max_bytes=12,
                     api_log_excluded_paths=("/api/v1/health",),
                 ),
@@ -717,6 +719,100 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
             assert payload["output"] == {"task_states": {"digest-traces": {"status": "ok"}}}
 
 
+def test_workflow_runs_endpoint_lists_dbos_run_summaries() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            host_id = client.app.state.runtime_state.host.host_id
+            run_id = f"mw:{host_id}:changelog:abc"
+
+            async def list_workflow_statuses(**_kwargs):
+                return [
+                    _FakeWorkflowStatus(
+                        workflow_id=run_id,
+                        status="SUCCESS",
+                        output={"task_states": {"digest-traces": {"status": "ok"}}},
+                        deduplication_id="changelog:manual",
+                    )
+                ]
+
+            with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
+                response = client.get("/api/v1/workflows/changelog/runs")
+            assert response.status_code == 200
+            payload = response.json()["data"]
+            assert payload["workflow_id"] == "changelog"
+            assert payload["runs"] == [
+                {
+                    "run_id": run_id,
+                    "workflow_id": "changelog",
+                    "dedup_key": "manual",
+                    "status": "completed",
+                    "created_at": 1_700_000_000.0,
+                    "started_at": 1_700_000_000.0,
+                    "finished_at": 1_700_000_001.0,
+                    "error": None,
+                }
+            ]
+            assert "output" not in payload["runs"][0]
+
+
+def test_workflow_runs_endpoint_forwards_filters() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            calls: list[dict[str, Any]] = []
+
+            async def list_workflow_statuses(**kwargs):
+                calls.append(kwargs)
+                return []
+
+            with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
+                response = client.get(
+                    "/api/v1/workflows/changelog/runs",
+                    params={
+                        "status": "failed",
+                        "start_time": "2026-05-01T00:00:00Z",
+                        "end_time": "2026-05-20T00:00:00Z",
+                        "limit": 250,
+                        "offset": 7,
+                        "sort_desc": "false",
+                    },
+                )
+            assert response.status_code == 200
+            host_id = client.app.state.runtime_state.host.host_id
+            assert calls == [
+                {
+                    "host_id": host_id,
+                    "workflow_id": "changelog",
+                    "status": ["ERROR", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
+                    "start_time": "2026-05-01T00:00:00Z",
+                    "end_time": "2026-05-20T00:00:00Z",
+                    "limit": 200,
+                    "offset": 7,
+                    "sort_desc": False,
+                }
+            ]
+
+
+def test_workflow_runs_endpoint_respects_api_auth() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret", workflow_enabled=True) as client:
+            unauthorized = client.get("/api/v1/workflows/changelog/runs")
+            assert unauthorized.status_code == 401
+
+            async def list_workflow_statuses(**_kwargs):
+                return []
+
+            with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
+                authorized = client.get(
+                    "/api/v1/workflows/changelog/runs",
+                    headers={"x-api-key": "secret"},
+                )
+            assert authorized.status_code == 200
+            assert authorized.json()["data"]["runs"] == []
+
+
 def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -855,14 +951,17 @@ def test_missing_telemetry_assets_fail_fast() -> None:
                 os.environ,
                 {
                     "MASH_DATA_DIR": str(root),
-                    "MASH_MEMORY_DATABASE_URL": "",
+                    "MASH_DATABASE_URL": "",
                 },
             ):
                 host = HostBuilder().primary(
                     build_spec(agent_id="primary", response_text="primary-ok")
                 ).build()
                 try:
-                    create_app(host, config=MashHostConfig())
+                    create_app(
+                        host,
+                        config=MashHostConfig(runtime_database_url="postgresql://test/runtime"),
+                    )
                 except RuntimeError as exc:
                     assert "missing telemetry assets" in str(exc)
                 else:  # pragma: no cover
