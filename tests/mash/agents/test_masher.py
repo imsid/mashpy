@@ -270,8 +270,17 @@ class MasherTests(unittest.TestCase):
 
         self.assertTrue(trace_skill.is_file())
         self.assertTrue(online_eval_skill.is_file())
-        self.assertIn("name: trace-digest-workflow", trace_skill.read_text(encoding="utf-8"))
-        self.assertIn("name: online-eval-curation", online_eval_skill.read_text(encoding="utf-8"))
+        trace_text = trace_skill.read_text(encoding="utf-8")
+        online_eval_text = online_eval_skill.read_text(encoding="utf-8")
+        self.assertIn("name: trace-digest-workflow", trace_text)
+        self.assertIn("name: online-eval-curation", online_eval_text)
+        for skill_text in (trace_text, online_eval_text):
+            self.assertIn("Return the tool result text exactly and nothing else.", skill_text)
+            self.assertIn("Do not use a code fence.", skill_text)
+            self.assertIn(
+                "The final assistant response must be exactly the tool result content string.",
+                skill_text,
+            )
 
     def test_trace_digest_workflow_trace_mode_returns_digest_without_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

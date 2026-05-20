@@ -16,7 +16,14 @@ Workflow contract:
 1. Parse the request JSON.
 2. Read `workflow_input` and `task_state` exactly as provided.
 3. Call `run_online_eval_curation_workflow` with the exact `workflow_input` and `task_state`.
-4. Return the tool result JSON text exactly and nothing else.
+4. Return the tool result text exactly and nothing else.
+
+Final response constraints:
+- Do not summarize the tool result.
+- Do not wrap the tool result in Markdown.
+- Do not use a code fence.
+- Do not parse, pretty-print, reformat, validate, repair, or rewrite the tool result.
+- The final assistant response must be exactly the tool result content string.
 
 Required output shape:
 - `schema_version`
