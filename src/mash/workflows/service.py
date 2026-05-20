@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+from mash.runtime.events import RuntimeEventType
+from mash.runtime.requests import to_public_event
 
 from . import dbos as workflow_dbos
 from .registry import WorkflowRegistry
@@ -27,6 +31,15 @@ class WorkflowRun:
     finished_at: float | None = None
     error: str | None = None
     output: dict[str, Any] | None = None
+
+
+@dataclass
+class WorkflowStreamEvent:
+    """One public workflow SSE event."""
+
+    event: str
+    data: dict[str, Any]
+    comment: str | None = None
 
 
 class WorkflowNotFoundError(LookupError):
@@ -144,6 +157,123 @@ class WorkflowService:
             dedup_key=_dedup_key_from_status(status, resolved_workflow_id),
         )
 
+    async def stream_run_events(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        poll_interval: float = 0.25,
+    ) -> AsyncIterator[WorkflowStreamEvent]:
+        resolved_workflow_id = str(workflow_id or "").strip()
+        resolved_run_id = str(run_id or "").strip()
+        workflow = self._require_workflow(resolved_workflow_id)
+        initial_run = await self.get_run(resolved_workflow_id, resolved_run_id)
+
+        async def _generate() -> AsyncIterator[WorkflowStreamEvent]:
+            cursors: dict[str, int] = {task.task_id: 0 for task in workflow.tasks}
+            started_tasks: set[str] = set()
+            completed_tasks: set[str] = set()
+            error_tasks: set[str] = set()
+            last_status: str | None = None
+            run = initial_run
+
+            while True:
+                if run.status != last_status:
+                    yield _workflow_status_event(run)
+                    last_status = run.status
+
+                emitted = False
+                for task in workflow.tasks:
+                    task_events = await self._list_task_runtime_events(
+                        task.agent_id,
+                        workflow_id=resolved_workflow_id,
+                        task_id=task.task_id,
+                        run_id=resolved_run_id,
+                        after_event_id=cursors.get(task.task_id, 0),
+                    )
+                    if not task_events:
+                        continue
+
+                    if task.task_id not in started_tasks:
+                        started_tasks.add(task.task_id)
+                        emitted = True
+                        yield _workflow_task_event(
+                            "workflow.task.started",
+                            workflow_id=resolved_workflow_id,
+                            run_id=resolved_run_id,
+                            task_id=task.task_id,
+                            task_agent_id=task.agent_id,
+                        )
+
+                    for event in task_events:
+                        cursors[task.task_id] = max(
+                            cursors.get(task.task_id, 0),
+                            int(getattr(event, "event_id", 0) or 0),
+                        )
+                        emitted = True
+                        public = to_public_event(event)
+                        yield WorkflowStreamEvent(
+                            event=str(public.get("event") or "message"),
+                            data=_augment_workflow_payload(
+                                public.get("data"),
+                                workflow_id=resolved_workflow_id,
+                                run_id=resolved_run_id,
+                                task_id=task.task_id,
+                                task_agent_id=task.agent_id,
+                            ),
+                        )
+
+                        if event.event_type == RuntimeEventType.REQUEST_COMPLETED.value:
+                            if task.task_id not in completed_tasks:
+                                completed_tasks.add(task.task_id)
+                                yield _workflow_task_event(
+                                    "workflow.task.completed",
+                                    workflow_id=resolved_workflow_id,
+                                    run_id=resolved_run_id,
+                                    task_id=task.task_id,
+                                    task_agent_id=task.agent_id,
+                                )
+                        elif event.event_type == RuntimeEventType.REQUEST_FAILED.value:
+                            if task.task_id not in error_tasks:
+                                error_tasks.add(task.task_id)
+                                yield _workflow_task_event(
+                                    "workflow.task.error",
+                                    workflow_id=resolved_workflow_id,
+                                    run_id=resolved_run_id,
+                                    task_id=task.task_id,
+                                    task_agent_id=task.agent_id,
+                                )
+
+                if _is_terminal_workflow_status(run.status):
+                    return
+
+                if not emitted:
+                    yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
+                    await _sleep(poll_interval)
+                run = await self.get_run(resolved_workflow_id, resolved_run_id)
+
+        return _generate()
+
+    async def _list_task_runtime_events(
+        self,
+        agent_id: str,
+        *,
+        workflow_id: str,
+        task_id: str,
+        run_id: str,
+        after_event_id: int,
+    ) -> list[Any]:
+        agent = self._host.get_agent(agent_id)
+        return await agent.runtime_store.list_events(
+            app_id=agent_id,
+            session_id=workflow_task_session_id(
+                workflow_id=workflow_id,
+                task_id=task_id,
+                run_id=run_id,
+            ),
+            after_event_id=max(0, int(after_event_id)),
+        )
+
     def _require_workflow(self, workflow_id: str) -> WorkflowSpec:
         try:
             return self._workflow_registry.get(workflow_id)
@@ -179,6 +309,74 @@ def _normalize_workflow_input(value: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("workflow_input must be a JSON object")
     return dict(value)
+
+
+def workflow_task_session_id(*, workflow_id: str, task_id: str, run_id: str) -> str:
+    return f"workflow:{workflow_id}:task:{task_id}:run:{run_id}"
+
+
+def _workflow_status_event(run: WorkflowRun) -> WorkflowStreamEvent:
+    return WorkflowStreamEvent(
+        event="workflow.status",
+        data={
+            "workflow_id": run.workflow_id,
+            "run_id": run.run_id,
+            "dedup_key": run.dedup_key,
+            "status": run.status,
+            "created_at": run.created_at,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "error": run.error,
+            "output": run.output,
+        },
+    )
+
+
+def _workflow_task_event(
+    event_name: str,
+    *,
+    workflow_id: str,
+    run_id: str,
+    task_id: str,
+    task_agent_id: str,
+) -> WorkflowStreamEvent:
+    return WorkflowStreamEvent(
+        event=event_name,
+        data={
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "task_agent_id": task_agent_id,
+        },
+    )
+
+
+def _augment_workflow_payload(
+    payload: Any,
+    *,
+    workflow_id: str,
+    run_id: str,
+    task_id: str,
+    task_agent_id: str,
+) -> dict[str, Any]:
+    data = dict(payload) if isinstance(payload, dict) else {"payload": payload}
+    data.update(
+        {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "task_agent_id": task_agent_id,
+        }
+    )
+    return data
+
+
+def _is_terminal_workflow_status(status: str) -> bool:
+    return str(status or "").lower() in {"completed", "failed", "cancelled"}
+
+
+async def _sleep(duration: float) -> None:
+    await asyncio.sleep(max(0.0, float(duration)))
 
 
 def _run_from_status(

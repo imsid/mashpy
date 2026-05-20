@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
+from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec
 from mash.workflows import (
     DuplicateWorkflowRunError,
@@ -19,6 +20,7 @@ from mash.workflows import (
     WorkflowSpec,
 )
 from mash.workflows import dbos as workflow_dbos
+from mash.workflows.service import workflow_task_session_id
 
 
 def _task(task_id: str, agent_id: str) -> TaskSpec:
@@ -92,15 +94,53 @@ class _FakeAgentClient:
         }
 
 
+class _FakeRuntimeStore:
+    def __init__(self, events: list[RuntimeEvent]) -> None:
+        self.events = list(events)
+        self.calls: list[dict[str, Any]] = []
+
+    async def list_events(
+        self,
+        app_id: str,
+        *,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        after_event_id: int = 0,
+        limit: int | None = None,
+    ) -> list[RuntimeEvent]:
+        del trace_id, limit
+        self.calls.append(
+            {
+                "app_id": app_id,
+                "session_id": session_id,
+                "after_event_id": after_event_id,
+            }
+        )
+        return [
+            event
+            for event in self.events
+            if event.app_id == app_id
+            and event.session_id == session_id
+            and event.event_id > after_event_id
+        ]
+
+
+class _FakeRuntime:
+    def __init__(self, runtime_store: _FakeRuntimeStore) -> None:
+        self.runtime_store = runtime_store
+
+
 class _FakeHost:
     def __init__(
         self,
         registry: WorkflowRegistry,
         clients: dict[str, _FakeAgentClient],
+        agents: dict[str, _FakeRuntime] | None = None,
     ) -> None:
         self.runtime_database_url = "postgresql://example"
         self._registry = registry
         self._clients = dict(clients)
+        self._agents = dict(agents or {})
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._registry
@@ -110,6 +150,12 @@ class _FakeHost:
             return self._clients[agent_id]
         except KeyError as exc:
             raise ValueError(f"agent client '{agent_id}' is not registered") from exc
+
+    def get_agent(self, agent_id: str) -> _FakeRuntime:
+        try:
+            return self._agents[agent_id]
+        except KeyError as exc:
+            raise ValueError(f"agent '{agent_id}' is not registered") from exc
 
 
 class _FakeDBOS:
@@ -293,6 +339,122 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.status, "completed")
         self.assertEqual(run.finished_at, 1_700_000_001.0)
         self.assertEqual(run.output, {"task_states": {"task-1": {"ok": True}}})
+
+    async def test_stream_run_events_uses_deterministic_task_session_and_cursor(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        run_id = "mw:host-1:wf:abc"
+        session_id = workflow_task_session_id(
+            workflow_id="wf",
+            task_id="task-1",
+            run_id=run_id,
+        )
+        store = _FakeRuntimeStore(
+            [
+                RuntimeEvent(
+                    event_id=1,
+                    request_id="req-1",
+                    app_id="worker",
+                    agent_id="worker",
+                    session_id=session_id,
+                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                ),
+                RuntimeEvent(
+                    event_id=2,
+                    request_id="req-1",
+                    app_id="worker",
+                    agent_id="worker",
+                    session_id=session_id,
+                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    payload={"request_id": "req-1", "response": {"text": "{}"}},
+                ),
+            ]
+        )
+        service = WorkflowService(
+            registry,
+            _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
+            host_id="host-1",
+        )
+        statuses = [
+            _FakeWorkflowStatus(workflow_id=run_id, status="RUNNING"),
+            _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS"),
+        ]
+
+        async def get_workflow_status(_run_id):
+            return statuses.pop(0) if statuses else _FakeWorkflowStatus(
+                workflow_id=run_id,
+                status="SUCCESS",
+            )
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            stream = await service.stream_run_events("wf", run_id, poll_interval=0)
+            events = [event async for event in stream]
+
+        self.assertEqual(
+            [event.event for event in events],
+            [
+                "workflow.status",
+                "workflow.task.started",
+                "request.accepted",
+                "request.completed",
+                "workflow.task.completed",
+                "workflow.status",
+            ],
+        )
+        self.assertEqual(store.calls[0]["session_id"], session_id)
+        self.assertEqual(store.calls[0]["after_event_id"], 0)
+        self.assertEqual(store.calls[1]["after_event_id"], 2)
+        self.assertEqual(events[2].data["workflow_id"], "wf")
+        self.assertEqual(events[2].data["task_id"], "task-1")
+        self.assertEqual(events[2].data["task_agent_id"], "worker")
+
+    async def test_stream_run_events_flushes_task_events_for_terminal_run(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        run_id = "mw:host-1:wf:abc"
+        session_id = workflow_task_session_id(
+            workflow_id="wf",
+            task_id="task-1",
+            run_id=run_id,
+        )
+        store = _FakeRuntimeStore(
+            [
+                RuntimeEvent(
+                    event_id=7,
+                    request_id="req-1",
+                    app_id="worker",
+                    agent_id="worker",
+                    session_id=session_id,
+                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    payload={"request_id": "req-1", "response": {"text": "{}"}},
+                )
+            ]
+        )
+        service = WorkflowService(
+            registry,
+            _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
+            host_id="host-1",
+        )
+
+        async def get_workflow_status(_run_id):
+            return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            stream = await service.stream_run_events("wf", run_id, poll_interval=0)
+            events = [event async for event in stream]
+
+        self.assertIn("request.completed", [event.event for event in events])
+        self.assertEqual(events[-1].event, "workflow.task.completed")
 
     async def test_unknown_workflow_is_rejected(self) -> None:
         registry = WorkflowRegistry()

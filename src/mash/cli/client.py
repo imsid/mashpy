@@ -77,6 +77,33 @@ class MashHostClient:
             )
         return response
 
+    @staticmethod
+    def _iter_sse_events(response: requests.Response) -> Iterator[dict[str, Any]]:
+        event_name: Optional[str] = None
+        data_lines: list[str] = []
+        for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+            if line is None:
+                continue
+            stripped = line.strip()
+            if not stripped:
+                if event_name and data_lines:
+                    raw = "\n".join(data_lines)
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        payload = {"raw": raw}
+                    yield {"event": event_name, "data": payload}
+                event_name = None
+                data_lines = []
+                continue
+            if stripped.startswith(":"):
+                continue
+            if stripped.startswith("event:"):
+                event_name = stripped[6:].strip()
+                continue
+            if stripped.startswith("data:"):
+                data_lines.append(stripped[5:].strip())
+
     def health(self) -> dict[str, Any]:
         response = self._request("GET", "/api/v1/health")
         return response.json()["data"]
@@ -118,30 +145,7 @@ class MashHostClient:
             f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/events",
             stream=True,
         ) as response:
-            event_name: Optional[str] = None
-            data_lines: list[str] = []
-            for line in response.iter_lines(chunk_size=1, decode_unicode=True):
-                if line is None:
-                    continue
-                stripped = line.strip()
-                if not stripped:
-                    if event_name and data_lines:
-                        raw = "\n".join(data_lines)
-                        try:
-                            payload = json.loads(raw)
-                        except json.JSONDecodeError:
-                            payload = {"raw": raw}
-                        yield {"event": event_name, "data": payload}
-                    event_name = None
-                    data_lines = []
-                    continue
-                if stripped.startswith(":"):
-                    continue
-                if stripped.startswith("event:"):
-                    event_name = stripped[6:].strip()
-                    continue
-                if stripped.startswith("data:"):
-                    data_lines.append(stripped[5:].strip())
+            yield from self._iter_sse_events(response)
 
     def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
         response = self._request(
@@ -181,12 +185,11 @@ class MashHostClient:
     ) -> dict[str, Any]:
         response = self._request(
             "GET",
-            "/api/v1/telemetry/reasoning-trace",
-            query={
-                "agent_id": agent_id,
-                "session_id": session_id,
-                "trace_id": trace_id,
-            },
+            (
+                f"/api/v1/agent/{quote(agent_id, safe='')}"
+                f"/session/{quote(session_id, safe='')}"
+                f"/trace/{quote(trace_id, safe='')}/reasoning"
+            ),
         )
         return response.json()["data"]
 
@@ -224,6 +227,16 @@ class MashHostClient:
         )
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
+
+    def stream_workflow_run(
+        self, workflow_id: str, run_id: str
+    ) -> Iterator[dict[str, Any]]:
+        with self._request(
+            "GET",
+            f"/api/v1/workflows/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}/events",
+            stream=True,
+        ) as response:
+            yield from self._iter_sse_events(response)
 
     def close(self) -> None:
         self._session.close()

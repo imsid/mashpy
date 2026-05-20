@@ -74,7 +74,7 @@ class MashHostClientTests(unittest.TestCase):
 
         self.assertEqual(session.calls[-1]["timeout"], DEFAULT_REQUEST_TIMEOUT)
 
-    def test_get_reasoning_trace_uses_telemetry_route(self) -> None:
+    def test_get_reasoning_trace_uses_agent_trace_route(self) -> None:
         client = MashHostClient("http://localhost:8000")
         session = _RecordingSession()
         client._session = session  # type: ignore[assignment]
@@ -82,7 +82,7 @@ class MashHostClientTests(unittest.TestCase):
         client.get_reasoning_trace("primary", "s-1", "trace-1")
 
         self.assertIn(
-            "/api/v1/telemetry/reasoning-trace?agent_id=primary&session_id=s-1&trace_id=trace-1",
+            "/api/v1/agent/primary/session/s-1/trace/trace-1/reasoning",
             str(session.calls[-1]["url"]),
         )
 
@@ -174,6 +174,22 @@ class MashHostClientTests(unittest.TestCase):
         self.assertEqual(session.calls[-1]["method"], "GET")
         self.assertIn(
             "/api/v1/workflows/wf/runs/run%2F1",
+            str(session.calls[-1]["url"]),
+        )
+
+    def test_stream_workflow_run_uses_events_route_and_stream_timeout(self) -> None:
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        client._session = session  # type: ignore[assignment]
+
+        events = list(client.stream_workflow_run("wf/one", "run/1"))
+
+        self.assertEqual(events[-1]["event"], "request.completed")
+        self.assertEqual(session.calls[-1]["method"], "GET")
+        self.assertTrue(session.calls[-1]["stream"])
+        self.assertEqual(session.calls[-1]["timeout"], DEFAULT_STREAM_TIMEOUT)
+        self.assertIn(
+            "/api/v1/workflows/wf%2Fone/runs/run%2F1/events",
             str(session.calls[-1]["url"]),
         )
 

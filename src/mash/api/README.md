@@ -217,12 +217,8 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `data: <serialized API event>`
 - Emits `: keep-alive` frames while idle.
 
-`GET /api/v1/telemetry/reasoning-trace`
+`GET /api/v1/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning`
 - Returns the compact CLI-style reasoning trace for one trace.
-- Query params:
-  - `agent_id` required
-  - `session_id` required
-  - `trace_id` required
 - Returns:
   - `status`
   - `steps`

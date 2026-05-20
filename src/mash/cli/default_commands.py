@@ -208,8 +208,79 @@ def register_default_commands(shell) -> None:
                 workflow_input=workflow_input,
             )
             ctx.renderer.info(f"Workflow: {run.get('workflow_id') or workflow_id}")
-            ctx.renderer.info(f"Run ID: {run.get('run_id') or ''}")
-            ctx.renderer.info(f"Status: {run.get('status') or ''}")
+            run_id = str(run.get("run_id") or "")
+            ctx.renderer.info(f"Run ID: {run_id}")
+            if not run_id:
+                ctx.renderer.info(f"Status: {run.get('status') or ''}")
+                return
+
+            streamed_response_text: dict[str, str] = {}
+            try:
+                for event in ctx.client.stream_workflow_run(workflow_id, run_id):
+                    event_name = str(event.get("event") or "")
+                    payload = event.get("data")
+                    if not isinstance(payload, dict):
+                        continue
+
+                    task_id = str(payload.get("task_id") or "")
+                    task_agent_id = str(payload.get("task_agent_id") or "")
+                    task_label = f"Workflow task {task_id}" if task_id else "Workflow task"
+
+                    if event_name == "workflow.status":
+                        status = str(payload.get("status") or "")
+                        if status:
+                            ctx.renderer.info(f"Workflow status: {status}")
+                        continue
+
+                    if event_name == "workflow.task.started":
+                        ctx.renderer.info(f"{task_label} started")
+                        continue
+
+                    if event_name == "workflow.task.completed":
+                        ctx.renderer.info(f"{task_label} completed")
+                        continue
+
+                    if event_name == "workflow.task.error":
+                        ctx.renderer.error(f"{task_label} error")
+                        continue
+
+                    if event_name == "agent.trace":
+                        shell._render_runtime_trace_payload(
+                            payload,
+                            trace_label=task_label,
+                            agent_id=task_agent_id or None,
+                        )
+                        if task_agent_id:
+                            streamed_text = shell._extract_streamed_response_text(
+                                payload,
+                                agent_id=task_agent_id,
+                            )
+                            if streamed_text:
+                                streamed_response_text[task_id] = streamed_text
+                                ctx.renderer.markdown(streamed_text)
+                        continue
+
+                    if event_name == "request.completed":
+                        response_payload = payload.get("response")
+                        if isinstance(response_payload, dict):
+                            text = str(response_payload.get("text") or "")
+                        else:
+                            text = str(payload.get("text") or "")
+                        if text and text != streamed_response_text.get(task_id):
+                            ctx.renderer.markdown(text)
+                        continue
+
+                    if event_name == "request.error":
+                        error = payload.get("error")
+                        ctx.renderer.error(str(error or "workflow task request failed"))
+                        continue
+
+                    if event_name == "workflow.error":
+                        error = payload.get("error")
+                        ctx.renderer.error(str(error or "workflow stream failed"))
+                        return
+            finally:
+                shell.chain_renderer.finish_trace()
             return
 
         if subcommand == "status":

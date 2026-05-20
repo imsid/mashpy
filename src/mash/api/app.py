@@ -491,6 +491,39 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             }
         )
 
+    @api.get("/workflows/{workflow_id}/runs/{run_id}/events")
+    async def stream_workflow_run_events(
+        request: Request,
+        workflow_id: str,
+        run_id: str,
+    ) -> StreamingResponse:
+        workflow_service = _get_workflow_service(request)
+        events = await workflow_service.stream_run_events(
+            workflow_id.strip(),
+            run_id.strip(),
+        )
+
+        async def _generate() -> AsyncIterator[str]:
+            try:
+                async for event in events:
+                    if await request.is_disconnected():
+                        break
+                    if event.comment:
+                        yield f": {event.comment}\n\n"
+                        continue
+                    yield _build_runtime_event_sse_payload(event.event, event.data)
+            except Exception as exc:
+                yield _build_runtime_event_sse_payload(
+                    "workflow.error",
+                    {"workflow_id": workflow_id, "run_id": run_id, "error": str(exc)},
+                )
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
     @api.get("/telemetry/events")
     async def get_observability_events(
         request: Request,
@@ -529,12 +562,12 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             }
         )
 
-    @api.get("/telemetry/reasoning-trace")
+    @api.get("/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning")
     async def get_reasoning_trace(
         request: Request,
-        agent_id: str = Query(...),
-        session_id: str = Query(...),
-        trace_id: str = Query(...),
+        agent_id: str,
+        session_id: str,
+        trace_id: str,
     ) -> dict[str, Any]:
         state = _state_from_request(request)
         if not state.observability_enabled:

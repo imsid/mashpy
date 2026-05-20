@@ -24,6 +24,7 @@ Import the workflow API from `mash.workflows`:
 - `WorkflowRegistry`
 - `WorkflowRun`
 - `WorkflowService`
+- `WorkflowStreamEvent`
 
 ## How To Define A Workflow
 
@@ -154,6 +155,10 @@ When the host is wrapped by `mash.api`, workflows are exposed through:
 - `GET /api/v1/workflows`
 - `POST /api/v1/workflows/{workflow_id}/run`
 - `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
+- `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`
+
+The events endpoint streams workflow status, task lifecycle events, and each
+task agent's normal request events over SSE.
 
 ## CLI
 
@@ -161,12 +166,12 @@ The interactive Mash REPL exposes workflow commands as thin wrappers around the
 HTTP API:
 
 - `/workflow list`: list registered workflows
-- `/workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]`: start a workflow run
+- `/workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]`: start a workflow run and stream task progress
 - `/workflow status <workflow_id> <run_id>`: show workflow run status
 
-Workflow CLI commands start runs asynchronously and print the run id/status. They
-do not poll until completion. When a completed run has DBOS output, status
-responses include that output.
+Workflow run streams show workflow status, task lifecycle events, task agent
+trace progress, and task responses. When a completed run has DBOS output,
+`/workflow status` includes that output.
 
 ## What This Package Does Not Do
 

@@ -16,9 +16,11 @@ from fastapi.testclient import TestClient
 from mash.api import MashHostConfig, create_app
 from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE, get_telemetry_static_dir
 from mash.runtime import HostBuilder
+from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import TaskSpec, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
+from mash.workflows.service import workflow_task_session_id
 
 
 @contextmanager
@@ -514,12 +516,7 @@ def test_reasoning_trace_route_returns_compact_trace() -> None:
             trace_id = terminal["trace_id"]
 
             reasoning_trace = client.get(
-                "/api/v1/telemetry/reasoning-trace",
-                params={
-                    "agent_id": "primary",
-                    "session_id": "s-1",
-                    "trace_id": trace_id,
-                },
+                f"/api/v1/agent/primary/session/s-1/trace/{trace_id}/reasoning",
             )
             assert reasoning_trace.status_code == 200
             payload = reasoning_trace.json()["data"]
@@ -538,12 +535,7 @@ def test_reasoning_trace_route_rejects_blank_scope_values() -> None:
         root = Path(tmp)
         with _build_test_client(root) as client:
             response = client.get(
-                "/api/v1/telemetry/reasoning-trace",
-                params={
-                    "agent_id": "primary",
-                    "session_id": " ",
-                    "trace_id": "trace-1",
-                },
+                "/api/v1/agent/primary/session/%20/trace/trace-1/reasoning",
             )
             assert response.status_code == 400
             payload = response.json()["error"]
@@ -725,6 +717,136 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
             assert payload["output"] == {"task_states": {"digest-traces": {"status": "ok"}}}
 
 
+def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            host = client.app.state.runtime_state.host
+            host_id = host.host_id
+            run_id = f"mw:{host_id}:changelog:abc"
+            task_id = "scan-codebase-and-append-changelog"
+            session_id = workflow_task_session_id(
+                workflow_id="changelog",
+                task_id=task_id,
+                run_id=run_id,
+            )
+            runtime = host.get_agent("changelog-agent")
+
+            async def list_events(
+                app_id: str,
+                *,
+                session_id: str | None = None,
+                trace_id: str | None = None,
+                after_event_id: int = 0,
+                limit: int | None = None,
+            ):
+                del trace_id, limit
+                events = [
+                    RuntimeEvent(
+                        event_id=1,
+                        request_id="req-1",
+                        app_id="changelog-agent",
+                        agent_id="changelog-agent",
+                        session_id=session_id,
+                        event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    ),
+                    RuntimeEvent(
+                        event_id=2,
+                        request_id="req-1",
+                        app_id="changelog-agent",
+                        agent_id="changelog-agent",
+                        session_id=session_id,
+                        trace_id="trace-1",
+                        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                        payload={"action_type": "response", "assistant_text": "{}"},
+                    ),
+                    RuntimeEvent(
+                        event_id=3,
+                        request_id="req-1",
+                        app_id="changelog-agent",
+                        agent_id="changelog-agent",
+                        session_id=session_id,
+                        trace_id="trace-1",
+                        event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                        payload={"request_id": "req-1", "response": {"text": "{}"}},
+                    ),
+                ]
+                return [
+                    event
+                    for event in events
+                    if event.app_id == app_id and event.event_id > after_event_id
+                ]
+
+            runtime.runtime_store.list_events = list_events
+
+            async def get_workflow_status(_run_id):
+                return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
+
+            with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+                with client.stream(
+                    "GET",
+                    f"/api/v1/workflows/changelog/runs/{run_id}/events",
+                ) as stream:
+                    assert stream.status_code == 200
+                    assert "text/event-stream" in stream.headers["content-type"]
+                    events = _collect_sse_events(stream)
+
+            names = [event["event"] for event in events]
+            assert names == [
+                "workflow.status",
+                "workflow.task.started",
+                "request.accepted",
+                "agent.trace",
+                "request.completed",
+                "workflow.task.completed",
+            ]
+            completed = events[-2]["data"]
+            assert completed["workflow_id"] == "changelog"
+            assert completed["run_id"] == run_id
+            assert completed["task_id"] == task_id
+            assert completed["task_agent_id"] == "changelog-agent"
+
+
+def test_workflow_run_events_returns_not_found_for_unknown_run() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            response = client.get(
+                "/api/v1/workflows/changelog/runs/mw:wrong:changelog:abc/events"
+            )
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
+
+
+def test_workflow_run_events_respects_api_auth() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret", workflow_enabled=True) as client:
+            host = client.app.state.runtime_state.host
+            run_id = f"mw:{host.host_id}:changelog:abc"
+            unauthorized = client.get(f"/api/v1/workflows/changelog/runs/{run_id}/events")
+            assert unauthorized.status_code == 401
+
+            runtime = host.get_agent("changelog-agent")
+
+            async def list_events(_app_id, **_kwargs):
+                return []
+
+            runtime.runtime_store.list_events = list_events
+
+            async def get_workflow_status(_run_id):
+                return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
+
+            with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+                with client.stream(
+                    "GET",
+                    f"/api/v1/workflows/changelog/runs/{run_id}/events",
+                    headers={"Authorization": "Bearer secret"},
+                ) as stream:
+                    assert stream.status_code == 200
+                    assert "text/event-stream" in stream.headers["content-type"]
+
+
 def test_missing_telemetry_assets_fail_fast() -> None:
     with patch("mash.api.app.mount_telemetry_ui", side_effect=RuntimeError("missing telemetry assets")):
         with tempfile.TemporaryDirectory() as tmp:
@@ -777,3 +899,23 @@ def _collect_terminal_response(
             if current_event == "request.error":
                 raise AssertionError(f"request failed: {text}")
     raise AssertionError("stream ended without request.completed")
+
+
+def _collect_sse_events(stream) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    current_event = None
+    for line in stream.iter_lines():
+        if not line:
+            continue
+        text = line if isinstance(line, str) else line.decode("utf-8")
+        if text.startswith(":"):
+            continue
+        if text.startswith("event:"):
+            current_event = text.split(":", 1)[1].strip()
+            continue
+        if text.startswith("data:") and current_event:
+            payload = json.loads(text.split(":", 1)[1].strip())
+            events.append({"event": current_event, "data": payload})
+            if current_event in {"workflow.task.completed", "workflow.task.error", "workflow.error"}:
+                break
+    return events

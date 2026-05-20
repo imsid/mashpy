@@ -162,7 +162,8 @@ Important runtime properties:
 - The runtime H2A surface is:
   `GET /health`, `POST /agent/{agent_id}/request`, `GET /agent/{agent_id}/request/{request_id}`.
 - Host-level workflows are exposed through:
-  `GET /api/v1/workflows`, `POST /api/v1/workflows/{workflow_id}/run`, and `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`.
+  `GET /api/v1/workflows`, `POST /api/v1/workflows/{workflow_id}/run`, `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`, and `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`.
+- The workflow run event stream forwards workflow status, task lifecycle events, and each task agent's normal request stream.
 
 ## Working on the SDK
 
@@ -356,9 +357,7 @@ Example trace-mode invocation through the REPL:
 
 ```text
 /workflow run masher-trace-digest --input '{"mode":"trace","target_agent_id":"primary","session_id":"...","trace_id":"..."}'
-/workflow status masher-trace-digest <run_id>
 /workflow run masher-online-eval-curation --input '{"mode":"trace","target_agent_id":"primary","session_id":"...","trace_id":"..."}'
-/workflow status masher-online-eval-curation <run_id>
 ```
 
 Example incremental invocation:

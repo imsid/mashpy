@@ -169,6 +169,74 @@ class _FakeClient:
             "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
         }
 
+    def stream_workflow_run(self, workflow_id: str, run_id: str):
+        del workflow_id, run_id
+        yield {
+            "event": "workflow.status",
+            "data": {
+                "workflow_id": "changelog",
+                "run_id": "mw:host:changelog:abc",
+                "status": "running",
+            },
+        }
+        yield {
+            "event": "workflow.task.started",
+            "data": {
+                "workflow_id": "changelog",
+                "run_id": "mw:host:changelog:abc",
+                "task_id": "scan",
+                "task_agent_id": "worker",
+            },
+        }
+        yield {
+            "event": "agent.trace",
+            "data": {
+                "workflow_id": "changelog",
+                "run_id": "mw:host:changelog:abc",
+                "task_id": "scan",
+                "task_agent_id": "worker",
+                "event_type": "runtime.llm.think.completed",
+                "trace_id": "trace-wf-1",
+                "session_id": "workflow:changelog:task:scan:run:mw:host:changelog:abc",
+                "loop_index": 0,
+                "created_at": 100.0,
+                "payload": {
+                    "duration_ms": 9,
+                    "action_type": "response",
+                    "assistant_text": "{\"status\":\"ok\"}",
+                    "tool_calls": [],
+                    "token_usage": {"input": 2, "output": 1},
+                },
+            },
+        }
+        yield {
+            "event": "request.completed",
+            "data": {
+                "workflow_id": "changelog",
+                "run_id": "mw:host:changelog:abc",
+                "task_id": "scan",
+                "task_agent_id": "worker",
+                "response": {"text": "{\"status\":\"ok\"}"},
+            },
+        }
+        yield {
+            "event": "workflow.task.completed",
+            "data": {
+                "workflow_id": "changelog",
+                "run_id": "mw:host:changelog:abc",
+                "task_id": "scan",
+                "task_agent_id": "worker",
+            },
+        }
+        yield {
+            "event": "workflow.status",
+            "data": {
+                "workflow_id": "changelog",
+                "run_id": "mw:host:changelog:abc",
+                "status": "completed",
+            },
+        }
+
 
 class MashRemoteShellTests(unittest.TestCase):
     def _build_shell(self) -> MashRemoteShell:
@@ -236,7 +304,25 @@ class MashRemoteShellTests(unittest.TestCase):
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow: changelog", lines)
         self.assertIn("Run ID: mw:host:changelog:abc", lines)
-        self.assertIn("Status: queued", lines)
+        self.assertIn("Workflow status: running", lines)
+        self.assertIn("Workflow task scan started", lines)
+        self.assertIn("Workflow task scan completed", lines)
+        self.assertIn("Workflow status: completed", lines)
+
+    def test_workflow_run_streams_task_response_and_chain_events(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.chain_renderer, "on_runtime_event") as runtime_event:
+            with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
+                with patch.object(shell.context.renderer, "markdown") as markdown:
+                    shell.command_registry.execute(shell.context, "/workflow run changelog")
+
+        runtime_event.assert_called_once()
+        self.assertEqual(
+            runtime_event.call_args.args[0].event_type,
+            RuntimeEventType.LLM_THINK_COMPLETED.value,
+        )
+        markdown.assert_called_once_with('{"status":"ok"}')
+        finish_trace.assert_called_once()
 
     def test_workflow_run_forwards_input_json(self) -> None:
         shell = self._build_shell()

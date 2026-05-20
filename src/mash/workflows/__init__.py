@@ -1,7 +1,13 @@
 """Workflow orchestration exports."""
 
 from .registry import WorkflowRegistry
-from .service import DuplicateWorkflowRunError, WorkflowNotFoundError, WorkflowRun, WorkflowService
+from .service import (
+    DuplicateWorkflowRunError,
+    WorkflowNotFoundError,
+    WorkflowRun,
+    WorkflowService,
+    WorkflowStreamEvent,
+)
 from .spec import TaskSpec, WorkflowSpec
 
 __all__ = [
@@ -11,5 +17,6 @@ __all__ = [
     "WorkflowRegistry",
     "WorkflowRun",
     "WorkflowService",
+    "WorkflowStreamEvent",
     "WorkflowSpec",
 ]
