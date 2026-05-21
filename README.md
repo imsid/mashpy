@@ -163,8 +163,8 @@ Important runtime properties:
 - The runtime H2A surface is:
   `GET /health`, `POST /agent/{agent_id}/request`, `GET /agent/{agent_id}/request/{request_id}`.
 - Host-level workflows are exposed through:
-  `GET /api/v1/workflows`, `POST /api/v1/workflows/{workflow_id}/run`, `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`, and `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`.
-- The workflow run event stream forwards workflow status, task lifecycle events, and each task agent's normal request stream.
+  `GET /api/v1/workflow`, `POST /api/v1/workflow/{workflow_id}/run`, `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`, and `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`.
+- The workflow run event stream replays task lifecycle events and each task agent's normal runtime events.
 
 ## Working on the SDK
 

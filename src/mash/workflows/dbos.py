@@ -169,32 +169,6 @@ async def get_workflow_status(run_id: str) -> Any | None:
     return await dbos_class.get_workflow_status_async(run_id)
 
 
-async def list_workflow_statuses(
-    *,
-    host_id: str,
-    workflow_id: str,
-    status: str | list[str] | None = None,
-    start_time: str | None = None,
-    end_time: str | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
-    sort_desc: bool = True,
-) -> list[Any]:
-    dbos_class, _, _, _, _ = _load_dbos_api()
-    return await dbos_class.list_workflows_async(
-        name=_WORKFLOW_NAME,
-        workflow_id_prefix=workflow_run_id_prefix(host_id, workflow_id),
-        status=status,
-        start_time=start_time,
-        end_time=end_time,
-        limit=limit,
-        offset=offset,
-        sort_desc=sort_desc,
-        load_input=False,
-        load_output=False,
-    )
-
-
 async def execute_registered_workflow(
     host_id: str,
     workflow_id: str,

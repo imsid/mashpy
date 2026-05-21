@@ -460,6 +460,64 @@ class SQLiteStore(MemoryStore):
             )
         return turns
 
+    async def list_workflow_turns(
+        self,
+        app_id: str,
+        session_prefix: str,
+        *,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        sort_desc: bool = True,
+    ) -> List[Dict[str, Any]]:
+        normalized_limit = None if limit is None else max(0, int(limit))
+        if normalized_limit == 0:
+            return []
+
+        params: List[Any] = [app_id, f"{session_prefix}%"]
+        filters = ["app_id = ?", "session_id LIKE ?"]
+        if start_time is not None:
+            filters.append("created_at >= ?")
+            params.append(float(start_time))
+        if end_time is not None:
+            filters.append("created_at <= ?")
+            params.append(float(end_time))
+
+        sql = f"""
+            SELECT turn_id, session_id, user_message, agent_response, metadata, created_at
+            FROM turns
+            WHERE {' AND '.join(filters)}
+            ORDER BY created_at {'DESC' if sort_desc else 'ASC'}, turn_id {'DESC' if sort_desc else 'ASC'}
+        """
+        if normalized_limit is not None:
+            sql += "\nLIMIT ?"
+            params.append(normalized_limit)
+        normalized_offset = max(0, int(offset))
+        if normalized_offset:
+            sql += "\nOFFSET ?"
+            params.append(normalized_offset)
+
+        await self.open()
+        async with self._lock:
+            rows = await self._fetchall_unlocked(sql, params)
+
+        return [
+            {
+                "turn_id": str(row["turn_id"]),
+                "session_id": str(row["session_id"]),
+                "user_message": (
+                    "" if row["user_message"] is None else str(row["user_message"])
+                ),
+                "agent_response": (
+                    "" if row["agent_response"] is None else str(row["agent_response"])
+                ),
+                "metadata": self._load_json_dict(row["metadata"]),
+                "created_at": float(row["created_at"] or 0.0),
+            }
+            for row in rows
+        ]
+
     async def get_session_signals(
         self,
         session_id: str,

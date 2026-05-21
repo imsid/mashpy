@@ -1,6 +1,7 @@
 # API
 
-Lightweight reference for the HTTP surface exposed by `src/mash/api/app.py`.
+Lightweight reference for the HTTP surface composed by `src/mash/api/app.py`
+and implemented in `src/mash/api/routes/`.
 
 This README is intended to be prompt-cache friendly for the `api-copilot` agent: it lists the exposed routes, the common request/response conventions, and the main query/body fields without duplicating full OpenAPI schemas.
 
@@ -162,13 +163,29 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `summary_text`
   - `turn_id`
 
+`GET /api/v1/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning`
+- Returns the compact CLI-style reasoning trace for one trace.
+- Requires observability to be enabled because it reads runtime event logs.
+- Path params:
+  - `agent_id`
+  - `session_id`
+  - `trace_id`
+- Returns:
+  - `status`
+  - `steps`
+  - `summary`
+  - `source`
+  - `agent_id`
+  - `session_id`
+  - `trace_id`
+
 ### Workflows
 
-`GET /api/v1/workflows`
+`GET /api/v1/workflow`
 - Lists registered host workflows.
 - Returns `workflows`.
 
-`POST /api/v1/workflows/{workflow_id}/run`
+`POST /api/v1/workflow/{workflow_id}/run`
 - Starts a workflow run.
 - Path params:
   - `workflow_id`
@@ -180,27 +197,27 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `workflow_id`
   - `status`
 
-`GET /api/v1/workflows/{workflow_id}/runs`
+`GET /api/v1/workflow/{workflow_id}/runs`
 - Lists previous run summaries for one workflow.
 - Path params:
   - `workflow_id`
 - Query params:
-  - `status` optional public status filter (`queued`, `completed`, `failed`, `cancelled`) or DBOS status
-  - `start_time`, `end_time` optional DBOS time bounds
+  - `status` optional public status filter; only `completed` returns memory-backed runs
+  - `start_time`, `end_time` optional memory turn time bounds
   - `limit` optional, default `50`, clamped to `1..200`
   - `offset` optional, default `0`
   - `sort_desc` optional, default `true`
-- Returns `workflow_id` and `runs`; each run includes `run_id`, `workflow_id`, `dedup_key`, `status`, timestamps, and `error`.
+- Returns `workflow_id` and `runs`; each run includes `run_id`, `workflow_id`, `dedup_key`, `status`, timestamps, `error`, and `summary`.
 - Does not include run `output`; call the run detail endpoint for results.
 
-`GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
+`GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
 - Returns one workflow run status and output.
 - Path params:
   - `workflow_id`
   - `run_id`
 
-`GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`
-- Server-Sent Events stream for workflow run progress.
+`GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`
+- Server-Sent Events stream for workflow task runtime events.
 - Path params:
   - `workflow_id`
   - `run_id`
@@ -260,17 +277,6 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `data: <serialized API event>`
 - Emits `: keep-alive` frames while idle.
 
-`GET /api/v1/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning`
-- Returns the compact CLI-style reasoning trace for one trace.
-- Returns:
-  - `status`
-  - `steps`
-  - `summary`
-  - `source`
-  - `agent_id`
-  - `session_id`
-  - `trace_id`
-
 `GET /api/v1/telemetry/memory/search`
 - Searches observability memory records.
 - Query params:
@@ -296,7 +302,11 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - `500 SEARCH_FAILED`: unexpected memory search failure
 
 ## Source Of Truth
-- The route definitions live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).
+- App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).
+- Shared route helpers live in [routes/common.py](/Users/sid/Projects/mashpy/src/mash/api/routes/common.py).
+- Agent/session routes live in [routes/agent.py](/Users/sid/Projects/mashpy/src/mash/api/routes/agent.py).
+- Workflow routes live in [routes/workflow.py](/Users/sid/Projects/mashpy/src/mash/api/routes/workflow.py).
+- Telemetry routes live in [routes/telemetry.py](/Users/sid/Projects/mashpy/src/mash/api/routes/telemetry.py).
 - The telemetry SPA routes live in [telemetry_ui.py](/Users/sid/Projects/mashpy/src/mash/api/telemetry_ui.py).
 - The default host config lives in [config.py](/Users/sid/Projects/mashpy/src/mash/api/config.py).
 

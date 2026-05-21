@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class WorkflowRun:
-    """One workflow invocation projected from DBOS workflow state."""
+    """One workflow invocation projected for public workflow APIs."""
 
     run_id: str
     workflow_id: str
@@ -31,6 +32,7 @@ class WorkflowRun:
     finished_at: float | None = None
     error: str | None = None
     output: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
 
 
 @dataclass
@@ -91,25 +93,55 @@ class WorkflowService:
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
-        self._require_workflow(resolved_workflow_id)
-        statuses = await workflow_dbos.list_workflow_statuses(
-            host_id=self._host_id,
+        workflow = self._require_workflow(resolved_workflow_id)
+        normalized_status = _normalize_optional_text(status)
+        if normalized_status is not None and normalized_status.lower() != "completed":
+            return []
+        parsed_start_time = _parse_time_filter(start_time)
+        parsed_end_time = _parse_time_filter(end_time)
+
+        turns: list[dict[str, Any]] = []
+        for task in workflow.tasks:
+            store = self._workflow_task_memory_store(task.agent_id)
+            if store is None:
+                continue
+            task_turns = await store.list_workflow_turns(
+                app_id=task.agent_id,
+                session_prefix=_workflow_task_session_prefix(
+                    workflow_id=resolved_workflow_id,
+                    task_id=task.task_id,
+                ),
+                start_time=parsed_start_time,
+                end_time=parsed_end_time,
+                limit=None,
+                offset=0,
+                sort_desc=bool(sort_desc),
+            )
+            for turn in task_turns:
+                parsed = parse_workflow_task_session_id(str(turn.get("session_id") or ""))
+                if parsed is None:
+                    continue
+                parsed_workflow_id, parsed_task_id, parsed_run_id = parsed
+                if (
+                    parsed_workflow_id != resolved_workflow_id
+                    or parsed_task_id != task.task_id
+                    or not parsed_run_id
+                ):
+                    continue
+                item = dict(turn)
+                item["workflow_id"] = parsed_workflow_id
+                item["task_id"] = parsed_task_id
+                item["run_id"] = parsed_run_id
+                item["agent_id"] = task.agent_id
+                turns.append(item)
+
+        return _runs_from_workflow_turns(
+            turns,
             workflow_id=resolved_workflow_id,
-            status=_dbos_status_filter(status),
-            start_time=_normalize_optional_text(start_time),
-            end_time=_normalize_optional_text(end_time),
             limit=max(1, int(limit)),
             offset=max(0, int(offset)),
             sort_desc=bool(sort_desc),
         )
-        return [
-            _run_from_status(
-                item,
-                workflow_id=resolved_workflow_id,
-                dedup_key=_dedup_key_from_status(item, resolved_workflow_id),
-            )
-            for item in statuses
-        ]
 
     async def run_workflow(
         self,
@@ -173,23 +205,22 @@ class WorkflowService:
         resolved_run_id = str(run_id or "").strip()
         if not resolved_run_id:
             raise ValueError("run_id is required")
-        expected_prefix = workflow_dbos.workflow_run_id_prefix(
-            self._host_id,
-            resolved_workflow_id,
-        )
-        if not resolved_run_id.startswith(expected_prefix):
-            raise WorkflowNotFoundError(
-                f"workflow run '{resolved_run_id}' is not registered for workflow '{resolved_workflow_id}'"
-            )
 
-        status = await workflow_dbos.get_workflow_status(resolved_run_id)
+        try:
+            status = await workflow_dbos.get_workflow_status(resolved_run_id)
+        except Exception as exc:
+            raise WorkflowNotFoundError(
+                f"workflow run '{resolved_run_id}' was not found"
+            ) from exc
         if status is None:
             raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
-        return _run_from_status(
+        run = _run_from_status(
             status,
             workflow_id=resolved_workflow_id,
             dedup_key=_dedup_key_from_status(status, resolved_workflow_id),
         )
+        run.summary = await self._workflow_run_summary(resolved_workflow_id, resolved_run_id)
+        return run
 
     async def stream_run_events(
         self,
@@ -201,30 +232,41 @@ class WorkflowService:
         resolved_workflow_id = str(workflow_id or "").strip()
         resolved_run_id = str(run_id or "").strip()
         workflow = self._require_workflow(resolved_workflow_id)
-        initial_run = await self.get_run(resolved_workflow_id, resolved_run_id)
+        if not resolved_run_id:
+            raise ValueError("run_id is required")
+
+        initial_events: dict[str, list[Any]] = {}
+        for task in workflow.tasks:
+            task_events = await self._list_task_runtime_events(
+                task.agent_id,
+                workflow_id=resolved_workflow_id,
+                task_id=task.task_id,
+                run_id=resolved_run_id,
+                after_event_id=0,
+            )
+            initial_events[task.task_id] = task_events
+        if not any(initial_events.values()):
+            raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
 
         async def _generate() -> AsyncIterator[WorkflowStreamEvent]:
             cursors: dict[str, int] = {task.task_id: 0 for task in workflow.tasks}
             started_tasks: set[str] = set()
             completed_tasks: set[str] = set()
             error_tasks: set[str] = set()
-            last_status: str | None = None
-            run = initial_run
+            queued_events = initial_events
 
             while True:
-                if run.status != last_status:
-                    yield _workflow_status_event(run)
-                    last_status = run.status
-
                 emitted = False
                 for task in workflow.tasks:
-                    task_events = await self._list_task_runtime_events(
-                        task.agent_id,
-                        workflow_id=resolved_workflow_id,
-                        task_id=task.task_id,
-                        run_id=resolved_run_id,
-                        after_event_id=cursors.get(task.task_id, 0),
-                    )
+                    task_events = queued_events.pop(task.task_id, None)
+                    if task_events is None:
+                        task_events = await self._list_task_runtime_events(
+                            task.agent_id,
+                            workflow_id=resolved_workflow_id,
+                            task_id=task.task_id,
+                            run_id=resolved_run_id,
+                            after_event_id=cursors.get(task.task_id, 0),
+                        )
                     if not task_events:
                         continue
 
@@ -278,13 +320,12 @@ class WorkflowService:
                                     task_agent_id=task.agent_id,
                                 )
 
-                if _is_terminal_workflow_status(run.status):
+                if error_tasks or len(completed_tasks) == len(workflow.tasks):
                     return
 
                 if not emitted:
                     yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
                     await _sleep(poll_interval)
-                run = await self.get_run(resolved_workflow_id, resolved_run_id)
 
         return _generate()
 
@@ -307,6 +348,57 @@ class WorkflowService:
             ),
             after_event_id=max(0, int(after_event_id)),
         )
+
+    async def _workflow_run_summary(
+        self,
+        workflow_id: str,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        workflow = self._require_workflow(workflow_id)
+        turns: list[dict[str, Any]] = []
+        for task in workflow.tasks:
+            store = self._workflow_task_memory_store(task.agent_id)
+            if store is None:
+                continue
+            task_turns = await store.list_workflow_turns(
+                app_id=task.agent_id,
+                session_prefix=workflow_task_session_id(
+                    workflow_id=workflow_id,
+                    task_id=task.task_id,
+                    run_id=run_id,
+                ),
+                limit=None,
+                offset=0,
+                sort_desc=True,
+            )
+            for turn in task_turns:
+                if str(turn.get("session_id") or "") != workflow_task_session_id(
+                    workflow_id=workflow_id,
+                    task_id=task.task_id,
+                    run_id=run_id,
+                ):
+                    continue
+                item = dict(turn)
+                item["task_id"] = task.task_id
+                item["agent_id"] = task.agent_id
+                turns.append(item)
+        if not turns:
+            return None
+        latest = max(
+            turns,
+            key=lambda item: (
+                float(item.get("created_at") or 0.0),
+                str(item.get("turn_id") or ""),
+            ),
+        )
+        return _workflow_run_summary_from_turn(latest)
+
+    def _workflow_task_memory_store(self, agent_id: str) -> Any | None:
+        try:
+            agent = self._host.get_agent(agent_id)
+        except Exception:
+            return None
+        return getattr(agent, "memory_store", None) or getattr(agent, "store", None)
 
     def _require_workflow(self, workflow_id: str) -> WorkflowSpec:
         try:
@@ -349,21 +441,22 @@ def workflow_task_session_id(*, workflow_id: str, task_id: str, run_id: str) -> 
     return f"workflow:{workflow_id}:task:{task_id}:run:{run_id}"
 
 
-def _workflow_status_event(run: WorkflowRun) -> WorkflowStreamEvent:
-    return WorkflowStreamEvent(
-        event="workflow.status",
-        data={
-            "workflow_id": run.workflow_id,
-            "run_id": run.run_id,
-            "dedup_key": run.dedup_key,
-            "status": run.status,
-            "created_at": run.created_at,
-            "started_at": run.started_at,
-            "finished_at": run.finished_at,
-            "error": run.error,
-            "output": run.output,
-        },
-    )
+def parse_workflow_task_session_id(session_id: str) -> tuple[str, str, str] | None:
+    parts = str(session_id or "").split(":")
+    if len(parts) < 6:
+        return None
+    if parts[0] != "workflow" or parts[2] != "task" or parts[4] != "run":
+        return None
+    workflow_id = parts[1].strip()
+    task_id = parts[3].strip()
+    run_id = ":".join(parts[5:]).strip()
+    if not workflow_id or not task_id or not run_id:
+        return None
+    return workflow_id, task_id, run_id
+
+
+def _workflow_task_session_prefix(*, workflow_id: str, task_id: str) -> str:
+    return f"workflow:{workflow_id}:task:{task_id}:run:"
 
 
 def _workflow_task_event(
@@ -405,10 +498,6 @@ def _augment_workflow_payload(
     return data
 
 
-def _is_terminal_workflow_status(status: str) -> bool:
-    return str(status or "").lower() in {"completed", "failed", "cancelled"}
-
-
 async def _sleep(duration: float) -> None:
     await asyncio.sleep(max(0.0, float(duration)))
 
@@ -436,6 +525,61 @@ def _run_from_status(
     )
 
 
+def _runs_from_workflow_turns(
+    turns: list[dict[str, Any]],
+    *,
+    workflow_id: str,
+    limit: int,
+    offset: int,
+    sort_desc: bool,
+) -> list[WorkflowRun]:
+    latest_by_run: dict[str, dict[str, Any]] = {}
+    for turn in turns:
+        run_id = str(turn.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        current = latest_by_run.get(run_id)
+        if current is None or _turn_sort_key(turn) > _turn_sort_key(current):
+            latest_by_run[run_id] = turn
+
+    ordered = sorted(
+        latest_by_run.values(),
+        key=_turn_sort_key,
+        reverse=sort_desc,
+    )
+    sliced = ordered[max(0, int(offset)) : max(0, int(offset)) + max(1, int(limit))]
+    return [
+        WorkflowRun(
+            run_id=str(turn["run_id"]),
+            workflow_id=workflow_id,
+            dedup_key=None,
+            status="completed",
+            created_at=float(turn.get("created_at") or 0.0),
+            started_at=float(turn.get("created_at") or 0.0),
+            finished_at=float(turn.get("created_at") or 0.0),
+            error=None,
+            output=None,
+            summary=_workflow_run_summary_from_turn(turn),
+        )
+        for turn in sliced
+    ]
+
+
+def _turn_sort_key(turn: dict[str, Any]) -> tuple[float, str]:
+    return float(turn.get("created_at") or 0.0), str(turn.get("turn_id") or "")
+
+
+def _workflow_run_summary_from_turn(turn: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "turn_id": str(turn.get("turn_id") or ""),
+        "session_id": str(turn.get("session_id") or ""),
+        "task_id": str(turn.get("task_id") or ""),
+        "agent_id": str(turn.get("agent_id") or ""),
+        "user_message": str(turn.get("user_message") or ""),
+        "agent_response": str(turn.get("agent_response") or ""),
+    }
+
+
 def _map_dbos_status(status: str) -> str:
     return {
         "PENDING": "queued",
@@ -446,18 +590,6 @@ def _map_dbos_status(status: str) -> str:
         "MAX_RECOVERY_ATTEMPTS_EXCEEDED": "failed",
         "CANCELLED": "cancelled",
     }.get(status, status.lower() or "unknown")
-
-
-def _dbos_status_filter(status: str | None) -> str | list[str] | None:
-    normalized = _normalize_optional_text(status)
-    if normalized is None:
-        return None
-    return {
-        "queued": ["PENDING", "ENQUEUED", "DELAYED"],
-        "completed": "SUCCESS",
-        "failed": ["ERROR", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
-        "cancelled": "CANCELLED",
-    }.get(normalized.lower(), normalized.upper())
 
 
 def _millis_to_seconds(value: Any) -> float | None:
@@ -488,3 +620,23 @@ def _dedup_key_from_status(status: Any, workflow_id: str) -> str | None:
         return None
     prefix = f"{workflow_id}:"
     return dedup[len(prefix) :] if dedup.startswith(prefix) else dedup
+
+
+def _parse_time_filter(value: str | None) -> float | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    try:
+        return float(normalized)
+    except ValueError:
+        pass
+    text = normalized
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.timestamp()

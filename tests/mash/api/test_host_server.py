@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -88,6 +89,34 @@ class _FakeWorkflowStatus:
     output: dict[str, Any] | None = None
     error: Exception | None = None
     deduplication_id: str | None = None
+
+
+def _save_workflow_turn(
+    client: TestClient,
+    *,
+    run_id: str,
+    user_message: str = "workflow input",
+    agent_response: str = '{"status":"ok"}',
+) -> str:
+    runtime = client.app.state.runtime_state.host.get_agent("changelog-agent")
+    session_id = workflow_task_session_id(
+        workflow_id="changelog",
+        task_id="scan-codebase-and-append-changelog",
+        run_id=run_id,
+    )
+    turn_id = f"trace-{run_id.replace(':', '-')}"
+    asyncio.run(
+        runtime.memory_store.save_turn(
+            trace_id=turn_id,
+            session_id=session_id,
+            app_id="changelog-agent",
+            user_message=user_message,
+            agent_response=agent_response,
+            signals={},
+            session_total_tokens=0,
+        )
+    )
+    return turn_id
 
 
 def test_health_and_agent_contract() -> None:
@@ -578,11 +607,11 @@ def test_workflow_routes_are_available_without_registered_workflows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            listed = client.get("/api/v1/workflows")
+            listed = client.get("/api/v1/workflow")
             assert listed.status_code == 200
             assert listed.json()["data"]["workflows"] == []
 
-            submitted = client.post("/api/v1/workflows/changelog/run", json={})
+            submitted = client.post("/api/v1/workflow/changelog/run", json={})
             assert submitted.status_code == 404
             assert submitted.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
 
@@ -591,7 +620,7 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            listed = client.get("/api/v1/workflows")
+            listed = client.get("/api/v1/workflow")
             assert listed.status_code == 200
             assert listed.json()["data"]["workflows"] == [
                 {
@@ -620,7 +649,7 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
                 "start_workflow_run",
                 start_workflow_run,
             ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-                submitted = client.post("/api/v1/workflows/changelog/run", json={})
+                submitted = client.post("/api/v1/workflow/changelog/run", json={})
             assert submitted.status_code == 200
             payload = submitted.json()["data"]
             assert payload["workflow_id"] == "changelog"
@@ -648,7 +677,7 @@ def test_workflow_run_accepts_input_object() -> None:
                 start_workflow_run,
             ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
                 submitted = client.post(
-                    "/api/v1/workflows/changelog/run",
+                    "/api/v1/workflow/changelog/run",
                     json={"input": {"target_agent_id": "primary"}},
                 )
             assert submitted.status_code == 200
@@ -659,7 +688,7 @@ def test_workflow_run_rejects_non_object_input() -> None:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
             response = client.post(
-                "/api/v1/workflows/changelog/run",
+                "/api/v1/workflow/changelog/run",
                 json={"input": ["bad"]},
             )
             assert response.status_code == 422
@@ -669,7 +698,7 @@ def test_workflow_run_returns_not_found_for_unknown_workflow() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            response = client.post("/api/v1/workflows/missing/run", json={})
+            response = client.post("/api/v1/workflow/missing/run", json={})
             assert response.status_code == 404
             assert response.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
 
@@ -685,7 +714,7 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
 
             with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
                 response = client.post(
-                    "/api/v1/workflows/changelog/run",
+                    "/api/v1/workflow/changelog/run",
                     json={"dedup_key": "manual"},
                 )
             assert response.status_code == 409
@@ -710,7 +739,7 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
                 )
 
             with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-                response = client.get(f"/api/v1/workflows/changelog/runs/{run_id}")
+                response = client.get(f"/api/v1/workflow/changelog/runs/{run_id}")
             assert response.status_code == 200
             payload = response.json()["data"]
             assert payload["run_id"] == run_id
@@ -719,96 +748,74 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
             assert payload["output"] == {"task_states": {"digest-traces": {"status": "ok"}}}
 
 
-def test_workflow_runs_endpoint_lists_dbos_run_summaries() -> None:
+def test_workflow_runs_endpoint_lists_memory_turn_summaries() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            host_id = client.app.state.runtime_state.host.host_id
-            run_id = f"mw:{host_id}:changelog:abc"
+            run_id = "mw:h_TI1UUyBX5w8Q:changelog:bHfMwMfMsPDPHI60"
+            turn_id = _save_workflow_turn(
+                client,
+                run_id=run_id,
+                user_message="summarize run",
+                agent_response='{"summary":"done"}',
+            )
 
-            async def list_workflow_statuses(**_kwargs):
-                return [
-                    _FakeWorkflowStatus(
-                        workflow_id=run_id,
-                        status="SUCCESS",
-                        output={"task_states": {"digest-traces": {"status": "ok"}}},
-                        deduplication_id="changelog:manual",
-                    )
-                ]
-
-            with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
-                response = client.get("/api/v1/workflows/changelog/runs")
+            assert not hasattr(workflow_dbos, "list_workflow_statuses")
+            response = client.get("/api/v1/workflow/changelog/runs")
             assert response.status_code == 200
             payload = response.json()["data"]
             assert payload["workflow_id"] == "changelog"
-            assert payload["runs"] == [
-                {
-                    "run_id": run_id,
-                    "workflow_id": "changelog",
-                    "dedup_key": "manual",
-                    "status": "completed",
-                    "created_at": 1_700_000_000.0,
-                    "started_at": 1_700_000_000.0,
-                    "finished_at": 1_700_000_001.0,
-                    "error": None,
-                }
-            ]
+            assert len(payload["runs"]) == 1
+            run = payload["runs"][0]
+            assert run["run_id"] == run_id
+            assert run["workflow_id"] == "changelog"
+            assert run["dedup_key"] is None
+            assert run["status"] == "completed"
+            assert run["error"] is None
             assert "output" not in payload["runs"][0]
+            assert run["summary"] == {
+                "turn_id": turn_id,
+                "session_id": workflow_task_session_id(
+                    workflow_id="changelog",
+                    task_id="scan-codebase-and-append-changelog",
+                    run_id=run_id,
+                ),
+                "task_id": "scan-codebase-and-append-changelog",
+                "agent_id": "changelog-agent",
+                "user_message": "summarize run",
+                "agent_response": '{"summary":"done"}',
+            }
 
 
-def test_workflow_runs_endpoint_forwards_filters() -> None:
+def test_workflow_runs_endpoint_returns_empty_for_non_completed_status() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            calls: list[dict[str, Any]] = []
+            _save_workflow_turn(client, run_id="mw:h_static:changelog:abc")
 
-            async def list_workflow_statuses(**kwargs):
-                calls.append(kwargs)
-                return []
-
-            with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
-                response = client.get(
-                    "/api/v1/workflows/changelog/runs",
-                    params={
-                        "status": "failed",
-                        "start_time": "2026-05-01T00:00:00Z",
-                        "end_time": "2026-05-20T00:00:00Z",
-                        "limit": 250,
-                        "offset": 7,
-                        "sort_desc": "false",
-                    },
-                )
+            assert not hasattr(workflow_dbos, "list_workflow_statuses")
+            response = client.get(
+                "/api/v1/workflow/changelog/runs",
+                params={
+                    "status": "failed",
+                },
+            )
             assert response.status_code == 200
-            host_id = client.app.state.runtime_state.host.host_id
-            assert calls == [
-                {
-                    "host_id": host_id,
-                    "workflow_id": "changelog",
-                    "status": ["ERROR", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
-                    "start_time": "2026-05-01T00:00:00Z",
-                    "end_time": "2026-05-20T00:00:00Z",
-                    "limit": 200,
-                    "offset": 7,
-                    "sort_desc": False,
-                }
-            ]
+            assert response.json()["data"]["runs"] == []
 
 
 def test_workflow_runs_endpoint_respects_api_auth() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, api_key="secret", workflow_enabled=True) as client:
-            unauthorized = client.get("/api/v1/workflows/changelog/runs")
+            unauthorized = client.get("/api/v1/workflow/changelog/runs")
             assert unauthorized.status_code == 401
 
-            async def list_workflow_statuses(**_kwargs):
-                return []
-
-            with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
-                authorized = client.get(
-                    "/api/v1/workflows/changelog/runs",
-                    headers={"x-api-key": "secret"},
-                )
+            assert not hasattr(workflow_dbos, "list_workflow_statuses")
+            authorized = client.get(
+                "/api/v1/workflow/changelog/runs",
+                headers={"x-api-key": "secret"},
+            )
             assert authorized.status_code == 200
             assert authorized.json()["data"]["runs"] == []
 
@@ -875,13 +882,14 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
 
             runtime.runtime_store.list_events = list_events
 
-            async def get_workflow_status(_run_id):
-                return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
-
-            with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            with patch.object(
+                workflow_dbos,
+                "get_workflow_status",
+                side_effect=AssertionError("DBOS status must not be used"),
+            ):
                 with client.stream(
                     "GET",
-                    f"/api/v1/workflows/changelog/runs/{run_id}/events",
+                    f"/api/v1/workflow/changelog/runs/{run_id}/events",
                 ) as stream:
                     assert stream.status_code == 200
                     assert "text/event-stream" in stream.headers["content-type"]
@@ -889,7 +897,6 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
 
             names = [event["event"] for event in events]
             assert names == [
-                "workflow.status",
                 "workflow.task.started",
                 "request.accepted",
                 "agent.trace",
@@ -908,7 +915,7 @@ def test_workflow_run_events_returns_not_found_for_unknown_run() -> None:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
             response = client.get(
-                "/api/v1/workflows/changelog/runs/mw:wrong:changelog:abc/events"
+                "/api/v1/workflow/changelog/runs/mw:wrong:changelog:abc/events"
             )
             assert response.status_code == 404
             assert response.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
@@ -920,23 +927,47 @@ def test_workflow_run_events_respects_api_auth() -> None:
         with _build_test_client(root, api_key="secret", workflow_enabled=True) as client:
             host = client.app.state.runtime_state.host
             run_id = f"mw:{host.host_id}:changelog:abc"
-            unauthorized = client.get(f"/api/v1/workflows/changelog/runs/{run_id}/events")
+            unauthorized = client.get(f"/api/v1/workflow/changelog/runs/{run_id}/events")
             assert unauthorized.status_code == 401
 
             runtime = host.get_agent("changelog-agent")
 
-            async def list_events(_app_id, **_kwargs):
-                return []
+            async def list_events(
+                app_id: str,
+                *,
+                session_id: str | None = None,
+                trace_id: str | None = None,
+                after_event_id: int = 0,
+                limit: int | None = None,
+            ):
+                del trace_id, limit
+                events = [
+                    RuntimeEvent(
+                        event_id=1,
+                        request_id="req-1",
+                        app_id="changelog-agent",
+                        agent_id="changelog-agent",
+                        session_id=session_id,
+                        event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                        payload={"request_id": "req-1", "response": {"text": "{}"}},
+                    )
+                ]
+                return [
+                    event
+                    for event in events
+                    if event.app_id == app_id and event.event_id > after_event_id
+                ]
 
             runtime.runtime_store.list_events = list_events
 
-            async def get_workflow_status(_run_id):
-                return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
-
-            with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            with patch.object(
+                workflow_dbos,
+                "get_workflow_status",
+                side_effect=AssertionError("DBOS status must not be used"),
+            ):
                 with client.stream(
                     "GET",
-                    f"/api/v1/workflows/changelog/runs/{run_id}/events",
+                    f"/api/v1/workflow/changelog/runs/{run_id}/events",
                     headers={"Authorization": "Bearer secret"},
                 ) as stream:
                     assert stream.status_code == 200

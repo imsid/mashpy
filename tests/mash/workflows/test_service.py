@@ -20,7 +20,10 @@ from mash.workflows import (
     WorkflowSpec,
 )
 from mash.workflows import dbos as workflow_dbos
-from mash.workflows.service import workflow_task_session_id
+from mash.workflows.service import (
+    parse_workflow_task_session_id,
+    workflow_task_session_id,
+)
 
 
 def _task(task_id: str, agent_id: str) -> TaskSpec:
@@ -125,8 +128,62 @@ class _FakeRuntimeStore:
         ]
 
 
+class _FakeMemoryStore:
+    def __init__(self, turns: list[dict[str, Any]]) -> None:
+        self.turns = list(turns)
+        self.calls: list[dict[str, Any]] = []
+
+    async def list_workflow_turns(
+        self,
+        app_id: str,
+        session_prefix: str,
+        *,
+        start_time: float | None = None,
+        end_time: float | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        sort_desc: bool = True,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            {
+                "app_id": app_id,
+                "session_prefix": session_prefix,
+                "start_time": start_time,
+                "end_time": end_time,
+                "limit": limit,
+                "offset": offset,
+                "sort_desc": sort_desc,
+            }
+        )
+        rows = [
+            turn
+            for turn in self.turns
+            if turn["session_id"].startswith(session_prefix)
+            and turn.get("app_id", app_id) == app_id
+        ]
+        if start_time is not None:
+            rows = [turn for turn in rows if float(turn["created_at"]) >= start_time]
+        if end_time is not None:
+            rows = [turn for turn in rows if float(turn["created_at"]) <= end_time]
+        rows = sorted(
+            rows,
+            key=lambda turn: (float(turn["created_at"]), str(turn["turn_id"])),
+            reverse=sort_desc,
+        )
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        return [dict(row) for row in rows]
+
+
 class _FakeRuntime:
-    def __init__(self, runtime_store: _FakeRuntimeStore) -> None:
+    def __init__(
+        self,
+        runtime_store: _FakeRuntimeStore | None = None,
+        memory_store: _FakeMemoryStore | None = None,
+    ) -> None:
+        self.memory_store = memory_store or _FakeMemoryStore([])
         self.runtime_store = runtime_store
 
 
@@ -216,7 +273,73 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_list_runs_uses_dbos_prefix_filters_and_maps_statuses(self) -> None:
+    async def test_list_runs_uses_memory_turns_and_maps_summaries(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        run_id = "mw:h_TI1UUyBX5w8Q:wf:bHfMwMfMsPDPHI60"
+        session_id = workflow_task_session_id(
+            workflow_id="wf",
+            task_id="task-1",
+            run_id=run_id,
+        )
+        memory_store = _FakeMemoryStore(
+            [
+                {
+                    "turn_id": "turn-1",
+                    "session_id": session_id,
+                    "app_id": "worker",
+                    "user_message": "run input",
+                    "agent_response": '{"ok":true}',
+                    "metadata": {},
+                    "created_at": 1_700_000_000.0,
+                }
+            ]
+        )
+        service = WorkflowService(
+            registry,
+            _FakeHost(
+                registry,
+                {},
+                agents={"worker": _FakeRuntime(memory_store=memory_store)},
+            ),
+            host_id="host-1",
+        )
+
+        self.assertFalse(hasattr(workflow_dbos, "list_workflow_statuses"))
+        runs = await service.list_runs("wf")
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].run_id, run_id)
+        self.assertEqual(runs[0].workflow_id, "wf")
+        self.assertIsNone(runs[0].dedup_key)
+        self.assertEqual(runs[0].status, "completed")
+        self.assertEqual(runs[0].summary["turn_id"], "turn-1")
+        self.assertEqual(runs[0].summary["session_id"], session_id)
+        self.assertEqual(runs[0].summary["task_id"], "task-1")
+        self.assertEqual(runs[0].summary["agent_id"], "worker")
+        self.assertEqual(runs[0].summary["user_message"], "run input")
+        self.assertEqual(runs[0].summary["agent_response"], '{"ok":true}')
+        self.assertEqual(
+            memory_store.calls,
+            [
+                {
+                    "app_id": "worker",
+                    "session_prefix": "workflow:wf:task:task-1:run:",
+                    "start_time": None,
+                    "end_time": None,
+                    "limit": None,
+                    "offset": 0,
+                    "sort_desc": True,
+                }
+            ],
+        )
+
+    async def test_list_runs_returns_empty_for_non_completed_status(self) -> None:
         registry = WorkflowRegistry()
         registry.register(
             WorkflowSpec(
@@ -225,50 +348,27 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
-        calls: list[dict[str, Any]] = []
 
-        async def list_workflow_statuses(**kwargs):
-            calls.append(kwargs)
-            return [
-                _FakeWorkflowStatus(
-                    workflow_id="mw:host-1:wf:abc",
-                    status="SUCCESS",
-                    deduplication_id="wf:manual",
-                )
-            ]
+        runs = await service.list_runs("wf", status="failed")
 
-        with patch.object(workflow_dbos, "list_workflow_statuses", list_workflow_statuses):
-            runs = await service.list_runs(
-                "wf",
-                status="queued",
-                start_time="2026-05-01T00:00:00Z",
-                end_time="2026-05-20T00:00:00Z",
-                limit=25,
-                offset=5,
-                sort_desc=False,
-            )
+        self.assertEqual(runs, [])
+
+    def test_parse_workflow_task_session_id_preserves_colon_run_id(self) -> None:
+        session_id = (
+            "workflow:masher-trace-digest:task:digest-traces:run:"
+            "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60"
+        )
+
+        parsed = parse_workflow_task_session_id(session_id)
 
         self.assertEqual(
-            calls,
-            [
-                {
-                    "host_id": "host-1",
-                    "workflow_id": "wf",
-                    "status": ["PENDING", "ENQUEUED", "DELAYED"],
-                    "start_time": "2026-05-01T00:00:00Z",
-                    "end_time": "2026-05-20T00:00:00Z",
-                    "limit": 25,
-                    "offset": 5,
-                    "sort_desc": False,
-                }
-            ],
+            parsed,
+            (
+                "masher-trace-digest",
+                "digest-traces",
+                "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60",
+            ),
         )
-        self.assertEqual(len(runs), 1)
-        self.assertEqual(runs[0].run_id, "mw:host-1:wf:abc")
-        self.assertEqual(runs[0].workflow_id, "wf")
-        self.assertEqual(runs[0].dedup_key, "manual")
-        self.assertEqual(runs[0].status, "completed")
-        self.assertIsNone(runs[0].output)
 
     async def test_list_runs_unknown_workflow_raises_not_found(self) -> None:
         registry = WorkflowRegistry()
@@ -276,50 +376,6 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(WorkflowNotFoundError):
             await service.list_runs("missing")
-
-    async def test_dbos_list_workflow_statuses_uses_lightweight_listing(self) -> None:
-        calls: list[dict[str, Any]] = []
-
-        class _ListDBOS:
-            @staticmethod
-            async def list_workflows_async(**kwargs):
-                calls.append(kwargs)
-                return [_FakeWorkflowStatus(workflow_id="mw:host-1:wf:abc", status="SUCCESS")]
-
-        with patch.object(
-            workflow_dbos,
-            "_load_dbos_api",
-            return_value=(_ListDBOS, None, None, None, None),
-        ):
-            statuses = await workflow_dbos.list_workflow_statuses(
-                host_id="host-1",
-                workflow_id="wf",
-                status="SUCCESS",
-                start_time="2026-05-01T00:00:00Z",
-                end_time="2026-05-20T00:00:00Z",
-                limit=25,
-                offset=5,
-                sort_desc=False,
-            )
-
-        self.assertEqual(len(statuses), 1)
-        self.assertEqual(
-            calls,
-            [
-                {
-                    "name": "mash.workflow.execute",
-                    "workflow_id_prefix": "mw:host-1:wf:",
-                    "status": "SUCCESS",
-                    "start_time": "2026-05-01T00:00:00Z",
-                    "end_time": "2026-05-20T00:00:00Z",
-                    "limit": 25,
-                    "offset": 5,
-                    "sort_desc": False,
-                    "load_input": False,
-                    "load_output": False,
-                }
-            ],
-        )
 
     async def test_run_workflow_starts_dbos_workflow_and_returns_status(self) -> None:
         registry = WorkflowRegistry()
@@ -485,38 +541,29 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
             host_id="host-1",
         )
-        statuses = [
-            _FakeWorkflowStatus(workflow_id=run_id, status="RUNNING"),
-            _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS"),
-        ]
-
-        async def get_workflow_status(_run_id):
-            return statuses.pop(0) if statuses else _FakeWorkflowStatus(
-                workflow_id=run_id,
-                status="SUCCESS",
-            )
-
-        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+        with patch.object(
+            workflow_dbos,
+            "get_workflow_status",
+            side_effect=AssertionError("DBOS status must not be used"),
+        ):
             stream = await service.stream_run_events("wf", run_id, poll_interval=0)
             events = [event async for event in stream]
 
         self.assertEqual(
             [event.event for event in events],
             [
-                "workflow.status",
                 "workflow.task.started",
                 "request.accepted",
                 "request.completed",
                 "workflow.task.completed",
-                "workflow.status",
             ],
         )
         self.assertEqual(store.calls[0]["session_id"], session_id)
         self.assertEqual(store.calls[0]["after_event_id"], 0)
-        self.assertEqual(store.calls[1]["after_event_id"], 2)
-        self.assertEqual(events[2].data["workflow_id"], "wf")
-        self.assertEqual(events[2].data["task_id"], "task-1")
-        self.assertEqual(events[2].data["task_agent_id"], "worker")
+        self.assertEqual(len(store.calls), 1)
+        self.assertEqual(events[1].data["workflow_id"], "wf")
+        self.assertEqual(events[1].data["task_id"], "task-1")
+        self.assertEqual(events[1].data["task_agent_id"], "worker")
 
     async def test_stream_run_events_flushes_task_events_for_terminal_run(self) -> None:
         registry = WorkflowRegistry()
@@ -551,10 +598,11 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             host_id="host-1",
         )
 
-        async def get_workflow_status(_run_id):
-            return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
-
-        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+        with patch.object(
+            workflow_dbos,
+            "get_workflow_status",
+            side_effect=AssertionError("DBOS status must not be used"),
+        ):
             stream = await service.stream_run_events("wf", run_id, poll_interval=0)
             events = [event async for event in stream]
 

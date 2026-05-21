@@ -152,18 +152,23 @@ latest = await workflow_service.get_run("changelog", run.run_id)
 
 When the host is wrapped by `mash.api`, workflows are exposed through:
 
-- `GET /api/v1/workflows`
-- `POST /api/v1/workflows/{workflow_id}/run`
-- `GET /api/v1/workflows/{workflow_id}/runs`
-- `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
-- `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/events`
+- `GET /api/v1/workflow`
+- `POST /api/v1/workflow/{workflow_id}/run`
+- `GET /api/v1/workflow/{workflow_id}/runs`
+- `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
+- `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`
 
-The run list endpoint returns lightweight run summaries and supports DBOS-native
-filters: `status`, `start_time`, `end_time`, `limit`, `offset`, and `sort_desc`.
-Call the run detail endpoint with a returned `run_id` to fetch run output.
+The run list endpoint returns lightweight completed-run summaries from workflow
+task turns persisted in agent memory. Each summary includes the task `session_id`,
+`turn_id`, `user_message`, and `agent_response`. The endpoint supports
+`status=completed`, `start_time`, `end_time`, `limit`, `offset`, and `sort_desc`;
+non-completed status filters return an empty list until a durable non-completed
+run source is added. Call the run detail endpoint with a returned `run_id` to
+fetch DBOS status and output.
 
-The events endpoint streams workflow status, task lifecycle events, and each
-task agent's normal request events over SSE.
+The events endpoint replays task lifecycle events and each task agent's normal
+runtime events over SSE from runtime event logs; it does not query DBOS for live
+workflow status.
 
 ## CLI
 

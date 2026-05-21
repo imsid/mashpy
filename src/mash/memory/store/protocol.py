@@ -76,6 +76,20 @@ class MemoryStore(Protocol):
         """Get conversation turns for a session."""
         ...
 
+    async def list_workflow_turns(
+        self,
+        app_id: str,
+        session_prefix: str,
+        *,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        sort_desc: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """List workflow task turns for one application and session prefix."""
+        ...
+
     async def get_session_signals(
         self,
         session_id: str,

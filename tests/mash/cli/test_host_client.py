@@ -109,7 +109,7 @@ class MashHostClientTests(unittest.TestCase):
 
         self.assertEqual(workflows[0]["workflow_id"], "changelog")
         self.assertEqual(session.calls[-1]["method"], "GET")
-        self.assertEqual(session.calls[-1]["url"], "http://localhost:8000/api/v1/workflows")
+        self.assertEqual(session.calls[-1]["url"], "http://localhost:8000/api/v1/workflow")
 
     def test_run_workflow_posts_optional_dedup_key(self) -> None:
         client = MashHostClient("http://localhost:8000")
@@ -131,7 +131,7 @@ class MashHostClientTests(unittest.TestCase):
 
         self.assertEqual(run["run_id"], "run-1")
         self.assertEqual(session.calls[-1]["method"], "POST")
-        self.assertIn("/api/v1/workflows/wf%2Fone/run", str(session.calls[-1]["url"]))
+        self.assertIn("/api/v1/workflow/wf%2Fone/run", str(session.calls[-1]["url"]))
         self.assertEqual(session.calls[-1]["json"], {"dedup_key": "manual"})
 
     def test_run_workflow_omits_missing_dedup_key(self) -> None:
@@ -173,7 +173,7 @@ class MashHostClientTests(unittest.TestCase):
         self.assertEqual(run["status"], "completed")
         self.assertEqual(session.calls[-1]["method"], "GET")
         self.assertIn(
-            "/api/v1/workflows/wf/runs/run%2F1",
+            "/api/v1/workflow/wf/runs/run%2F1",
             str(session.calls[-1]["url"]),
         )
 
@@ -189,7 +189,7 @@ class MashHostClientTests(unittest.TestCase):
         self.assertTrue(session.calls[-1]["stream"])
         self.assertEqual(session.calls[-1]["timeout"], DEFAULT_STREAM_TIMEOUT)
         self.assertIn(
-            "/api/v1/workflows/wf%2Fone/runs/run%2F1/events",
+            "/api/v1/workflow/wf%2Fone/runs/run%2F1/events",
             str(session.calls[-1]["url"]),
         )
 

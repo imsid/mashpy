@@ -187,6 +187,43 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         assert matching_b is not None
         self.assertEqual([turn["turn_id"] for turn in matching_b], [turn_b])
 
+    async def test_list_workflow_turns_filters_by_app_and_session_prefix(self) -> None:
+        run_session = (
+            "workflow:masher-trace-digest:task:digest-traces:run:"
+            "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60"
+        )
+        turn_id = await self._save_turn(
+            session_id=run_session,
+            app_id="masher",
+            user_message="digest input",
+            agent_response="digest output",
+        )
+        await self._save_turn(
+            session_id="workflow:other:task:digest-traces:run:mw:h_1:other:r1",
+            app_id="masher",
+            user_message="other workflow",
+            agent_response="ignore",
+        )
+        await self._save_turn(
+            session_id=run_session,
+            app_id="other-app",
+            user_message="other app",
+            agent_response="ignore",
+        )
+
+        turns = await self.store.list_workflow_turns(
+            app_id="masher",
+            session_prefix="workflow:masher-trace-digest:task:digest-traces:run:",
+            limit=10,
+            sort_desc=False,
+        )
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["turn_id"], turn_id)
+        self.assertEqual(turns[0]["session_id"], run_session)
+        self.assertEqual(turns[0]["user_message"], "digest input")
+        self.assertEqual(turns[0]["agent_response"], "digest output")
+
 
 if __name__ == "__main__":
     unittest.main()

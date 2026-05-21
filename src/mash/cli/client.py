@@ -194,7 +194,7 @@ class MashHostClient:
         return response.json()["data"]
 
     def list_workflows(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/api/v1/workflows")
+        response = self._request("GET", "/api/v1/workflow")
         workflows = response.json()["data"].get("workflows")
         if not isinstance(workflows, list):
             return []
@@ -214,7 +214,7 @@ class MashHostClient:
             body["input"] = workflow_input
         response = self._request(
             "POST",
-            f"/api/v1/workflows/{quote(workflow_id, safe='')}/run",
+            f"/api/v1/workflow/{quote(workflow_id, safe='')}/run",
             json_body=body,
         )
         data = response.json()["data"]
@@ -223,7 +223,7 @@ class MashHostClient:
     def get_workflow_run(self, workflow_id: str, run_id: str) -> dict[str, Any]:
         response = self._request(
             "GET",
-            f"/api/v1/workflows/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}",
+            f"/api/v1/workflow/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}",
         )
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
@@ -233,7 +233,7 @@ class MashHostClient:
     ) -> Iterator[dict[str, Any]]:
         with self._request(
             "GET",
-            f"/api/v1/workflows/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}/events",
+            f"/api/v1/workflow/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}/events",
             stream=True,
         ) as response:
             yield from self._iter_sse_events(response)

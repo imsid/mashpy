@@ -24,4 +24,4 @@ Code-defined host-level workflows that orchestrate existing Mash agents.
 ## Minimal Validation
 - `python -m compileall src/mash/workflows`
 - Verify one successful single-task workflow, one multi-task workflow, one duplicate-dedup rejection, and one invalid-JSON failure path.
-- Verify API behavior for `GET /workflows`, successful `POST /workflows/{id}/run`, `GET /workflows/{id}/runs/{run_id}`, and not-found/conflict error paths.
+- Verify API behavior for `GET /workflow`, successful `POST /workflow/{id}/run`, `GET /workflow/{id}/runs/{run_id}`, and not-found/conflict error paths.
