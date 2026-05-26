@@ -77,6 +77,19 @@ class OpenAIProvider(BaseLLMProvider):
         if tools:
             params["tools"] = tools
 
+        structured_output = request.provider_options.get("structured_output")
+        if isinstance(structured_output, dict):
+            params["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": self._structured_output_name(structured_output),
+                    "schema": structured_output,
+                    "strict": bool(
+                        request.provider_options.get("structured_output_strict", True)
+                    ),
+                }
+            }
+
         if request.use_prompt_caching:
             params["prompt_cache_key"] = self._openai_prompt_cache_key(request)
             params["prompt_cache_retention"] = request.provider_options.get(
@@ -85,7 +98,13 @@ class OpenAIProvider(BaseLLMProvider):
             )
 
         for key, value in request.provider_options.items():
-            if key in {"betas", "prompt_cache_retention", "prompt_cache_key"}:
+            if key in {
+                "betas",
+                "prompt_cache_retention",
+                "prompt_cache_key",
+                "structured_output",
+                "structured_output_strict",
+            }:
                 continue
             params[key] = value
 
@@ -123,6 +142,11 @@ class OpenAIProvider(BaseLLMProvider):
     def _supports_temperature(self) -> bool:
         normalized = self.model.strip().lower()
         return not normalized.startswith("gpt-5")
+
+    def _structured_output_name(self, schema: Dict[str, Any]) -> str:
+        name = str(schema.get("title") or "StructuredOutput").strip()
+        normalized = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name)
+        return normalized or "StructuredOutput"
 
     def _openai_instructions(self, system: Any) -> Optional[str]:
         if not system:

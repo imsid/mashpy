@@ -39,8 +39,19 @@ class SkillTool:
                 f"Skill '{skill_name}' not found. Available skills: {available}"
             )
 
+        if skill.content is not None:
+            payload = {
+                "base_path": skill.location or "",
+                "skill_path": "",
+                "skill_name": skill.name,
+                "skill_md": skill.content,
+            }
+            return ToolResult.success(json.dumps(payload, ensure_ascii=True))
+
         if not skill.location:
-            return ToolResult.error(f"Skill '{skill_name}' has no location configured.")
+            return ToolResult.error(
+                f"Skill '{skill_name}' has no content or location configured."
+            )
 
         skill_dir = Path(skill.location)
         skill_path = skill_dir / "SKILL.md"

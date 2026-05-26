@@ -14,7 +14,9 @@ from unittest.mock import patch
 
 from mash.agents import MasherAgentSpec
 from mash.agents.masher import (
+    MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
+    MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
 )
 from mash.agents.masher.tool import (
@@ -275,12 +277,9 @@ class MasherTests(unittest.TestCase):
         self.assertIn("name: trace-digest-workflow", trace_text)
         self.assertIn("name: online-eval-curation", online_eval_text)
         for skill_text in (trace_text, online_eval_text):
-            self.assertIn("Return the tool result text exactly and nothing else.", skill_text)
-            self.assertIn("Do not use a code fence.", skill_text)
-            self.assertIn(
-                "The final assistant response must be exactly the tool result content string.",
-                skill_text,
-            )
+            self.assertIn("Use the tool result as the workflow outcome.", skill_text)
+            self.assertNotIn("Do not use a code fence.", skill_text)
+            self.assertNotIn("raw JSON", skill_text)
 
     def test_trace_digest_workflow_trace_mode_returns_digest_without_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -573,11 +572,23 @@ class MasherTests(unittest.TestCase):
                     self.assertNotIn("masher", described)
                     self.assertNotIn("masher", host.list_agents())
                     workflows = {
-                        workflow.workflow_id
+                        workflow.workflow_id: workflow
                         for workflow in host.get_workflow_registry().list()
                     }
                     self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
                     self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
+                    self.assertEqual(
+                        workflows[
+                            MASHER_TRACE_DIGEST_WORKFLOW_ID
+                        ].tasks[0].structured_output,
+                        MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
+                    )
+                    self.assertEqual(
+                        workflows[
+                            MASHER_ONLINE_EVAL_WORKFLOW_ID
+                        ].tasks[0].structured_output,
+                        MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
+                    )
                 finally:
                     asyncio.run(host.close())
 

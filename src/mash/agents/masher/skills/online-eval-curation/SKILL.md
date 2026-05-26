@@ -16,14 +16,7 @@ Workflow contract:
 1. Parse the request JSON.
 2. Read `workflow_input` and `task_state` exactly as provided.
 3. Call `run_online_eval_curation_workflow` with the exact `workflow_input` and `task_state`.
-4. Return the tool result text exactly and nothing else.
-
-Final response constraints:
-- Do not summarize the tool result.
-- Do not wrap the tool result in Markdown.
-- Do not use a code fence.
-- Do not parse, pretty-print, reformat, validate, repair, or rewrite the tool result.
-- The final assistant response must be exactly the tool result content string.
+4. Use the tool result as the workflow outcome.
 
 Required output shape:
 - `schema_version`
@@ -46,4 +39,4 @@ Rules:
 - Keep records machine-friendly and compact.
 - Use raw event data for metrics whenever possible.
 - Do not include trace digest narrative fields such as `summary`, `metrics`, or `notable_events`.
-- If the tool returns an error, return a JSON object with `schema_version`, status `"failed"`, and `error`.
+- If the tool returns an error, return an object with `schema_version`, status `"failed"`, and `error`.

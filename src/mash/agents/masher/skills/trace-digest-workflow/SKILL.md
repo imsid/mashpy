@@ -16,14 +16,7 @@ Workflow contract:
 1. Parse the request JSON.
 2. Read `workflow_input` and `task_state` exactly as provided.
 3. Call `run_trace_digest_workflow` with the exact `workflow_input` and `task_state`.
-4. Return the tool result text exactly and nothing else.
-
-Final response constraints:
-- Do not summarize the tool result.
-- Do not wrap the tool result in Markdown.
-- Do not use a code fence.
-- Do not parse, pretty-print, reformat, validate, repair, or rewrite the tool result.
-- The final assistant response must be exactly the tool result content string.
+4. Use the tool result as the workflow outcome.
 
 Input modes:
 - `trace`: requires `target_agent_id`, `session_id`, and `trace_id`; returns one digest and does not write the JSONL artifact.
@@ -32,4 +25,4 @@ Input modes:
 Rules:
 - Treat `task_state` only as checkpoint data.
 - Do not produce online eval dataset rows from this workflow.
-- If the tool returns an error, return a JSON object with `schema_version`, status `"failed"`, and `error`.
+- If the tool returns an error, return an object with `schema_version`, status `"failed"`, and `error`.

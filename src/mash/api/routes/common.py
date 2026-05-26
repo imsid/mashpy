@@ -49,11 +49,38 @@ class AppRuntimeState:
 class SubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    structured_output: Optional[dict[str, Any]] = None
 
 
 class CompactSessionRequest(BaseModel):
     reason: str = "manual"
     session_total_tokens_reset: int = 0
+
+
+class RegisterAgentSkillRequest(BaseModel):
+    type: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    location: Optional[str] = None
+    content: Optional[str] = None
+
+
+class DynamicTaskSpecRequest(BaseModel):
+    task_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    structured_output: Optional[dict[str, Any]] = None
+
+
+class WorkflowTaskMessageRequest(BaseModel):
+    skill_name: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+
+
+class RegisterAgentWorkflowRequest(BaseModel):
+    workflow_id: str = Field(min_length=1)
+    tasks: list[DynamicTaskSpecRequest] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    task_message: WorkflowTaskMessageRequest
 
 
 class RunWorkflowRequest(BaseModel):

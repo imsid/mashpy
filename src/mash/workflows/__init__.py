@@ -8,7 +8,7 @@ from .service import (
     WorkflowService,
     WorkflowStreamEvent,
 )
-from .spec import TaskSpec, WorkflowSpec
+from .spec import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
 
 __all__ = [
     "DuplicateWorkflowRunError",
@@ -19,4 +19,5 @@ __all__ = [
     "WorkflowService",
     "WorkflowStreamEvent",
     "WorkflowSpec",
+    "WorkflowTaskMessageSpec",
 ]

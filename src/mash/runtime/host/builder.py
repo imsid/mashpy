@@ -111,10 +111,15 @@ class HostBuilder:
                     raise ValueError("workflow task agent id is required")
                 existing = host.get_registered_agent_spec(agent_id)
                 if existing is None:
+                    if task.agent_spec is None:
+                        raise ValueError(
+                            f"workflow task agent '{agent_id}' is not registered"
+                        )
                     host.register_workflow_agent(task.agent_spec, agent_id=agent_id)
-                elif existing is not task.agent_spec:
+                elif task.agent_spec is not None and existing is not task.agent_spec:
                     raise ValueError(
-                        f"workflow task agent '{agent_id}' is already registered with a different spec"
+                        f"workflow task agent '{agent_id}' is already registered "
+                        "with a different spec"
                     )
             host.register_workflow(workflow)
         return host

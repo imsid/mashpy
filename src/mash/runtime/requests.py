@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
 from .errors import classify_error
 from .events import RuntimeEvent, RuntimeEventType
+from .structured_output import serialize_structured_output
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -19,12 +20,17 @@ async def submit_request(
     *,
     message: str,
     session_id: str,
+    structured_output: Any = None,
 ) -> dict[str, Any]:
+    normalized_structured_output = serialize_structured_output(structured_output)
+    request_metadata = None
+    if normalized_structured_output is not None:
+        request_metadata = {"structured_output_request": normalized_structured_output}
     return await _submit_request(
         self,
         message=message,
         session_id=session_id,
-        request_metadata=None,
+        request_metadata=request_metadata,
     )
 
 

@@ -89,6 +89,19 @@ class MashRemoteShell:
             return
         self.chain_renderer.on_runtime_event(event, trace_label=trace_label)
 
+    def render_runtime_trace_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        trace_label: str | None = None,
+        agent_id: str | None = None,
+    ) -> None:
+        self._render_runtime_trace_payload(
+            payload,
+            trace_label=trace_label,
+            agent_id=agent_id,
+        )
+
     def _render_trace_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
         if event_type.startswith("subagent."):
@@ -112,6 +125,17 @@ class MashRemoteShell:
         if event is None:
             return ""
         return runtime_event_response_preview(event)
+
+    @staticmethod
+    def extract_streamed_response_text(
+        payload: dict[str, Any],
+        *,
+        agent_id: str,
+    ) -> str:
+        return MashRemoteShell._extract_streamed_response_text(
+            payload,
+            agent_id=agent_id,
+        )
 
     def _render_subagent_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")

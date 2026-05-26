@@ -199,11 +199,13 @@ class AgentRuntime:
         *,
         message: str,
         session_id: str,
+        structured_output: Any = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
             message=message,
             session_id=session_id,
+            structured_output=structured_output,
         )
 
     async def submit_subagent_request(

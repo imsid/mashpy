@@ -23,3 +23,18 @@
 ## Host Composition
 
 `pilot/spec.py` builds the host with one primary agent and the five module copilots above, then enables Masher's workflow-only trace digest worker.
+
+## Pilot REPL
+
+Start the Pilot host with mash
+`mash host serve --host-app pilot.spec:build_host --host 127.0.0.1 --port 8001`. Connect to it with
+the Pilot remote shell to get Pilot-only slash commands:
+
+```bash
+pilot repl
+```
+
+Pilot registers `/changelog [N]` on top of the standard Mash REPL commands. On
+first use, the command dynamically publishes a changelog skill and workflow
+against the primary `pilot` agent, then runs it with `commit_count=N` (default
+`5`).

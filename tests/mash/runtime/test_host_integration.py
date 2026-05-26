@@ -14,12 +14,13 @@ from mash.runtime.client import AgentClientError
 from mash.runtime.engine.dbos import register_runtime, require_runtime, unregister_runtime
 from mash.runtime.engine.workflow import execute_request_workflow
 from mash.runtime import HostBuilder
+from mash.skills import Skill
 from mash.testing.runtime_fixtures import (
     build_delegating_spec,
     build_spec,
     metadata,
 )
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
 from mash.workflows import dbos as workflow_dbos
 from mash.tools.subagent import derive_subagent_session_id
 
@@ -166,6 +167,106 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     ["changelog"],
                 )
 
+    def test_host_registers_agent_workflow_bound_to_existing_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                host = (
+                    HostBuilder()
+                    .primary(build_spec(agent_id="primary", response_text="primary-ok"))
+                    .subagent(
+                        build_spec(agent_id="data", response_text='{"ok":true}'),
+                        metadata=metadata(),
+                    )
+                    .build()
+                )
+                workflow = WorkflowSpec(
+                    workflow_id="experiment-readout",
+                    tasks=[TaskSpec(task_id="analyze-experiment", agent_id="data")],
+                    metadata={"source": "crew", "version": 1},
+                    task_message=WorkflowTaskMessageSpec(
+                        skill_name="workflow:experiment-readout:v1",
+                        instruction="Load the workflow skill and execute the task.",
+                    ),
+                )
+
+                host.register_agent_workflow("data", workflow)
+                host.register_agent_workflow("data", workflow)
+
+                described = {item["agent_id"]: item for item in host.describe_agents()}
+                self.assertEqual(sorted(described.keys()), ["data", "primary"])
+                self.assertIs(
+                    host.get_workflow_registry().get("experiment-readout"),
+                    workflow,
+                )
+
+    def test_host_rejects_dynamic_workflow_with_unknown_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                host = HostBuilder().primary(
+                    build_spec(agent_id="primary", response_text="primary-ok")
+                ).build()
+
+                with self.assertRaises(ValueError):
+                    host.register_agent_workflow(
+                        "primary",
+                        WorkflowSpec(
+                            workflow_id="experiment-readout",
+                            tasks=[
+                                TaskSpec(
+                                    task_id="analyze-experiment",
+                                    agent_id="missing",
+                                )
+                            ],
+                            task_message=WorkflowTaskMessageSpec(
+                                skill_name="workflow:experiment-readout:v1",
+                                instruction="Load the workflow skill.",
+                            ),
+                        )
+                    )
+
+    def test_host_unregister_agent_workflow_is_idempotent(self) -> None:
+        host = HostBuilder().primary(
+            build_spec(agent_id="primary", response_text="primary-ok")
+        ).build()
+        workflow = WorkflowSpec(
+            workflow_id="wf",
+            tasks=[TaskSpec(task_id="task", agent_id="primary")],
+            task_message=WorkflowTaskMessageSpec(
+                skill_name="workflow:wf:v1",
+                instruction="Load the workflow skill.",
+            ),
+        )
+
+        host.register_agent_workflow("primary", workflow)
+        host.unregister_agent_workflow("primary", "wf")
+        host.unregister_agent_workflow("primary", "wf")
+
+        self.assertEqual(host.get_workflow_registry().list(), [])
+
+    def test_host_rejects_agent_workflow_unregister_from_wrong_agent(self) -> None:
+        host = (
+            HostBuilder()
+            .primary(build_spec(agent_id="primary", response_text="primary-ok"))
+            .subagent(
+                build_spec(agent_id="data", response_text='{"ok":true}'),
+                metadata=metadata(),
+            )
+            .build()
+        )
+        workflow = WorkflowSpec(
+            workflow_id="wf",
+            tasks=[TaskSpec(task_id="task", agent_id="data")],
+            task_message=WorkflowTaskMessageSpec(
+                skill_name="workflow:wf:v1",
+                instruction="Load the workflow skill.",
+            ),
+        )
+
+        host.register_agent_workflow("data", workflow)
+
+        with self.assertRaises(ValueError):
+            host.unregister_agent_workflow("primary", "wf")
+
     async def test_host_builder_registers_multiple_workflow_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
@@ -233,6 +334,72 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(signal_rows[-1]["turn_id"], result["turn_id"])
                     self.assertIn("unused_tools", signal_rows[-1]["signals"])
                     self.assertIn("unused_tool_tokens", signal_rows[-1]["signals"])
+                finally:
+                    await host.close()
+
+    async def test_dynamic_skill_registered_before_start_is_available_at_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                host = HostBuilder().primary(
+                    build_spec(agent_id="primary", response_text="primary-ok")
+                ).build()
+                host.register_agent_skill(
+                    "primary",
+                    Skill(
+                        type="dynamic",
+                        name="workflow:test:v1",
+                        description="Test workflow skill.",
+                        content="# Test workflow",
+                    ),
+                )
+                host.configure_runtime_database_url("postgresql://test/runtime")
+                await host.start()
+                try:
+                    runtime = host.get_agent("primary")
+                    self.assertIsNotNone(runtime.skills.get("workflow:test:v1"))
+                    self.assertIn("Skill", runtime.agent.tools)
+                finally:
+                    await host.close()
+
+    async def test_dynamic_skill_registered_after_start_updates_live_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                host = HostBuilder().primary(
+                    build_spec(agent_id="primary", response_text="primary-ok")
+                ).build()
+                host.configure_runtime_database_url("postgresql://test/runtime")
+                await host.start()
+                try:
+                    runtime = host.get_agent("primary")
+                    self.assertIsNone(runtime.skills.get("workflow:test:v1"))
+                    self.assertNotIn("Skill", runtime.agent.tools)
+
+                    host.register_agent_skill(
+                        "primary",
+                        Skill(
+                            type="dynamic",
+                            name="workflow:test:v1",
+                            description="Test workflow skill.",
+                            content="# Test workflow",
+                        ),
+                    )
+
+                    self.assertIsNotNone(runtime.skills.get("workflow:test:v1"))
+                    self.assertIn("Skill", runtime.agent.tools)
+                    turn_agent = runtime.build_turn_agent(
+                        session_id="s-1",
+                        trace_id="trace-1",
+                    )
+                    try:
+                        self.assertIsNotNone(turn_agent.skills.get("workflow:test:v1"))
+                        self.assertIn("Skill", turn_agent.tools)
+                    finally:
+                        await turn_agent.tools.shutdown()
+
+                    host.unregister_agent_skill("primary", "workflow:test:v1")
+
+                    self.assertIsNone(runtime.skills.get("workflow:test:v1"))
+                    self.assertNotIn("Skill", runtime.agent.tools)
                 finally:
                     await host.close()
 

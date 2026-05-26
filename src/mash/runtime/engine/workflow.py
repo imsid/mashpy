@@ -12,6 +12,7 @@ from .steps import (
     commit_request_step,
     complete_request,
     fail_request,
+    finalize_structured_output,
     load_request_context,
     persist_completed_turn,
     plan_request_step,
@@ -138,6 +139,20 @@ async def execute_request_workflow(
                 )
 
                 if bool(workflow_state.get("done")):
+                    structured_output_request = request_metadata.get(
+                        "structured_output_request"
+                    )
+                    if isinstance(structured_output_request, dict):
+                        workflow_state = await DBOS.run_step_async(
+                            {"name": "structured_output.finalize"},
+                            finalize_structured_output,
+                            agent_id,
+                            request_id,
+                            session_id,
+                            trace_id,
+                            workflow_state,
+                            structured_output_request,
+                        )
                     turn_payload = await DBOS.run_step_async(
                         {"name": "turn.persist"},
                         persist_completed_turn,

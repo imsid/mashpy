@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider
-from mash.runtime.spec import AgentSpec
 from mash.runtime.host.subagents import SubAgentMetadata
+from mash.runtime.spec import AgentSpec
 from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
@@ -29,6 +29,31 @@ MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
 MASHER_TRACE_DIGEST_TASK_ID = "digest-traces"
 MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
 MASHER_ONLINE_EVAL_TASK_ID = "curate-online-evals"
+
+MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT = {
+    "title": "MasherTraceDigestWorkflowOutput",
+    "type": "object",
+    "properties": {
+        "json_text": {
+            "type": "string",
+            "description": "A serialized JSON object string containing the full trace digest output.",
+        }
+    },
+    "required": ["json_text"],
+    "additionalProperties": False,
+}
+MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT = {
+    "title": "MasherOnlineEvalCurationWorkflowOutput",
+    "type": "object",
+    "properties": {
+        "json_text": {
+            "type": "string",
+            "description": "A serialized JSON object string containing the full trace digest output.",
+        }
+    },
+    "required": ["json_text"],
+    "additionalProperties": False,
+}
 
 _PROMPT = """You are Masher, Mash's built-in workflow-only worker.
 
@@ -55,7 +80,7 @@ Routing rules:
 - Call the standard Skill tool exactly once with the matched skill name before doing workflow work.
 - After the skill loads, follow only the loaded skill's workflow instructions.
 - Do not infer a skill from workflow_input, task_state, user wording, or partial id matches.
-- If no route matches, return a JSON error object and do not call workflow tools.
+- If no route matches, return an error object and do not call workflow tools.
 """
 
 
@@ -166,6 +191,7 @@ def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSp
                 TaskSpec(
                     task_id=MASHER_TRACE_DIGEST_TASK_ID,
                     agent_spec=masher_spec,
+                    structured_output=MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
                 )
             ],
         ),
@@ -175,6 +201,7 @@ def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSp
                 TaskSpec(
                     task_id=MASHER_ONLINE_EVAL_TASK_ID,
                     agent_spec=masher_spec,
+                    structured_output=MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
                 )
             ],
         ),
@@ -190,8 +217,10 @@ def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgent
 __all__ = [
     "MASHER_AGENT_ID",
     "MASHER_ONLINE_EVAL_TASK_ID",
+    "MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT",
     "MASHER_ONLINE_EVAL_WORKFLOW_ID",
     "MASHER_TRACE_DIGEST_TASK_ID",
+    "MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT",
     "MASHER_TRACE_DIGEST_WORKFLOW_ID",
     "MasherAgentSpec",
     "build_masher_workflow_specs",

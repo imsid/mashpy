@@ -170,11 +170,14 @@ class _FakeClient:
         }
 
     def stream_workflow_run(self, workflow_id: str, run_id: str):
-        del workflow_id, run_id
+        del run_id
+        task_id = "scan"
+        task_agent_id = "worker"
+        response_text = "{\"status\":\"ok\"}"
         yield {
             "event": "workflow.status",
             "data": {
-                "workflow_id": "changelog",
+                "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
                 "status": "running",
             },
@@ -182,19 +185,19 @@ class _FakeClient:
         yield {
             "event": "workflow.task.started",
             "data": {
-                "workflow_id": "changelog",
+                "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
-                "task_id": "scan",
-                "task_agent_id": "worker",
+                "task_id": task_id,
+                "task_agent_id": task_agent_id,
             },
         }
         yield {
             "event": "agent.trace",
             "data": {
-                "workflow_id": "changelog",
+                "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
-                "task_id": "scan",
-                "task_agent_id": "worker",
+                "task_id": task_id,
+                "task_agent_id": task_agent_id,
                 "event_type": "runtime.llm.think.completed",
                 "trace_id": "trace-wf-1",
                 "session_id": "workflow:changelog:task:scan:run:mw:host:changelog:abc",
@@ -203,7 +206,7 @@ class _FakeClient:
                 "payload": {
                     "duration_ms": 9,
                     "action_type": "response",
-                    "assistant_text": "{\"status\":\"ok\"}",
+                    "assistant_text": response_text,
                     "tool_calls": [],
                     "token_usage": {"input": 2, "output": 1},
                 },
@@ -212,26 +215,26 @@ class _FakeClient:
         yield {
             "event": "request.completed",
             "data": {
-                "workflow_id": "changelog",
+                "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
-                "task_id": "scan",
-                "task_agent_id": "worker",
-                "response": {"text": "{\"status\":\"ok\"}"},
+                "task_id": task_id,
+                "task_agent_id": task_agent_id,
+                "response": {"text": response_text},
             },
         }
         yield {
             "event": "workflow.task.completed",
             "data": {
-                "workflow_id": "changelog",
+                "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
-                "task_id": "scan",
-                "task_agent_id": "worker",
+                "task_id": task_id,
+                "task_agent_id": task_agent_id,
             },
         }
         yield {
             "event": "workflow.status",
             "data": {
-                "workflow_id": "changelog",
+                "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
                 "status": "completed",
             },
@@ -253,6 +256,7 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertIn("sessions", command_names)
         self.assertIn("use", command_names)
         self.assertIn("workflow", command_names)
+        self.assertNotIn("changelog", command_names)
 
     def test_session_command_reads_remote_session(self) -> None:
         shell = self._build_shell()

@@ -245,13 +245,13 @@ def register_default_commands(shell) -> None:
                         continue
 
                     if event_name == "agent.trace":
-                        shell._render_runtime_trace_payload(
+                        shell.render_runtime_trace_payload(
                             payload,
                             trace_label=task_label,
                             agent_id=task_agent_id or None,
                         )
                         if task_agent_id:
-                            streamed_text = shell._extract_streamed_response_text(
+                            streamed_text = shell.extract_streamed_response_text(
                                 payload,
                                 agent_id=task_agent_id,
                             )

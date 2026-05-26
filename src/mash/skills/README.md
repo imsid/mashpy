@@ -6,6 +6,7 @@
 - Defines the skill interface used by optional agent capabilities.
 - Provides the registry used to enable skills for an agent.
 - Adapts skills into tool-facing behavior when they need to be exposed to the model.
+- Supports filesystem-backed skills and inline dynamic skill content.
 
 ## Main Components
 - `base.py`: skill interface and base behavior.

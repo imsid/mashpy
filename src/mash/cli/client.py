@@ -8,6 +8,8 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
+from mash.runtime.structured_output import serialize_structured_output
+
 DEFAULT_REQUEST_TIMEOUT = (10, 30)
 DEFAULT_STREAM_TIMEOUT = (10, None)
 
@@ -120,20 +122,50 @@ class MashHostClient:
         response = self._request("GET", f"/api/v1/agent/{quote(agent_id, safe='')}")
         return response.json()["data"]
 
+    def register_agent_skill(
+        self,
+        agent_id: str,
+        skill_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/skill",
+            json_body=dict(skill_payload),
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def register_agent_workflow(
+        self,
+        agent_id: str,
+        workflow_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/workflow",
+            json_body=dict(workflow_payload),
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     def submit_request(
         self,
         agent_id: str,
         *,
         message: str,
         session_id: str,
+        structured_output: Any = None,
     ) -> str:
+        json_body: dict[str, Any] = {
+            "message": message,
+            "session_id": session_id,
+        }
+        if structured_output is not None:
+            json_body["structured_output"] = serialize_structured_output(structured_output)
         response = self._request(
             "POST",
             f"/api/v1/agent/{quote(agent_id, safe='')}/request",
-            json_body={
-                "message": message,
-                "session_id": session_id,
-            },
+            json_body=json_body,
         )
         return str(response.json()["data"]["request_id"])
 

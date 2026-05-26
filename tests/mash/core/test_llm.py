@@ -71,6 +71,44 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         call_kwargs = provider._client.responses.create.call_args.kwargs
         self.assertEqual(call_kwargs["temperature"], 0.2)
 
+    async def test_openai_send_maps_structured_output_to_text_format(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        provider._model = "gpt-4.1"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock())
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_openai_response = Mock(
+            return_value=SimpleNamespace(text="{}", tool_calls=[], provider_metadata={})
+        )
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+        request = LLMRequest(
+            model="gpt-4.1",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            provider_options={
+                "structured_output": schema,
+            },
+        )
+
+        await provider.send(request)
+
+        call_kwargs = provider._client.responses.create.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["text"]["format"],
+            {
+                "type": "json_schema",
+                "name": "StructuredOutput",
+                "schema": schema,
+                "strict": True,
+            },
+        )
+
     def test_openai_parser_normalizes_text_and_tool_calls(self) -> None:
         provider = object.__new__(OpenAIProvider)
         response = SimpleNamespace(
@@ -207,6 +245,42 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(translated[0]["name"], "bash")
         self.assertEqual(translated[0]["category"], "shell")
         self.assertIn("cache_control", translated[0])
+
+    async def test_anthropic_send_maps_structured_output_to_output_config(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        provider._model = "claude-sonnet-4-5"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock()))
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_anthropic_response = Mock(
+            return_value=SimpleNamespace(text="{}", tool_calls=[], provider_metadata={})
+        )
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+        request = LLMRequest(
+            model="claude-sonnet-4-5",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            provider_options={
+                "structured_output": schema,
+            },
+        )
+
+        await provider.send(request)
+
+        call_kwargs = provider._client.messages.create.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["output_config"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "schema": schema,
+                }
+            },
+        )
 
 
 if __name__ == "__main__":

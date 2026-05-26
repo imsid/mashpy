@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from ...core.context import Context, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
+from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
 from ..events import RuntimeEvent, RuntimeEventType
@@ -93,6 +95,14 @@ def _step_completed_payload(
         "tool_calls": tool_calls,
         "duration_ms": int(duration_ms),
     }
+
+
+def _structured_output_instruction() -> str:
+    return (
+        "Produce the requested structured output for the preceding completed "
+        "assistant response. Preserve the answer's facts and do not add new "
+        "information."
+    )
 
 
 async def _plan_step_payload(
@@ -220,6 +230,8 @@ async def _persist_turn_payload(
         "signals": dict(signals or {}),
         "metadata": dict(response_metadata or {}),
     }
+    if "structured_output" in response_metadata:
+        response_payload["structured_output"] = response_metadata["structured_output"]
     return {
         "turn_id": resolved_trace_id,
         "trace_id": resolved_trace_id,
@@ -510,6 +522,9 @@ async def persist_completed_turn(
     )
     response.metadata["trace_id"] = trace_id
     response.metadata["token_usage"] = dict(workflow_state.get("aggregate_usage") or {})
+    structured_output = workflow_state.get("structured_output")
+    if structured_output is not None:
+        response.metadata["structured_output"] = structured_output
     turn_payload = await _persist_turn_payload(
         runtime,
         message=message,
@@ -533,6 +548,76 @@ async def persist_completed_turn(
         ),
     )
     return turn_payload
+
+
+async def finalize_structured_output(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    workflow_state: dict[str, Any],
+    structured_output_request: dict[str, Any],
+) -> dict[str, Any]:
+    del request_id
+    runtime = _require_runtime(agent_id)
+    context = context_helpers.deserialize_context(
+        runtime,
+        workflow_state.get("context") or {},
+    )
+    messages = context.get_messages_for_llm()
+    messages.append(
+        LLMMessage(
+            role="user",
+            content=[LLMContentBlock.text(_structured_output_instruction())],
+        )
+    )
+    llm_request = LLMRequest(
+        model=runtime.agent.llm.model,
+        system=context.system_prompt,
+        messages=messages,
+        tools=[],
+        max_tokens=runtime.agent.config.max_tokens,
+        temperature=runtime.agent.config.temperature,
+        use_prompt_caching=False,
+        provider_options={"structured_output": dict(structured_output_request)},
+    )
+    llm = runtime.definition.build_llm()
+    if hasattr(llm, "set_event_logger"):
+        llm.set_event_logger(runtime.event_logger, session_id, runtime.app_id)
+    if hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(trace_id)
+    response = await llm.send(llm_request)
+    if response.stop_reason in {"max_tokens", "refusal", "error"}:
+        raise RuntimeError(
+            f"structured output finalizer failed with stop reason: {response.stop_reason}"
+        )
+    try:
+        decoded = json.loads(response.text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"structured output finalizer returned invalid JSON: {exc.msg}"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError("structured output finalizer must return a JSON object")
+
+    aggregate_usage = dict(workflow_state.get("aggregate_usage") or {})
+    if response.usage is not None:
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        if input_tokens is not None:
+            aggregate_usage["input"] = int(aggregate_usage.get("input", 0) or 0) + int(
+                input_tokens
+            )
+        if output_tokens is not None:
+            aggregate_usage["output"] = int(aggregate_usage.get("output", 0) or 0) + int(
+                output_tokens
+            )
+
+    return {
+        **dict(workflow_state or {}),
+        "aggregate_usage": aggregate_usage,
+        "structured_output": dict(decoded),
+    }
 
 
 async def complete_request(

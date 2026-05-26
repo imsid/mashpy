@@ -9,6 +9,7 @@ from mash.mcp.client import MCPClientError
 from mash.mcp.manager import MCPManager
 from mash.mcp.types import MCPServerConfig
 from mash.tools.mcp import MCPToolAdapter
+from mash.skills.tool import SkillTool
 
 from ..core.agent import Agent
 from ..memory.signals import build_default_signal_collector
@@ -25,7 +26,7 @@ def build_agent_instance(
     session_id: str,
 ) -> Agent:
     tools = self.definition.build_tools()
-    skills = self.definition.build_skills()
+    skills = getattr(self, "skills", None) or self.definition.build_skills()
     llm = self.definition.build_llm()
     if hasattr(self, "agent"):
         config = replace(self.agent.config)
@@ -41,6 +42,8 @@ def build_agent_instance(
         config.system_prompt = configured_prompt
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
+    if skills.list_skills() and "Skill" not in agent.tools:
+        agent.tools.register(SkillTool(skills))
     collector = getattr(self, "signal_collector", None)
     if collector is None:
         collector = build_default_signal_collector()

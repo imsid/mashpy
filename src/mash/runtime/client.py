@@ -9,6 +9,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from .structured_output import serialize_structured_output
+
 
 class AgentClientError(RuntimeError):
     """Raised when AgentClient operations fail."""
@@ -27,6 +29,7 @@ class AgentClientLike(Protocol):
         message: str,
         *,
         session_id: str,
+        structured_output: Any = None,
         timeout: float = 30.0,
     ) -> str:
         ...
@@ -129,12 +132,15 @@ class AgentClient:
         message: str,
         *,
         session_id: str,
+        structured_output: Any = None,
         timeout: float = 30.0,
     ) -> str:
         payload: Dict[str, Any] = {
             "message": message,
             "session_id": session_id,
         }
+        if structured_output is not None:
+            payload["structured_output"] = serialize_structured_output(structured_output)
 
         try:
             async with httpx.AsyncClient(headers=self._headers) as client:
@@ -231,12 +237,14 @@ class InProcessAgentClient:
         message: str,
         *,
         session_id: str,
+        structured_output: Any = None,
         timeout: float = 30.0,
     ) -> str:
         del timeout
         accepted = await self.runtime.submit_request(
             message=message,
             session_id=session_id,
+            structured_output=structured_output,
         )
         request_id = str(accepted.get("request_id") or "").strip()
         if not request_id:

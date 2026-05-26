@@ -41,6 +41,7 @@ Repository = "https://github.com/imsid/mashpy"
 
 [project.scripts]
 mash = "mash.cli.main:main"
+pilot = "pilot.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -54,9 +55,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["mash*"]
-exclude = ["apps*"]
+where = ["src", "."]
+include = ["mash*", "pilot*"]
+exclude = ["apps*", "tests*"]
 
 [tool.setuptools.package-data]
 "mash.api" = ["static/telemetry/**/*"]
@@ -65,3 +66,4 @@ exclude = ["apps*"]
   "skills/*/references/**/*",
   "skills/*/assets/**/*",
 ]
+"pilot" = ["skills/*.md"]

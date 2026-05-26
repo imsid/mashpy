@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+for _path in (_REPO_ROOT / "src", _REPO_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from mash.logging import bound_request_id
 from mash.runtime import context as context_helpers
@@ -11,6 +18,7 @@ from mash.runtime.engine.steps import (
     commit_request_step,
     complete_request,
     fail_request,
+    finalize_structured_output,
     load_request_context,
     persist_completed_turn,
     plan_request_step,
@@ -226,6 +234,18 @@ async def _execute_request_inline(
                 if not bool(workflow_state.get("done")):
                     continue
 
+                structured_output_request = request_metadata.get(
+                    "structured_output_request"
+                )
+                if isinstance(structured_output_request, dict):
+                    workflow_state = await finalize_structured_output(
+                        runtime.app_id,
+                        request_id,
+                        session_id,
+                        trace_id,
+                        workflow_state,
+                        structured_output_request,
+                    )
                 turn_payload = await persist_completed_turn(
                     runtime.app_id,
                     request_id,

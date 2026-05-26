@@ -92,6 +92,20 @@ class AnthropicProvider(BaseLLMProvider):
         if tools:
             params["tools"] = tools
 
+        structured_output = request.provider_options.get("structured_output")
+        if isinstance(structured_output, dict):
+            params["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": structured_output,
+                }
+            }
+
+        for key, value in request.provider_options.items():
+            if key in {"betas", "structured_output"}:
+                continue
+            params[key] = value
+
         await self._emit_request_start(
             request,
             payload={"messages": params["messages"], "tools": params.get("tools", [])},

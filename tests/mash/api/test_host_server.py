@@ -155,6 +155,115 @@ def test_health_and_agent_contract() -> None:
             assert "text/html" in spa.headers["content-type"]
 
 
+def test_register_agent_skill_endpoint_registers_dynamic_skill() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.post(
+                "/api/v1/agent/primary/skill",
+                json={
+                    "type": "dynamic",
+                    "name": "workflow:test:v1",
+                    "description": "Test workflow skill.",
+                    "content": "# Test workflow",
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json()["data"] == {
+                "agent_id": "primary",
+                "skill_name": "workflow:test:v1",
+            }
+            runtime = client.app.state.runtime_state.host.get_agent("primary")
+            assert runtime.skills.get("workflow:test:v1") is not None
+            assert "Skill" in runtime.agent.tools
+
+
+def test_register_agent_skill_endpoint_returns_not_found_for_unknown_agent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.post(
+                "/api/v1/agent/missing/skill",
+                json={
+                    "type": "dynamic",
+                    "name": "workflow:test:v1",
+                    "content": "# Test workflow",
+                },
+            )
+
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "AGENT_NOT_FOUND"
+
+
+def test_register_agent_workflow_endpoint_registers_dynamic_workflow() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.post(
+                "/api/v1/agent/primary/workflow",
+                json={
+                    "workflow_id": "pilot-changelog",
+                    "tasks": [
+                        {
+                            "task_id": "scan-recent-commits",
+                            "agent_id": "primary",
+                            "structured_output": {
+                                "title": "WorkflowOutput",
+                                "type": "object",
+                                "properties": {"ok": {"type": "boolean"}},
+                                "required": ["ok"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    ],
+                    "metadata": {"source": "test"},
+                    "task_message": {
+                        "skill_name": "workflow:test:v1",
+                        "instruction": "Run the task.",
+                    },
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json()["data"] == {
+                "agent_id": "primary",
+                "workflow_id": "pilot-changelog",
+            }
+            workflow = client.app.state.runtime_state.host.get_workflow_registry().get(
+                "pilot-changelog"
+            )
+            assert workflow.tasks[0].agent_id == "primary"
+            assert workflow.tasks[0].structured_output == {
+                "title": "WorkflowOutput",
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            }
+            assert workflow.task_message.skill_name == "workflow:test:v1"
+
+
+def test_register_agent_workflow_endpoint_returns_not_found_for_unknown_agent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.post(
+                "/api/v1/agent/missing/workflow",
+                json={
+                    "workflow_id": "pilot-changelog",
+                    "tasks": [{"task_id": "scan-recent-commits", "agent_id": "primary"}],
+                    "task_message": {
+                        "skill_name": "workflow:test:v1",
+                        "instruction": "Run the task.",
+                    },
+                },
+            )
+
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "AGENT_NOT_FOUND"
+
+
 def test_agent_scoped_request_and_session_routes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -175,6 +284,62 @@ def test_agent_scoped_request_and_session_routes() -> None:
             history = client.get("/api/v1/agent/primary/sessions/s1/history")
             assert history.status_code == 200
             assert len(history.json()["data"]["turns"]) == 1
+
+
+def test_agent_request_accepts_structured_output_schema_payload() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch.dict(
+            os.environ,
+            {
+                "MASH_DATA_DIR": str(root),
+                "MASH_DATABASE_URL": "",
+            },
+        ):
+            host = HostBuilder().primary(
+                build_spec(agent_id="primary", response_text='{"ok":true}')
+            ).build()
+            app = create_app(
+                host,
+                config=MashHostConfig(
+                    runtime_database_url="postgresql://test/runtime",
+                ),
+            )
+            with TestClient(app) as client:
+                submitted = client.post(
+                    "/api/v1/agent/primary/request",
+                    json={
+                        "message": "hello",
+                        "session_id": "s1",
+                        "structured_output": {
+                            "title": "Result",
+                            "type": "object",
+                            "properties": {"ok": {"type": "boolean"}},
+                            "required": ["ok"],
+                            "additionalProperties": False,
+                        },
+                    },
+                )
+                assert submitted.status_code == 200
+                request_id = submitted.json()["data"]["request_id"]
+                payload = _collect_terminal_response(client, "primary", request_id)
+                assert payload["response"]["structured_output"] == {"ok": True}
+
+
+def test_agent_request_rejects_invalid_structured_output_schema_payload() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={
+                    "message": "hello",
+                    "session_id": "s1",
+                    "structured_output": ["not-a-schema"],
+                },
+            )
+
+            assert submitted.status_code == 422
 
 
 def test_session_signals_route_returns_definitions_and_turn_rows() -> None:

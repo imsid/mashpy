@@ -6,6 +6,8 @@ from dataclasses import asdict
 from typing import Dict, Optional
 
 from mash.core.database import resolve_database_url
+from mash.skills.base import Skill
+from mash.skills.tool import SkillTool
 from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import make_host_id
 from mash.workflows.dbos import register_host as register_workflow_host
@@ -33,6 +35,8 @@ class AgentHost:
         self._registered: Dict[str, AgentRegistration] = {}
         self._agents: Dict[str, AgentRuntime] = {}
         self._clients: Dict[str, AgentClientLike] = {}
+        self._agent_skills: Dict[str, Dict[str, Skill]] = {}
+        self._agent_workflows: Dict[str, set[str]] = {}
         self._workflow_registry = WorkflowRegistry()
         self._workflow_service = WorkflowService(
             self._workflow_registry,
@@ -110,7 +114,73 @@ class AgentHost:
         return resolved_agent_id
 
     def register_workflow(self, workflow: WorkflowSpec) -> None:
+        self._ensure_workflow_task_agents(workflow)
         self._workflow_registry.register(workflow)
+
+    def register_agent_workflow(self, agent_id: str, workflow: WorkflowSpec) -> None:
+        resolved_agent_id = str(agent_id or "").strip()
+        if not resolved_agent_id:
+            raise ValueError("agent_id is required")
+        self._require_registered_agent(resolved_agent_id)
+        self._ensure_workflow_task_agents(workflow)
+        self._workflow_registry.upsert(workflow)
+        self._remove_agent_workflow(workflow.workflow_id)
+        self._agent_workflows.setdefault(resolved_agent_id, set()).add(workflow.workflow_id)
+
+    def unregister_agent_workflow(self, agent_id: str, workflow_id: str) -> None:
+        resolved_agent_id = str(agent_id or "").strip()
+        if not resolved_agent_id:
+            raise ValueError("agent_id is required")
+        self._require_registered_agent(resolved_agent_id)
+        resolved_workflow_id = str(workflow_id or "").strip()
+        if not resolved_workflow_id:
+            raise ValueError("workflow_id is required")
+        owner_agent_id = self._workflow_owner_agent_id(resolved_workflow_id)
+        if owner_agent_id is not None and owner_agent_id != resolved_agent_id:
+            raise ValueError(
+                f"workflow '{resolved_workflow_id}' is registered for agent "
+                f"'{owner_agent_id}'"
+            )
+        self._workflow_registry.unregister(resolved_workflow_id)
+        self._remove_agent_workflow(resolved_workflow_id)
+
+    def register_agent_skill(self, agent_id: str, skill: Skill) -> None:
+        resolved_agent_id = str(agent_id or "").strip()
+        if not resolved_agent_id:
+            raise ValueError("agent_id is required")
+        self._require_registered_agent(resolved_agent_id)
+
+        agent_skills = self._agent_skills.get(resolved_agent_id, {})
+        if skill.name in agent_skills:
+            raise ValueError(
+                f"Skill '{skill.name}' is already registered for agent '{resolved_agent_id}'"
+            )
+
+        runtime = self._agents.get(resolved_agent_id)
+        if runtime is not None:
+            self._register_runtime_skill(runtime, skill)
+        agent_skills = self._agent_skills.setdefault(resolved_agent_id, {})
+        agent_skills[skill.name] = skill
+
+    def unregister_agent_skill(self, agent_id: str, skill_name: str) -> None:
+        resolved_agent_id = str(agent_id or "").strip()
+        if not resolved_agent_id:
+            raise ValueError("agent_id is required")
+        self._require_registered_agent(resolved_agent_id)
+        resolved_skill_name = str(skill_name or "").strip()
+        if not resolved_skill_name:
+            raise ValueError("skill_name is required")
+
+        agent_skills = self._agent_skills.get(resolved_agent_id)
+        if agent_skills is not None:
+            agent_skills.pop(resolved_skill_name, None)
+            if not agent_skills:
+                self._agent_skills.pop(resolved_agent_id, None)
+
+        runtime = self._agents.get(resolved_agent_id)
+        if runtime is not None:
+            runtime.skills.unregister(resolved_skill_name)
+            self._refresh_runtime_skill_tool(runtime)
 
     def get_registered_agent_spec(self, agent_id: str) -> AgentSpec | None:
         registered = self._registered.get(str(agent_id or "").strip())
@@ -131,6 +201,9 @@ class AgentHost:
                     runtime_database_url=self.runtime_database_url,
                     session_id=registered.session_id,
                 )
+                agent_skills = self._agent_skills.get(registered.agent_id, {})
+                for skill in agent_skills.values():
+                    self._register_runtime_skill(runtime, skill)
                 self._agents[registered.agent_id] = runtime
 
             if self._primary_agent_id is not None:
@@ -228,6 +301,52 @@ class AgentHost:
         for agent in self._agents.values():
             await agent.shutdown()
         self._agents.clear()
+
+    def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
+        for task in workflow.tasks:
+            agent_id = task.agent_id.strip()
+            if not agent_id:
+                raise ValueError("workflow task agent id is required")
+            existing = self.get_registered_agent_spec(agent_id)
+            if existing is None:
+                if task.agent_spec is None:
+                    raise ValueError(
+                        f"workflow task agent '{agent_id}' is not registered"
+                    )
+                self.register_workflow_agent(task.agent_spec, agent_id=agent_id)
+            elif task.agent_spec is not None and existing is not task.agent_spec:
+                raise ValueError(
+                    f"workflow task agent '{agent_id}' is already registered "
+                    "with a different spec"
+                )
+
+    def _require_registered_agent(self, agent_id: str) -> None:
+        if agent_id not in self._registered:
+            raise ValueError(f"agent '{agent_id}' is not registered")
+
+    def _workflow_owner_agent_id(self, workflow_id: str) -> str | None:
+        for agent_id, workflow_ids in self._agent_workflows.items():
+            if workflow_id in workflow_ids:
+                return agent_id
+        return None
+
+    def _remove_agent_workflow(self, workflow_id: str) -> None:
+        for agent_id, workflow_ids in list(self._agent_workflows.items()):
+            workflow_ids.discard(workflow_id)
+            if not workflow_ids:
+                self._agent_workflows.pop(agent_id, None)
+
+    def _register_runtime_skill(self, runtime: AgentRuntime, skill: Skill) -> None:
+        runtime.skills.register(skill)
+        self._refresh_runtime_skill_tool(runtime)
+
+    def _refresh_runtime_skill_tool(self, runtime: AgentRuntime) -> None:
+        if "Skill" in runtime.agent.tools:
+            runtime.agent.tools.unregister("Skill")
+        if runtime.skills.list_skills():
+            runtime.agent.tools.register(SkillTool(runtime.skills))
+        runtime.tools = runtime.agent.tools
+        runtime.skills = runtime.agent.skills
 
     async def __aenter__(self) -> "AgentHost":
         await self.start()

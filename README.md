@@ -319,6 +319,13 @@ mash agents
 mash repl
 ```
 
+Or use Pilot's app-specific REPL wrapper to include Pilot-only commands such as
+`/changelog [N]`:
+
+```bash
+python -m pilot.cli --api-base-url http://127.0.0.1:8000 --api-key secret repl
+```
+
 Open the built-in telemetry UI:
 
 - [http://127.0.0.1:8000/telemetry](http://127.0.0.1:8000/telemetry)

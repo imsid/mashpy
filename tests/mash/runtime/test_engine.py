@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
+from pydantic import BaseModel
+
 from mash.core.config import AgentConfig
 from mash.core.context import ToolCall
 from mash.core.llm import BaseLLMProvider, LLMProvider
@@ -184,6 +186,42 @@ class _AlwaysRespondLLMProvider(LLMProvider):
         del trace_id
 
 
+class _StructuredOutputLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        structured_output = request.provider_options.get("structured_output")
+        if structured_output:
+            return LLMResponse(
+                text='{"title":"Changelog","commits_scanned":5}',
+                tool_calls=[],
+                content_blocks=[
+                    LLMContentBlock.text('{"title":"Changelog","commits_scanned":5}')
+                ],
+                stop_reason="end_turn",
+                usage=LLMTokenUsage(input_tokens=3, output_tokens=2, total_tokens=5),
+            )
+        return LLMResponse(
+            text="I scanned the recent commits.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("I scanned the recent commits.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
 class _SignalsDefinition(_BaseDefinition):
     def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
         super().__init__(root, app_id=app_id)
@@ -255,6 +293,15 @@ class _AlwaysRespondDefinition(_BaseDefinition):
             system_prompt="You are a test app.",
             max_steps=2,
         )
+
+
+class _StructuredOutputDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+        super().__init__(root, app_id=app_id)
+        self.provider = _StructuredOutputLLMProvider()
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
 
 
 class _FakeMCPClient:
@@ -465,11 +512,13 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         *,
         message: str,
         session_id: str | None = None,
+        structured_output: Any = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
         target_session_id = session_id or runtime.session_id
         accepted = await runtime.submit_request(
             message=message,
             session_id=target_session_id,
+            structured_output=structured_output,
         )
         events = await self._collect_request_events(
             runtime, str(accepted["request_id"])
@@ -521,6 +570,53 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(turns[-1]["user_message"], "hi")
                 self.assertEqual(turns[-1]["agent_response"], "hello")
                 self.assertEqual(turns[-1]["metadata"]["token_usage"]["input"], 2)
+
+                await runtime.shutdown()
+
+    async def test_submit_request_attaches_structured_output_after_completion(self) -> None:
+        class ChangelogOutput(BaseModel):
+            title: str
+            commits_scanned: int
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                definition = _StructuredOutputDefinition(Path(tmp))
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                await runtime.open()
+                _, _, result = await self._invoke_request(
+                    runtime,
+                    message="make a changelog",
+                    structured_output=ChangelogOutput,
+                )
+
+                self.assertEqual(
+                    result["response"]["text"],
+                    "I scanned the recent commits.",
+                )
+                self.assertEqual(
+                    result["response"]["structured_output"],
+                    {"title": "Changelog", "commits_scanned": 5},
+                )
+                self.assertEqual(len(definition.provider.requests), 2)
+                finalizer_request = definition.provider.requests[-1]
+                self.assertEqual(finalizer_request.tools, [])
+                self.assertEqual(
+                    finalizer_request.provider_options["structured_output"]["title"],
+                    "ChangelogOutput",
+                )
+                self.assertEqual(
+                    finalizer_request.provider_options["structured_output"]["type"],
+                    "object",
+                )
+                turns = await runtime.store.get_turns(
+                    session_id=runtime.session_id,
+                    app_id=runtime.app_id,
+                    limit=1,
+                )
+                self.assertEqual(
+                    turns[-1]["metadata"]["structured_output"],
+                    {"title": "Changelog", "commits_scanned": 5},
+                )
 
                 await runtime.shutdown()
 

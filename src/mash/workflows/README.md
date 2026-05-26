@@ -3,17 +3,21 @@
 `src/mash/workflows` adds a DBOS-backed host-level workflow layer on top of the
 existing Mash agent request runtime.
 
-This package is for code-defined workflows only. A workflow is an ordered list of
-tasks, and each task delegates execution to a registered Mash agent.
+This package supports code-defined workflows and runtime-only dynamic workflows.
+A workflow is an ordered list of tasks, and each task delegates execution to a
+registered Mash agent.
 
 The current design is intentionally small:
 
-- workflows are registered in Python, not created over the API
-- tasks carry the `AgentSpec` that executes them
+- workflows are registered in Python host code, not created over the HTTP API
+- code-defined tasks can carry the `AgentSpec` that executes them
+- dynamic tasks can reference an already registered agent by id
 - DBOS owns workflow orchestration, run history, status, and active-run deduplication
 - task state is derived from prior successful DBOS workflow outputs
 - the workflow framework does not own artifacts
 - each task execution still runs through the normal Mash request path
+- dynamic workflow definitions and inline dynamic skill content are live host
+  state; applications that own authoring must republish them on startup
 
 ## Public Surface
 
@@ -21,6 +25,7 @@ Import the workflow API from `mash.workflows`:
 
 - `TaskSpec`
 - `WorkflowSpec`
+- `WorkflowTaskMessageSpec`
 - `WorkflowRegistry`
 - `WorkflowRun`
 - `WorkflowService`
@@ -80,6 +85,48 @@ host = builder.build()
 ```
 
 The host exposes a `WorkflowRegistry` and `WorkflowService`.
+
+## How To Publish A Dynamic Workflow
+
+Dynamic workflow publishing is an in-process host API. The application owns
+authoring, persistence, and validation policy, then publishes live definitions to
+Mash:
+
+```python
+from mash.skills import Skill
+from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
+
+
+host.register_agent_skill(
+    "data",
+    Skill(
+        type="dynamic",
+        name="workflow:experiment-readout:v1",
+        description="Execute Experiment Readout workflow v1.",
+        content=generated_skill_markdown,
+    ),
+)
+
+host.register_agent_workflow(
+    "data",
+    WorkflowSpec(
+        workflow_id="experiment-readout",
+        tasks=[TaskSpec(task_id="analyze-experiment", agent_id="data")],
+        metadata={"source": "crew", "version": 1},
+        task_message=WorkflowTaskMessageSpec(
+            skill_name="workflow:experiment-readout:v1",
+            instruction="Load the workflow skill and execute only the matching task.",
+        ),
+    )
+)
+
+host.unregister_agent_workflow("data", "experiment-readout")
+```
+
+`register_agent_workflow(...)` replaces the live workflow definition for future
+runs and records the publishing agent. `unregister_agent_workflow(...)` removes
+the workflow from future runs for that same agent; it does not cancel or mutate
+already queued DBOS runs.
 
 ## DBOS Orchestration
 

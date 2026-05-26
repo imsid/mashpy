@@ -246,7 +246,11 @@ class WorkflowService:
             )
             initial_events[task.task_id] = task_events
         if not any(initial_events.values()):
-            raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
+            status = await _get_workflow_status_or_none(resolved_run_id)
+            if status is None:
+                raise WorkflowNotFoundError(
+                    f"workflow run '{resolved_run_id}' was not found"
+                )
 
         async def _generate() -> AsyncIterator[WorkflowStreamEvent]:
             cursors: dict[str, int] = {task.task_id: 0 for task in workflow.tasks}
@@ -320,9 +324,32 @@ class WorkflowService:
                                     task_agent_id=task.agent_id,
                                 )
 
-                if error_tasks or len(completed_tasks) == len(workflow.tasks):
+                if error_tasks:
                     return
 
+                status = None
+                if len(completed_tasks) == len(workflow.tasks):
+                    status = await workflow_dbos.get_workflow_status(resolved_run_id)
+                    terminal_event = _terminal_workflow_stream_event(
+                        status,
+                        workflow_id=resolved_workflow_id,
+                        run_id=resolved_run_id,
+                    )
+                    if terminal_event is not None:
+                        if terminal_event.event:
+                            yield terminal_event
+                        return
+                elif not emitted:
+                    status = await workflow_dbos.get_workflow_status(resolved_run_id)
+                    terminal_event = _terminal_workflow_stream_event(
+                        status,
+                        workflow_id=resolved_workflow_id,
+                        run_id=resolved_run_id,
+                    )
+                    if terminal_event is not None:
+                        if terminal_event.event:
+                            yield terminal_event
+                        return
                 if not emitted:
                     yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
                     await _sleep(poll_interval)
@@ -410,7 +437,7 @@ class WorkflowService:
 
     @staticmethod
     def _serialize_workflow(workflow: WorkflowSpec) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "workflow_id": workflow.workflow_id,
             "tasks": [
                 {
@@ -420,6 +447,9 @@ class WorkflowService:
                 for task in workflow.tasks
             ],
         }
+        if workflow.metadata:
+            payload["metadata"] = dict(workflow.metadata)
+        return payload
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -478,6 +508,31 @@ def _workflow_task_event(
     )
 
 
+def _terminal_workflow_stream_event(
+    status: Any | None,
+    *,
+    workflow_id: str,
+    run_id: str,
+) -> WorkflowStreamEvent | None:
+    if status is None:
+        return None
+    mapped_status = _map_dbos_status(str(getattr(status, "status", "") or ""))
+    if mapped_status == "completed":
+        return WorkflowStreamEvent(event="", data={})
+    if mapped_status in {"failed", "cancelled"}:
+        error = _status_error(status) or f"workflow {mapped_status}"
+        return WorkflowStreamEvent(
+            event="workflow.error",
+            data={
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "status": mapped_status,
+                "error": error,
+            },
+        )
+    return None
+
+
 def _augment_workflow_payload(
     payload: Any,
     *,
@@ -500,6 +555,13 @@ def _augment_workflow_payload(
 
 async def _sleep(duration: float) -> None:
     await asyncio.sleep(max(0.0, float(duration)))
+
+
+async def _get_workflow_status_or_none(run_id: str) -> Any | None:
+    try:
+        return await workflow_dbos.get_workflow_status(run_id)
+    except Exception:
+        return None
 
 
 def _run_from_status(

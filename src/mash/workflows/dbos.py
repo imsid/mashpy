@@ -14,7 +14,7 @@ from mash.runtime.engine.workflow import execute_request_workflow, workflow_id_f
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import append_runtime_event
 
-from .spec import WorkflowSpec
+from .spec import WorkflowSpec, WorkflowTaskMessageSpec
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import AgentHost
@@ -23,6 +23,15 @@ if TYPE_CHECKING:
 _WORKFLOW_NAME = "mash.workflow.execute"
 _QUEUE_NAME = "mash.workflow.runs"
 _WORKFLOW_RUN_ID_PREFIX = "mw"
+_WORKFLOW_TASK_STRUCTURED_OUTPUT = {
+    "title": "WorkflowTaskState",
+    "type": "object",
+    "properties": {},
+    "required": [],
+    # Provider-native structured output requires a closed object schema for
+    # Anthropic. Hosts should set TaskSpec.structured_output for non-empty task state.
+    "additionalProperties": False,
+}
 
 
 @dataclass
@@ -201,6 +210,8 @@ async def execute_registered_workflow(
             task.agent_id,
             normalized_workflow_input,
             previous_state,
+            workflow.task_message,
+            task.structured_output,
         )
         payload = await dbos_class.run_step_async(
             {"name": f"{task.task_id}.request.await"},
@@ -266,6 +277,8 @@ async def _post_task_request(
     agent_id: str,
     workflow_input: dict[str, Any],
     task_state: dict[str, Any],
+    task_message: WorkflowTaskMessageSpec | None,
+    structured_output: dict[str, Any] | None,
 ) -> str:
     host = require_host(host_id)
     client = host.get_client(agent_id)
@@ -280,18 +293,22 @@ async def _post_task_request(
         task_id=task_id,
         workflow_input=workflow_input,
         task_state=task_state,
+        task_message=task_message,
     )
     runtime = _resolve_inline_runtime(host, agent_id)
+    task_structured_output = structured_output or _WORKFLOW_TASK_STRUCTURED_OUTPUT
     if runtime is not None:
         return await _execute_inline_task_request(
             runtime,
             agent_id=agent_id,
             message=message,
             session_id=session_id,
+            structured_output=task_structured_output,
         )
     return await client.post_request(
         message,
         session_id=session_id,
+        structured_output=task_structured_output,
     )
 
 
@@ -311,6 +328,7 @@ async def _execute_inline_task_request(
     agent_id: str,
     message: str,
     session_id: str,
+    structured_output: dict[str, Any],
 ) -> str:
     request_id = str(
         uuid.uuid5(uuid.NAMESPACE_URL, f"mash.workflow.task:{agent_id}:{session_id}")
@@ -328,7 +346,9 @@ async def _execute_inline_task_request(
                 "workflow_id": workflow_id_for(runtime.app_id, request_id),
                 "message": message,
                 "initial_session_id": session_id,
-                "request_metadata": {},
+                "request_metadata": {
+                    "structured_output_request": dict(structured_output)
+                },
             },
         ),
     )
@@ -337,7 +357,7 @@ async def _execute_inline_task_request(
         request_id,
         message,
         session_id,
-        {},
+        {"structured_output_request": dict(structured_output)},
         require_runtime=_inline_runtime_resolver(runtime, agent_id),
     )
     return request_id
@@ -378,16 +398,10 @@ def _extract_task_state(payload: dict[str, Any]) -> dict[str, Any]:
     response = payload.get("response")
     if not isinstance(response, dict):
         raise RuntimeError("workflow task completed without a response payload")
-    text = response.get("text")
-    if not isinstance(text, str):
-        raise RuntimeError("workflow task response text is required")
-    try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"workflow task output must be valid JSON: {exc.msg}") from exc
-    if not isinstance(decoded, dict):
-        raise RuntimeError("workflow task output must be a JSON object")
-    return dict(decoded)
+    structured_output = response.get("structured_output")
+    if not isinstance(structured_output, dict):
+        raise RuntimeError("workflow task response structured_output is required")
+    return dict(structured_output)
 
 
 def _build_task_message(
@@ -397,17 +411,28 @@ def _build_task_message(
     task_id: str,
     workflow_input: dict[str, Any],
     task_state: dict[str, Any],
+    task_message: WorkflowTaskMessageSpec | None = None,
 ) -> str:
-    return json.dumps(
-        {
-            "workflow_id": workflow_id,
-            "workflow_run_id": workflow_run_id,
-            "task_id": task_id,
-            "workflow_input": dict(workflow_input),
-            "task_state": dict(task_state),
-        },
-        ensure_ascii=True,
-    )
+    payload: dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "workflow_run_id": workflow_run_id,
+        "task_id": task_id,
+        "workflow_input": dict(workflow_input),
+        "task_state": dict(task_state),
+    }
+    if task_message is not None:
+        skill_name = str(task_message.skill_name or "").strip()
+        payload["skill_name"] = skill_name
+        payload["instruction"] = str(task_message.instruction or "").strip()
+        payload["workflow_task_instructions"] = [
+            (
+                f"Your first action must be calling the Skill tool with "
+                f"arguments {{\"name\": \"{skill_name}\"}}."
+            ),
+            "After the Skill tool returns, follow the loaded skill instructions.",
+            "Execute only the task identified by task_id.",
+        ]
+    return json.dumps(payload, ensure_ascii=True)
 
 
 def _task_session_id(*, workflow_id: str, task_id: str, run_id: str) -> str:

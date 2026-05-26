@@ -18,6 +18,7 @@ from mash.workflows import (
     WorkflowRegistry,
     WorkflowService,
     WorkflowSpec,
+    WorkflowTaskMessageSpec,
 )
 from mash.workflows import dbos as workflow_dbos
 from mash.workflows.service import (
@@ -38,6 +39,7 @@ class _RequestRecord:
     request_id: str
     payload: dict[str, Any]
     session_id: str
+    structured_output: dict[str, Any] | None = None
 
 
 @dataclass
@@ -63,6 +65,7 @@ class _FakeAgentClient:
         message: str,
         *,
         session_id: str,
+        structured_output: dict[str, Any] | None = None,
         timeout: float = 30.0,
     ) -> str:
         del timeout
@@ -72,6 +75,7 @@ class _FakeAgentClient:
                 request_id=request_id,
                 payload=json.loads(message),
                 session_id=session_id,
+                structured_output=structured_output,
             )
         )
         return request_id
@@ -86,13 +90,22 @@ class _FakeAgentClient:
         if self.event == "request.error":
             yield {"event": "request.error", "data": {"error": "boom"}}
             return
+        response: dict[str, Any] = {
+            "text": self.text,
+        }
+        try:
+            decoded = json.loads(self.text)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            response["structured_output"] = decoded
+        elif decoded is not None:
+            response["structured_output"] = decoded
         yield {
             "event": "request.completed",
             "data": {
                 "request_id": request_id,
-                "response": {
-                    "text": self.text,
-                },
+                "response": response,
             },
         }
 
@@ -251,6 +264,55 @@ class WorkflowRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             registry.register(workflow)
 
+    def test_upsert_replaces_existing_workflow(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="changelog",
+                tasks=[_task("scan", "worker-a")],
+            )
+        )
+        replacement = WorkflowSpec(
+            workflow_id="changelog",
+            tasks=[_task("summarize", "worker-b")],
+            metadata={"source": "crew"},
+        )
+
+        registry.upsert(replacement)
+
+        self.assertIs(registry.get("changelog"), replacement)
+        self.assertEqual(registry.list(), [replacement])
+
+    def test_unregister_is_idempotent(self) -> None:
+        registry = WorkflowRegistry()
+        workflow = WorkflowSpec(
+            workflow_id="changelog",
+            tasks=[_task("scan", "worker")],
+        )
+        registry.register(workflow)
+
+        registry.unregister("changelog")
+        registry.unregister("changelog")
+
+        self.assertEqual(registry.list(), [])
+
+    def test_invalid_workflow_shape_is_rejected(self) -> None:
+        registry = WorkflowRegistry()
+
+        with self.assertRaises(ValueError):
+            registry.register(
+                WorkflowSpec(workflow_id="", tasks=[_task("scan", "worker")])
+            )
+        with self.assertRaises(ValueError):
+            registry.register(WorkflowSpec(workflow_id="wf", tasks=[]))
+        with self.assertRaises(ValueError):
+            registry.register(
+                WorkflowSpec(
+                    workflow_id="wf",
+                    tasks=[_task("scan", "worker"), _task("scan", "worker")],
+                )
+            )
+
 
 class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_workflows_serializes_specs(self) -> None:
@@ -272,6 +334,21 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    async def test_list_workflows_includes_metadata_when_present(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="changelog",
+                tasks=[_task("scan", "worker")],
+                metadata={"source": "crew", "version": 1},
+            )
+        )
+        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+
+        workflows = await service.list_workflows()
+
+        self.assertEqual(workflows[0]["metadata"], {"source": "crew", "version": 1})
 
     async def test_list_runs_uses_memory_turns_and_maps_summaries(self) -> None:
         registry = WorkflowRegistry()
@@ -541,11 +618,11 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
             host_id="host-1",
         )
-        with patch.object(
-            workflow_dbos,
-            "get_workflow_status",
-            side_effect=AssertionError("DBOS status must not be used"),
-        ):
+        async def get_workflow_status(run_id_value):
+            self.assertEqual(run_id_value, run_id)
+            return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
             stream = await service.stream_run_events("wf", run_id, poll_interval=0)
             events = [event async for event in stream]
 
@@ -598,16 +675,91 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             host_id="host-1",
         )
 
-        with patch.object(
-            workflow_dbos,
-            "get_workflow_status",
-            side_effect=AssertionError("DBOS status must not be used"),
-        ):
+        async def get_workflow_status(run_id_value):
+            self.assertEqual(run_id_value, run_id)
+            return _FakeWorkflowStatus(workflow_id=run_id, status="SUCCESS")
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
             stream = await service.stream_run_events("wf", run_id, poll_interval=0)
             events = [event async for event in stream]
 
         self.assertIn("request.completed", [event.event for event in events])
         self.assertEqual(events[-1].event, "workflow.task.completed")
+
+    async def test_stream_run_events_waits_when_run_exists_before_task_events(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        run_id = "mw:host-1:wf:abc"
+        store = _FakeRuntimeStore([])
+        service = WorkflowService(
+            registry,
+            _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
+            host_id="host-1",
+        )
+
+        async def get_workflow_status(run_id_value):
+            self.assertEqual(run_id_value, run_id)
+            return _FakeWorkflowStatus(workflow_id=run_id, status="ENQUEUED")
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            stream = await service.stream_run_events("wf", run_id, poll_interval=0)
+            event = await anext(stream)
+            await stream.aclose()
+
+        self.assertEqual(event.comment, "keep-alive")
+
+    async def test_stream_run_events_surfaces_dbos_error_after_task_response(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        run_id = "mw:host-1:wf:abc"
+        session_id = workflow_task_session_id(
+            workflow_id="wf",
+            task_id="task-1",
+            run_id=run_id,
+        )
+        store = _FakeRuntimeStore(
+            [
+                RuntimeEvent(
+                    event_id=1,
+                    request_id="req-1",
+                    app_id="worker",
+                    agent_id="worker",
+                    session_id=session_id,
+                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    payload={"request_id": "req-1", "response": {"text": "not-json"}},
+                )
+            ]
+        )
+        service = WorkflowService(
+            registry,
+            _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
+            host_id="host-1",
+        )
+
+        async def get_workflow_status(run_id_value):
+            self.assertEqual(run_id_value, run_id)
+            return _FakeWorkflowStatus(
+                workflow_id=run_id,
+                status="ERROR",
+                error=RuntimeError("workflow task output must be valid JSON"),
+            )
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            stream = await service.stream_run_events("wf", run_id, poll_interval=0)
+            events = [event async for event in stream]
+
+        self.assertEqual(events[-1].event, "workflow.error")
+        self.assertIn("valid JSON", events[-1].data["error"])
 
     async def test_unknown_workflow_is_rejected(self) -> None:
         registry = WorkflowRegistry()
@@ -655,7 +807,11 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
-        with patch.object(workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None, None)):
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None, None),
+        ):
             output = await workflow_dbos.execute_registered_workflow(
                 "host-1",
                 "wf",
@@ -689,7 +845,11 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         workflow_dbos.register_host("host-1", self.host)
         workflow_input = {"target_agent_id": "primary"}
 
-        with patch.object(workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None, None)):
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None, None),
+        ):
             await workflow_dbos.execute_registered_workflow(
                 "host-1",
                 "wf",
@@ -697,8 +857,71 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
                 workflow_input=workflow_input,
             )
 
-        self.assertEqual(clients["worker-1"].requests[0].payload["workflow_input"], workflow_input)
-        self.assertEqual(clients["worker-2"].requests[0].payload["workflow_input"], workflow_input)
+        self.assertEqual(
+            clients["worker-1"].requests[0].payload["workflow_input"],
+            workflow_input,
+        )
+        self.assertEqual(
+            clients["worker-2"].requests[0].payload["workflow_input"],
+            workflow_input,
+        )
+
+    async def test_execute_dynamic_workflow_adds_skill_task_instructions(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[TaskSpec(task_id="task-1", agent_id="worker")],
+                task_message=WorkflowTaskMessageSpec(
+                    skill_name="workflow:wf:v1",
+                    instruction="Load the workflow skill and execute task-1.",
+                ),
+            )
+        )
+        client = _FakeAgentClient(text=json.dumps({"ok": True}))
+        self.host = _FakeHost(registry, {"worker": client})
+        workflow_dbos.register_host("host-1", self.host)
+
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None, None),
+        ):
+            await workflow_dbos.execute_registered_workflow(
+                "host-1",
+                "wf",
+                "mw:host-1:wf:new",
+            )
+
+        payload = client.requests[0].payload
+        self.assertEqual(payload["skill_name"], "workflow:wf:v1")
+        self.assertEqual(
+            payload["instruction"],
+            "Load the workflow skill and execute task-1.",
+        )
+        self.assertIn("workflow_id", payload)
+        self.assertIn("task_state", payload)
+        self.assertIn(
+            "Your first action must be calling the Skill tool",
+            payload["workflow_task_instructions"][0],
+        )
+        self.assertEqual(
+            client.requests[0].structured_output,
+            {
+                "title": "WorkflowTaskState",
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        )
+        self.assertNotIn("mandatory_first_action", payload)
+        self.assertNotIn("final_response_contract", payload)
+        self.assertNotIn("final_response_contract_text", payload)
+        self.assertIn(
+            "After the Skill tool returns",
+            payload["workflow_task_instructions"][1],
+        )
 
     async def test_execute_workflow_rejects_invalid_task_json(self) -> None:
         registry = WorkflowRegistry()
@@ -711,7 +934,34 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         self.host = _FakeHost(registry, {"worker": _FakeAgentClient(text="not-json")})
         workflow_dbos.register_host("host-1", self.host)
 
-        with patch.object(workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None, None)):
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None, None),
+        ):
+            with self.assertRaises(RuntimeError):
+                await workflow_dbos.execute_registered_workflow(
+                    "host-1",
+                    "wf",
+                    "mw:host-1:wf:new",
+                )
+
+    async def test_execute_workflow_rejects_non_object_task_json(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[_task("task-1", "worker")],
+            )
+        )
+        self.host = _FakeHost(registry, {"worker": _FakeAgentClient(text="[]")})
+        workflow_dbos.register_host("host-1", self.host)
+
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None, None),
+        ):
             with self.assertRaises(RuntimeError):
                 await workflow_dbos.execute_registered_workflow(
                     "host-1",

@@ -86,6 +86,59 @@ class MashHostClientTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
+    def test_register_agent_skill_posts_skill_payload(self) -> None:
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        session.responses.append(
+            _FakeResponse(
+                {"data": {"agent_id": "primary", "skill_name": "workflow:test:v1"}}
+            )
+        )
+        client._session = session  # type: ignore[assignment]
+        payload = {
+            "type": "dynamic",
+            "name": "workflow:test:v1",
+            "description": "Test skill.",
+            "content": "# Test",
+        }
+
+        result = client.register_agent_skill("primary", payload)
+
+        self.assertEqual(result["skill_name"], "workflow:test:v1")
+        self.assertEqual(session.calls[-1]["method"], "POST")
+        self.assertEqual(
+            session.calls[-1]["url"],
+            "http://localhost:8000/api/v1/agent/primary/skill",
+        )
+        self.assertEqual(session.calls[-1]["json"], payload)
+
+    def test_register_agent_workflow_posts_workflow_payload(self) -> None:
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        session.responses.append(
+            _FakeResponse({"data": {"agent_id": "primary", "workflow_id": "wf"}})
+        )
+        client._session = session  # type: ignore[assignment]
+        payload = {
+            "workflow_id": "wf",
+            "tasks": [{"task_id": "task", "agent_id": "primary"}],
+            "metadata": {"source": "test"},
+            "task_message": {
+                "skill_name": "workflow:test:v1",
+                "instruction": "Run the task.",
+            },
+        }
+
+        result = client.register_agent_workflow("primary", payload)
+
+        self.assertEqual(result["workflow_id"], "wf")
+        self.assertEqual(session.calls[-1]["method"], "POST")
+        self.assertEqual(
+            session.calls[-1]["url"],
+            "http://localhost:8000/api/v1/agent/primary/workflow",
+        )
+        self.assertEqual(session.calls[-1]["json"], payload)
+
     def test_list_workflows_uses_workflow_route(self) -> None:
         client = MashHostClient("http://localhost:8000")
         session = _RecordingSession()
