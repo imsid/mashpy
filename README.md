@@ -1,61 +1,38 @@
 # mashpy
 
-This repository is the development workspace for Mash.
+Mash is an SDK and host runtime for building self-hosted multi-agent applications.
+It gives app developers a Python `AgentSpec` contract, a host API for composing
+agents and workflows, a FastAPI server for deployment, and a CLI/REPL for talking
+to a running host.
 
-It contains three main components:
+## What Is Mash?
 
-- `mash.runtime`
-  The managed runtime for an agent.
-- `mash.api`
-  The self-hosted API server in `src/mash/api`.
-- `mash.cli`
-  The bundled CLI in `src/mash/cli`.
+Mash is organized around three surfaces:
 
+- **SDK and runtime**: define agents, tools, skills, workflows, memory, and request
+  execution.
+- **API server**: serve a Mash host over HTTP, including request streaming,
+  workflow routes, and telemetry.
+- **CLI**: connect to a running host, open an interactive REPL, inspect sessions,
+  and run workflows.
 
-## Repo layout
+`pilot/` is the in-repo example host app. It uses the same public Mash contracts
+that external host apps use, and adds Pilot-specific REPL commands such as
+`/changelog [N]`.
+
+## What Is In This Repo?
 
 ```text
-src/mash/                  SDK, host API, and CLI
+src/mash/                  Mash package: SDK, runtime, API, CLI, workflows
+pilot/                     Example Mash host app built on the SDK
 docs/rfcs/                 Protocol and design RFCs
-pilot/                     Mash Pilot host built on Mash
-tests/                     Unified test suite
+tests/                     Mash and Pilot test suites
 Dockerfile                 Base image for Mash host deployments
 ```
 
-## RFCs
+## Quick Start
 
-- [Host-to-Agent Protocol (H2A)](docs/rfcs/host-to-agent-protocol.md)
-
-## Mental model
-
-The architecture is:
-
-- app developers use `mashpy` to define one or more `AgentSpec`s
-- an app exposes `build_host() -> MashAgentHost`
-- `mash.api` loads that host and serves HTTP
-- `mash.api` also serves the built-in telemetry UI at `/telemetry`
-- `mash` talks to a running Mash API deployment
-- deployments are expected to run in a container
-
-Mash stores agent memory in one of two ways:
-
-- Postgres when `MASH_DATABASE_URL` is set
-- otherwise SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`
-
-That memory store contains:
-
-- conversation turns and signals
-- memory-search data
-- structured memory logs
-
-If `MASH_DATA_DIR` is not set, the SQLite fallback root is `/var/lib/mash`.
-
-Hosted runtime durability, observability events, and Postgres-backed memory use
-the same Postgres database via `MASH_DATABASE_URL`.
-
-## Local setup
-
-Create the repo virtualenv, install dependencies, and activate it:
+Create and activate the repo environment:
 
 ```bash
 uv venv
@@ -63,127 +40,50 @@ uv sync
 source .venv/bin/activate
 ```
 
-## System Architecture
+Run the main test suites:
 
-At a high level, `mashpy` is one distribution with three cooperating surfaces:
-
-- `mash.core`
-  The agent loop itself: config, context, provider adapters, and think/act/observe execution.
-- `mash.runtime`
-  Host-side orchestration: `AgentSpec`, runtime servers, host/client wiring, request streaming, session storage, subagent delegation, and workflow-only agents.
-- `mash.api` and `mash.cli`
-  App facing surfaces built on top of the runtime. `mash.api` exposes the FastAPI host service and telemetry UI; `mash.cli` is the remote client.
-
-The normal execution path is:
-
-1. An app defines one or more `AgentSpec`s.
-2. `MashAgentHostBuilder` composes those specs into a `MashAgentHost`, including optional subagents and code-defined workflows.
-3. `mash.api` starts the host and exposes HTTP endpoints for agent requests, sessions, session signals, history, workflows, and telemetry.
-4. `mash.cli` talks to that HTTP API as a remote client.
-
-```mermaid
-flowchart TD
-    A["`AgentSpec`"] --> B["`MashAgentHostBuilder`"]
-    B --> C["`MashAgentHost`"]
-    C --> D["`mash.api`"]
-    G["`mash.cli`"] --> D
-    D --> F["MashAgent"]
+```bash
+uv run --extra dev pytest -q tests/mash
+uv run --extra dev pytest -q tests/pilot
 ```
 
-Persistence is runtime-level, not app-level. Each agent gets a `memory_store`
-from `AgentSpec.build_memory_store()`, which defaults to:
+## Run Pilot Locally
 
-- Postgres when `MASH_DATABASE_URL` is set
-- otherwise SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`
+Start the Pilot host:
 
-If `MASH_DATA_DIR` is not set, the SQLite fallback root is `/var/lib/mash`.
-
-## Agent Runtime
-
-The core execution stack is:
-
-- [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
-  `AgentSpec` is the transport-agnostic contract app authors implement, including `build_memory_store()`.
-- [src/mash/runtime/host.py](src/mash/runtime/host.py)
-  `MashAgentHost` and `MashAgentHostBuilder` register the primary agent, subagents, workflow-only agents, and workflows, start one runtime per agent, and wire host-managed delegation.
-- [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
-  `MashAgentRuntime` is the async execution core for one agent: hosted request execution, per-session serialization, runtime event emission, replay-derived request state, recovery hooks, persistence orchestration, and trace fanout.
-- [src/mash/runtime/execution](src/mash/runtime/execution)
-  Runtime execution primitives: `RuntimeEvent`, `RuntimeStore`, and the Postgres-backed runtime event log.
-- [src/mash/runtime/server.py](src/mash/runtime/server.py)
-  `MashAgentServer` is the Starlette transport adapter over one runtime and exposes the H2A HTTP + SSE surface.
-- [src/mash/core/agent.py](src/mash/core/agent.py)
-  `Agent` provides think/act/observe primitives used by the hosted runtime workflow loop.
-- [src/mash/runtime/client.py](src/mash/runtime/client.py)
-  `MashAgentClient` is the async H2A client used by the host and by subagent delegation.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant API as mash.api
-    participant Host as MashAgentHost
-    participant Client as MashAgentClient
-    participant Server as MashAgentServer
-    participant Runtime as MashAgentRuntime
-    participant Workflow as DBOS Workflow
-    participant Agent as mash.core.Agent
-    participant Store as State Store
-
-    User->>API: POST /api/v1/agent/{agent_id}/request
-    API->>Host: get_client(agent_id)
-    Host-->>API: MashAgentClient
-    API->>Client: post_request(...) / stream_response(...)
-    Client->>Server: HTTP request + SSE stream
-    Server->>Runtime: submit_request(...) / stream_request_events(...)
-    Runtime->>Store: append runtime.request.accepted
-    Runtime->>Workflow: start_workflow(request_id)
-    Workflow->>Agent: think / act / observe primitives
-    Workflow->>Store: append RuntimeEvent progress
-    Runtime->>Store: save_turn(...)
-    Server-->>Client: request.accepted / request.waiting? / agent.trace / request.completed
-    Client-->>API: streamed runtime events
-    API-->>User: SSE / final payload
-
+```bash
+mash host serve --host-app pilot.spec:build_host --host 127.0.0.1 --port 8001
 ```
 
-Important runtime properties:
+In another terminal, connect the Mash CLI:
 
-- Each request is accepted immediately and started as a durable DBOS workflow.
-- Requests for the same `session_id` are serialized inside one runtime with a per-session lock.
-- Different sessions on the same agent may run concurrently up to the runtime concurrency limit.
-- `request.waiting` is emitted when an accepted request cannot start yet because the session is busy or the runtime concurrency limit is saturated.
-- `runtime_store` is the append-only canonical event log for request streaming, telemetry, replay, and debugging.
-- Runtime durability is implemented separately from the event log via DBOS workflows.
-- Public request streaming is derived from persisted `RuntimeEvent`s in `runtime_event_log`.
-- Startup recovery resumes incomplete hosted requests through DBOS workflow recovery.
-- Request lifecycle is streamed over SSE using stable event names:
-  `request.accepted`, optional `request.waiting`, `request.started`, `agent.trace`, `request.completed`, `request.error`.
-- Token accounting is session-scoped inside each runtime. `session_total_tokens` is computed from saved turn metadata and persisted with each turn.
-- Each runtime uses separate `memory_store` and `runtime_store` persistence roles.
-- The runtime H2A surface is:
-  `GET /health`, `POST /agent/{agent_id}/request`, `GET /agent/{agent_id}/request/{request_id}`.
-- Host-level workflows are exposed through:
-  `GET /api/v1/workflow`, `POST /api/v1/workflow/{workflow_id}/run`, `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`, and `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`.
-- The workflow run event stream replays task lifecycle events and each task agent's normal runtime events.
+```bash
+mash connect --api-base-url http://127.0.0.1:8001 --api-key secret --agent pilot
+mash status
+mash agents
+```
 
-## Working on the SDK
+Open the Pilot REPL, which includes Pilot-only commands such as `/changelog [N]`:
 
-The main SDK surface is:
+```bash
+pilot repl
+```
 
-- `AgentSpec` in [src/mash/runtime/spec.py](src/mash/runtime/spec.py)
-- `MashAgentHost` in [src/mash/runtime/host.py](src/mash/runtime/host.py)
-- `MashAgentRuntime` in [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
-- `MashAgentClient` in [src/mash/runtime/client.py](src/mash/runtime/client.py)
-- `MashAgentServer` in [src/mash/runtime/server.py](src/mash/runtime/server.py)
+The API server also serves the telemetry UI at:
 
-The intended app shape is:
+- [http://127.0.0.1:8001/telemetry](http://127.0.0.1:8001/telemetry)
+
+## Build Your Own Host
+
+A Mash app defines one or more `AgentSpec`s and returns a host from
+`build_host()`:
 
 ```python
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentSpec, MashAgentHostBuilder
-from mash.skills.registry import SkillRegistry
-from mash.tools.registry import ToolRegistry
+from mash.runtime import AgentSpec, HostBuilder
+from mash.skills import SkillRegistry
+from mash.tools import ToolRegistry
 
 
 class PrimaryAgent(AgentSpec):
@@ -197,274 +97,75 @@ class PrimaryAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="primary", api_key="...")
+        return AnthropicProvider(app_id="primary")
 
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id="primary", system_prompt="You are helpful.")
+        return AgentConfig(
+            app_id="primary",
+            system_prompt="You are helpful.",
+        )
 
 
 def build_host():
-    return MashAgentHostBuilder().primary(PrimaryAgent()).build()
+    return HostBuilder().primary(PrimaryAgent()).build()
 ```
 
-## Subagent Invocation Flow
-
-Subagent delegation is host-managed, not a special local shortcut.
-
-1. The host registers the primary agent and subagents in [src/mash/runtime/host.py](src/mash/runtime/host.py).
-2. On startup, the host resolves subagent endpoints and the primary runtime injects subagent routing guidance plus `InvokeSubagent`.
-3. `InvokeSubagentTool` in [src/mash/tools/subagent.py](src/mash/tools/subagent.py) resolves the target subagent client and submits a normal streamed request.
-4. The subagent request runs through that subagent’s own runtime server, runtime core, persistence layer, and session namespace.
-5. Streamed request events are forwarded back to the primary runtime as `subagent.*` trace events for observability.
-
-```mermaid
-sequenceDiagram
-    participant Primary as Primary Agent
-    participant Tool as InvokeSubagentTool
-    participant Host as MashAgentHost
-    participant Client as MashAgentClient
-    participant Server as Subagent MashAgentServer
-    participant Runtime as Subagent MashAgentRuntime
-    participant Subagent as Subagent mash.core.Agent
-
-    Primary->>Tool: InvokeSubagent(agent_id, prompt, opts)
-    Tool->>Host: get_client(agent_id)
-    Host-->>Tool: MashAgentClient
-    Tool->>Client: post_request(prompt, session_id=subagent_session_id)
-    Client->>Server: HTTP request + SSE stream
-    Server->>Runtime: submit_request(...) / stream_request_events(...)
-    Runtime->>Runtime: RuntimeWorkflowExecutor.run(request_id)
-    Runtime->>Subagent: think / act / observe primitives
-    Runtime->>Runtime: append RuntimeEvent progress
-    Server-->>Client: request.accepted / agent.trace / request.completed
-    Client-->>Tool: streamed events
-    Tool-->>Primary: ToolResult(text + metadata)
-```
-
-Relevant implementation details:
-
-- Subagent session ids are deterministic via [src/mash/runtime/session.py](src/mash/runtime/session.py) using:
-  `primary_app_id + primary_session_id + subagent_id`.
-- The subagent keeps its own session history and token totals.
-- The primary agent only owns its own turns and token usage; subagent execution is correlated, but not merged into the primary session’s token total.
-
-## Core Modules
-
-When working on `mashpy`, these are the main files to orient around:
-
-- [src/mash/core/agent.py](src/mash/core/agent.py)
-  Core think/act/observe primitives, tool execution, token aggregation, and trace metadata generation.
-- [src/mash/runtime/runtime.py](src/mash/runtime/runtime.py)
-  Async hosted request lifecycle, per-session locking, runtime event append/read behavior, and persistence orchestration.
-- [src/mash/runtime/execution](src/mash/runtime/execution)
-  `RuntimeEvent`, replay state, workflow execution, recovery, and runtime event storage.
-- [src/mash/runtime/server.py](src/mash/runtime/server.py)
-  H2A Starlette surface and SSE streaming for one runtime.
-- [src/mash/runtime/host.py](src/mash/runtime/host.py)
-  Multi-agent composition, uvicorn server startup, and subagent endpoint wiring.
-- [src/mash/api/app.py](src/mash/api/app.py)
-  FastAPI composition for the public host API, telemetry endpoints, auth, and `/api/v1/agent/...` routes.
-- [src/mash/cli/main.py](src/mash/cli/main.py)
-  Unified `mash` CLI entrypoint for remote operations and `mash host serve`.
-- [src/mash/cli/shell.py](src/mash/cli/shell.py)
-  Remote REPL path, including streamed request handling and chain rendering.
-
-Common contributor questions:
-
-- If you are changing request or event shapes, update runtime tests, API tests, and CLI streaming behavior together.
-- If you are changing token accounting or persistence, validate both `tests/mash/runtime/test_engine.py` and `tests/mash/runtime/test_host_integration.py`.
-- If you are changing telemetry behavior, remember there are two layers:
-  the API routes in `mash.api`, and the bundled frontend assets under `src/mash/api/web`.
-- Telemetry is a trace debugger backed by canonical runtime events; memory search remains turns-backed.
-
-## Mash Pilot
-
-[pilot/spec.py](pilot/spec.py) is the main in-repo agent app built on Mash.
-
-Pilot uses standard Mash building blocks:
-
-- `PilotSpec` is the primary `AgentSpec`.
-- `build_host()` composes the primary pilot plus module-specific copilots with `MashAgentHostBuilder`.
-- `mash.api` serves that host over HTTP.
-- `mash.cli` connects to it as a remote client.
-
-The Pilot host currently registers:
-
-- `pilot`: the primary codebase guide for shared Mash modules.
-- `cli-copilot`: specialist for `src/mash/cli`.
-- `api-copilot`: specialist for `src/mash/api`.
-- `mcp-copilot`: specialist for `src/mash/mcp`.
-- `runtime-copilot`: specialist for `src/mash/runtime`.
-
-Run Pilot from the activated repo environment:
+Serve it with:
 
 ```bash
-export OPENAI_API_KEY=...
-export MASH_DATA_DIR=.mash
-export MASH_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash
-
-python -m pilot.spec \
-  --workspace-root /Users/sid/Projects/mashpy \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --api-key secret
+mash host serve --host-app my_app:build_host --host 0.0.0.0 --port 8000
 ```
 
-Connect with the bundled CLI:
+For containerized deployments, use the root [Dockerfile](Dockerfile) as the base
+host image and configure startup with `MASH_HOST_APP`, `MASH_DATA_DIR`, and
+`MASH_DATABASE_URL`.
+
+## Documentation Map
+
+- [Mash package](src/mash/README.md): package overview and boundaries.
+- [Runtime](src/mash/runtime/README.md): host composition, request execution,
+  persistence, structured output, and runtime internals.
+- [Workflows](src/mash/workflows/README.md): code-defined workflows, dynamic
+  publishing, task state, and DBOS orchestration.
+- [Skills](src/mash/skills/README.md): filesystem and inline skills plus dynamic
+  skill registration.
+- [API](src/mash/api/README.md): HTTP surface, request/response shapes, telemetry,
+  and dynamic publishing endpoints.
+- [CLI](src/mash/cli/README.md): `mash` commands and REPL slash commands.
+- [LLM providers](src/mash/core/llm/README.md): provider adapters, normalized LLM
+  contracts, and provider-native structured output.
+- [Masher](src/mash/agents/masher/README.md): built-in workflow-only trace
+  digest and online eval worker.
+- [Pilot](pilot/README.md): example host composition and Pilot-specific REPL
+  behavior.
+
+Other useful module guides:
+
+- [Core](src/mash/core/README.md)
+- [Tools](src/mash/tools/README.md)
+- [Agents](src/mash/agents/README.md)
+- [Memory](src/mash/memory/README.md)
+- [MCP](src/mash/mcp/README.md)
+- [Logging](src/mash/logging/README.md)
+
+## Development
+
+Use the focused module READMEs above as the source of truth when changing a
+subsystem. For cross-surface behavior, update tests across the relevant layers:
+
+- runtime changes: `tests/mash/runtime`
+- API changes: `tests/mash/api`
+- CLI/REPL changes: `tests/mash/cli`
+- workflow changes: `tests/mash/workflows`
+- Pilot changes: `tests/pilot`
+
+Before handing off broad changes, run:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent pilot
-mash status
-mash agents
-mash repl
+uv run --extra dev pytest -q tests/mash
+uv run --extra dev pytest -q tests/pilot
 ```
 
-Or use Pilot's app-specific REPL wrapper to include Pilot-only commands such as
-`/changelog [N]`:
+## RFCs
 
-```bash
-python -m pilot.cli --api-base-url http://127.0.0.1:8000 --api-key secret repl
-```
-
-Open the built-in telemetry UI:
-
-- [http://127.0.0.1:8000/telemetry](http://127.0.0.1:8000/telemetry)
-
-Telemetry is intentionally narrow:
-
-- request and trace inspection backed by `runtime_event_log`
-- recent trace lookup
-- live request streaming via the hosted SSE endpoints
-- memory search as a separate turns-backed feature
-
-Pilot is useful as both:
-
-- a real Mash app built on the same `AgentSpec` and `MashAgentHostBuilder` contracts exposed to users
-- the canonical reference for how to build a multi-agent Mash host with specialized subagents
-
-## Masher
-
-Masher is Mash's built-in workflow-only trace processing worker, implemented in [src/mash/agents/masher/spec.py](src/mash/agents/masher/spec.py).
-
-Masher is not exposed as a user-invokable subagent. `HostBuilder.enable_masher()` registers Masher as a workflow-only runtime and registers Masher workflows. It is hidden from public agent listings and from `InvokeSubagent`, but workflow tasks can still call it through the host runtime client.
-
-The built-in workflows each have one task backed by `TaskSpec(agent_spec=masher_spec)` and support two modes through workflow input.
-
-`masher-trace-digest` is diagnostic:
-
-- trace mode: digest one explicit `target_agent_id` / `session_id` / `trace_id` and return the digest in completed workflow output
-- incremental mode: use workflow task state as a per-target checkpoint, digest traces after the last checkpoint timestamp, append digest rows to Masher's JSONL artifact, and return updated checkpoint state only
-
-`masher-online-eval-curation` is dataset-focused:
-
-- trace mode: curate one explicit `target_agent_id` / `session_id` / `trace_id` into a normalized eval row
-- incremental mode: use workflow task state as a per-target checkpoint, curate traces after the last checkpoint timestamp, append eval rows to Masher's JSONL artifact, and return updated checkpoint state only
-
-Example trace-mode invocation through the REPL:
-
-```text
-/workflow run masher-trace-digest --input '{"mode":"trace","target_agent_id":"primary","session_id":"...","trace_id":"..."}'
-/workflow run masher-online-eval-curation --input '{"mode":"trace","target_agent_id":"primary","session_id":"...","trace_id":"..."}'
-```
-
-Example incremental invocation:
-
-```text
-/workflow run masher-trace-digest daily-primary --input '{"mode":"incremental","target_agent_id":"primary"}'
-/workflow run masher-online-eval-curation daily-primary-evals --input '{"mode":"incremental","target_agent_id":"primary"}'
-```
-
-Incremental artifacts are written to Masher's configured JSONL artifacts, which default to:
-
-```text
-<MASH_DATA_DIR>/masher/trace-digests.jsonl
-<MASH_DATA_DIR>/masher/online-evals.jsonl
-```
-
-## Running the host API directly
-
-You can start the API server either from Python or through `mash host serve`.
-
-From Python:
-
-```python
-import os
-
-from mash.api import MashHostConfig, run_host
-
-from my_app import build_host
-
-os.environ["MASH_DATABASE_URL"] = "postgresql://postgres:postgres@127.0.0.1:5432/mash"
-run_host(build_host(), config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
-```
-
-From the CLI:
-
-```bash
-MASH_HOST_APP=my_app:build_host \
-MASH_API_HOST=0.0.0.0 \
-MASH_API_PORT=8000 \
-MASH_DATA_DIR=/var/lib/mash \
-MASH_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mash \
-mash host serve
-```
-
-For containerized deployments, the env-driven startup path is the intended one.
-
-## Docker workflow
-
-The root [Dockerfile](Dockerfile) is the base image for Mash host deployments.
-
-Build it:
-
-```bash
-docker build -t mashpy/mash-host-base:latest .
-```
-
-The Pilot image is defined in [pilot/Dockerfile](pilot/Dockerfile).
-
-Build and run it:
-
-```bash
-docker build -t mashpy/pilot:latest -f pilot/Dockerfile .
-docker run \
-  -p 8000:8000 \
-  -e OPENAI_API_KEY=... \
-  -e MASH_HOST_APP=pilot.spec:build_host \
-  -e MASH_API_KEY=secret \
-  -e MASH_DATA_DIR=/var/lib/mash \
-  -e MASH_DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/mash \
-  -v $(pwd)/data:/var/lib/mash \
-  mashpy/pilot:latest
-```
-
-The container contract is:
-
-- `MASH_HOST_APP` points at `module:build_host`
-- `MASH_DATA_DIR` points at the SQLite fallback state root
-- `MASH_DATABASE_URL` points at the shared Postgres database for Mash runtime, API, and memory tables
-- port `8000` is exposed by default
-- operators mount persistent storage at `/var/lib/mash`
-
-## Tests
-
-Focused runtime and API tests:
-
-```bash
-PYTHONPATH=src \
-pytest -q \
-  tests/mash/runtime/test_engine.py \
-  tests/mash/runtime/test_host_integration.py \
-  tests/mash/api/test_host_server.py
-```
-
-CLI-focused tests:
-
-```bash
-PYTHONPATH=src \
-pytest -q \
-  tests/mash/cli/test_main.py \
-  tests/mash/cli/test_shell.py
-```
-
-When changing cross-surface behavior, set `PYTHONPATH=src` so tests resolve the unified workspace sources instead of stale installed copies.
+- [Host-to-Agent Protocol (H2A)](docs/rfcs/host-to-agent-protocol.md)

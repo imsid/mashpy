@@ -28,6 +28,8 @@ Behavior:
 - Requires a Claude model name.
 - Supports prompt-caching annotations on system/tool blocks.
 - Supports provider beta flags via `request.provider_options["betas"]`.
+- Translates `request.provider_options["structured_output"]` into the
+  Messages API `output_config` json_schema format.
 - Returns capability flags:
   - `beta_flags=True`
   - `server_tools=True`
@@ -46,6 +48,9 @@ Behavior:
 - Supports reasoning-oriented provider options through `request.provider_options`.
 - Supports prompt caching through `prompt_cache_key` / `prompt_cache_retention`.
 - Temperature is omitted for `gpt-5*` models.
+- Translates `request.provider_options["structured_output"]` into the
+  Responses API `text.format` json_schema entry; honors
+  `request.provider_options["structured_output_strict"]` (default `True`).
 - Returns capability flags:
   - `reasoning_controls=True`
 
@@ -208,12 +213,68 @@ Current provider capability summary:
 Current known usage:
 - Anthropic:
   - `betas`: list of Anthropic beta flags
+  - `structured_output`: JSON-schema dict (see Structured Output below)
 - OpenAI:
   - `prompt_cache_key`
   - `prompt_cache_retention`
+  - `structured_output`: JSON-schema dict (see Structured Output below)
+  - `structured_output_strict`: bool, defaults to `True`
   - any additional Responses API params not filtered out by the adapter
 
 Callers should treat `provider_options` as an escape hatch, not a stable cross-provider contract.
+
+## Structured Output
+
+The runtime drives structured output by passing a JSON schema through
+`LLMRequest.provider_options["structured_output"]`. Both shipped adapters
+detect this key and translate it into their provider-native schema-format
+argument, then strip it (and `structured_output_strict` on OpenAI) from the
+generic `provider_options` passthrough so it does not appear twice. The
+literal user/assistant instruction that asks the model to produce the
+structured payload is added by the runtime
+([`finalize_structured_output`](../../runtime/engine/steps.py)), not by the
+providers.
+
+### `AnthropicProvider`
+
+When `provider_options["structured_output"]` is a dict, the adapter sets the
+Messages API `output_config`:
+
+```python
+{
+    "format": {
+        "type": "json_schema",
+        "schema": <user-provided schema dict>,
+    }
+}
+```
+
+No additional flags are required.
+
+### `OpenAIProvider`
+
+When `provider_options["structured_output"]` is a dict, the adapter sets the
+Responses API `text` field:
+
+```python
+{
+    "format": {
+        "type": "json_schema",
+        "name": <derived>,
+        "schema": <user-provided schema dict>,
+        "strict": <bool>,
+    }
+}
+```
+
+- `name` is derived from the schema's `title` field by sanitizing
+  non-alphanumeric characters (fallback: `StructuredOutput`).
+- `strict` defaults to `True` and can be overridden by
+  `provider_options["structured_output_strict"]`.
+
+For the developer-facing entry point (Pydantic models, request submission,
+response shape, HTTP API), see
+[`src/mash/runtime/README.md`](../../runtime/README.md) (Structured Output).
 
 ## Logging Behavior
 

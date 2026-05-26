@@ -46,7 +46,8 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 ```json
 {
   "message": "required non-empty string",
-  "session_id": "required non-empty string"
+  "session_id": "required non-empty string",
+  "structured_output": "optional JSON-schema object"
 }
 ```
 
@@ -56,6 +57,41 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 {
   "reason": "manual",
   "session_total_tokens_reset": 0
+}
+```
+
+- `RegisterAgentSkillRequest`
+
+```json
+{
+  "type": "required non-empty string",
+  "name": "required non-empty string",
+  "description": "optional string",
+  "location": "optional string (filesystem path)",
+  "content": "optional string (inline markdown)"
+}
+```
+
+At least one of `location` or `content` must be set (enforced by `Skill`
+validation).
+
+- `RegisterAgentWorkflowRequest`
+
+```json
+{
+  "workflow_id": "required non-empty string",
+  "tasks": [
+    {
+      "task_id": "required non-empty string",
+      "agent_id": "required non-empty string",
+      "structured_output": "optional JSON-schema object"
+    }
+  ],
+  "metadata": "optional JSON object",
+  "task_message": {
+    "skill_name": "required non-empty string",
+    "instruction": "required non-empty string"
+  }
 }
 ```
 
@@ -102,6 +138,9 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `agent_id`
 - Body: `SubmitRequest`
 - Returns `request_id`.
+- Optionally accepts a `structured_output` JSON-schema object on the body; when
+  set, the response stream's `request.completed` payload includes a
+  `structured_output` field alongside `text`.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
 - Server-Sent Events stream for async request progress.
@@ -113,6 +152,31 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `event: <event_name>`
   - `data: <json payload>`
 - Terminates when event name is `request.completed` or `request.error`.
+
+### Dynamic Publishing
+
+`POST /api/v1/agent/{agent_id}/skill`
+- Registers a dynamic or filesystem-backed skill on the named agent.
+- Path params:
+  - `agent_id`
+- Body: `RegisterAgentSkillRequest`
+- Returns:
+  - `agent_id`
+  - `skill_name`
+- Idempotent: if the skill name is already registered for that agent, the
+  request is a no-op (no error).
+
+`POST /api/v1/agent/{agent_id}/workflow`
+- Publishes (upserts) a workflow definition owned by the named agent.
+- Path params:
+  - `agent_id`
+- Body: `RegisterAgentWorkflowRequest`
+- Returns:
+  - `agent_id`
+  - `workflow_id`
+- Upsert semantics: re-registering the same `workflow_id` replaces the live
+  definition. Unregistration is only available through the in-process host
+  API (`AgentHost.unregister_agent_workflow`), not HTTP.
 
 ### Sessions
 
@@ -300,6 +364,9 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - `400 SEARCH_VALIDATION_ERROR`: invalid memory search arguments
 - `503 SEARCH_UNAVAILABLE`: search backend not available
 - `500 SEARCH_FAILED`: unexpected memory search failure
+- `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
+- `400 INVALID_AGENT_SKILL`: skill validation failed (for example, missing both `location` and `content`)
+- `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
 
 ## Source Of Truth
 - App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).

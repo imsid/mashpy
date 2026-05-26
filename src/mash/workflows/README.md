@@ -56,6 +56,29 @@ CHANGELOG_WORKFLOW = WorkflowSpec(
 agent unless the same spec is already registered as the primary agent or a
 subagent.
 
+## Per-Task Structured Output
+
+A `TaskSpec` can attach a JSON schema that the task agent's response must
+match. The schema is forwarded as request-level structured output; the
+serialized JSON payload is what becomes the next task state, instead of
+parsing free-form text.
+
+```python
+TaskSpec(
+    task_id="analyze-experiment",
+    agent_id="data",
+    structured_output={
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    },
+)
+```
+
+See [`src/mash/runtime/README.md`](../runtime/README.md) (Structured Output)
+for the runtime-level flow.
+
 ## How To Register A Workflow
 
 Register workflows through `HostBuilder`, alongside the agents they depend on:
@@ -127,6 +150,77 @@ host.unregister_agent_workflow("data", "experiment-readout")
 runs and records the publishing agent. `unregister_agent_workflow(...)` removes
 the workflow from future runs for that same agent; it does not cancel or mutate
 already queued DBOS runs.
+
+`unregister_agent_workflow(...)` is scoped to the agent that originally
+registered the workflow. Calling it with a different `agent_id` raises
+`ValueError` (see `_workflow_owner_agent_id` in
+[`src/mash/runtime/host/host.py`](../runtime/host/host.py)).
+
+Dynamic skill content and dynamic workflow definitions are live host state.
+On host restart, the application that owns authoring must republish both.
+
+`WorkflowTaskMessageSpec` is the standard way to ship a dynamic workflow to
+its task agent: it tells the agent which skill to load and which instruction
+to follow. Both `skill_name` and `instruction` are required when the spec is
+provided (validation lives in [`src/mash/workflows/spec.py`](./spec.py)).
+The HTTP publishing endpoint requires `task_message` on every request. When
+the task runs, the request payload includes `task_message`, and the workflow
+runtime instructs the agent to invoke the `Skill` tool with the named skill
+before executing.
+
+## HTTP API For Dynamic Publishing
+
+Hosts wrapped by `mash.api` expose dynamic publishing as two POST endpoints
+on the agent the workflow/skill belongs to:
+
+- `POST /api/v1/agent/{agent_id}/skill`
+- `POST /api/v1/agent/{agent_id}/workflow`
+
+Body shapes match the Pydantic models in
+[`src/mash/api/routes/common.py`](../api/routes/common.py)
+(`RegisterAgentSkillRequest` and `RegisterAgentWorkflowRequest`).
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/agent/data/skill \
+  -H "Authorization: Bearer $MASH_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "dynamic",
+    "name": "workflow:experiment-readout:v1",
+    "description": "Execute Experiment Readout workflow v1.",
+    "content": "# Experiment Readout\n\nLoad and run the workflow…"
+  }'
+
+curl -X POST http://127.0.0.1:8000/api/v1/agent/data/workflow \
+  -H "Authorization: Bearer $MASH_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "experiment-readout",
+    "tasks": [
+      {
+        "task_id": "analyze-experiment",
+        "agent_id": "data",
+        "structured_output": {
+          "type": "object",
+          "properties": {"ok": {"type": "boolean"}},
+          "required": ["ok"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "metadata": {"source": "crew", "version": 1},
+    "task_message": {
+      "skill_name": "workflow:experiment-readout:v1",
+      "instruction": "Load the workflow skill and execute only the matching task."
+    }
+  }'
+```
+
+Responses are `{"data": {"agent_id": "...", "skill_name": "..."}}` and
+`{"data": {"agent_id": "...", "workflow_id": "..."}}` respectively.
+
+There is no DELETE endpoint exposed yet — unregistration is only available
+through the in-process host API.
 
 ## DBOS Orchestration
 

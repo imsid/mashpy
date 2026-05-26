@@ -33,6 +33,15 @@ Workflow task `AgentSpec` objects passed through `HostBuilder.workflow(...)` are
 registered as workflow-only runtimes. They can be targeted by `mash.workflows`
 tasks but are hidden from public agent listings and subagent delegation.
 
+Related READMEs:
+
+- [`src/mash/workflows/README.md`](../workflows/README.md) — workflow layer,
+  including dynamic publishing and per-task structured output.
+- [`src/mash/skills/README.md`](../skills/README.md) — agent skills, including
+  runtime registration.
+- [`src/mash/core/llm/README.md`](../core/llm/README.md) — how provider
+  adapters translate a structured-output schema into their native shape.
+
 ## Architecture
 
 The runtime is intentionally split into four layers:
@@ -288,6 +297,110 @@ The key point is:
 - **event sourcing records the request**
 
 Neither layer should absorb the other's responsibility.
+
+## Structured Output
+
+Requests can carry a JSON schema (or a Pydantic model) describing the shape
+the agent's final response should match. After the agent produces its normal
+free-text answer, the runtime makes a second LLM call —
+[`finalize_structured_output`](./engine/steps.py) — that asks the model to
+"produce the requested structured output for the preceding completed
+assistant response. Preserve the answer's facts and do not add new
+information." The returned JSON is attached to the response as
+`structured_output` alongside the existing `text`, and persisted on the turn
+by [`persist_completed_turn`](./engine/steps.py).
+
+### Usage
+
+Pydantic model:
+
+```python
+from pydantic import BaseModel
+
+class ChangelogOutput(BaseModel):
+    title: str
+    commits_scanned: int
+
+response = await runtime.submit_request(
+    message="summarize recent commits",
+    session_id="s1",
+    structured_output=ChangelogOutput,
+)
+```
+
+JSON schema dict:
+
+```python
+response = await runtime.submit_request(
+    message="summarize recent commits",
+    session_id="s1",
+    structured_output={
+        "title": "ChangelogOutput",
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "commits_scanned": {"type": "integer"},
+        },
+        "required": ["title", "commits_scanned"],
+        "additionalProperties": False,
+    },
+)
+```
+
+Both paths go through
+[`serialize_structured_output`](./structured_output.py); Pydantic models are
+converted via `model_json_schema()`, dicts are passed through unchanged.
+Anything else raises `TypeError`.
+
+### Response shape
+
+The structured payload appears alongside `text`:
+
+```json
+{
+  "response": {
+    "text": "I scanned the last five commits.",
+    "structured_output": {"title": "Changelog", "commits_scanned": 5}
+  }
+}
+```
+
+### HTTP API
+
+`POST /api/v1/agent/{agent_id}/request` accepts an optional
+`structured_output` field on the body. The body must be a JSON-schema dict;
+Pydantic models are serialized client-side by
+[`src/mash/cli/client.py`](../cli/client.py) before being sent.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/agent/primary/request \
+  -H "Authorization: Bearer $MASH_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "summarize recent commits",
+    "session_id": "s1",
+    "structured_output": {
+      "title": "ChangelogOutput",
+      "type": "object",
+      "properties": {
+        "title": {"type": "string"},
+        "commits_scanned": {"type": "integer"}
+      },
+      "required": ["title", "commits_scanned"],
+      "additionalProperties": false
+    }
+  }'
+```
+
+An invalid `structured_output` payload returns `400
+INVALID_STRUCTURED_OUTPUT`.
+
+### Per-task structured output
+
+`WorkflowSpec` tasks can attach their own per-task schema. See
+[`src/mash/workflows/README.md`](../workflows/README.md) (Per-Task Structured
+Output) for the workflow-level usage and how task state derives from the
+returned JSON.
 
 ## Important Interfaces
 
