@@ -874,7 +874,6 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[TaskSpec(task_id="task-1", agent_id="worker")],
                 task_message=WorkflowTaskMessageSpec(
                     skill_name="workflow:wf:v1",
-                    instruction="Load the workflow skill and execute task-1.",
                 ),
             )
         )
@@ -895,10 +894,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
 
         payload = client.requests[0].payload
         self.assertEqual(payload["skill_name"], "workflow:wf:v1")
-        self.assertEqual(
-            payload["instruction"],
-            "Load the workflow skill and execute task-1.",
-        )
+        self.assertNotIn("instruction", payload)
         self.assertIn("workflow_id", payload)
         self.assertIn("task_state", payload)
         self.assertIn(

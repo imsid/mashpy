@@ -73,7 +73,6 @@ class DynamicTaskSpecRequest(BaseModel):
 
 class WorkflowTaskMessageRequest(BaseModel):
     skill_name: str = Field(min_length=1)
-    instruction: str = Field(min_length=1)
 
 
 class RegisterAgentWorkflowRequest(BaseModel):

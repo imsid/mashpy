@@ -423,7 +423,6 @@ def _build_task_message(
     if task_message is not None:
         skill_name = str(task_message.skill_name or "").strip()
         payload["skill_name"] = skill_name
-        payload["instruction"] = str(task_message.instruction or "").strip()
         payload["workflow_task_instructions"] = [
             (
                 f"Your first action must be calling the Skill tool with "

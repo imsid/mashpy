@@ -89,8 +89,7 @@ validation).
   ],
   "metadata": "optional JSON object",
   "task_message": {
-    "skill_name": "required non-empty string",
-    "instruction": "required non-empty string"
+    "skill_name": "required non-empty string"
   }
 }
 ```

@@ -185,7 +185,6 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     metadata={"source": "crew", "version": 1},
                     task_message=WorkflowTaskMessageSpec(
                         skill_name="workflow:experiment-readout:v1",
-                        instruction="Load the workflow skill and execute the task.",
                     ),
                 )
 
@@ -219,7 +218,6 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             ],
                             task_message=WorkflowTaskMessageSpec(
                                 skill_name="workflow:experiment-readout:v1",
-                                instruction="Load the workflow skill.",
                             ),
                         )
                     )
@@ -233,7 +231,6 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
             tasks=[TaskSpec(task_id="task", agent_id="primary")],
             task_message=WorkflowTaskMessageSpec(
                 skill_name="workflow:wf:v1",
-                instruction="Load the workflow skill.",
             ),
         )
 
@@ -258,7 +255,6 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
             tasks=[TaskSpec(task_id="task", agent_id="data")],
             task_message=WorkflowTaskMessageSpec(
                 skill_name="workflow:wf:v1",
-                instruction="Load the workflow skill.",
             ),
         )
 

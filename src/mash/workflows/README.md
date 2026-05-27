@@ -138,7 +138,6 @@ host.register_agent_workflow(
         metadata={"source": "crew", "version": 1},
         task_message=WorkflowTaskMessageSpec(
             skill_name="workflow:experiment-readout:v1",
-            instruction="Load the workflow skill and execute only the matching task.",
         ),
     )
 )
@@ -160,9 +159,9 @@ Dynamic skill content and dynamic workflow definitions are live host state.
 On host restart, the application that owns authoring must republish both.
 
 `WorkflowTaskMessageSpec` is the standard way to ship a dynamic workflow to
-its task agent: it tells the agent which skill to load and which instruction
-to follow. Both `skill_name` and `instruction` are required when the spec is
-provided (validation lives in [`src/mash/workflows/spec.py`](./spec.py)).
+its task agent: it tells the agent which skill to load. `skill_name` is
+required when the spec is provided (validation lives in
+[`src/mash/workflows/spec.py`](./spec.py)).
 The HTTP publishing endpoint requires `task_message` on every request. When
 the task runs, the request payload includes `task_message`, and the workflow
 runtime instructs the agent to invoke the `Skill` tool with the named skill
@@ -210,8 +209,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/data/workflow \
     ],
     "metadata": {"source": "crew", "version": 1},
     "task_message": {
-      "skill_name": "workflow:experiment-readout:v1",
-      "instruction": "Load the workflow skill and execute only the matching task."
+      "skill_name": "workflow:experiment-readout:v1"
     }
   }'
 ```

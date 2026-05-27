@@ -220,7 +220,6 @@ def test_register_agent_workflow_endpoint_registers_dynamic_workflow() -> None:
                     "metadata": {"source": "test"},
                     "task_message": {
                         "skill_name": "workflow:test:v1",
-                        "instruction": "Run the task.",
                     },
                 },
             )
@@ -255,7 +254,6 @@ def test_register_agent_workflow_endpoint_returns_not_found_for_unknown_agent() 
                     "tasks": [{"task_id": "scan-recent-commits", "agent_id": "primary"}],
                     "task_message": {
                         "skill_name": "workflow:test:v1",
-                        "instruction": "Run the task.",
                     },
                 },
             )

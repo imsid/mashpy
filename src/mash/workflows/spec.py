@@ -59,13 +59,10 @@ class WorkflowTaskMessageSpec:
     """Dynamic workflow task prompt instructions."""
 
     skill_name: str
-    instruction: str
 
     def __post_init__(self) -> None:
         if not str(self.skill_name or "").strip():
             raise ValueError("workflow task message skill_name is required")
-        if not str(self.instruction or "").strip():
-            raise ValueError("workflow task message instruction is required")
 
 
 @dataclass(frozen=True)

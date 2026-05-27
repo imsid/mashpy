@@ -157,7 +157,6 @@ def build_agent_router() -> APIRouter:
             metadata=dict(body.metadata),
             task_message=WorkflowTaskMessageSpec(
                 skill_name=body.task_message.skill_name,
-                instruction=body.task_message.instruction,
             ),
         )
         try:

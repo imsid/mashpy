@@ -62,6 +62,4 @@ def _validate_workflow(workflow: WorkflowSpec) -> str:
     if task_message is not None:
         if not str(task_message.skill_name or "").strip():
             raise ValueError("workflow task message skill_name is required")
-        if not str(task_message.instruction or "").strip():
-            raise ValueError("workflow task message instruction is required")
     return workflow_id
