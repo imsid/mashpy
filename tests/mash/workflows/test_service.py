@@ -919,6 +919,66 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             payload["workflow_task_instructions"][1],
         )
 
+    async def test_execute_dynamic_workflow_closes_nested_structured_output_objects(self) -> None:
+        registry = WorkflowRegistry()
+        registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                tasks=[
+                    TaskSpec(
+                        task_id="task-1",
+                        agent_id="worker",
+                        structured_output={
+                            "type": "object",
+                            "properties": {
+                                "result": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ok": {"type": "boolean"},
+                                    },
+                                    "required": ["ok"],
+                                }
+                            },
+                            "required": ["result"],
+                        },
+                    )
+                ],
+            )
+        )
+        client = _FakeAgentClient(text='{"result":{"ok":true}}')
+        self.host = _FakeHost(registry, {"worker": client})
+        workflow_dbos.register_host("host-1", self.host)
+
+        with patch.object(
+            workflow_dbos,
+            "_load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None, None),
+        ):
+            await workflow_dbos.execute_registered_workflow(
+                "host-1",
+                "wf",
+                "mw:host-1:wf:new",
+            )
+
+        self.assertEqual(
+            client.requests[0].structured_output,
+            {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "object",
+                        "properties": {
+                            "ok": {"type": "boolean"},
+                        },
+                        "required": ["ok"],
+                        "additionalProperties": False,
+                    }
+                },
+                "required": ["result"],
+                "additionalProperties": False,
+            },
+        )
+
     async def test_execute_workflow_rejects_invalid_task_json(self) -> None:
         registry = WorkflowRegistry()
         registry.register(

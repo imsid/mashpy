@@ -70,6 +70,43 @@ The runtime is intentionally split into four layers:
    - `turns.py`
    - these are internal modules used by the runtime core and workflow code; they are not alternate public surfaces
 
+## Request Flow
+
+At a high level, a Mash request flows through the host API, into an agent
+runtime, through the durable request engine, and back out as replayable runtime
+events:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant API as mash.api
+    participant Host as AgentHost
+    participant Client as AgentClient
+    participant Server as AgentServer
+    participant Runtime as AgentRuntime
+    participant Events as RuntimeStore
+    participant Engine as RequestEngine
+    participant Agent as mash.core.Agent
+    participant Memory as Memory Store
+
+    User->>API: POST /api/v1/agents/{agent_id}/requests
+    API->>Host: get_client(agent_id)
+    Host-->>API: AgentClient
+    API->>Client: post_request(...) / stream(...)
+    Client->>Server: HTTP request + SSE stream
+    Server->>Runtime: submit_request(...) / stream_request_events(...)
+    Runtime->>Events: append request.accepted
+    Runtime->>Engine: start_request(...)
+    Engine->>Agent: think -> act -> observe
+    Agent-->>Engine: response + trace + token usage
+    Engine->>Memory: save_turn(...)
+    Engine->>Events: append request.started / agent.trace / request.completed
+    Runtime-->>Server: replay persisted events
+    Server-->>Client: SSE runtime events
+    Client-->>API: streamed runtime events
+    API-->>User: SSE / final payload
+```
+
 ## Event Sourcing vs Durability
 
 ### Event Sourcing

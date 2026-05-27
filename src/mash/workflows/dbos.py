@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from mash.runtime.engine.workflow import execute_request_workflow, workflow_id_for
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import append_runtime_event
+from mash.runtime.structured_output import normalize_structured_output_schema
 
 from .spec import WorkflowSpec, WorkflowTaskMessageSpec
 
@@ -296,7 +297,11 @@ async def _post_task_request(
         task_message=task_message,
     )
     runtime = _resolve_inline_runtime(host, agent_id)
-    task_structured_output = structured_output or _WORKFLOW_TASK_STRUCTURED_OUTPUT
+    task_structured_output = (
+        normalize_structured_output_schema(structured_output)
+        if isinstance(structured_output, dict)
+        else _WORKFLOW_TASK_STRUCTURED_OUTPUT
+    )
     if runtime is not None:
         return await _execute_inline_task_request(
             runtime,

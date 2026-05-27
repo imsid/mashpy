@@ -608,6 +608,11 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     finalizer_request.provider_options["structured_output"]["type"],
                     "object",
                 )
+                self.assertFalse(
+                    finalizer_request.provider_options["structured_output"][
+                        "additionalProperties"
+                    ]
+                )
                 turns = await runtime.store.get_turns(
                     session_id=runtime.session_id,
                     app_id=runtime.app_id,
@@ -617,6 +622,48 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     turns[-1]["metadata"]["structured_output"],
                     {"title": "Changelog", "commits_scanned": 5},
                 )
+
+    async def test_submit_request_closes_nested_structured_output_objects(self) -> None:
+        nested_schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "details": {
+                    "type": "object",
+                    "properties": {
+                        "count": {"type": "integer"},
+                    },
+                    "required": ["count"],
+                },
+            },
+            "required": ["summary", "details"],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                definition = _StructuredOutputDefinition(Path(tmp))
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                await runtime.open()
+                try:
+                    await self._invoke_request(
+                        runtime,
+                        message="make a changelog",
+                        structured_output=nested_schema,
+                    )
+                finally:
+                    self.assertEqual(len(definition.provider.requests), 2)
+                    finalizer_request = definition.provider.requests[-1]
+                    self.assertFalse(
+                        finalizer_request.provider_options["structured_output"][
+                            "additionalProperties"
+                        ]
+                    )
+                    self.assertFalse(
+                        finalizer_request.provider_options["structured_output"][
+                            "properties"
+                        ]["details"]["additionalProperties"]
+                    )
+                    await runtime.shutdown()
 
                 await runtime.shutdown()
 

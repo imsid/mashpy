@@ -20,6 +20,41 @@ Mash is organized around three surfaces:
 that external host apps use, and adds Pilot-specific REPL commands such as
 `/changelog [N]`.
 
+At a high level, a Mash request flows through the host API, into an agent
+runtime, through the durable request engine, and back out as replayable runtime
+events:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant API as mash.api
+    participant Host as AgentHost
+    participant Client as AgentClient
+    participant Server as AgentServer
+    participant Runtime as AgentRuntime
+    participant Events as RuntimeStore
+    participant Engine as RequestEngine
+    participant Agent as mash.core.Agent
+    participant Memory as Memory Store
+
+    User->>API: POST /api/v1/agents/{agent_id}/requests
+    API->>Host: get_client(agent_id)
+    Host-->>API: AgentClient
+    API->>Client: post_request(...) / stream(...)
+    Client->>Server: HTTP request + SSE stream
+    Server->>Runtime: submit_request(...) / stream_request_events(...)
+    Runtime->>Events: append request.accepted
+    Runtime->>Engine: start_request(...)
+    Engine->>Agent: think -> act -> observe
+    Agent-->>Engine: response + trace + token usage
+    Engine->>Memory: save_turn(...)
+    Engine->>Events: append request.started / agent.trace / request.completed
+    Runtime-->>Server: replay persisted events
+    Server-->>Client: SSE runtime events
+    Client-->>API: streamed runtime events
+    API-->>User: SSE / final payload
+```
+
 ## What Is In This Repo?
 
 ```text
@@ -67,6 +102,16 @@ Open the Pilot REPL, which includes Pilot-only commands such as `/changelog [N]`
 
 ```bash
 pilot repl
+```
+
+Example messages inside the REPL:
+
+```text
+> Summarize how HostBuilder wires the primary agent, subagents, and workflows. Cite the key files.
+> Trace how an accepted request moves through AgentRuntime, RuntimeStore, and RequestEngine.
+> Explain when request.waiting is emitted and what that means for a busy session.
+> Compare src/mash/runtime and src/mash/workflows responsibilities in this repo.
+/changelog 5
 ```
 
 The API server also serves the telemetry UI at:
@@ -122,6 +167,8 @@ host image and configure startup with `MASH_HOST_APP`, `MASH_DATA_DIR`, and
 
 ## Documentation Map
 
+- [Product brief](docs/product-brief.md): product-level pitch of what Mash
+  offers and where it fits.
 - [Mash package](src/mash/README.md): package overview and boundaries.
 - [Runtime](src/mash/runtime/README.md): host composition, request execution,
   persistence, structured output, and runtime internals.
