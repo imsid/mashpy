@@ -85,7 +85,6 @@ def configure_remote_tools(
 ) -> None:
     if self.mcp_manager is None:
         self.mcp_manager = MCPManager(
-            default_model=agent.llm.model,
             event_logger=self.event_logger,
             session_id=self.session_id,
             app_id=self.app_id,

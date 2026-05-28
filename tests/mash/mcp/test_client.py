@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from mash.mcp.client import MCPHTTPClient, RPCResponse
+from mash.mcp.client import MCPClientError, MCPHTTPClient, RPCResponse
 
 
 class MCPHTTPClientAsyncBridgeTests(unittest.TestCase):
@@ -36,7 +36,6 @@ class MCPHTTPClientAsyncBridgeTests(unittest.TestCase):
             self.assertEqual(method, "tools/list")
             return RPCResponse(
                 result={"tools": [{"name": "alpha"}]},
-                sampling_requests=[],
                 elicitation_requests=[],
             )
 
@@ -53,6 +52,48 @@ class MCPHTTPClientAsyncBridgeTests(unittest.TestCase):
         asyncio.run(_runner())
         self.assertEqual(len(handled), 1)
 
+    def test_extract_interactions_rejects_sampling_requests(self) -> None:
+        with self.assertRaisesRegex(
+            MCPClientError, "deprecated MCP feature 'sampling/createMessage'"
+        ):
+            MCPHTTPClient._extract_interactions(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "sampling-1",
+                        "method": "sampling/createMessage",
+                        "params": {},
+                    }
+                ]
+            )
+
+    def test_extract_interactions_keeps_elicitation_requests(self) -> None:
+        elicitation = MCPHTTPClient._extract_interactions(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "elicitation-1",
+                    "method": "elicitation/createMessage",
+                    "params": {"message": "Need input"},
+                }
+            ]
+        )
+        self.assertEqual(len(elicitation), 1)
+        self.assertEqual(elicitation[0]["id"], "elicitation-1")
+
+    def test_handle_sse_payload_rejects_sampling_requests(self) -> None:
+        client = MCPHTTPClient.__new__(MCPHTTPClient)
+
+        async def _runner() -> None:
+            with self.assertRaisesRegex(
+                MCPClientError, "deprecated MCP feature 'sampling/createMessage'"
+            ):
+                await client._handle_sse_payload(
+                    '{"jsonrpc":"2.0","id":"sampling-1","method":"sampling/createMessage","params":{}}'
+                )
+
+        asyncio.run(_runner())
+
     def test_run_awaitable_re_raises_errors(self) -> None:
         client = MCPHTTPClient.__new__(MCPHTTPClient)
 
@@ -64,4 +105,3 @@ class MCPHTTPClientAsyncBridgeTests(unittest.TestCase):
                 client._run_awaitable(_fail())
 
         asyncio.run(_runner())
-

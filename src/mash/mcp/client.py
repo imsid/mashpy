@@ -1,12 +1,10 @@
 """HTTP-based MCP client for interacting with MCP servers.
 
-This module implements the core handshake described in the MCP client
-concepts documentation (initialize, notifications/initialized, shutdown) using
-JSON-RPC over the official HTTP transport. It also sketches how sampling and
-elicitation hooks can work within the CLI workflow: servers can request that
-clients obtain LLM completions (sampling) or ask the user for more input
-(elicitation). For now those hooks surface helpful console guidance so we can
-plug in a real model or UX later.
+This module implements the core MCP handshake (initialize,
+notifications/initialized, shutdown) using JSON-RPC over the official HTTP
+transport. Mash supports server-initiated elicitation requests but does not
+implement deprecated MCP features such as Sampling, Roots, or protocol-level
+Logging.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, TypeVar, Union
+from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -37,18 +35,13 @@ class RPCResponse:
     """Container for a JSON-RPC result plus side-channel events."""
 
     result: Dict[str, Any]
-    sampling_requests: List[Dict[str, Any]]
     elicitation_requests: List[Dict[str, Any]]
 
-
-SamplingHandler = Callable[
-    [Dict[str, Any]], Union[Dict[str, Any], Awaitable[Dict[str, Any]]]
-]
 T = TypeVar("T")
 
 
 class MCPHTTPClient:
-    """Minimal MCP HTTP client with sampling + elicitation hooks."""
+    """Minimal MCP HTTP client with elicitation hooks."""
 
     def __init__(
         self,
@@ -58,7 +51,6 @@ class MCPHTTPClient:
         client_version: str = "0.1.0",
         protocol_version: str = DEFAULT_PROTOCOL_VERSION,
         default_headers: Optional[Dict[str, str]] = None,
-        sampling_handler: SamplingHandler,
         elicitation_handler: Callable[[Dict[str, Any]], Dict[str, Any]],
     ) -> None:
         self.base_url = self._normalize_url(base_url)
@@ -69,7 +61,6 @@ class MCPHTTPClient:
         self.client_name = client_name
         self.client_version = client_version
         self.protocol_version = protocol_version
-        self._sampling_handler = sampling_handler
         self._elicitation_handler = elicitation_handler
         self._custom_headers: Dict[str, str] = {}
         if default_headers:
@@ -132,7 +123,7 @@ class MCPHTTPClient:
             "method": "initialize",
             "params": {
                 "protocolVersion": self.protocol_version,
-                "capabilities": {"sampling": {}},
+                "capabilities": {},
                 "clientInfo": {
                     "name": self.client_name,
                     "version": self.client_version,
@@ -222,10 +213,9 @@ class MCPHTTPClient:
         )
         events = self._parse_events(response.text, response.headers.get("Content-Type"))
         rpc_result = self._extract_result_payload(request_id, events)
-        sampling, elicitation = self._extract_interactions(events)
+        elicitation = self._extract_interactions(events)
         return RPCResponse(
             result=rpc_result,
-            sampling_requests=sampling,
             elicitation_requests=elicitation,
         )
 
@@ -274,18 +264,21 @@ class MCPHTTPClient:
     @staticmethod
     def _extract_interactions(
         events: List[Dict[str, Any]],
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        sampling: List[Dict[str, Any]] = []
+    ) -> List[Dict[str, Any]]:
         elicitation: List[Dict[str, Any]] = []
         for event in events:
-            if event.get("method") == "sampling/createMessage":
-                sampling.append(event)
-            elif event.get("method") in {
+            method = event.get("method")
+            if method == "sampling/createMessage":
+                raise MCPClientError(
+                    "Server requested deprecated MCP feature 'sampling/createMessage', "
+                    "which Mash does not support."
+                )
+            if method in {
                 "elicitation/createMessage",
                 "elicitation/request",
             }:
                 elicitation.append(event)
-        return sampling, elicitation
+        return elicitation
 
     # ------------------------------------------------------------------
     # Public interface used by the host
@@ -444,35 +437,24 @@ class MCPHTTPClient:
             return
         method = message.get("method")
         if method == "sampling/createMessage":
-            params = message.get("params", {})
-            LOGGER.info("Received sampling request via SSE")
-            reply = await self.handle_sampling_request(params)
-            self._send_rpc_response(message.get("id"), reply)
-        elif method in {"elicitation/createMessage", "elicitation/request"}:
+            raise MCPClientError(
+                "Server requested deprecated MCP feature 'sampling/createMessage', "
+                "which Mash does not support."
+            )
+        if method in {"elicitation/createMessage", "elicitation/request"}:
             params = message.get("params", {})
             LOGGER.info("Received elicitation request via SSE")
             reply = self.handle_elicitation_request(params)
             self._send_rpc_response(message.get("id"), reply)
 
     # ------------------------------------------------------------------
-    # Sampling + elicitation hooks
+    # Elicitation hooks
     # ------------------------------------------------------------------
     async def _handle_interactions(self, response: RPCResponse) -> None:
-        for sampling_req in response.sampling_requests:
-            params = sampling_req.get("params", {})
-            sampling_reply = await self.handle_sampling_request(params)
-            self._send_rpc_response(sampling_req.get("id"), sampling_reply)
         for elicitation_req in response.elicitation_requests:
             params = elicitation_req.get("params", {})
             elicitation_reply = self.handle_elicitation_request(params)
             self._send_rpc_response(elicitation_req.get("id"), elicitation_reply)
-
-    async def handle_sampling_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Delegate sampling requests to the configured handler."""
-        result = self._sampling_handler(request)
-        if inspect.isawaitable(result):
-            return await result
-        return result
 
     def handle_elicitation_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Delegate elicitation requests to the configured handler."""

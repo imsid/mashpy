@@ -23,20 +23,18 @@ class MCPManager:
     def __init__(
         self,
         app_id: str,
-        default_model: Optional[str] = None,
         event_logger: Optional[EventLogger] = None,
         session_id: Optional[str] = None,
     ) -> None:
         """Initialize MCP manager.
 
         Args:
-            default_model: Default model for sampling requests.
             event_logger: Optional event logger for logging MCP operations.
             session_id: Optional session ID for event logging.
             app_id: Optional app ID for event logging.
         """
         self._servers: Dict[str, MCPServer] = {}
-        self._host = Host(default_model=default_model)
+        self._host = Host()
         self._event_logger = event_logger
         self._session_id = session_id
         self._app_id = app_id
