@@ -87,8 +87,7 @@ class REPL:
                     self.command_registry.execute(ctx, line)
                 # Handle messages
                 elif self.message_handler:
-                    with ctx.renderer.status("Thinking..."):
-                        self.message_handler(ctx, line)
+                    self.message_handler(ctx, line)
                 else:
                     ctx.renderer.warn("Only slash commands are supported. Try /help.")
             except SystemExit:

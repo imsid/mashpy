@@ -97,7 +97,23 @@ sequenceDiagram
     Server->>Runtime: submit_request(...) / stream_request_events(...)
     Runtime->>Events: append request.accepted
     Runtime->>Engine: start_request(...)
-    Engine->>Agent: think -> act -> observe
+    Engine->>Agent: think (plan step)
+    Agent-->>Engine: action + tool calls
+
+    opt interaction needed (approval or AskUser)
+        Engine->>Events: append request.interaction.create
+        Events-->>Server: SSE request.interaction.create
+        Server-->>Client: SSE request.interaction.create
+        Client-->>API: interaction event
+        API-->>User: prompt for input
+        User->>API: POST .../interaction {interaction_id, response}
+        API->>Client: post_interaction(...)
+        Client->>Server: POST .../interaction
+        Server->>Engine: DBOS.send (resume workflow)
+        Engine->>Events: append request.interaction.ack
+    end
+
+    Engine->>Agent: act (execute tools) -> observe
     Agent-->>Engine: response + trace + token usage
     Engine->>Memory: save_turn(...)
     Engine->>Events: append request.started / agent.trace / request.completed
@@ -268,7 +284,7 @@ This is intentionally append-only and request-scoped.
   - per-agent HTTP/SSE surface
 
 - [`client.py`](./client.py)
-  - H2A and in-process clients for request submission and event streaming
+  - H2A and in-process clients for request submission, event streaming, and interaction delivery
 
 - [`spec.py`](./spec.py)
   - `AgentSpec` contract
@@ -291,6 +307,7 @@ This is intentionally append-only and request-scoped.
 
 - [`engine/steps.py`](./engine/steps.py)
   - granular workflow step implementations
+  - interaction event emission helpers (`emit_interaction_create`, `emit_interaction_ack`)
 
 ### `events/`
 
@@ -438,6 +455,41 @@ INVALID_STRUCTURED_OUTPUT`.
 [`src/mash/workflows/README.md`](../workflows/README.md) (Per-Task Structured
 Output) for the workflow-level usage and how task state derives from the
 returned JSON.
+
+## Interactions
+
+Interactions allow an agent to pause mid-execution and request information or approval from the host before continuing. This supports human-in-the-loop workflows where tool execution requires explicit user consent, or the agent needs clarification.
+
+### Interaction Types
+
+| Type | Schema | Response shape |
+|------|--------|----------------|
+| `approval` | `{ "type": "enum", "options": ["approve", "deny", "skip"] }` | One of the enum values |
+| `info` | `{ "type": "text" }` | Free-form string |
+| `choice` | `{ "type": "multi_select", "options": [...] }` | Array of selected options |
+
+### How Interactions Work
+
+1. During the workflow loop, after `plan_request_step`, if the action payload contains an `interaction` field, the workflow initiates an interaction.
+2. The workflow emits a `runtime.interaction.create` event (visible on SSE as `request.interaction.create`).
+3. The workflow calls `DBOS.recv(interaction_id, timeout_seconds=...)` — this durably blocks execution.
+4. The host delivers the user's response via `post_interaction` on the client, which calls `DBOS.send(workflow_id, response, topic=interaction_id)`.
+5. The workflow resumes, emits `runtime.interaction.ack`, and continues to tool execution.
+
+### Durability
+
+Interactions use DBOS `recv`/`send` for durable blocking. If the process restarts while waiting for a response, the workflow automatically resumes at the same `recv` point. This enables interactions that span hours or days.
+
+### Timeout Defaults
+
+If no response arrives within `timeout_seconds`:
+- `approval` → defaults to `"deny"`
+- `info` → defaults to `""`
+- `choice` → defaults to `[]`
+
+### Client Operation
+
+Both `AgentClient` (HTTP) and `InProcessAgentClient` expose `post_interaction(request_id, *, interaction_id, response)`. The HTTP client POSTs to `/agent/{agent_id}/request/{request_id}/interaction`. The in-process client calls `DBOS.send()` directly.
 
 ## Important Interfaces
 

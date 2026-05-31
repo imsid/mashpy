@@ -21,8 +21,7 @@ class AgentClientLike(Protocol):
 
     agent_id: str
 
-    async def health(self, *, timeout: float = 5.0) -> dict[str, Any]:
-        ...
+    async def health(self, *, timeout: float = 5.0) -> dict[str, Any]: ...
 
     async def post_request(
         self,
@@ -31,19 +30,25 @@ class AgentClientLike(Protocol):
         session_id: str,
         structured_output: Any = None,
         timeout: float = 30.0,
-    ) -> str:
-        ...
+    ) -> str: ...
+
+    async def post_interaction(
+        self,
+        request_id: str,
+        *,
+        interaction_id: str,
+        response: Any,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]: ...
 
     def stream_response(
         self,
         request_id: str,
         *,
         timeout: Optional[float] = None,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        ...
+    ) -> AsyncIterator[Dict[str, Any]]: ...
 
-    async def close(self) -> None:
-        ...
+    async def close(self) -> None: ...
 
 
 class AgentClient:
@@ -82,6 +87,9 @@ class AgentClient:
     def _request_stream_url(self, request_id: str) -> str:
         return f"{self._request_url()}/{request_id}"
 
+    def _interaction_url(self, request_id: str) -> str:
+        return f"{self._request_url()}/{request_id}/interaction"
+
     def _health_url(self) -> str:
         return f"{self.base_url}/health"
 
@@ -98,7 +106,9 @@ class AgentClient:
         return response.text
 
     @staticmethod
-    def _parse_raw_event(event_name: Optional[str], data_lines: list[str]) -> dict[str, Any] | None:
+    def _parse_raw_event(
+        event_name: Optional[str], data_lines: list[str]
+    ) -> dict[str, Any] | None:
         if not event_name or not data_lines:
             return None
         raw = "\n".join(data_lines)
@@ -140,7 +150,9 @@ class AgentClient:
             "session_id": session_id,
         }
         if structured_output is not None:
-            payload["structured_output"] = serialize_structured_output(structured_output)
+            payload["structured_output"] = serialize_structured_output(
+                structured_output
+            )
 
         try:
             async with httpx.AsyncClient(headers=self._headers) as client:
@@ -162,6 +174,46 @@ class AgentClient:
         if not request_id:
             raise AgentClientError("Agent POST response missing request_id")
         return request_id
+
+    async def post_interaction(
+        self,
+        request_id: str,
+        *,
+        interaction_id: str,
+        response: Any,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        payload = {
+            "interaction_id": interaction_id,
+            "response": response,
+        }
+        try:
+            async with httpx.AsyncClient(headers=self._headers) as client:
+                resp = await client.post(
+                    self._interaction_url(request_id),
+                    json=payload,
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise AgentClientError(f"POST interaction failed: {exc}") from exc
+
+        if resp.status_code == 404:
+            raise AgentClientError(
+                f"POST interaction failed (status=404): {self._extract_message(resp)}"
+            )
+        if resp.status_code == 409:
+            raise AgentClientError(
+                "POST interaction failed (status=409): interaction already responded"
+            )
+        if resp.status_code == 410:
+            raise AgentClientError(
+                "POST interaction failed (status=410): interaction timed out"
+            )
+        if resp.status_code != 200:
+            raise AgentClientError(
+                f"POST interaction failed (status={resp.status_code}): {self._extract_message(resp)}"
+            )
+        return resp.json()
 
     async def stream_response(
         self,
@@ -251,6 +303,23 @@ class InProcessAgentClient:
             raise AgentClientError("Agent POST response missing request_id")
         return request_id
 
+    async def post_interaction(
+        self,
+        request_id: str,
+        *,
+        interaction_id: str,
+        response: Any,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        del timeout
+        from dbos import DBOS as _DBOS
+
+        from .engine.workflow import workflow_id_for
+
+        wf_id = workflow_id_for(self.agent_id, request_id)
+        await _DBOS.send_async(wf_id, response, topic=interaction_id)
+        return {"ok": True, "interaction_id": interaction_id}
+
     async def post_subagent_request(
         self,
         message: str,
@@ -305,5 +374,6 @@ class InProcessAgentClient:
 
     async def close(self) -> None:
         return None
+
 
 __all__ = ["AgentClient", "AgentClientError", "AgentClientLike", "InProcessAgentClient"]

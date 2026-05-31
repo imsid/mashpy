@@ -56,6 +56,13 @@ class ToolRegistry:
         """
         return list(self._tools.keys())
 
+    def tools_requiring_approval(self, names: List[str]) -> List[str]:
+        """Return tool names from the given list that require approval."""
+        return [
+            name for name in names
+            if name in self._tools and getattr(self._tools[name], "requires_approval", False)
+        ]
+
     def to_llm_format(self) -> List[Dict[str, Any]]:
         """Convert all tools to LLM API format.
 

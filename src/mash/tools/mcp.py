@@ -29,6 +29,7 @@ class MCPToolAdapter:
         self.name = name
         self.description = description
         self.parameters = parameters
+        self.requires_approval = False
         self._executor = executor
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:

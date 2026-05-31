@@ -236,6 +236,7 @@ class BashTool:
             },
             "required": ["command"],
         }
+        self.requires_approval = False
         self._session = BashSession(working_dir=working_dir)
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:

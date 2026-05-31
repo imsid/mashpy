@@ -17,6 +17,8 @@ class RuntimeEventType(str, Enum):
     SUBAGENT_CALL_COMPLETED = "runtime.subagent.call.completed"
     STEP_COMPLETED = "runtime.step.completed"
     TURN_PERSISTED = "runtime.turn.persisted"
+    INTERACTION_CREATE = "runtime.interaction.create"
+    INTERACTION_ACK = "runtime.interaction.ack"
     REQUEST_COMPLETED = "runtime.request.completed"
     REQUEST_FAILED = "runtime.request.failed"
     STEP_FAILED = "runtime.step.failed"

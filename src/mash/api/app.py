@@ -84,7 +84,9 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
         )
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    async def _validation_error_handler(
+        _: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=422,
             content=error_payload(
@@ -102,14 +104,18 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
         )
 
     @app.exception_handler(WorkflowNotFoundError)
-    async def _workflow_not_found_handler(_: Request, exc: WorkflowNotFoundError) -> JSONResponse:
+    async def _workflow_not_found_handler(
+        _: Request, exc: WorkflowNotFoundError
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=404,
             content=error_payload("WORKFLOW_NOT_FOUND", str(exc)),
         )
 
     @app.exception_handler(DuplicateWorkflowRunError)
-    async def _duplicate_workflow_run_handler(_: Request, exc: DuplicateWorkflowRunError) -> JSONResponse:
+    async def _duplicate_workflow_run_handler(
+        _: Request, exc: DuplicateWorkflowRunError
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content=error_payload(
@@ -131,7 +137,9 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
                 status_code=401,
             )
 
-    api = APIRouter(prefix=resolved_config.api_prefix, dependencies=[Depends(_authorize)])
+    api = APIRouter(
+        prefix=resolved_config.api_prefix, dependencies=[Depends(_authorize)]
+    )
     api.include_router(build_agent_router())
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())

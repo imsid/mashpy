@@ -45,7 +45,23 @@ sequenceDiagram
     Server->>Runtime: submit_request(...) / stream_request_events(...)
     Runtime->>Events: append request.accepted
     Runtime->>Engine: start_request(...)
-    Engine->>Agent: think -> act -> observe
+    Engine->>Agent: think (plan step)
+    Agent-->>Engine: action + tool calls
+
+    opt interaction needed (approval or AskUser)
+        Engine->>Events: append request.interaction.create
+        Events-->>Server: SSE request.interaction.create
+        Server-->>Client: SSE request.interaction.create
+        Client-->>API: interaction event
+        API-->>User: prompt for input
+        User->>API: POST .../interaction {interaction_id, response}
+        API->>Client: post_interaction(...)
+        Client->>Server: POST .../interaction
+        Server->>Engine: DBOS.send (resume workflow)
+        Engine->>Events: append request.interaction.ack
+    end
+
+    Engine->>Agent: act (execute tools) -> observe
     Agent-->>Engine: response + trace + token usage
     Engine->>Memory: save_turn(...)
     Engine->>Events: append request.started / agent.trace / request.completed

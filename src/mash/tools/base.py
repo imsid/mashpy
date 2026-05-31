@@ -32,6 +32,7 @@ class Tool(Protocol):
     name: str
     description: str
     parameters: Dict[str, Any]  # JSON schema
+    requires_approval: bool
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given arguments.
@@ -61,6 +62,7 @@ class FunctionTool:
     description: str
     parameters: Dict[str, Any]
     _executor: Callable[[Dict[str, Any]], Awaitable[ToolResult]]
+    requires_approval: bool = False
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given arguments."""

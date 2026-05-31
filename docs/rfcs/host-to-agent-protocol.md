@@ -265,14 +265,50 @@ event: request.waiting
 data: {"request_id":"req_123","agent_id":"planner","session_id":"sess_123","status":"waiting","reason":"session_busy"}
 ```
 
-### 6.3 Event Contract
+### 6.3 `post_interaction`
 
-H2A v1 defines this canonical event sequence:
+`post_interaction` delivers a user response to a blocked agent.
+
+Inputs:
+
+- `interaction_id: string`
+- `response: any`
+
+Rules:
+
+- The client MUST submit `post_interaction` as an HTTP `POST` to the interaction endpoint for that request.
+- The request body MUST be a JSON object containing `interaction_id` and `response`.
+- `interaction_id` MUST match an outstanding `request.interaction.create` event for the given request.
+
+The server response MUST be `200 OK` with a JSON object containing:
+
+- `ok: true`
+- `interaction_id: string`
+
+Error responses:
+
+- `404 Not Found` if `request_id` or `interaction_id` is unknown.
+- `409 Conflict` if `interaction_id` has already been responded to.
+- `410 Gone` if the interaction timed out.
+
+Example:
+
+```json
+{
+  "interaction_id": "itr_abc123",
+  "response": "approve"
+}
+```
+
+### 6.4 Event Contract
+
+H2A defines this canonical event sequence:
 
 - `request.accepted`
 - optional `request.waiting`
 - `request.started`
 - zero or more `agent.trace`
+- zero or more `request.interaction.create` / `request.interaction.ack` pairs
 - terminal `request.completed` or `request.error`
 
 Rules:
@@ -281,39 +317,126 @@ Rules:
 - `request.waiting` MUST be non-terminal.
 - `request.waiting` indicates that the request has been accepted but is blocked behind another in-flight request for the same `session_id`.
 - `request.started` MUST be emitted before any `agent.trace` or terminal event.
+- `request.interaction.create` MUST be non-terminal.
+- `request.interaction.create` MUST be followed by exactly one `request.interaction.ack` with the same `interaction_id`.
+- `request.interaction.create` and `request.interaction.ack` MAY appear zero or more times between `request.started` and the terminal event.
 - Exactly one terminal event MUST be emitted.
 
-### 6.4 Client Contract
+### 6.5 Client Contract
 
 For one addressable agent:
 
 - one client MUST target exactly one `agent_id`
 - one client MUST use exactly one base URL for that agent server
-- `post_request` and `stream_response` together form the complete asynchronous request contract
+- `post_request`, `stream_response`, and `post_interaction` together form the complete asynchronous request contract
 
-H2A v1 does not define:
+H2A does not define:
 
 - request cancellation
 - request replay or resume
 - idempotent request submission
 
-## 7. Client To Agent HTTP Server
+## 7. Interactions
+
+An interaction is a mid-execution pause where the agent requests information or approval from the host before continuing. Interactions enable human-in-the-loop workflows without breaking the streaming event model.
+
+### 7.1 Interaction Types
+
+H2A defines three interaction types:
+
+| Type | Schema | Description |
+|------|--------|-------------|
+| `approval` | `{ "type": "enum", "options": ["approve", "deny", "skip"] }` | Request permission before a destructive or significant action |
+| `info` | `{ "type": "text" }` | Request free-form text input from the user |
+| `choice` | `{ "type": "multi_select", "options": [...] }` | Request one or more selections from a set of options |
+
+### 7.2 `request.interaction.create`
+
+Emitted on the SSE stream when the agent blocks waiting for a response.
+
+```text
+event: request.interaction.create
+data: {"request_id":"req_123","agent_id":"planner","session_id":"sess_123","interaction_id":"itr_abc123","type":"approval","prompt":"Delete 47 files from production. Proceed?","schema":{"type":"enum","options":["approve","deny","skip"]},"timeout_seconds":300}
+```
+
+Fields:
+
+- `request_id: string` — the parent request
+- `agent_id: string` — the agent requesting interaction
+- `session_id: string` — current session
+- `interaction_id: string` — unique identifier for this interaction
+- `type: string` — one of `approval`, `info`, `choice`
+- `prompt: string` — human-readable question or description
+- `schema: object` — describes the expected response shape
+- `timeout_seconds: number` — how long the agent will wait
+
+### 7.3 `request.interaction.ack`
+
+Emitted after the agent receives the host's response and resumes execution.
+
+```text
+event: request.interaction.ack
+data: {"request_id":"req_123","agent_id":"planner","session_id":"sess_123","interaction_id":"itr_abc123","response":"approve"}
+```
+
+Fields:
+
+- `request_id: string`
+- `agent_id: string`
+- `session_id: string`
+- `interaction_id: string` — matches the originating `request.interaction.create`
+- `response: any` — the user's response (string for approval/info, array for choice)
+- `timed_out: boolean` (optional) — true if the agent proceeded after timeout with a default
+
+### 7.4 Interaction Flow
+
+```mermaid
+sequenceDiagram
+    participant Host
+    participant Client as Agent Client
+    participant Agent as Agent Runtime
+
+    Agent-->>Client: SSE request.interaction.create
+    Client-->>Host: request.interaction.create event
+    Host->>Host: Present interaction to user
+    Host->>Client: post_interaction(interaction_id, response)
+    Client->>Agent: POST .../interaction
+    Agent-->>Client: 200 OK
+    Agent-->>Client: SSE request.interaction.ack
+    Client-->>Host: request.interaction.ack event
+    Note over Agent: Execution resumes
+```
+
+### 7.5 Timeout Behavior
+
+If the host does not respond within `timeout_seconds`:
+
+- The agent MUST emit `request.interaction.ack` with `timed_out: true`.
+- Default timeout responses: `"deny"` for approval, `""` for info, `[]` for choice.
+- After timeout, POST to that `interaction_id` MUST return `410 Gone`.
+
+### 7.6 Durability
+
+Interaction blocking MUST be durable. If the agent runtime restarts while waiting for a response, it MUST resume waiting for the same `interaction_id` without re-emitting `request.interaction.create`. This enables interactions that span hours or days.
+
+## 8. Client To Agent HTTP Server
 
 This section defines the third communication standard: `Client -> Agent`.
 
 Each agent is exposed by one HTTP server that handles health checks, request creation, and request event streaming.
 
-### 7.1 Endpoint Shape
+### 8.1 Endpoint Shape
 
 The HTTP plus SSE binding defines these endpoints for one agent:
 
 - `GET /health`
 - `POST /agent/{agent_id}/request`
 - `GET /agent/{agent_id}/request/{request_id}`
+- `POST /agent/{agent_id}/request/{request_id}/interaction`
 
 Equivalent route shapes are permitted if they preserve the same semantics.
 
-### 7.2 POST Handling
+### 8.2 POST Request Handling
 
 For `POST /agent/{agent_id}/request`, the server MUST:
 
@@ -338,7 +461,7 @@ Example transport error:
 }
 ```
 
-### 7.3 GET Handling
+### 8.3 GET Stream Handling
 
 For `GET /agent/{agent_id}/request/{request_id}`, the server MUST:
 
@@ -351,7 +474,17 @@ For `GET /agent/{agent_id}/request/{request_id}`, the server MUST:
 
 If no new events are available and the request is not yet complete, the server MAY emit SSE keep-alive comments.
 
-### 7.4 Runtime Requirements Behind The Server
+### 8.4 POST Interaction Handling
+
+For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
+
+1. match the route for the target `agent_id` and `request_id`
+2. read the request body as JSON
+3. validate that `interaction_id` is a non-empty string
+4. deliver the response to the blocked workflow
+5. return `200 OK` with the acknowledged payload
+
+### 8.5 Runtime Requirements Behind The Server
 
 The runtime attached to one agent HTTP server MUST provide:
 
@@ -368,26 +501,26 @@ The runtime execution model MAY vary internally, but the current H2A reference b
 - different sessions MAY run concurrently up to an implementation-defined limit
 - the runtime MAY emit `request.waiting` when same-session contention delays execution start
 
-## 8. Per-Agent HTTP Runtime Binding
+## 9. Per-Agent HTTP Runtime Binding
 
 H2A is per-agent at the transport boundary.
 
-### 8.1 One Server Per Agent
+### 9.1 One Server Per Agent
 
 - Each addressable agent MUST be exposed through its own HTTP server instance or an equivalent per-agent endpoint surface.
 - Each server instance MUST bind exactly one runtime and exactly one `agent_id`.
 - A host with multiple agents MUST maintain one client per agent server.
 - Separate processes or containers are not required by the protocol. An implementation MAY run per-agent servers in the same process.
 
-### 8.2 Server Startup
+### 9.2 Server Startup
 
 When an agent runtime starts its HTTP server:
 
 - it MUST bind a host and port
 - it MUST associate the bound server with exactly one `agent_id`
-- it MUST return a base URL that clients can use for subsequent `post_request` and `stream` calls
+- it MUST return a base URL that clients can use for subsequent `post_request`, `stream`, and `post_interaction` calls
 
-### 8.3 Binding Summary
+### 9.3 Binding Summary
 
 The resulting interaction model is:
 
@@ -396,8 +529,10 @@ The resulting interaction model is:
 3. the per-agent HTTP server accepts the request
 4. the client calls `stream`
 5. the per-agent HTTP server streams the lifecycle for that request
+6. if `request.interaction.create` is received, the client calls `post_interaction`
+7. the per-agent HTTP server delivers the response and resumes execution
 
-## 9. Error Model
+## 10. Error Model
 
 Transport and validation errors MUST be returned as JSON objects of the form:
 
@@ -421,14 +556,14 @@ Recommended HTTP status codes:
 - `404 Not Found` for unknown routes or request ids
 - `500 Internal Server Error` for unexpected transport failures
 
-## 10. Related Protocols
+## 11. Related Protocols
 
 This section is informative.
 
-### 10.1 MCP
+### 11.1 MCP
 
 MCP is complementary to H2A. MCP focuses on tools, resources, prompts, and external context interoperability and includes explicit initialization and capability negotiation. H2A focuses on host-to-agent execution, lifecycle, and transport semantics.
 
-### 10.2 A2A
+### 11.2 A2A
 
 Google A2A is the closest adjacent public protocol. It emphasizes agent-to-agent communication, task lifecycle, structured messages, artifacts, and long-running execution. H2A is narrower and host-to-agent first.

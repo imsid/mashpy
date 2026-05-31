@@ -20,10 +20,12 @@ from mash.runtime import (
     SubAgentMetadata,
 )
 from mash.skills.registry import SkillRegistry
+from mash.tools.ask_user import AskUserTool
 from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 
 from .prompt import build_base_prompt, build_repo_context
+from .tools import UpdateDocsTool
 
 APP_NAME = "Mash Pilot"
 PILOT_AGENT_ID = "pilot"
@@ -450,6 +452,8 @@ class PilotSpec(_BaseCopilotSpec):
     def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
         tools.register(BashTool(working_dir=str(self.workspace_root)))
+        tools.register(UpdateDocsTool(workspace_root=str(self.workspace_root)))
+        tools.register(AskUserTool())
         return tools
 
     def build_system_prompt(self) -> list[dict[str, Any]]:

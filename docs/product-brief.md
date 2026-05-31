@@ -32,6 +32,22 @@ replayable runtime events. That gives teams a stronger operational model than a
 single in-memory agent loop and makes retries, restarts, and long-running work
 much easier to manage.
 
+### Human-in-the-Loop Interactions
+
+Mash supports durable agent-to-user interactions as part of the hosted runtime.
+An agent can pause mid-execution to request approval before a sensitive tool
+runs, or ask the user a question when it needs information to continue. These
+interactions are durable: the runtime can restart, and the waiting agent resumes
+exactly where it left off when the user responds — whether that takes seconds or
+hours.
+
+Tool developers gate execution behind user consent by setting a single attribute
+on the tool definition. Agents ask users questions by calling a built-in tool
+that the runtime intercepts and translates into a durable interaction. Both paths
+use the same protocol-level interaction events and the same host-to-client
+response flow, so the operational model stays simple regardless of who initiates
+the interaction.
+
 ### Structured Outputs Across the System
 
 Mash supports structured outputs as a first-class capability. They are not

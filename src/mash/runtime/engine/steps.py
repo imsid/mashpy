@@ -357,6 +357,19 @@ async def plan_request_step(
             payload=action_payload,
         ),
     )
+    tool_call_names = [
+        str(tc.get("name") or "")
+        for tc in list(action_payload.get("tool_calls") or [])
+        if isinstance(tc, dict)
+    ]
+    needs_approval = runtime.agent.tools.tools_requiring_approval(tool_call_names)
+    if needs_approval:
+        action_payload["interaction"] = {
+            "type": "approval",
+            "prompt": f"Approve execution of: {', '.join(needs_approval)}?",
+            "timeout_seconds": 300,
+        }
+
     aggregate_usage = dict(workflow_state.get("aggregate_usage") or {})
     token_usage = dict(plan_payload.get("token_usage") or {})
     aggregate_usage["input"] = int(aggregate_usage.get("input", 0) or 0) + int(
@@ -618,6 +631,83 @@ async def finalize_structured_output(
         "aggregate_usage": aggregate_usage,
         "structured_output": dict(decoded),
     }
+
+
+INTERACTION_SCHEMAS = {
+    "approval": {"type": "enum", "options": ["approve", "deny", "skip"]},
+    "info": {"type": "text"},
+    "choice": lambda options: {"type": "multi_select", "options": list(options)},
+}
+
+
+async def emit_interaction_create(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    *,
+    interaction_id: str,
+    interaction_type: str,
+    prompt: str,
+    options: list[str] | None = None,
+    timeout_seconds: int = 300,
+) -> None:
+    runtime = _require_runtime(agent_id)
+    if interaction_type == "choice":
+        schema = INTERACTION_SCHEMAS["choice"](options or [])
+    else:
+        schema = INTERACTION_SCHEMAS.get(interaction_type, {"type": "text"})
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=runtime.app_id,
+            agent_id=runtime.app_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            event_type=RuntimeEventType.INTERACTION_CREATE.value,
+            dedupe_key=f"interaction.create.{interaction_id}",
+            payload={
+                "interaction_id": interaction_id,
+                "type": interaction_type,
+                "prompt": prompt,
+                "schema": schema,
+                "timeout_seconds": timeout_seconds,
+            },
+        ),
+    )
+
+
+async def emit_interaction_ack(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    *,
+    interaction_id: str,
+    response: Any,
+    timed_out: bool = False,
+) -> None:
+    runtime = _require_runtime(agent_id)
+    payload: dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "response": response,
+    }
+    if timed_out:
+        payload["timed_out"] = True
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=runtime.app_id,
+            agent_id=runtime.app_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            event_type=RuntimeEventType.INTERACTION_ACK.value,
+            dedupe_key=f"interaction.ack.{interaction_id}",
+            payload=payload,
+        ),
+    )
 
 
 async def complete_request(

@@ -228,6 +228,33 @@ def build_agent_router() -> APIRouter:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
+    @router.post("/agent/{agent_id}/request/{request_id}/interaction")
+    async def post_interaction(
+        request: Request, agent_id: str, request_id: str
+    ) -> dict[str, Any]:
+        client = get_client(request, agent_id)
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="Request body must be an object",
+                status_code=400,
+            )
+        interaction_id = body.get("interaction_id")
+        if not isinstance(interaction_id, str) or not interaction_id.strip():
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="interaction_id is required",
+                status_code=400,
+            )
+        response_value = body.get("response")
+        result = await client.post_interaction(
+            request_id.strip(),
+            interaction_id=interaction_id.strip(),
+            response=response_value,
+        )
+        return success(result)
+
     @router.get("/agent/{agent_id}/sessions")
     async def list_sessions(request: Request, agent_id: str) -> dict[str, Any]:
         agent = resolve_agent(request, agent_id)

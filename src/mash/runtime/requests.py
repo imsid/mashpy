@@ -175,6 +175,31 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
                 "status": "started",
             },
         }
+    if event.event_type == RuntimeEventType.INTERACTION_CREATE.value:
+        return {
+            "event": "request.interaction.create",
+            "data": {
+                "request_id": event.request_id,
+                "agent_id": event.agent_id,
+                "session_id": event.session_id,
+                "interaction_id": event.payload.get("interaction_id"),
+                "type": event.payload.get("type"),
+                "prompt": event.payload.get("prompt"),
+                "schema": event.payload.get("schema"),
+                "timeout_seconds": event.payload.get("timeout_seconds"),
+            },
+        }
+    if event.event_type == RuntimeEventType.INTERACTION_ACK.value:
+        return {
+            "event": "request.interaction.ack",
+            "data": {
+                "request_id": event.request_id,
+                "agent_id": event.agent_id,
+                "session_id": event.session_id,
+                "interaction_id": event.payload.get("interaction_id"),
+                "response": event.payload.get("response"),
+            },
+        }
     if event.event_type == RuntimeEventType.REQUEST_COMPLETED.value:
         return {"event": "request.completed", "data": dict(event.payload or {})}
     if event.event_type == RuntimeEventType.REQUEST_FAILED.value:

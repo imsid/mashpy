@@ -168,6 +168,68 @@ class MashRemoteShell:
             error = error_payload.get("error")
             self.renderer.error(f"{trace_label} error: {error or 'request failed'}")
 
+    def _handle_interaction(
+        self, ctx: CLIContext, request_id: str, payload: dict[str, Any]
+    ) -> None:
+        self.chain_renderer.finish_trace()
+
+        interaction_id = str(payload.get("interaction_id") or "")
+        interaction_type = str(payload.get("type") or "info")
+        prompt = str(payload.get("prompt") or "Input required:")
+        schema = payload.get("schema")
+
+        self.renderer.info(f"\n{prompt}")
+
+        if interaction_type == "approval":
+            options = ["approve", "deny", "skip"]
+            self.renderer.info(f"  Options: {', '.join(options)}")
+            user_input = input("  > ").strip().lower()
+            if user_input not in options:
+                user_input = "deny"
+            response: Any = user_input
+
+        elif interaction_type == "choice":
+            options = []
+            if isinstance(schema, dict):
+                options = schema.get("options", [])
+            for i, opt in enumerate(options, 1):
+                self.renderer.info(f"  {i}. {opt}")
+            self.renderer.info("  Enter numbers separated by commas:")
+            user_input = input("  > ").strip()
+            selected: list[str] = []
+            for part in user_input.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    idx = int(part) - 1
+                    if 0 <= idx < len(options):
+                        selected.append(options[idx])
+                elif part in options:
+                    selected.append(part)
+            response = selected
+
+        else:
+            response = input("  > ").strip()
+
+        self.client.post_interaction(
+            ctx.agent_id,
+            request_id,
+            interaction_id=interaction_id,
+            response=response,
+        )
+
+    def _render_interaction_ack(self, payload: dict[str, Any]) -> None:
+        interaction_id = str(payload.get("interaction_id") or "")
+        response = payload.get("response")
+        timed_out = payload.get("timed_out", False)
+        if timed_out:
+            self.renderer.warn(f"  Interaction {interaction_id} timed out")
+        else:
+            if isinstance(response, list):
+                display = ", ".join(str(item) for item in response)
+            else:
+                display = str(response)
+            self.renderer.info(f"  Accepted: {display}")
+
     def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
         request_id = self.client.submit_request(
             ctx.agent_id,
@@ -192,6 +254,14 @@ class MashRemoteShell:
                     if streamed_text:
                         streamed_response_text = streamed_text
                         ctx.renderer.markdown(streamed_text)
+                    continue
+
+                if event_name == "request.interaction.create":
+                    self._handle_interaction(ctx, request_id, payload)
+                    continue
+
+                if event_name == "request.interaction.ack":
+                    self._render_interaction_ack(payload)
                     continue
 
                 if event_name == "request.completed":

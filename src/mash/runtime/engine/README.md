@@ -134,6 +134,8 @@ After `load_request_context(...)`, the workflow carries one durable state object
   - final collected signals once the run becomes terminal
 - `done`
   - whether the agent context has reached terminal completion
+- `interaction_response` (optional)
+  - the most recent interaction response, available after an interaction ack
 
 This state lives in workflow execution only. It is **not** written to the memory store as partial turns.
 
@@ -182,11 +184,28 @@ Important behavior:
 - assistant output is already reflected in the serialized context before the step returns
 - this step does **not** enable DBOS automatic retries
 
-### 4. `tool.call.<loop_index>.<call_index>`
+### 4. `interaction.create.<loop_index>` / `interaction.ack.<loop_index>` (conditional)
 
-Implemented by `run_step_tool_call(...)`.
+Implemented by `emit_interaction_create(...)` and `emit_interaction_ack(...)`.
 
-This step:
+These steps run only when the action payload from `plan_request_step` contains an `interaction` field. The workflow:
+
+- generates a unique `interaction_id`
+- appends `runtime.interaction.create` (visible as `request.interaction.create` on SSE)
+- calls `DBOS.recv(interaction_id, timeout_seconds=...)` — durable block
+- on response (or timeout): appends `runtime.interaction.ack`
+- injects the response into `workflow_state["interaction_response"]`
+
+This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async`. The `recv` itself is the durable checkpoint — if the process restarts, the workflow resumes waiting at the same point. The host delivers responses via `DBOS.send(workflow_id, response, topic=interaction_id)`.
+
+### 5. `tool.call.<loop_index>.<call_index>` (with workflow-level interceptions)
+
+Implemented by `run_step_tool_call(...)`, with special handling for:
+
+- **`AskUser`**: Intercepted by `_handle_ask_user_interaction()`. Instead of executing the tool, the workflow emits `runtime.interaction.create`, durably blocks via `DBOS.recv()`, and returns the user's response as a normal tool result. This enables agent-initiated user interaction.
+- **`InvokeSubagent`**: Runs at workflow scope (not step scope) because it starts child DBOS workflows.
+
+For all other tools, this step:
 
 - runs exactly one tool call through `Agent.execute_step_tool_call(...)`
 - appends the result payload to workflow state
@@ -201,7 +220,7 @@ Important behavior:
 - completed results remain in `result_payloads`, so already-finished tool calls in the current step are not rerun after resume
 - this step does **not** enable DBOS automatic retries
 
-### 5. `step.commit.<loop_index>`
+### 6. `step.commit.<loop_index>`
 
 Implemented by `commit_request_step(...)`.
 
@@ -224,7 +243,7 @@ It returns the next workflow state with:
 
 This is the only place in the workflow that decides whether execution should continue.
 
-### 6. `turn.persist`
+### 7. `turn.persist`
 
 Implemented by `persist_completed_turn(...)`.
 
@@ -242,7 +261,7 @@ Important nuance:
 - intermediate steps are never persisted as conversation turns
 - only the final completed turn is written to long-term conversation memory
 
-### 7. `request.complete`
+### 8. `request.complete`
 
 Implemented by `complete_request(...)`.
 
@@ -251,7 +270,7 @@ This step:
 - emits `agent.run.complete`
 - appends `runtime.request.completed`
 
-### 8. `request.fail`
+### 9. `request.fail`
 
 Implemented by `fail_request(...)`.
 
@@ -286,6 +305,15 @@ sequenceDiagram
         Step->>Agent: Agent.plan_step(...)
         Step->>Store: append runtime.llm.think.completed
 
+        opt "if action contains interaction"
+            WF->>Step: emit_interaction_create(...)
+            Step->>Store: append runtime.interaction.create
+            WF->>WF: DBOS.recv(interaction_id) — durable block
+            Note over WF: Host calls DBOS.send() via post_interaction
+            WF->>Step: emit_interaction_ack(...)
+            Step->>Store: append runtime.interaction.ack
+        end
+
         loop "for each tool call in action"
             WF->>Step: run_step_tool_call(workflow_state, tool_call)
             Step->>Agent: Agent.execute_step_tool_call(...)
@@ -311,13 +339,14 @@ At a high level, the workflow runs:
 1. start request
 2. load context
 3. plan one canonical agent step
-4. run each tool call for that step durably, in order
-5. commit that step
-6. if not done, repeat
-7. once done, persist the final turn
-8. complete request
+4. if the plan requires interaction: emit `interaction.create`, durably block via `DBOS.recv`, emit `interaction.ack`
+5. run each tool call for that step durably, in order
+6. commit that step
+7. if not done, repeat
+8. once done, persist the final turn
+9. complete request
 
-This is a durable `plan -> tool calls -> commit` loop wrapped around the canonical core agent semantics.
+This is a durable `plan -> [interaction] -> tool calls -> commit` loop wrapped around the canonical core agent semantics.
 
 ## Relationship To Event Sourcing
 
@@ -333,9 +362,10 @@ Typical successful event order:
 2. `runtime.trace.started`
 3. `runtime.context.loaded`
 4. one or more `runtime.llm.think.completed`
-5. zero or more `runtime.tool.call.completed` / `runtime.subagent.call.completed`
-6. `runtime.turn.persisted`
-7. `runtime.request.completed`
+5. zero or more `runtime.interaction.create` / `runtime.interaction.ack` pairs
+6. zero or more `runtime.tool.call.completed` / `runtime.subagent.call.completed`
+7. `runtime.turn.persisted`
+8. `runtime.request.completed`
 
 ## Design Rules For Future Edits
 

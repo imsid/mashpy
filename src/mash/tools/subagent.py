@@ -62,6 +62,7 @@ class InvokeSubagentTool:
     """Tool entrypoint used by primary agents to call subagents."""
 
     name = "InvokeSubagent"
+    requires_approval = False
     description = (
         "Invoke a subagent by id with a focused prompt. "
         "Use this when a specialized subagent can help with the task."

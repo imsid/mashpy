@@ -169,6 +169,21 @@ class MashHostClient:
         )
         return str(response.json()["data"]["request_id"])
 
+    def post_interaction(
+        self,
+        agent_id: str,
+        request_id: str,
+        *,
+        interaction_id: str,
+        response: Any,
+    ) -> dict[str, Any]:
+        resp = self._request(
+            "POST",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/interaction",
+            json_body={"interaction_id": interaction_id, "response": response},
+        )
+        return resp.json().get("data", {})
+
     def stream_request(
         self, agent_id: str, request_id: str
     ) -> Iterator[dict[str, Any]]:
