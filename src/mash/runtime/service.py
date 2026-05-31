@@ -71,6 +71,7 @@ class AgentRuntime:
             self,
             session_id=self.session_id,
         )
+        self._shared_llm = self.agent.llm
         self.agent.set_event_logger(self.event_logger, self.session_id)
         self.agent.llm.set_event_logger(
             self.event_logger,
@@ -248,11 +249,18 @@ class AgentRuntime:
                 "AgentRuntime must be opened before request submission or streaming"
             )
 
-    def build_turn_agent(self, *, session_id: str, trace_id: str) -> Any:
-        agent = factory_helpers.build_agent_instance(self, session_id=session_id)
+    def configure_turn_context(
+        self, agent: Any, *, session_id: str, trace_id: str
+    ) -> None:
         agent.set_event_logger(self.event_logger, session_id)
         agent.llm.set_event_logger(self.event_logger, session_id, self.app_id)
         agent.set_trace_id(trace_id)
+
+    def build_turn_agent(self, *, session_id: str, trace_id: str) -> Any:
+        agent = factory_helpers.build_agent_instance(
+            self, session_id=session_id, shared_llm=self._shared_llm,
+        )
+        self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent
 
     async def open(self) -> None:

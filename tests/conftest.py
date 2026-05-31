@@ -33,6 +33,8 @@ class _TestRuntimeStore:
         self._events: list[RuntimeEvent] = []
         self._events_by_request: dict[str, list[RuntimeEvent]] = {}
         self._lock = asyncio.Lock()
+        self._request_waiters: dict[str, set[asyncio.Event]] = {}
+        self._global_waiters: set[asyncio.Event] = set()
 
     async def open(self) -> None:
         return None
@@ -72,7 +74,8 @@ class _TestRuntimeStore:
             self._events.append(stored)
             if request_events is not None:
                 request_events.append(stored)
-            return stored
+        self._wake_waiters(event.request_id)
+        return stored
 
     async def list_request_events(
         self,
@@ -168,6 +171,35 @@ class _TestRuntimeStore:
             reverse=True,
         )
         return summaries[: max(1, int(limit))]
+
+    def register_request_waiter(self, request_id: str) -> asyncio.Event:
+        event = asyncio.Event()
+        self._request_waiters.setdefault(request_id, set()).add(event)
+        return event
+
+    def unregister_request_waiter(
+        self, request_id: str, event: asyncio.Event
+    ) -> None:
+        waiters = self._request_waiters.get(request_id)
+        if waiters:
+            waiters.discard(event)
+            if not waiters:
+                del self._request_waiters[request_id]
+
+    def register_global_waiter(self) -> asyncio.Event:
+        event = asyncio.Event()
+        self._global_waiters.add(event)
+        return event
+
+    def unregister_global_waiter(self, event: asyncio.Event) -> None:
+        self._global_waiters.discard(event)
+
+    def _wake_waiters(self, request_id: str | None) -> None:
+        if request_id:
+            for ev in self._request_waiters.get(request_id, ()):
+                ev.set()
+        for ev in self._global_waiters:
+            ev.set()
 
 
 async def _execute_request_inline(

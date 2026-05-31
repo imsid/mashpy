@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import defaultdict
 from typing import Any, Protocol, cast
 
 from .types import RuntimeEvent, RuntimeEventType
 
-try:  # pragma: no cover - optional dependency at import time
+try:
     import psycopg
     from psycopg.rows import dict_row
-except ImportError:  # pragma: no cover - exercised only without optional deps
+    from psycopg_pool import AsyncConnectionPool
+except ImportError:
     psycopg = None
     dict_row = None
+    AsyncConnectionPool = None
 
 
 class RuntimeStore(Protocol):
@@ -69,6 +72,20 @@ class RuntimeStore(Protocol):
     ) -> list[dict[str, Any]]:
         ...
 
+    def register_request_waiter(self, request_id: str) -> asyncio.Event:
+        ...
+
+    def unregister_request_waiter(
+        self, request_id: str, event: asyncio.Event
+    ) -> None:
+        ...
+
+    def register_global_waiter(self) -> asyncio.Event:
+        ...
+
+    def unregister_global_waiter(self, event: asyncio.Event) -> None:
+        ...
+
 
 class PostgresRuntimeStore(RuntimeStore):
     """Append-only Postgres-backed runtime event store."""
@@ -78,41 +95,98 @@ class PostgresRuntimeStore(RuntimeStore):
         if not resolved:
             raise ValueError("database_url is required")
         self._database_url = resolved
-        self._conn: Any = None
+        self._pool: Any = None
         self._open_lock = asyncio.Lock()
-        self._lock = asyncio.Lock()
+        self._request_waiters: dict[str, set[asyncio.Event]] = defaultdict(set)
+        self._global_waiters: set[asyncio.Event] = set()
+        self._listener_conn: Any = None
+        self._listener_task: asyncio.Task | None = None
 
     async def open(self) -> None:
-        if self._conn is not None:
+        if self._pool is not None:
             return
-        if psycopg is None or dict_row is None:  # pragma: no cover - env dependent
+        if psycopg is None or dict_row is None or AsyncConnectionPool is None:
             raise RuntimeError(
-                "psycopg is required for PostgresRuntimeStore. Install mashpy with PostgreSQL runtime dependencies."
+                "psycopg and psycopg_pool are required for PostgresRuntimeStore. "
+                "Install mashpy with PostgreSQL runtime dependencies."
             )
         async with self._open_lock:
-            if self._conn is not None:
+            if self._pool is not None:
                 return
-            conn = cast(
-                Any,
-                await psycopg.AsyncConnection.connect(self._database_url),
+            pool = AsyncConnectionPool(
+                self._database_url,
+                min_size=2,
+                max_size=10,
+                open=False,
+                kwargs={"autocommit": True, "row_factory": dict_row},
             )
-            conn.row_factory = dict_row
-            # Polling reads share this long-lived connection, so autocommit keeps
-            # implicit SELECT transactions from pinning later writes.
-            await conn.set_autocommit(True)
-            self._conn = conn
+            await pool.open()
+            self._pool = pool
             await self._init_schema()
 
+            self._listener_conn = cast(
+                Any,
+                await psycopg.AsyncConnection.connect(
+                    self._database_url, autocommit=True
+                ),
+            )
+            await self._listener_conn.execute("LISTEN runtime_events")
+            self._listener_task = asyncio.create_task(self._listen_loop())
+
     async def close(self) -> None:
-        if self._conn is None:
+        if self._listener_task is not None:
+            self._listener_task.cancel()
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                pass
+            self._listener_task = None
+
+        if self._listener_conn is not None:
+            await self._listener_conn.close()
+            self._listener_conn = None
+
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+
+    async def _listen_loop(self) -> None:
+        try:
+            async for notify in self._listener_conn.notifies():
+                request_id = notify.payload
+                if request_id:
+                    for ev in self._request_waiters.get(request_id, ()):
+                        ev.set()
+                for ev in self._global_waiters:
+                    ev.set()
+        except asyncio.CancelledError:
             return
-        await self._conn.close()
-        self._conn = None
+
+    def register_request_waiter(self, request_id: str) -> asyncio.Event:
+        event = asyncio.Event()
+        self._request_waiters[request_id].add(event)
+        return event
+
+    def unregister_request_waiter(
+        self, request_id: str, event: asyncio.Event
+    ) -> None:
+        waiters = self._request_waiters.get(request_id)
+        if waiters:
+            waiters.discard(event)
+            if not waiters:
+                del self._request_waiters[request_id]
+
+    def register_global_waiter(self) -> asyncio.Event:
+        event = asyncio.Event()
+        self._global_waiters.add(event)
+        return event
+
+    def unregister_global_waiter(self, event: asyncio.Event) -> None:
+        self._global_waiters.discard(event)
 
     async def append_event(self, event: RuntimeEvent) -> RuntimeEvent:
         await self.open()
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
                     if event.request_id and event.dedupe_key:
@@ -177,8 +251,12 @@ class PostgresRuntimeStore(RuntimeStore):
                         ),
                     )
                     stored = await cursor.fetchone()
-        if stored is None:
-            raise RuntimeError("failed to persist runtime event")
+                    if stored is None:
+                        raise RuntimeError("failed to persist runtime event")
+                    await cursor.execute(
+                        "SELECT pg_notify('runtime_events', %s)",
+                        (event.request_id or "",),
+                    )
         return self._dict_to_event(stored)
 
     async def list_request_events(
@@ -188,8 +266,7 @@ class PostgresRuntimeStore(RuntimeStore):
         after_seq: int = 0,
     ) -> list[RuntimeEvent]:
         await self.open()
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
@@ -215,7 +292,6 @@ class PostgresRuntimeStore(RuntimeStore):
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
         await self.open()
-        conn = self._get_conn()
         clauses = ["app_id = %s", "event_id > %s"]
         params: list[Any] = [app_id, int(after_event_id)]
         if session_id is not None:
@@ -250,7 +326,7 @@ class PostgresRuntimeStore(RuntimeStore):
                 WHERE {' AND '.join(clauses)}
                 ORDER BY event_id ASC
             """
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(query, tuple(params))
                 rows = await cursor.fetchall()
@@ -258,8 +334,7 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def has_request(self, request_id: str) -> bool:
         await self.open()
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
@@ -275,8 +350,7 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def is_request_terminal(self, request_id: str) -> bool:
         await self.open()
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
@@ -312,14 +386,13 @@ class PostgresRuntimeStore(RuntimeStore):
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         await self.open()
-        conn = self._get_conn()
         params: list[Any] = [app_id]
         session_clause = ""
         if session_id is not None:
             session_clause = "AND session_id = %s"
             params.append(session_id)
         params.append(max(1, int(limit)))
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     f"""
@@ -343,14 +416,8 @@ class PostgresRuntimeStore(RuntimeStore):
                 rows = await cursor.fetchall()
         return [self._trace_row_to_summary(row) for row in rows]
 
-    def _get_conn(self) -> Any:
-        if self._conn is None:
-            raise RuntimeError("PostgresRuntimeStore is not open")
-        return self._conn
-
     async def _init_schema(self) -> None:
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
                     await cursor.execute(

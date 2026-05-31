@@ -113,7 +113,14 @@ def build_telemetry_router() -> APIRouter:
                 )
                 if not events:
                     yield ": keep-alive\n\n"
-                    await asyncio.sleep(0.25)
+                    waiter = agent.runtime_store.register_global_waiter()
+                    try:
+                        try:
+                            await asyncio.wait_for(waiter.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            pass
+                    finally:
+                        agent.runtime_store.unregister_global_waiter(waiter)
                     continue
                 for event in events:
                     try:

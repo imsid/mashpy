@@ -24,10 +24,11 @@ def build_agent_instance(
     self: "AgentRuntime",
     *,
     session_id: str,
+    shared_llm: Any = None,
 ) -> Agent:
     tools = self.definition.build_tools()
     skills = getattr(self, "skills", None) or self.definition.build_skills()
-    llm = self.definition.build_llm()
+    llm = shared_llm if shared_llm is not None else self.definition.build_llm()
     if hasattr(self, "agent"):
         config = replace(self.agent.config)
     else:

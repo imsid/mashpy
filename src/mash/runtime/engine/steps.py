@@ -146,7 +146,6 @@ async def _run_tool_call_payload(
     session_id: str,
     trace_id: str,
 ) -> tuple[ContextToolResult, int]:
-
     agent = runtime.build_turn_agent(session_id=session_id, trace_id=trace_id)
     started_at = time.time()
     try:
@@ -169,22 +168,21 @@ async def _commit_step_payload(
 ) -> dict[str, Any]:
     action = context_helpers.action_from_payload(action_payload)
     results = context_helpers.result_payloads_to_context_results(result_payloads)
-    agent = runtime.build_turn_agent(session_id=session_id, trace_id=trace_id)
-    try:
-        commit = agent.commit_step(
-            context,
-            action,
-            results,
-            step_index=step_index,
-            tool_usage=tool_usage,
-        )
-        return {
-            "context": context_helpers.serialize_context(commit.context),
-            "done": bool(commit.done),
-            "signals": dict(commit.signals or {}),
-        }
-    finally:
-        await agent.tools.shutdown()
+    runtime.configure_turn_context(
+        runtime.agent, session_id=session_id, trace_id=trace_id,
+    )
+    commit = runtime.agent.commit_step(
+        context,
+        action,
+        results,
+        step_index=step_index,
+        tool_usage=tool_usage,
+    )
+    return {
+        "context": context_helpers.serialize_context(commit.context),
+        "done": bool(commit.done),
+        "signals": dict(commit.signals or {}),
+    }
 
 
 async def _persist_turn_payload(
@@ -594,11 +592,9 @@ async def finalize_structured_output(
         use_prompt_caching=False,
         provider_options={"structured_output": dict(structured_output_request)},
     )
-    llm = runtime.definition.build_llm()
-    if hasattr(llm, "set_event_logger"):
-        llm.set_event_logger(runtime.event_logger, session_id, runtime.app_id)
-    if hasattr(llm, "set_trace_id"):
-        llm.set_trace_id(trace_id)
+    llm = runtime._shared_llm
+    llm.set_event_logger(runtime.event_logger, session_id, runtime.app_id)
+    llm.set_trace_id(trace_id)
     response = await llm.send(llm_request)
     if response.stop_reason in {"max_tokens", "refusal", "error"}:
         raise RuntimeError(

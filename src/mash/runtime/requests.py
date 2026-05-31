@@ -143,8 +143,23 @@ async def stream_response_events(
     if public_events or done or wait_timeout <= 0:
         return public_events, next_cursor, done
 
-    await asyncio.sleep(max(0.0, wait_timeout))
-    return [], next_cursor, False
+    waiter = self.runtime_store.register_request_waiter(request_id)
+    try:
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            pass
+        stored_events = await self.runtime_store.list_request_events(
+            request_id,
+            after_seq=max(0, int(cursor)),
+        )
+        public_events = [to_public_event(event) for event in stored_events]
+        if stored_events:
+            next_cursor = int(stored_events[-1].request_seq or 0)
+        done = await self.runtime_store.is_request_terminal(request_id)
+        return public_events, next_cursor, done
+    finally:
+        self.runtime_store.unregister_request_waiter(request_id, waiter)
 
 
 async def append_runtime_event(

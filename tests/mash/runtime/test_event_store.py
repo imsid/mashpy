@@ -181,6 +181,48 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latest_trace["trace_id"], "trace-1")
 
 
+    async def test_request_waiter_wakes_on_append(self) -> None:
+        waiter = self.store.register_request_waiter(self.request_id)
+        try:
+            append_task = asyncio.create_task(self._delayed_append(0.1))
+            try:
+                await asyncio.wait_for(waiter.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.fail("waiter was not woken by append_event")
+            await append_task
+        finally:
+            self.store.unregister_request_waiter(self.request_id, waiter)
+
+        events = await self.store.list_request_events(self.request_id)
+        self.assertEqual(len(events), 1)
+
+    async def test_global_waiter_wakes_on_append(self) -> None:
+        waiter = self.store.register_global_waiter()
+        try:
+            append_task = asyncio.create_task(self._delayed_append(0.1))
+            try:
+                await asyncio.wait_for(waiter.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.fail("global waiter was not woken by append_event")
+            await append_task
+        finally:
+            self.store.unregister_global_waiter(waiter)
+
+    async def _delayed_append(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                dedupe_key=f"waiter-test-{uuid.uuid4().hex[:8]}",
+                payload={"status": "accepted"},
+            )
+        )
+
+
 class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_streamed_request_events_are_visible_from_separate_session(self) -> None:
         _require_postgres_runtime_support()
