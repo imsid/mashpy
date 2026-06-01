@@ -1,7 +1,7 @@
 # Mash Product Brief
 
 Mash is a self-hosted runtime for multi-agent applications. It is built around
-[Host-to-Agent Protocol (H2A)](docs/rfcs/host-to-agent-protocol.md) -- protocol boundary for submitting requests, streaming
+[Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) -- protocol boundary for submitting requests, streaming
 events, and running hosted agents.
 
 ## What Mash Provides
@@ -48,6 +48,10 @@ behavior and build agents that can act with context, preserve useful state, and
 expose structured outputs from each completed loop which makes it easier to build typed
 integrations, machine-readable agent responses, and predictable downstream
 automation.
+
+Each agent brings its own `LLMProvider`, so different agents in the same host
+can run on different models — a cheap model for triage, a capable one for
+complex reasoning. Mash ships providers for Anthropic and OpenAI out of the box.
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
