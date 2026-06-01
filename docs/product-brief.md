@@ -14,6 +14,7 @@ events, and running hosted agents.
 - [Observability Built Into the Runtime](#observability-built-into-the-runtime)
 - [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
 - [Self-Hosted Interfaces for Use and Operations](#self-hosted-interfaces-for-use-and-operations)
+    - [REPL](#repl)
     - [CLI Commands](#cli-commands)
 
 ### Agent Specs governed by a single Host
