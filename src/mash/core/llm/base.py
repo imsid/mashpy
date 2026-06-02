@@ -42,6 +42,9 @@ class LLMProvider(ABC):
         """Return the currently bound event-logger session ID, if any."""
         return None
 
+    async def close(self) -> None:
+        """Release provider resources. Default is no-op."""
+
     def capabilities(self) -> LLMCapabilities:
         """Return optional capabilities beyond the core provider contract."""
         return LLMCapabilities()

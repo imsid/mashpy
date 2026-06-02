@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .anthropic import DEFAULT_ANTHROPIC_MODEL, AnthropicProvider
 from .base import BaseLLMProvider, LLMProvider
+from .gemini import DEFAULT_GEMINI_MODEL, GeminiProvider
 from .openai import DEFAULT_OPENAI_MODEL, OpenAIProvider
 from .types import (
     LLMCapabilities,
@@ -28,7 +29,9 @@ __all__ = [
     "LLMToolDefinition",
     "coerce_content_blocks",
     "AnthropicProvider",
+    "GeminiProvider",
     "OpenAIProvider",
     "DEFAULT_ANTHROPIC_MODEL",
+    "DEFAULT_GEMINI_MODEL",
     "DEFAULT_OPENAI_MODEL",
 ]

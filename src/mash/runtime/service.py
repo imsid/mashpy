@@ -288,6 +288,7 @@ class AgentRuntime:
             if self.has_mcp_manager and self.mcp_manager is not None:
                 self.mcp_manager.disconnect_all()
             await self.agent.tools.shutdown()
+            await self.agent.llm.close()
             await self.engine.close()
             await self.runtime_store.close()
             await self.store.close()

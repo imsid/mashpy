@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mash.core.config import AgentConfig
-from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider
+from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider, GeminiProvider, DEFAULT_GEMINI_MODEL
 from mash.runtime.host.subagents import SubAgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.base import Skill
@@ -149,6 +149,13 @@ class MasherAgentSpec(AgentSpec):
         return skills
 
     def build_llm(self) -> LLMProvider:
+        if os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip():
+            return GeminiProvider(
+                app_id=MASHER_AGENT_ID,
+                model=os.getenv(
+                    "MASHER_GEMINI_MODEL", os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+                ),
+            )
         if os.getenv("OPENAI_API_KEY", "").strip():
             return OpenAIProvider(
                 app_id=MASHER_AGENT_ID,
@@ -165,7 +172,7 @@ class MasherAgentSpec(AgentSpec):
                 ),
             )
         raise RuntimeError(
-            "Masher requires OPENAI_API_KEY or ANTHROPIC_API_KEY to be configured."
+            "Masher requires GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY to be configured."
         )
 
     def build_agent_config(self) -> AgentConfig:

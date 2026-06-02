@@ -51,12 +51,13 @@ automation.
 
 Each agent brings its own `LLMProvider`, so different agents in the same host
 can run on different models — a cheap model for triage, a capable one for
-complex reasoning. Mash ships providers for Anthropic and OpenAI out of the box.
+complex reasoning. Mash ships providers for Anthropic, Google Gemini, and OpenAI out of the box.
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
 - **BashTool** — execute shell commands in the host environment
 - **AskUserTool** — pause execution to ask the user a question (durable)
+- **InvokeSubagent** — delegate work to a registered subagent and stream its response back
 - **search_conversations** — search stored conversation turns and return ranked previews
 - **get_full_turn_message** — expand search results into full turn text
 

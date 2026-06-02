@@ -11,6 +11,7 @@
 - `LLMTokenUsage`: normalized usage accounting
 - `LLMCapabilities`: optional provider capability flags
 - `AnthropicProvider`
+- `GeminiProvider`
 - `OpenAIProvider`
 
 ## Providers Available
@@ -33,6 +34,23 @@ Behavior:
 - Returns capability flags:
   - `beta_flags=True`
   - `server_tools=True`
+
+### `GeminiProvider`
+- Provider name: `gemini`
+- Default model: `DEFAULT_GEMINI_MODEL`
+- Default env source: `GEMINI_MODEL`, fallback `gemini-3.5-flash`
+- API key source:
+  - explicit `api_key`
+  - otherwise `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+
+Behavior:
+- Uses the modern Google GenAI `client.aio.models.generate_content` API.
+- Rejects deprecated legacy models (`gemini-2.0-*`, `gemini-1.5-*`).
+- Automatically translates and coerces lowercase parameter schema types to uppercase strings (e.g. `type: "object"` -> `type: "OBJECT"`) as required by the Gemini API.
+- Disables automatic function calling to ensure explicit Mash tool runtime control.
+- Supports prompt caching via Gemini's `CachedContent` API. When `use_prompt_caching` is enabled, the provider creates a server-side cache resource containing the system instruction and tool definitions, then references it in subsequent requests. The cache is reused as long as system/tools remain unchanged and is automatically recreated when they change. Cache creation failures fall back silently to non-cached requests. The cache is cleaned up on provider `close()` and also expires via TTL (default `3600s`, configurable via `provider_options["cache_ttl"]`).
+- Translates structured outputs into standard `response_mime_type` and `response_schema` parameters.
+- Returns all-false capability flags (`LLMCapabilities()`).
 
 ### `OpenAIProvider`
 - Provider name: `openai`
@@ -75,6 +93,11 @@ Required members:
 - Binds the current agent trace id so provider events can be correlated with agent execution.
 
 Optional members:
+
+`close() -> None`
+- Releases provider resources (e.g. cached content).
+- Default implementation is a no-op.
+- Called by the runtime during shutdown.
 
 `get_event_logger_session_id() -> str | None`
 - Returns the currently bound logging session if the provider tracks it.
@@ -203,8 +226,9 @@ Providers should map their native token accounting into these fields when availa
 
 Current provider capability summary:
 - `AnthropicProvider`: beta flags and server tools
+- `GeminiProvider`: all-false (no provider-specific capability flags)
 - `OpenAIProvider`: reasoning controls
-- Neither adapter currently advertises `streaming=True`
+- No adapter currently advertises `streaming=True`
 
 ## Provider Option Notes
 
@@ -214,6 +238,10 @@ Current known usage:
 - Anthropic:
   - `betas`: list of Anthropic beta flags
   - `structured_output`: JSON-schema dict (see Structured Output below)
+- Gemini:
+  - `cache_ttl`: TTL string for cached content (default `"3600s"`)
+  - `structured_output`: JSON-schema dict (see Structured Output below)
+  - any additional `GenerateContentConfig` params not filtered out by the adapter
 - OpenAI:
   - `prompt_cache_key`
   - `prompt_cache_retention`
@@ -250,6 +278,19 @@ Messages API `output_config`:
 ```
 
 No additional flags are required.
+
+### `GeminiProvider`
+
+When `provider_options["structured_output"]` is a dict, the adapter sets
+`response_mime_type` and `response_schema` on the `GenerateContentConfig`:
+
+```python
+response_mime_type = "application/json"
+response_schema = <user-provided schema dict with types coerced to uppercase>
+```
+
+Schema types are automatically coerced to uppercase (e.g. `"object"` becomes
+`"OBJECT"`) as required by the Gemini API.
 
 ### `OpenAIProvider`
 
@@ -296,4 +337,5 @@ Logged fields include:
 - Provider contract: [base.py](/Users/sid/Projects/mashpy/src/mash/core/llm/base.py)
 - Normalized models: [types.py](/Users/sid/Projects/mashpy/src/mash/core/llm/types.py)
 - Anthropic adapter: [anthropic.py](/Users/sid/Projects/mashpy/src/mash/core/llm/anthropic.py)
+- Gemini adapter: [gemini.py](/Users/sid/Projects/mashpy/src/mash/core/llm/gemini.py)
 - OpenAI adapter: [openai.py](/Users/sid/Projects/mashpy/src/mash/core/llm/openai.py)
