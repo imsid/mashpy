@@ -178,6 +178,8 @@ The `RequestEngine` boundary is also intentionally small:
 - `open()`
 - `close()`
 - `start_request(...)`
+- `get_request_status(...)`
+- `resume_request(...)`
 
 This is the execution/durability boundary. It decides how work starts and resumes. It does not replace the runtime event log.
 
@@ -291,6 +293,9 @@ This is intentionally append-only and request-scoped.
 
 - [`errors.py`](./errors.py)
   - runtime-facing error classification helpers
+  - `classify_error(...)`: pattern-matches errors into retryable/terminal categories
+  - `is_retryable(...)`: boolean helper, defaults unknown errors to retryable
+  - `retry_transient(...)`: async retry with exponential backoff for transient errors
 
 ### `engine/`
 
@@ -490,6 +495,65 @@ If no response arrives within `timeout_seconds`:
 ### Client Operation
 
 Both `AgentClient` (HTTP) and `InProcessAgentClient` expose `post_interaction(request_id, *, interaction_id, response)`. The HTTP client POSTs to `/agent/{agent_id}/request/{request_id}/interaction`. The in-process client calls `DBOS.send()` directly.
+
+## Error Classification and Resumability
+
+The runtime classifies errors as **retryable** (transient) or **terminal** (permanent) and retries transient failures automatically at the step level before emitting `REQUEST_FAILED`.
+
+### Error Classification
+
+[`errors.py`](./errors.py) provides `classify_error(error)` which pattern-matches error messages:
+
+| Error pattern | `error_code` | `retryable` |
+|---|---|---|
+| Rate limits, 429 | `rate_limit_exceeded` | `True` |
+| Timeouts | `timeout` | `True` |
+| Connection/network errors | `network_error` | `True` |
+| 502/503/504 server errors | `server_error` | `True` |
+| Overloaded/capacity | `overloaded` | `True` |
+| Context length exceeded | `context_length_exceeded` | `False` |
+| Auth errors, 401 | `auth_error` | `False` |
+| Permission denied, 403 | `permission_denied` | `False` |
+| Invalid request, 400 | `invalid_request` | `False` |
+| Unknown errors | `None` | `None` (defaults to retryable) |
+
+### Step-Level Retry
+
+Transient errors are retried automatically at the step level using `retry_transient()` from [`errors.py`](./errors.py). The two hot paths — LLM planning (`step.plan`) and tool execution (`tool.call`) — are wrapped in retry logic with exponential backoff and jitter.
+
+- **Max retries**: configurable via `DEFAULT_MAX_STEP_RETRIES` (default: 3)
+- **Backoff**: exponential with jitter, capped at `DEFAULT_RETRY_MAX_DELAY` (default: 30s)
+- **Non-retryable errors**: not retried, propagate immediately
+- **Exhausted retries**: the final exception propagates to the workflow error handler
+
+### Failure Handling
+
+There are three layers of failure handling, each covering a different scenario:
+
+| Failure type | Handled by | Developer action |
+|---|---|---|
+| Transient error (rate limit, timeout, network) | `retry_transient()` — in-process, immediate, with backoff | None — automatic |
+| Retries exhausted or terminal error | `REQUEST_FAILED` emitted | Call `resume_request()` to retry |
+| Process crash (OOM, kill, hardware) | DBOS local recovery on next startup | None — automatic on restart |
+
+**Step-level retry** covers transient errors during normal operation. If retries exhaust or the error is non-retryable, the workflow emits `REQUEST_FAILED` with `error_code` and `retryable` fields from `classify_error()` so the developer knows what happened.
+
+**Developer-initiated resume** covers failures that survive step-level retry. The developer calls `resume_request(request_id)` to set the DBOS workflow back to PENDING for re-execution.
+
+**Process crash recovery** covers the case where the host process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted — the DBOS workflow is left in PENDING state in the database. On the next process startup, `DBOS.launch()` scans for orphaned PENDING workflows and replays them from the last completed step. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
+
+### Request Status and Resume APIs
+
+`AgentRuntime` exposes two methods for request lifecycle inspection:
+
+- `get_request_status(request_id)` — queries the DBOS workflow status directly (not the event log). Returns `pending`, `completed`, `failed`, `cancelled`, or `queued`. Use this when the event stream goes silent after a crash to determine whether the request will be auto-recovered (`pending`) or needs manual intervention (`failed`).
+
+- `resume_request(request_id)` — for requests in `failed` or `cancelled` state, calls `DBOS.resume_workflow_async()` to set the workflow back to PENDING for recovery. Returns informational status if the request is already pending or completed.
+
+These are also available through `AgentClient`, `InProcessAgentClient`, and the HTTP API:
+
+- `GET /agent/{agent_id}/request/{request_id}/status`
+- `POST /agent/{agent_id}/request/{request_id}/resume`
 
 ## Important Interfaces
 

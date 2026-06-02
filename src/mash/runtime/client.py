@@ -48,6 +48,20 @@ class AgentClientLike(Protocol):
         timeout: Optional[float] = None,
     ) -> AsyncIterator[Dict[str, Any]]: ...
 
+    async def get_request_status(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]: ...
+
+    async def resume_request(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]: ...
+
     async def close(self) -> None: ...
 
 
@@ -89,6 +103,12 @@ class AgentClient:
 
     def _interaction_url(self, request_id: str) -> str:
         return f"{self._request_url()}/{request_id}/interaction"
+
+    def _request_status_url(self, request_id: str) -> str:
+        return f"{self._request_url()}/{request_id}/status"
+
+    def _request_resume_url(self, request_id: str) -> str:
+        return f"{self._request_url()}/{request_id}/resume"
 
     def _health_url(self) -> str:
         return f"{self.base_url}/health"
@@ -261,6 +281,56 @@ class AgentClient:
         except httpx.HTTPError as exc:
             raise AgentClientError(f"GET stream failed: {exc}") from exc
 
+    async def get_request_status(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(headers=self._headers) as client:
+                response = await client.get(
+                    self._request_status_url(request_id),
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise AgentClientError(f"GET request status failed: {exc}") from exc
+        if response.status_code == 404:
+            raise AgentClientError(
+                f"request '{request_id}' not found"
+            )
+        if response.status_code != 200:
+            raise AgentClientError(
+                f"GET request status failed (status={response.status_code}): "
+                f"{self._extract_message(response)}"
+            )
+        return response.json()
+
+    async def resume_request(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(headers=self._headers) as client:
+                response = await client.post(
+                    self._request_resume_url(request_id),
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise AgentClientError(f"POST resume request failed: {exc}") from exc
+        if response.status_code == 404:
+            raise AgentClientError(
+                f"request '{request_id}' not found"
+            )
+        if response.status_code != 200:
+            raise AgentClientError(
+                f"POST resume request failed (status={response.status_code}): "
+                f"{self._extract_message(response)}"
+            )
+        return response.json()
+
     async def close(self) -> None:
         return None
 
@@ -371,6 +441,24 @@ class InProcessAgentClient:
                 yield event
             if done:
                 return
+
+    async def get_request_status(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        del timeout
+        return await self.runtime.get_request_status(request_id)
+
+    async def resume_request(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        del timeout
+        return await self.runtime.resume_request(request_id)
 
     async def close(self) -> None:
         return None

@@ -9,6 +9,7 @@ from dbos import DBOS
 
 from ...logging import bound_request_id
 from .. import context as context_helpers
+from ..errors import classify_error, retry_transient
 from .steps import (
     commit_request_step,
     complete_request,
@@ -136,15 +137,17 @@ async def _run_tool_call_for_workflow(
             workflow_state,
             tool_call,
         )
-    return await DBOS.run_step_async(
-        {"name": f"tool.call.{loop_index}.{call_index}"},
-        run_step_tool_call,
-        agent_id,
-        request_id,
-        session_id,
-        trace_id,
-        workflow_state,
-        tool_call,
+    return await retry_transient(
+        lambda: DBOS.run_step_async(
+            {"name": f"tool.call.{loop_index}.{call_index}"},
+            run_step_tool_call,
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            workflow_state,
+            tool_call,
+        )
     )
 
 
@@ -185,14 +188,16 @@ async def execute_request_workflow(
             )
             while True:
                 loop_index = int(workflow_state.get("loop_index") or 0)
-                workflow_state = await DBOS.run_step_async(
-                    {"name": f"step.plan.{loop_index}"},
-                    plan_request_step,
-                    agent_id,
-                    request_id,
-                    session_id,
-                    trace_id,
-                    workflow_state,
+                workflow_state = await retry_transient(
+                    lambda: DBOS.run_step_async(
+                        {"name": f"step.plan.{loop_index}"},
+                        plan_request_step,
+                        agent_id,
+                        request_id,
+                        session_id,
+                        trace_id,
+                        workflow_state,
+                    )
                 )
                 action_payload = dict(workflow_state.get("action") or {})
 
@@ -343,10 +348,7 @@ async def execute_request_workflow(
                     )
                     return
         except Exception as exc:
-            error_payload = {
-                "error": str(exc),
-                "error_type": exc.__class__.__name__,
-            }
+            error_payload = classify_error(exc)
             await DBOS.run_step_async(
                 {"name": "request.fail"},
                 fail_request,

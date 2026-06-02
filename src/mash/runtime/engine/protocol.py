@@ -21,3 +21,17 @@ class RequestEngine(Protocol):
         request_metadata: dict[str, Any],
     ) -> None:
         ...
+
+    async def get_request_status(
+        self,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def resume_request(
+        self,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        ...

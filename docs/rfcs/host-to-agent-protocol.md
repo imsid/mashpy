@@ -321,6 +321,7 @@ Rules:
 - `request.interaction.create` MUST be followed by exactly one `request.interaction.ack` with the same `interaction_id`.
 - `request.interaction.create` and `request.interaction.ack` MAY appear zero or more times between `request.started` and the terminal event.
 - Exactly one terminal event MUST be emitted.
+- `request.error` payloads SHOULD include `error_code` and `retryable` fields to indicate the failure class and whether the error was transient. Transient errors are retried automatically at the step level before `request.error` is emitted; the `retryable` field indicates the original classification.
 
 ### 6.5 Client Contract
 
@@ -329,11 +330,12 @@ For one addressable agent:
 - one client MUST target exactly one `agent_id`
 - one client MUST use exactly one base URL for that agent server
 - `post_request`, `stream_response`, and `post_interaction` together form the complete asynchronous request contract
+- `get_request_status` — query the current execution state of a request
+- `resume_request` — restart a failed or cancelled request for recovery
 
 H2A does not define:
 
 - request cancellation
-- request replay or resume
 - idempotent request submission
 
 ## 7. Interactions
@@ -433,6 +435,8 @@ The HTTP plus SSE binding defines these endpoints for one agent:
 - `POST /agent/{agent_id}/request`
 - `GET /agent/{agent_id}/request/{request_id}`
 - `POST /agent/{agent_id}/request/{request_id}/interaction`
+- `GET /agent/{agent_id}/request/{request_id}/status`
+- `POST /agent/{agent_id}/request/{request_id}/resume`
 
 Equivalent route shapes are permitted if they preserve the same semantics.
 
@@ -484,7 +488,40 @@ For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
 4. deliver the response to the blocked workflow
 5. return `200 OK` with the acknowledged payload
 
-### 8.5 Runtime Requirements Behind The Server
+### 8.5 GET Request Status
+
+For `GET /agent/{agent_id}/request/{request_id}/status`, the server MUST:
+
+1. match the route for the target `agent_id` and `request_id`
+2. query the underlying workflow engine for the request's execution state
+3. return `200 OK` with a JSON object containing:
+   - `request_id: string`
+   - `workflow_id: string`
+   - `status: string` — one of `pending`, `completed`, `failed`, `cancelled`, `queued`
+   - optional `error: string` — error message if failed
+   - optional `recovery_attempts: number` — number of auto-recovery attempts
+4. return `404 Not Found` if the `request_id` is unknown
+
+This endpoint is useful when the SSE stream goes silent after a process crash. The client can check whether the request is still pending (will auto-recover), completed, or permanently failed.
+
+### 8.6 POST Resume Request
+
+For `POST /agent/{agent_id}/request/{request_id}/resume`, the server MUST:
+
+1. match the route for the target `agent_id` and `request_id`
+2. query the underlying workflow engine for the request's execution state
+3. if the request is in a terminal failure state (`failed`, `cancelled`), set the workflow back to `pending` for automatic recovery
+4. return `200 OK` with a JSON object containing:
+   - `request_id: string`
+   - `workflow_id: string`
+   - `status: string` — `resumed` if recovery was triggered, or the current status if no action was needed
+   - optional `previous_status: string` — the status before resume
+   - `message: string` — human-readable description
+5. return `404 Not Found` if the `request_id` is unknown
+
+If the request is already `completed` or `pending`, the server MUST return the current status without modifying state.
+
+### 8.7 Runtime Requirements Behind The Server
 
 The runtime attached to one agent HTTP server MUST provide:
 
@@ -545,7 +582,9 @@ Transport and validation errors MUST be returned as JSON objects of the form:
 }
 ```
 
-Request execution failures after acceptance MUST be emitted as `request.error` events rather than converted into a different HTTP response.
+Request execution failures after acceptance MUST be emitted as `request.error` events rather than converted into a different HTTP response. Transient errors (rate limits, timeouts, network errors) are retried automatically at the step level before `request.error` is emitted. The `request.error` payload SHOULD include `error_code` and `retryable` fields so clients can distinguish transient failures (retries exhausted) from permanent ones.
+
+Failed requests MAY be resumed by the host via `POST .../resume`, which sets the workflow back to pending for re-execution.
 
 Recommended HTTP status codes:
 

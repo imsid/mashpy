@@ -152,6 +152,36 @@ validation).
   - `data: <json payload>`
 - Terminates when event name is `request.completed` or `request.error`.
 
+`GET /api/v1/agent/{agent_id}/request/{request_id}/status`
+- Returns the current DBOS workflow status for a request.
+- Path params:
+  - `agent_id`
+  - `request_id`
+- Returns:
+  - `request_id`
+  - `workflow_id`
+  - `status`: `pending` | `completed` | `failed` | `cancelled` | `queued`
+  - `dbos_status`: raw DBOS status string
+  - `error`: optional error message
+  - `recovery_attempts`: optional number of DBOS recovery attempts
+- Use this to check request state when the SSE stream goes silent (e.g., after a
+  process crash).
+
+`POST /api/v1/agent/{agent_id}/request/{request_id}/resume`
+- Resumes a failed or cancelled request by setting the DBOS workflow back to
+  PENDING for recovery.
+- Path params:
+  - `agent_id`
+  - `request_id`
+- Returns:
+  - `request_id`
+  - `workflow_id`
+  - `status`: `resumed` | `completed` | `pending` | current status
+  - `previous_status`: the status before resume (only when `status` is `resumed`)
+  - `message`: human-readable description
+- If the request is already completed or pending, returns informational status
+  without changing state.
+
 ### Dynamic Publishing
 
 `POST /api/v1/agent/{agent_id}/skill`
@@ -366,6 +396,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
 - `400 INVALID_AGENT_SKILL`: skill validation failed (for example, missing both `location` and `content`)
 - `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
+- `404 REQUEST_NOT_FOUND`: unknown `request_id` for status or resume operations
 
 ## Source Of Truth
 - App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).

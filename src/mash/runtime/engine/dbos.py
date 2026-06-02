@@ -59,11 +59,9 @@ def unregister_runtime(runtime: "AgentRuntime") -> None:
 
 async def ensure_dbos_ready(database_url: str) -> None:
     resolved_url = str(database_url or "").strip()
-    conductor_key = os.getenv("DBOS_CONDUCTOR_KEY")
+    conductor_key = os.getenv("DBOS_CONDUCTOR_KEY") or None
     if not resolved_url:
         raise RuntimeError("MASH_DATABASE_URL is required")
-    if not conductor_key:
-        raise RuntimeError("DBOS_CONDUCTOR_KEY is required")
     if _STATE.ready:
         if _STATE.database_url != resolved_url:
             raise RuntimeError(
@@ -72,13 +70,13 @@ async def ensure_dbos_ready(database_url: str) -> None:
         return
     dbos_class, _ = _load_dbos_api()
 
-    dbos_class(
-        config={
-            "name": "mash",
-            "system_database_url": resolved_url,
-            "conductor_key": conductor_key,
-        }
-    )
+    config: dict[str, Any] = {
+        "name": "mash",
+        "system_database_url": resolved_url,
+    }
+    if conductor_key:
+        config["conductor_key"] = conductor_key
+    dbos_class(config=config)
     register_workflow(dbos_class)
     dbos_class.launch()
     _STATE.ready = True
@@ -112,6 +110,17 @@ def register_workflow(dbos_class: Any) -> None:
         name="mash.runtime.execute_request"
     )(_workflow)
     register_host_workflow(dbos_class)
+
+
+_REQUEST_STATUS_MAP = {
+    "PENDING": "pending",
+    "SUCCESS": "completed",
+    "ERROR": "failed",
+    "CANCELLED": "cancelled",
+    "ENQUEUED": "queued",
+    "DELAYED": "queued",
+    "MAX_RECOVERY_ATTEMPTS_EXCEEDED": "failed",
+}
 
 
 class DBOSRequestEngine(RequestEngine):
@@ -157,6 +166,74 @@ class DBOSRequestEngine(RequestEngine):
                 f"failed to start DBOS workflow '{workflow_id}' for session "
                 f"'{session_id}': {detail}"
             ) from exc
+
+    async def get_request_status(
+        self,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        await ensure_dbos_ready(self._database_url)
+        dbos_class, _ = _load_dbos_api()
+        workflow_id = workflow_id_for(self._runtime.app_id, request_id)
+        status = await dbos_class.get_workflow_status_async(workflow_id)
+        if status is None:
+            raise KeyError(f"request '{request_id}' not found")
+        raw_status = str(getattr(status, "status", "") or "")
+        result: dict[str, Any] = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "status": _REQUEST_STATUS_MAP.get(raw_status, "unknown"),
+            "dbos_status": raw_status,
+        }
+        error = getattr(status, "error", None)
+        if error is not None:
+            result["error"] = str(error)
+        recovery_attempts = getattr(status, "recovery_attempts", None)
+        if recovery_attempts is not None:
+            result["recovery_attempts"] = int(recovery_attempts)
+        return result
+
+    async def resume_request(
+        self,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        await ensure_dbos_ready(self._database_url)
+        dbos_class, _ = _load_dbos_api()
+        workflow_id = workflow_id_for(self._runtime.app_id, request_id)
+        status = await dbos_class.get_workflow_status_async(workflow_id)
+        if status is None:
+            raise KeyError(f"request '{request_id}' not found")
+        raw_status = str(getattr(status, "status", "") or "")
+        if raw_status == "SUCCESS":
+            return {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "status": "completed",
+                "message": "request already completed successfully",
+            }
+        if raw_status == "PENDING":
+            return {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "status": "pending",
+                "message": "request is already pending recovery",
+            }
+        if raw_status in ("ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"):
+            await dbos_class.resume_workflow_async(workflow_id)
+            return {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "status": "resumed",
+                "previous_status": _REQUEST_STATUS_MAP.get(raw_status, "unknown"),
+                "message": "request has been resumed for recovery",
+            }
+        return {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "status": _REQUEST_STATUS_MAP.get(raw_status, "unknown"),
+            "message": f"request is in '{raw_status}' state",
+        }
 
 
 __all__ = [

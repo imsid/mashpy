@@ -255,6 +255,46 @@ def build_agent_router() -> APIRouter:
         )
         return success(result)
 
+    @router.get("/agent/{agent_id}/request/{request_id}/status")
+    async def get_request_status(
+        request: Request, agent_id: str, request_id: str
+    ) -> dict[str, Any]:
+        client = get_client(request, agent_id)
+        normalized = request_id.strip()
+        if not normalized:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="request_id is required",
+                status_code=400,
+            )
+        try:
+            status = await client.get_request_status(normalized)
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(status)
+
+    @router.post("/agent/{agent_id}/request/{request_id}/resume")
+    async def resume_request(
+        request: Request, agent_id: str, request_id: str
+    ) -> dict[str, Any]:
+        client = get_client(request, agent_id)
+        normalized = request_id.strip()
+        if not normalized:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="request_id is required",
+                status_code=400,
+            )
+        try:
+            result = await client.resume_request(normalized)
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(result)
+
     @router.get("/agent/{agent_id}/sessions")
     async def list_sessions(request: Request, agent_id: str) -> dict[str, Any]:
         agent = resolve_agent(request, agent_id)

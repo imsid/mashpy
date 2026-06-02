@@ -30,18 +30,21 @@ The workflow does **not** call `Agent.run(...)` directly. It checkpoints progres
 ## Files In This Layer
 
 - [`protocol.py`](./protocol.py)
-  - defines the `RequestEngine` interface
+  - defines the `RequestEngine` interface (`open`, `close`, `start_request`, `get_request_status`, `resume_request`)
 - [`dbos.py`](./dbos.py)
   - boots DBOS
   - registers live runtimes
   - registers the workflow
   - starts workflow instances
+  - implements `get_request_status` (queries DBOS workflow status)
+  - implements `resume_request` (calls `DBOS.resume_workflow_async`)
 - [`workflow.py`](./workflow.py)
   - sequences DBOS boundaries and loop control
 - [`steps.py`](./steps.py)
   - contains both:
     - DBOS-facing workflow entrypoints
     - runtime-side state transitions and turn persistence helpers
+  - interaction event emission helpers (`emit_interaction_create`, `emit_interaction_ack`)
 
 There is no separate runtime adapter file anymore. The engine implementation lives in `workflow.py` and `steps.py`.
 
@@ -278,6 +281,16 @@ This step:
 
 - records terminal failure as `runtime.request.failed`
 - preserves the request error contract
+- the payload includes `error_code` and `retryable` fields from `classify_error()`
+
+### Step-level retry
+
+The LLM planning step (`step.plan`) and tool execution steps (`tool.call`) are wrapped in `retry_transient()` from [`../errors.py`](../errors.py). Transient errors (rate limits, timeouts, network errors) are retried automatically with exponential backoff before the exception reaches the workflow-level error handler.
+
+- Retries happen in-process with configurable max attempts (`DEFAULT_MAX_STEP_RETRIES`, default 3)
+- Non-retryable errors are not retried and propagate immediately
+- If retries exhaust, the exception propagates to the workflow handler which emits `REQUEST_FAILED`
+- The developer can then call `resume_request()` to manually retry the failed request
 
 ## Sequence Diagram
 
@@ -366,6 +379,11 @@ Typical successful event order:
 6. zero or more `runtime.tool.call.completed` / `runtime.subagent.call.completed`
 7. `runtime.turn.persisted`
 8. `runtime.request.completed`
+
+On failure (after step-level retries are exhausted for transient errors, or immediately for terminal errors):
+
+1. events 1–6 as above (partial)
+2. `runtime.request.failed` (terminal — stream ends, payload includes `error_code` and `retryable`)
 
 ## Design Rules For Future Edits
 
