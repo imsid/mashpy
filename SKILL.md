@@ -290,6 +290,11 @@ response = await runtime.submit_request(
 | `MASH_DATA_DIR` | Persistent data directory (default: `/var/lib/mash`) |
 | `MASH_API_KEY` | API key for the hosted server |
 
+## Deployment
+
+For deploying a Mash Host (local, Docker, cloud, horizontal scaling), see
+[HOW_TO_DEPLOY.md](HOW_TO_DEPLOY.md).
+
 ## Reference Documentation
 
 Fetch these URLs when you need deeper context on a specific subsystem:

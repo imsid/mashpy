@@ -288,6 +288,10 @@ from mash.api import run_host, MashHostConfig
 run_host(host, config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
 ```
 
+For full deployment instructions (Docker Compose, horizontal scaling,
+cloud deployment, and external API access), see
+[HOW_TO_DEPLOY.md](HOW_TO_DEPLOY.md).
+
 ## Project Structure Convention
 
 ```
