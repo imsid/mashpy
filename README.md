@@ -98,6 +98,13 @@ uv run --extra dev pytest -q tests/mash
 uv run --extra dev pytest -q tests/pilot
 ```
 
+## Build with a Coding Agent
+
+This repo includes [`CLAUDE.md`](CLAUDE.md) and [`SKILL.md`](SKILL.md) so
+coding agents like Claude Code, Codex, and Cursor can scaffold a Mash-powered
+agent from a natural language prompt. Copy them into your project or point your
+agent at this repo to get started.
+
 ## Run Pilot Locally
 
 Start the Pilot host:

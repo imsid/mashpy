@@ -530,6 +530,9 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         _FailureInspectingWorkflowDBOS.fail_payload = None
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                async def _no_retry(fn, **_kw):
+                    return await fn()
+
                 with patch(
                     "mash.runtime.service.DBOSRequestEngine",
                     _StepRestrictedRequestEngine,
@@ -539,6 +542,9 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ), patch(
                     "mash.runtime.engine.workflow.plan_request_step",
                     raise_provider_error,
+                ), patch(
+                    "mash.runtime.engine.workflow.retry_transient",
+                    _no_retry,
                 ):
                     host = HostBuilder().primary(
                         build_spec(agent_id="primary", response_text="unused")
@@ -559,6 +565,8 @@ class AgentHostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             {
                                 "error": provider_message,
                                 "error_type": "FakeProviderError",
+                                "error_code": "overloaded",
+                                "retryable": True,
                             },
                         )
                         self.assertNotIn("gASV", str(payload.get("error")))
