@@ -1,6 +1,6 @@
 [project]
 name = "mashpy"
-version = "0.4.2"
+version = "0.4.3"
 description = "SDK for building hosted multi-agent Mash applications."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -43,7 +43,6 @@ Repository = "https://github.com/imsid/mashpy"
 
 [project.scripts]
 mash = "mash.cli.main:main"
-pilot = "pilot.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -58,7 +57,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["mash*", "pilot*"]
+include = ["mash*"]
 exclude = ["apps*", "tests*"]
 
 [tool.setuptools.package-data]
@@ -68,4 +67,3 @@ exclude = ["apps*", "tests*"]
   "skills/*/references/**/*",
   "skills/*/assets/**/*",
 ]
-"pilot" = ["skills/*.md"]

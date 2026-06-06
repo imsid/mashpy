@@ -1,1 +1,0 @@
-"""Mash Pilot package."""

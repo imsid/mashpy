@@ -2,7 +2,7 @@
 
 This guide covers deploying a Mash Host with one or more agents — on your
 laptop, in Docker, or on any cloud provider. It uses the
-[Pilot agent](pilot/README.md) as a running example but the steps apply to any
+[Pilot agent](https://github.com/imsid/mash-pilot) as a running example but the steps apply to any
 Mash application.
 
 ## Architecture Overview

@@ -318,4 +318,4 @@ on a specific subsystem:
 - [CLI](https://github.com/imsid/mashpy/blob/main/src/mash/cli/README.md)
 - [Memory](https://github.com/imsid/mashpy/blob/main/src/mash/memory/README.md)
 - [MCP integration](https://github.com/imsid/mashpy/blob/main/src/mash/mcp/README.md)
-- [Pilot example app](https://github.com/imsid/mashpy/blob/main/pilot/README.md)
+- [Pilot example app](https://github.com/imsid/mash-pilot)
