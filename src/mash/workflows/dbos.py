@@ -358,12 +358,18 @@ async def _execute_inline_task_request(
             },
         ),
     )
+    def _resolve(requested_agent_id: str) -> Any:
+        if requested_agent_id != agent_id:
+            raise RuntimeError(f"runtime '{requested_agent_id}' is not registered")
+        return runtime
+
     await start_request_workflow(
         agent_id,
         request_id,
         message,
         session_id,
         {"structured_output_request": dict(structured_output)},
+        require_runtime_fallback=_resolve,
     )
     return request_id
 

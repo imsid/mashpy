@@ -118,6 +118,8 @@ async def start_request_workflow(
     message: str,
     session_id: str,
     request_metadata: dict[str, Any],
+    *,
+    require_runtime_fallback: Any | None = None,
 ) -> None:
     """Start execute_request_workflow as a standalone DBOS workflow.
 
@@ -125,21 +127,36 @@ async def start_request_workflow(
     child workflow gets its own DBOS workflow ID (``agent_id:request_id``).
     This is required for ``DBOS.recv_async`` / ``DBOS.send_async`` pairing
     used by AskUser interactions.
+
+    When the DBOS runtime workflow is not registered (e.g. in tests),
+    falls back to executing the request workflow inline if
+    *require_runtime_fallback* is provided.
     """
-    dbos_class, set_workflow_id = _load_dbos_api()
     workflow = _STATE.registered_workflow
-    if workflow is None:
-        raise RuntimeError("DBOS workflow is not registered")
-    wf_id = workflow_id_for(agent_id, request_id)
-    with set_workflow_id(wf_id):
-        await dbos_class.start_workflow_async(
-            workflow,
+    if workflow is not None:
+        dbos_class, set_workflow_id = _load_dbos_api()
+        wf_id = workflow_id_for(agent_id, request_id)
+        with set_workflow_id(wf_id):
+            await dbos_class.start_workflow_async(
+                workflow,
+                agent_id,
+                request_id,
+                message,
+                session_id,
+                dict(request_metadata or {}),
+            )
+        return
+    if require_runtime_fallback is not None:
+        await execute_request_workflow(
             agent_id,
             request_id,
             message,
             session_id,
             dict(request_metadata or {}),
+            require_runtime=require_runtime_fallback,
         )
+        return
+    raise RuntimeError("DBOS workflow is not registered")
 
 
 _REQUEST_STATUS_MAP = {
