@@ -10,7 +10,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from mash.runtime.engine.workflow import execute_request_workflow, workflow_id_for
+from mash.runtime.engine.dbos import start_request_workflow
+from mash.runtime.engine.workflow import workflow_id_for
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import append_runtime_event
 from mash.runtime.structured_output import normalize_structured_output_schema
@@ -357,24 +358,14 @@ async def _execute_inline_task_request(
             },
         ),
     )
-    await execute_request_workflow(
+    await start_request_workflow(
         agent_id,
         request_id,
         message,
         session_id,
         {"structured_output_request": dict(structured_output)},
-        require_runtime=_inline_runtime_resolver(runtime, agent_id),
     )
     return request_id
-
-
-def _inline_runtime_resolver(runtime: Any, agent_id: str) -> Any:
-    def _resolve(requested_agent_id: str) -> Any:
-        if requested_agent_id != agent_id:
-            raise RuntimeError(f"runtime '{requested_agent_id}' is not registered")
-        return runtime
-
-    return _resolve
 
 
 async def _collect_terminal_payload(

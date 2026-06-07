@@ -112,6 +112,36 @@ def register_workflow(dbos_class: Any) -> None:
     register_host_workflow(dbos_class)
 
 
+async def start_request_workflow(
+    agent_id: str,
+    request_id: str,
+    message: str,
+    session_id: str,
+    request_metadata: dict[str, Any],
+) -> None:
+    """Start execute_request_workflow as a standalone DBOS workflow.
+
+    Used by the workflow orchestrator for inline task execution so that the
+    child workflow gets its own DBOS workflow ID (``agent_id:request_id``).
+    This is required for ``DBOS.recv_async`` / ``DBOS.send_async`` pairing
+    used by AskUser interactions.
+    """
+    dbos_class, set_workflow_id = _load_dbos_api()
+    workflow = _STATE.registered_workflow
+    if workflow is None:
+        raise RuntimeError("DBOS workflow is not registered")
+    wf_id = workflow_id_for(agent_id, request_id)
+    with set_workflow_id(wf_id):
+        await dbos_class.start_workflow_async(
+            workflow,
+            agent_id,
+            request_id,
+            message,
+            session_id,
+            dict(request_metadata or {}),
+        )
+
+
 _REQUEST_STATUS_MAP = {
     "PENDING": "pending",
     "SUCCESS": "completed",
