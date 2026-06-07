@@ -271,7 +271,62 @@ Host containers + managed PostgreSQL.
 | Load Balancer | ALB | Cloud Load Balancing | Application Gateway |
 | Secrets | Secrets Manager | Secret Manager | Key Vault |
 
-### Deployment Steps
+### Quick Deploy with Render
+
+[Render](https://render.com) is the fastest path to production. A single
+`render.yaml` Blueprint provisions both the Mash Host and a managed Postgres
+database — no Dockerfiles to push, no load balancers to configure.
+
+**1. Add a `render.yaml` to your repo root:**
+
+```yaml
+services:
+  - type: web
+    name: my-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: MASH_DATABASE_URL
+        fromDatabase:
+          name: mash-db
+          property: connectionString
+      - key: MASH_HOST_APP
+        value: my_agent.spec:build_host
+      - key: ANTHROPIC_API_KEY
+        sync: false  # prompted at deploy time
+      - key: MASH_API_KEY
+        sync: false
+
+databases:
+  - name: mash-db
+    plan: basic-256mb
+    databaseName: mash
+    user: mash
+```
+
+**2. Deploy:**
+
+- Push the repo to GitHub (or GitLab).
+- In the Render dashboard, click **New → Blueprint** and select your repo.
+- Render detects `render.yaml`, provisions the database, and builds the
+  Docker image. You'll be prompted for the `sync: false` env vars
+  (`ANTHROPIC_API_KEY`, `MASH_API_KEY`).
+
+**3. Connect:**
+
+```bash
+mash connect \
+  --api-base-url https://my-agent.onrender.com \
+  --api-key <your-mash-api-key> \
+  --agent my-agent
+```
+
+Render handles TLS, health checks, and zero-downtime deploys out of the box.
+To scale horizontally, increase the instance count in the Render dashboard —
+no load balancer setup needed.
+
+### Deployment Steps (Other Providers)
 
 1. **Provision managed PostgreSQL.** Create a Postgres 14+ instance in your
    cloud provider. Note the connection string.

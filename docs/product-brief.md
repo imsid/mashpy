@@ -161,10 +161,10 @@ generation without first building a separate post-processing pipeline.
 Mash exposes agents over HTTP, supports streaming responses, includes a CLI and
 REPL, and fits naturally into local, server, and containerized deployments. The
 same platform can be used to develop an agent system, integrate it into product
-surfaces, and operate it in a controlled environment. Checkout [Crew Agent](https://github.com/imsid/crew/blob/main/docs/product.md) for an implementation.
+surfaces, and operate it in a controlled environment. Checkout [Pilot Agent](https://github.com/imsid/mash-pilot/blob/main/README.md) for an implementation.
 
 ```bash
-mash host serve --host-app pilot.spec:build_host --port 8001
+mash host serve --host-app <MASH_HOST> --port 8001
 mash connect --api-base-url <MASH_HOST_URL> --api-key secret
 ```
 
