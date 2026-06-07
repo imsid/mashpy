@@ -241,6 +241,12 @@ host = (
 The primary agent gets an `InvokeSubagent` tool automatically and can
 delegate to registered subagents.
 
+**Connection sharing:** `AgentHost` creates one shared Postgres connection
+pool and one shared memory store for all agents that use the default
+`build_memory_store()`. This keeps the total database connection count
+constant regardless of agent count. Agents that override
+`build_memory_store()` get their own store instance.
+
 ## Workflows
 
 ```python

@@ -218,7 +218,8 @@ The runtime keeps two different stores on purpose.
 
 ### `memory_store`
 
-Built by `AgentSpec.build_memory_store()`.
+Provisioned by the caller and injected into `AgentRuntime` as a required
+constructor parameter. The default factory is `AgentSpec.build_memory_store()`.
 
 This store owns conversation-oriented state:
 
@@ -238,7 +239,8 @@ the runtime computes.
 
 ### `runtime_store`
 
-Built in `service.py` as a `RuntimeStore` implementation.
+Provisioned by the caller and injected into `AgentRuntime` as a required
+constructor parameter. The standard implementation is `PostgresRuntimeStore`.
 
 This store owns request-oriented state:
 
@@ -248,6 +250,24 @@ This store owns request-oriented state:
 - replayable event streams for API clients
 
 This is intentionally append-only and request-scoped.
+
+### Store lifecycle and sharing
+
+`AgentRuntime` does not create or close its stores — callers own that
+lifecycle. This design enables connection sharing across agents:
+
+- **`AgentHost`** creates one shared `PostgresRuntimeStore` and one shared
+  `PostgresStore` for all agents that use the default `build_memory_store()`.
+  Agents whose spec overrides `build_memory_store()` get their own instance.
+  The host opens the shared stores before creating runtimes and closes them
+  after all runtimes shut down.
+
+- **`AgentServer`** creates its own stores in `from_spec()` and closes them
+  in its lifespan shutdown, after the runtime shuts down.
+
+This keeps the total Postgres connection count constant regardless of agent
+count (one pool + one LISTEN connection + one memory connection), rather than
+scaling linearly per agent.
 
 ## File and Module Guide
 

@@ -355,13 +355,40 @@ class _TestDBOSRequestEngine:
         task.add_done_callback(self._tasks.discard)
 
 
+class _TestMemoryStore:
+    """In-memory SQLiteStore stand-in that accepts a database_url constructor."""
+
+    def __init__(self, _database_url: str) -> None:
+        from mash.memory.store import SQLiteStore
+
+        self._delegate = SQLiteStore(":memory:")
+
+    async def open(self) -> None:
+        await self._delegate.open()
+
+    async def close(self) -> None:
+        await self._delegate.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+def build_test_stores(
+    database_url: str = "postgresql://test/runtime",
+) -> tuple[_TestRuntimeStore, _TestMemoryStore]:
+    """Create test-appropriate runtime and memory stores."""
+    return _TestRuntimeStore(database_url), _TestMemoryStore(database_url)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _patch_hosted_runtime_for_tests():
     from _pytest.monkeypatch import MonkeyPatch
 
     patcher = MonkeyPatch()
     patcher.setenv("MASH_DATABASE_URL", "postgresql://test/runtime")
-    patcher.setattr("mash.runtime.service.PostgresRuntimeStore", _TestRuntimeStore)
+    patcher.setattr("mash.runtime.host.host.PostgresRuntimeStore", _TestRuntimeStore)
+    patcher.setattr("mash.runtime.host.host.PostgresStore", _TestMemoryStore)
+    patcher.setattr("mash.runtime.server.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.service.DBOSRequestEngine", _TestDBOSRequestEngine)
     yield
     patcher.undo()

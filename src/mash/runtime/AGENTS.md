@@ -9,6 +9,8 @@
 - Hosted request execution is event-sourced through `runtime_store`.
 - `RequestEngine` and the `engine/` package remain the workflow/backend boundary.
 - `memory_store` and `runtime_store` remain separate responsibilities.
+- `AgentRuntime` receives stores via constructor injection — it never creates or closes them.
+- `AgentHost` owns shared store instances and their lifecycle; `AgentServer` owns its own.
 - Runtime servers and clients preserve the current host/session contracts.
 - Subagent session derivation remains deterministic.
 - Interactions (approval/info/choice) block durably via DBOS `recv`/`send` in the workflow loop.
@@ -18,7 +20,7 @@
 - Keep the root package small. Prefer `engine/`, `events/`, and `host/` for bounded internals.
 - Keep host composition, transport, request coordination, and runtime lifecycle logic in this package.
 - If hosted request lifecycle, replay semantics, or `RuntimeEventType` changes, update runtime docs and tests together.
-- If storage contracts change, update `AgentSpec` docs to reflect the current store responsibilities.
+- If storage contracts or store lifecycle ownership change, update `AgentSpec` docs and the runtime README Stores section.
 - Preserve `InvokeSubagent` integration and subagent prompt injection behavior used by the host.
 - If runtime control APIs or session semantics change, update downstream API and CLI tests together.
 - If interaction types or schemas change, update the H2A RFC (`docs/rfcs/host-to-agent-protocol.md`) and client/server together.

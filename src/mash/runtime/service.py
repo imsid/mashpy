@@ -12,11 +12,12 @@ from mash.mcp.types import MCPServerConfig
 from ..core.config import SystemPrompt
 from ..logging import EventLogger
 from ..memory.signals import build_default_signal_collector
+from ..memory.store import MemoryStore
 from . import context as context_helpers
 from . import factory as factory_helpers
 from . import requests as request_helpers
 from .engine import DBOSRequestEngine, RequestEngine
-from .events import PostgresRuntimeStore
+from .events import RuntimeStore
 from .spec import AgentSpec
 
 
@@ -36,6 +37,8 @@ class AgentRuntime:
         *,
         runtime_database_url: str | None = None,
         session_id: str,
+        runtime_store: RuntimeStore,
+        memory_store: MemoryStore,
     ) -> None:
         self.definition = definition
         self.app_id = definition.get_agent_id()
@@ -46,8 +49,8 @@ class AgentRuntime:
         if not self.session_id:
             raise ValueError("session_id is required")
 
-        self.memory_store = definition.build_memory_store()
-        self.runtime_store = PostgresRuntimeStore(self.runtime_database_url)
+        self.memory_store = memory_store
+        self.runtime_store = runtime_store
         self.engine: RequestEngine = DBOSRequestEngine(
             self,
             database_url=self.runtime_database_url,
@@ -91,11 +94,15 @@ class AgentRuntime:
         *,
         runtime_database_url: str | None = None,
         session_id: str,
+        runtime_store: RuntimeStore,
+        memory_store: MemoryStore,
     ) -> "AgentRuntime":
         return cls(
             definition,
             runtime_database_url=runtime_database_url,
             session_id=session_id,
+            runtime_store=runtime_store,
+            memory_store=memory_store,
         )
 
     def get_event_logger(self) -> Any:
@@ -298,8 +305,6 @@ class AgentRuntime:
             await self.agent.tools.shutdown()
             await self.agent.llm.close()
             await self.engine.close()
-            await self.runtime_store.close()
-            await self.store.close()
             self._is_open = False
         finally:
             self.definition.on_shutdown(self)

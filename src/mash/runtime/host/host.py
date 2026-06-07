@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Dict, Optional
 
 from mash.core.database import resolve_database_url
+from mash.memory.store import MemoryStore, PostgresStore
 from mash.skills.base import Skill
 from mash.skills.tool import SkillTool
 from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
@@ -14,6 +15,7 @@ from mash.workflows.dbos import register_host as register_workflow_host
 from mash.workflows.dbos import unregister_host as unregister_workflow_host
 
 from ..client import AgentClientLike, InProcessAgentClient
+from ..events import PostgresRuntimeStore, RuntimeStore
 from ..factory import configure_subagent_tools
 from ..service import AgentRuntime
 from ..spec import AgentSpec
@@ -37,6 +39,8 @@ class AgentHost:
         self._clients: Dict[str, AgentClientLike] = {}
         self._agent_skills: Dict[str, Dict[str, Skill]] = {}
         self._agent_workflows: Dict[str, set[str]] = {}
+        self._shared_runtime_store: RuntimeStore | None = None
+        self._shared_memory_store: MemoryStore | None = None
         self._workflow_registry = WorkflowRegistry()
         self._workflow_service = WorkflowService(
             self._workflow_registry,
@@ -195,11 +199,29 @@ class AgentHost:
             raise RuntimeError("MASH_DATABASE_URL is required to start hosted Mash runtimes")
         register_workflow_host(self.host_id, self)
         try:
+            shared_runtime_store = PostgresRuntimeStore(self.runtime_database_url)
+            shared_memory_store = PostgresStore(self.runtime_database_url)
+            self._shared_runtime_store = shared_runtime_store
+            self._shared_memory_store = shared_memory_store
+            await shared_runtime_store.open()
+            await shared_memory_store.open()
+
             for registered in self._registered.values():
+                uses_default_memory = (
+                    type(registered.definition).build_memory_store
+                    is AgentSpec.build_memory_store
+                )
+                memory_store: MemoryStore = (
+                    shared_memory_store
+                    if uses_default_memory
+                    else registered.definition.build_memory_store()
+                )
                 runtime = AgentRuntime.from_spec(
                     registered.definition,
                     runtime_database_url=self.runtime_database_url,
                     session_id=registered.session_id,
+                    runtime_store=shared_runtime_store,
+                    memory_store=memory_store,
                 )
                 agent_skills = self._agent_skills.get(registered.agent_id, {})
                 for skill in agent_skills.values():
@@ -301,6 +323,13 @@ class AgentHost:
         for agent in self._agents.values():
             await agent.shutdown()
         self._agents.clear()
+
+        if self._shared_runtime_store is not None:
+            await self._shared_runtime_store.close()
+            self._shared_runtime_store = None
+        if self._shared_memory_store is not None:
+            await self._shared_memory_store.close()
+            self._shared_memory_store = None
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
         for task in workflow.tasks:

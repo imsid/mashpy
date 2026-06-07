@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine.workflow import workflow_id_for
+from .events import PostgresRuntimeStore
 from .service import AgentRuntime
 
 
@@ -46,6 +47,8 @@ class AgentServer:
                 yield
             finally:
                 await self.runtime.shutdown()
+                await self.runtime.runtime_store.close()
+                await self.runtime.store.close()
 
         self.app = Starlette(
             debug=False,
@@ -78,11 +81,18 @@ class AgentServer:
         runtime_database_url: str | None = None,
         session_id: str,
     ) -> "AgentServer":
+        from mash.core.database import resolve_database_url
+
+        db_url = runtime_database_url or resolve_database_url()
+        runtime_store = PostgresRuntimeStore(db_url)
+        memory_store = definition.build_memory_store()
         return cls(
             AgentRuntime.from_spec(
                 definition,
                 runtime_database_url=runtime_database_url,
                 session_id=session_id,
+                runtime_store=runtime_store,
+                memory_store=memory_store,
             )
         )
 

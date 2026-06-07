@@ -17,6 +17,7 @@ from mash.core.context import ToolCall
 from mash.core.llm import BaseLLMProvider, LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
 from mash.mcp.types import MCPServerConfig
+from conftest import build_test_stores
 from mash.runtime import AgentRuntime
 from mash.runtime.events import RuntimeEventType, build_reasoning_trace
 from mash.runtime.spec import AgentSpec
@@ -24,6 +25,12 @@ from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import build_spec
 from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
+
+
+def _test_stores() -> dict:
+    """Return runtime_store and memory_store kwargs for AgentRuntime.from_spec."""
+    rs, ms = build_test_stores()
+    return {"runtime_store": rs, "memory_store": ms}
 
 
 class _FakeLLMProvider(LLMProvider):
@@ -531,7 +538,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _BaseDefinition(Path(tmp))
-                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session", **_test_stores())
                 self.assertTrue(definition.startup_called)
                 self.assertFalse(hasattr(runtime, "renderer"))
                 await runtime.shutdown()
@@ -544,6 +551,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     AgentRuntime.from_spec(
                         _MismatchedDefinition(Path(tmp)),
                         session_id="host-session",
+                        **_test_stores(),
                     )
 
     def test_runtime_package_does_not_export_runtime_turn_result(self) -> None:
@@ -557,6 +565,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     build_spec(agent_id="test-app", response_text="hello"),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 await runtime.open()
                 _, _, result = await self._invoke_request(runtime, message="hi")
@@ -581,7 +590,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _StructuredOutputDefinition(Path(tmp))
-                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session", **_test_stores())
                 await runtime.open()
                 _, _, result = await self._invoke_request(
                     runtime,
@@ -642,7 +651,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _StructuredOutputDefinition(Path(tmp))
-                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session", **_test_stores())
                 await runtime.open()
                 try:
                     await self._invoke_request(
@@ -676,7 +685,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     Path(tmp),
                     expected_session_id="s-1",
                 )
-                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session", **_test_stores())
                 definition.runtime = runtime
                 await runtime.open()
 
@@ -691,6 +700,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     build_spec(agent_id="test-app", response_text="hello"),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 await runtime.open()
                 runtime.agent.config.compaction_token_threshold = 10
@@ -714,6 +724,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     _ResponseThenFinishDefinition(Path(tmp)),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -756,6 +767,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     _AlwaysRespondDefinition(Path(tmp)),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -774,7 +786,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _CompactionLoggingDefinition(Path(tmp))
-                runtime = AgentRuntime.from_spec(definition, session_id="host-session")
+                runtime = AgentRuntime.from_spec(definition, session_id="host-session", **_test_stores())
                 try:
                     await runtime.open()
                     await runtime.store.save_turn(
@@ -833,6 +845,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     _SignalsDefinition(Path(tmp)),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -887,6 +900,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         runtime = AgentRuntime.from_spec(
                             _MCPDefinition(Path(tmp)),
                             session_id="host-session",
+                            **_test_stores(),
                         )
                         try:
                             await runtime.open()
@@ -923,6 +937,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     _BaseDefinition(Path(tmp)),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 runtime.set_subagent_ids(["research", "", "analysis", "research", "  "])
                 self.assertEqual(runtime.get_subagent_ids(), ["research", "analysis"])
@@ -933,6 +948,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(
                     build_spec(agent_id="test-app", response_text="hello"),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -968,6 +984,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         fail_on_message="boom",
                     ),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -992,6 +1009,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         fail_on_message="boom",
                     ),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -1023,6 +1041,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         delay_seconds=0.25,
                     ),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
@@ -1069,6 +1088,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         delay_seconds=0.25,
                     ),
                     session_id="host-session",
+                    **_test_stores(),
                 )
                 try:
                     await runtime.open()
