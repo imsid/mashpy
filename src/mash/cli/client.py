@@ -240,6 +240,35 @@ class MashHostClient:
         )
         return response.json()["data"]
 
+    def list_traces(
+        self,
+        agent_id: str,
+        session_id: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        response = self._request(
+            "GET",
+            "/api/v1/telemetry/traces",
+            query={"agent_id": agent_id, "session_id": session_id, "limit": limit},
+        )
+        traces = response.json()["data"].get("traces")
+        if not isinstance(traces, list):
+            return []
+        return traces
+
+    def get_trace_analysis(
+        self,
+        agent_id: str,
+        session_id: str,
+        trace_id: str,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/api/v1/telemetry/trace/analysis",
+            query={"agent_id": agent_id, "session_id": session_id, "trace_id": trace_id},
+        )
+        return response.json()["data"]
+
     def list_workflows(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/api/v1/workflow")
         workflows = response.json()["data"].get("workflows")

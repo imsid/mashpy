@@ -370,6 +370,31 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `data: <serialized API event>`
 - Emits `: keep-alive` frames while idle.
 
+`GET /api/v1/telemetry/traces`
+- Lists recent traces for one agent, ordered by most recent first.
+- Query params:
+  - `agent_id` required
+  - `session_id` optional
+  - `limit` optional, default `5`, clamped to `1..100`
+- Returns:
+  - `traces`: list of `{ trace_id, session_id, started_at, latest_event_at, event_count }`
+  - `agent_id`
+
+`GET /api/v1/telemetry/trace/analysis`
+- Returns span tree and deterministic latency analysis for one trace.
+- Query params:
+  - `agent_id` required
+  - `session_id` required
+  - `trace_id` required
+- Returns:
+  - `analysis`: timing breakdown, tool stats, step breakdown, slowest operations, subagent traces
+  - `span_tree`: hierarchical span tree with kind, name, duration, children, and attributes
+  - `status`, `total_duration_ms`
+  - `tokens`: `{ input_tokens, output_tokens }`
+  - `counts`: `{ step_count, tool_call_count, tool_error_count, event_count }`
+- Errors:
+  - `404 TRACE_NOT_FOUND`: no events found for the given trace
+
 `GET /api/v1/telemetry/memory/search`
 - Searches observability memory records.
 - Query params:

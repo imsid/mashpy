@@ -9,6 +9,20 @@ from mash.tools.subagent import derive_subagent_session_id
 from .commands import Command
 
 
+def _fmt_ms(ms: float) -> str:
+    if ms >= 1000:
+        return f"{ms / 1000:.2f}s"
+    return f"{int(ms)}ms"
+
+
+def _fmt_status(status: str) -> str:
+    if status == "completed":
+        return "[ok]"
+    if status == "error":
+        return "[error]"
+    return f"[{status}]"
+
+
 def register_default_commands(shell) -> None:
     """Register built-in commands for a remote CLI shell."""
 
@@ -311,6 +325,98 @@ def register_default_commands(shell) -> None:
 
         ctx.renderer.error("Usage: /workflow [list|run|status] ...")
 
+    def trace_command(ctx, args: list[str]) -> None:
+        count = 1
+        if args:
+            try:
+                count = int(args[0])
+            except ValueError:
+                ctx.renderer.error("Usage: /trace [N]  (N = number of recent traces, default 1)")
+                return
+        if count < 1:
+            ctx.renderer.error("N must be at least 1")
+            return
+
+        traces = ctx.client.list_traces(ctx.agent_id, ctx.session_id, limit=count)
+        if not traces:
+            ctx.renderer.warn("No traces found for this session.")
+            return
+
+        for i, trace_summary in enumerate(traces):
+            trace_id = str(trace_summary.get("trace_id") or "")
+            if not trace_id:
+                continue
+
+            if i > 0:
+                ctx.renderer.print("")
+
+            try:
+                data = ctx.client.get_trace_analysis(ctx.agent_id, ctx.session_id, trace_id)
+            except Exception as exc:
+                ctx.renderer.error(f"Failed to load analysis for trace {trace_id}: {exc}")
+                continue
+
+            analysis = data.get("analysis") or {}
+            timing = analysis.get("timing") or {}
+            tokens = data.get("tokens") or {}
+            counts = data.get("counts") or {}
+
+            total_ms = timing.get("total_duration_ms", 0)
+            status = data.get("status", "unknown")
+
+            ctx.renderer.info(f"Trace {trace_id}")
+            ctx.renderer.print(
+                f"  {_fmt_status(status)}  {_fmt_ms(total_ms)}"
+                f"  |  {counts.get('step_count', 0)} steps"
+                f"  {counts.get('tool_call_count', 0)} tool calls"
+                f"  {(tokens.get('input_tokens', 0) + tokens.get('output_tokens', 0))} tokens"
+            )
+
+            segments = [
+                ("Think", timing.get("total_think_ms", 0), timing.get("pct_think", 0)),
+                ("Tool", timing.get("total_tool_ms", 0), timing.get("pct_tool", 0)),
+                ("Subagent", timing.get("total_subagent_ms", 0), timing.get("pct_subagent", 0)),
+                ("Cold Start", timing.get("cold_start_ms", 0), timing.get("pct_cold_start", 0)),
+                ("Context", timing.get("context_load_ms", 0), 0),
+                ("Idle", timing.get("idle_ms", 0), 0),
+            ]
+            timing_rows = []
+            for label, ms, pct in segments:
+                if ms > 0:
+                    bar_len = int(pct / 2) if pct > 0 else 0
+                    bar = "█" * bar_len
+                    timing_rows.append([label, _fmt_ms(ms), f"{pct:.1f}%" if pct else "", bar])
+            if timing_rows:
+                ctx.renderer.table(["Phase", "Duration", "%", ""], timing_rows)
+
+            tool_stats = analysis.get("tool_stats") or []
+            if tool_stats:
+                tool_rows = [
+                    [
+                        str(t.get("tool_name", "")),
+                        str(t.get("count", 0)),
+                        _fmt_ms(t.get("total_ms", 0)),
+                        _fmt_ms(t.get("avg_ms", 0)),
+                        _fmt_ms(t.get("max_ms", 0)),
+                        str(t.get("error_count", 0)),
+                    ]
+                    for t in tool_stats
+                ]
+                ctx.renderer.table(["Tool", "Count", "Total", "Avg", "Max", "Errors"], tool_rows)
+
+            slowest = analysis.get("slowest_operations") or []
+            if slowest:
+                slow_rows = [
+                    [
+                        str(s.get("kind", "")),
+                        str(s.get("name", "")),
+                        _fmt_ms(s.get("duration_ms", 0)),
+                        f"step {s['step_index']}" if s.get("step_index") is not None else "",
+                    ]
+                    for s in slowest[:5]
+                ]
+                ctx.renderer.table(["Kind", "Name", "Duration", "Step"], slow_rows)
+
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))
     )
@@ -343,5 +449,12 @@ def register_default_commands(shell) -> None:
             name="workflow",
             help="List, run, and inspect workflows",
             handler=workflow_command,
+        )
+    )
+    shell.command_registry.register(
+        Command(
+            name="trace",
+            help="Show trace analysis for recent traces (/trace [N])",
+            handler=trace_command,
         )
     )

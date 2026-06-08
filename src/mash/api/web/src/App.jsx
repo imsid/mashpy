@@ -37,6 +37,9 @@ export default function App() {
   const [selectedApiEventId, setSelectedApiEventId] = useState(null);
   const [apiLive, setApiLive] = useState(true);
 
+  const [traceAnalysis, setTraceAnalysis] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
   const [searchText, setSearchText] = useState('');
   const [searchTarget, setSearchTarget] = useState('user');
   const [searchResults, setSearchResults] = useState([]);
@@ -253,6 +256,37 @@ export default function App() {
     setActiveSearchContext(null);
     setSelectedSearchTurnId(null);
   }, [activeSearchContext, selectedSessionId]);
+
+  useEffect(() => {
+    if (!telemetryAgentId || !selectedSessionId || !selectedTraceId) {
+      setTraceAnalysis(null);
+      return;
+    }
+    let cancelled = false;
+    setAnalysisLoading(true);
+    (async () => {
+      try {
+        const params = new URLSearchParams({
+          agent_id: telemetryAgentId,
+          session_id: selectedSessionId,
+          trace_id: selectedTraceId
+        });
+        const response = await fetch(`${API_BASE}/telemetry/trace/analysis?${params.toString()}`);
+        const payload = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!response.ok) {
+          setTraceAnalysis(null);
+          return;
+        }
+        setTraceAnalysis(apiData(payload));
+      } catch {
+        if (!cancelled) setTraceAnalysis(null);
+      } finally {
+        if (!cancelled) setAnalysisLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [telemetryAgentId, selectedSessionId, selectedTraceId, events.length]);
 
   const selectedSession = selectedSessionId ? sessionMap.get(selectedSessionId) : null;
   const selectedSessionAppId = selectedSession?.appId || null;
@@ -672,52 +706,71 @@ export default function App() {
             </div>
           )}
 
-          <div className="mt-6 space-y-4">
-            {selectedEvents.map((event, idx) => {
-              const key = eventKey(event, idx);
-              const isOpen = expanded.has(key);
-              return (
-                <div key={key} className="relative">
-                  <div className="absolute left-2 top-1 h-full w-px bg-slate-200" />
-                  <div className="flex items-start gap-3">
-                    <div className="mt-2 h-2.5 w-2.5 rounded-full border border-slate-200 bg-white" />
-                    <div className="w-full">
-                      <button
-                        className="flex w-full flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left shadow-sm hover:border-slate-300"
-                        onClick={() => toggleExpand(key)}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span
-                            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
-                              styleForEvent(event.event_type)
-                            }`}
-                          >
-                            {eventFamilyLabel(event.event_type)}
-                          </span>
-                          <span className="text-sm font-medium text-slate-800">
-                            {event.event_type || 'unknown'}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                          <span>{formatDelta(baseTs, timestamp(event))}</span>
-                          <span>-</span>
-                          <span>{eventSummary(event)}</span>
-                          <span className="rounded-full border border-slate-200 px-2 py-0.5">
-                            {isOpen ? 'Hide' : 'Expand'}
-                          </span>
-                        </div>
-                      </button>
-                      {isOpen && (
-                        <pre className="mt-2 overflow-x-auto rounded-2xl border border-slate-200 bg-slate-950/95 p-4 text-xs text-slate-100">
-                          {JSON.stringify(event, null, 2)}
-                        </pre>
-                      )}
+          {analysisLoading && (
+            <div className="mt-6 text-center text-sm text-slate-500">Loading trace analysis...</div>
+          )}
+
+          {traceAnalysis && !analysisLoading && (
+            <div className="mt-6 space-y-6">
+              <TraceSummaryBar analysis={traceAnalysis} />
+              <SpanWaterfall
+                spanTree={traceAnalysis.span_tree}
+                totalDuration={traceAnalysis.total_duration_ms}
+                expanded={expanded}
+                toggleExpand={toggleExpand}
+              />
+              <TraceStatsPanel analysis={traceAnalysis} />
+            </div>
+          )}
+
+          {!traceAnalysis && !analysisLoading && selectedEvents.length > 0 && (
+            <div className="mt-6 space-y-4">
+              {selectedEvents.map((event, idx) => {
+                const key = eventKey(event, idx);
+                const isOpen = expanded.has(key);
+                return (
+                  <div key={key} className="relative">
+                    <div className="absolute left-2 top-1 h-full w-px bg-slate-200" />
+                    <div className="flex items-start gap-3">
+                      <div className="mt-2 h-2.5 w-2.5 rounded-full border border-slate-200 bg-white" />
+                      <div className="w-full">
+                        <button
+                          className="flex w-full flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left shadow-sm hover:border-slate-300"
+                          onClick={() => toggleExpand(key)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
+                                styleForEvent(event.event_type)
+                              }`}
+                            >
+                              {eventFamilyLabel(event.event_type)}
+                            </span>
+                            <span className="text-sm font-medium text-slate-800">
+                              {event.event_type || 'unknown'}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <span>{formatDelta(baseTs, timestamp(event))}</span>
+                            <span>-</span>
+                            <span>{eventSummary(event)}</span>
+                            <span className="rounded-full border border-slate-200 px-2 py-0.5">
+                              {isOpen ? 'Hide' : 'Expand'}
+                            </span>
+                          </div>
+                        </button>
+                        {isOpen && (
+                          <pre className="mt-2 overflow-x-auto rounded-2xl border border-slate-200 bg-slate-950/95 p-4 text-xs text-slate-100">
+                            {JSON.stringify(event, null, 2)}
+                          </pre>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </section>
         <section
           className={`lg:col-span-2 rounded-3xl border border-slate-200/70 bg-white/80 p-6 shadow-[0_20px_60px_-40px_rgba(15,23,42,0.4)] ${
@@ -900,6 +953,301 @@ function JsonBlock({ title, value }) {
       </pre>
     </div>
   );
+}
+
+const SPAN_COLORS = {
+  think: { bar: 'bg-sky-400', badge: 'bg-sky-100 text-sky-800 border-sky-200' },
+  tool_call: { bar: 'bg-amber-400', badge: 'bg-amber-100 text-amber-800 border-amber-200' },
+  subagent_call: { bar: 'bg-purple-400', badge: 'bg-purple-100 text-purple-800 border-purple-200' },
+  cold_start: { bar: 'bg-slate-400', badge: 'bg-slate-100 text-slate-700 border-slate-200' },
+  context_load: { bar: 'bg-cyan-400', badge: 'bg-cyan-100 text-cyan-800 border-cyan-200' },
+  step: { bar: 'bg-emerald-400', badge: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
+  trace: { bar: 'bg-slate-300', badge: 'bg-slate-100 text-slate-600 border-slate-200' },
+};
+
+function TraceSummaryBar({ analysis }) {
+  const timing = analysis.analysis?.timing;
+  if (!timing) return null;
+  const total = timing.total_duration_ms || 1;
+  const segments = [
+    { label: 'Think', ms: timing.total_think_ms, pct: timing.pct_think, color: 'bg-sky-400' },
+    { label: 'Tool', ms: timing.total_tool_ms, pct: timing.pct_tool, color: 'bg-amber-400' },
+    { label: 'Subagent', ms: timing.total_subagent_ms, pct: timing.pct_subagent, color: 'bg-purple-400' },
+    { label: 'Cold Start', ms: timing.cold_start_ms, pct: timing.pct_cold_start, color: 'bg-slate-400' },
+    { label: 'Idle', ms: timing.idle_ms, pct: total > 0 ? ((timing.idle_ms || 0) / total * 100) : 0, color: 'bg-slate-200' },
+  ].filter((s) => s.ms > 0);
+
+  const counts = analysis.counts || {};
+  const tokens = analysis.tokens || {};
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
+            analysis.status === 'completed'
+              ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
+              : analysis.status === 'error'
+              ? 'border-rose-200 bg-rose-100 text-rose-800'
+              : 'border-amber-200 bg-amber-100 text-amber-800'
+          }`}>
+            {analysis.status}
+          </span>
+          <span className="text-sm font-semibold text-slate-800">
+            {formatMs(timing.total_duration_ms)}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+          <span>{counts.step_count} step{counts.step_count !== 1 ? 's' : ''}</span>
+          <span>{counts.tool_call_count} tool call{counts.tool_call_count !== 1 ? 's' : ''}</span>
+          {counts.tool_error_count > 0 && (
+            <span className="text-rose-600">{counts.tool_error_count} error{counts.tool_error_count !== 1 ? 's' : ''}</span>
+          )}
+          <span>{(tokens.input_tokens || 0) + (tokens.output_tokens || 0)} tokens</span>
+        </div>
+      </div>
+
+      <div className="mt-3 flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
+        {segments.map((seg) => (
+          <div
+            key={seg.label}
+            className={`${seg.color} h-full`}
+            style={{ width: `${Math.max(seg.pct, 0.5)}%` }}
+            title={`${seg.label}: ${formatMs(seg.ms)} (${seg.pct.toFixed(1)}%)`}
+          />
+        ))}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-500">
+        {segments.map((seg) => (
+          <span key={seg.label} className="flex items-center gap-1">
+            <span className={`inline-block h-2 w-2 rounded-full ${seg.color}`} />
+            {seg.label} {formatMs(seg.ms)} ({seg.pct.toFixed(1)}%)
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SpanWaterfall({ spanTree, totalDuration, expanded, toggleExpand }) {
+  if (!spanTree) return null;
+  const total = totalDuration || spanTree.duration_ms || 1;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white">
+      <div className="border-b border-slate-200 px-4 py-2">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Span Waterfall</h3>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {renderSpanRows(spanTree, total, 0, expanded, toggleExpand)}
+      </div>
+    </div>
+  );
+}
+
+function renderSpanRows(span, totalDuration, depth, expanded, toggleExpand) {
+  const rows = [];
+  const hasChildren = span.children && span.children.length > 0;
+  const isOpen = expanded.has(span.span_id);
+  const colors = SPAN_COLORS[span.kind] || SPAN_COLORS.trace;
+
+  const offsetPct = totalDuration > 0
+    ? ((span.start_time - (span.start_time - span.duration_ms / 1000)) / (totalDuration / 1000)) * 100
+    : 0;
+  const widthPct = totalDuration > 0 ? Math.max((span.duration_ms / totalDuration) * 100, 0.5) : 100;
+
+  if (span.kind !== 'trace') {
+    rows.push(
+      <div
+        key={span.span_id}
+        className="flex items-center gap-2 px-4 py-2 hover:bg-slate-50 cursor-pointer"
+        onClick={() => toggleExpand(span.span_id)}
+      >
+        <div className="flex items-center gap-1 shrink-0" style={{ width: `${depth * 20 + 120}px` }}>
+          <span style={{ width: `${depth * 20}px` }} />
+          {hasChildren && (
+            <span className="text-slate-400 text-xs w-4 text-center">{isOpen ? '▾' : '▸'}</span>
+          )}
+          {!hasChildren && <span className="w-4" />}
+          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${colors.badge}`}>
+            {span.kind}
+          </span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-xs font-medium text-slate-800">{span.name}</span>
+            <span className="shrink-0 text-xs text-slate-500">{formatMs(span.duration_ms)}</span>
+          </div>
+          <div className="mt-1 h-2 w-full rounded-full bg-slate-100 relative">
+            <div
+              className={`absolute h-full rounded-full ${colors.bar} ${span.status === 'error' ? 'bg-rose-400' : ''}`}
+              style={{ width: `${widthPct}%`, maxWidth: '100%' }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (span.kind === 'trace' || isOpen) {
+    for (const child of (span.children || [])) {
+      rows.push(...renderSpanRows(child, totalDuration, span.kind === 'trace' ? depth : depth + 1, expanded, toggleExpand));
+    }
+  }
+
+  if (isOpen && span.attributes && Object.keys(span.attributes).length > 0) {
+    rows.push(
+      <div key={`${span.span_id}-attrs`} className="px-4 py-2 bg-slate-50">
+        <pre className="ml-8 overflow-x-auto text-[11px] text-slate-600" style={{ marginLeft: `${(depth + 1) * 20 + 32}px` }}>
+          {JSON.stringify(span.attributes, null, 2)}
+        </pre>
+      </div>
+    );
+  }
+
+  return rows;
+}
+
+function TraceStatsPanel({ analysis }) {
+  const data = analysis.analysis;
+  if (!data) return null;
+  const toolStats = data.tool_stats || [];
+  const stepBreakdown = data.step_breakdown || [];
+  const slowest = data.slowest_operations || [];
+
+  return (
+    <div className="space-y-4">
+      {toolStats.length > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white">
+          <button
+            className="w-full px-4 py-3 text-left"
+            onClick={(e) => {
+              const panel = e.currentTarget.nextElementSibling;
+              panel.classList.toggle('hidden');
+            }}
+          >
+            <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Tool Stats ({toolStats.length})
+            </h3>
+          </button>
+          <div className="border-t border-slate-200">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                <tr>
+                  <th className="px-4 py-2 font-semibold">Tool</th>
+                  <th className="px-4 py-2 font-semibold">Count</th>
+                  <th className="px-4 py-2 font-semibold">Total</th>
+                  <th className="px-4 py-2 font-semibold">Avg</th>
+                  <th className="px-4 py-2 font-semibold">Max</th>
+                  <th className="px-4 py-2 font-semibold">Errors</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {toolStats.map((tool) => (
+                  <tr key={tool.tool_name}>
+                    <td className="px-4 py-2 font-mono text-slate-800">{tool.tool_name}</td>
+                    <td className="px-4 py-2 text-slate-600">{tool.count}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(tool.total_ms)}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(tool.avg_ms)}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(tool.max_ms)}</td>
+                    <td className={`px-4 py-2 ${tool.error_count > 0 ? 'text-rose-600' : 'text-slate-400'}`}>
+                      {tool.error_count}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {stepBreakdown.length > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white">
+          <button
+            className="w-full px-4 py-3 text-left"
+            onClick={(e) => {
+              const panel = e.currentTarget.nextElementSibling;
+              panel.classList.toggle('hidden');
+            }}
+          >
+            <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Step Breakdown ({stepBreakdown.length})
+            </h3>
+          </button>
+          <div className="border-t border-slate-200 hidden">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                <tr>
+                  <th className="px-4 py-2 font-semibold">Step</th>
+                  <th className="px-4 py-2 font-semibold">Think</th>
+                  <th className="px-4 py-2 font-semibold">Tool</th>
+                  <th className="px-4 py-2 font-semibold">Overhead</th>
+                  <th className="px-4 py-2 font-semibold">Total</th>
+                  <th className="px-4 py-2 font-semibold">Tools</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {stepBreakdown.map((step) => (
+                  <tr key={step.step_index}>
+                    <td className="px-4 py-2 font-mono text-slate-800">{step.step_index}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(step.think_ms)}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(step.tool_ms)}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(step.overhead_ms)}</td>
+                    <td className="px-4 py-2 text-slate-600">{formatMs(step.total_ms)}</td>
+                    <td className="px-4 py-2 font-mono text-slate-500">{(step.tool_calls || []).join(', ') || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {slowest.length > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white">
+          <button
+            className="w-full px-4 py-3 text-left"
+            onClick={(e) => {
+              const panel = e.currentTarget.nextElementSibling;
+              panel.classList.toggle('hidden');
+            }}
+          >
+            <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Slowest Operations (top {slowest.length})
+            </h3>
+          </button>
+          <div className="border-t border-slate-200 hidden">
+            <div className="divide-y divide-slate-100">
+              {slowest.map((op, idx) => {
+                const colors = SPAN_COLORS[op.kind] || SPAN_COLORS.trace;
+                return (
+                  <div key={idx} className="flex items-center justify-between px-4 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${colors.badge}`}>
+                        {op.kind}
+                      </span>
+                      <span className="text-xs text-slate-800">{op.name}</span>
+                      {op.step_index != null && (
+                        <span className="text-[10px] text-slate-400">step {op.step_index}</span>
+                      )}
+                    </div>
+                    <span className="text-xs font-medium text-slate-700">{formatMs(op.duration_ms)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatMs(ms) {
+  if (ms == null) return '0ms';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${Math.round(ms)}ms`;
 }
 
 function normalizeAppId(value) {

@@ -22,7 +22,9 @@ from mash.agents.masher import (
 from mash.agents.masher.tool import (
     _build_online_eval_row,
     _load_trace_bundle,
+    _load_trace_events,
 )
+from mash.runtime.events import build_runtime_trace, build_span_tree, analyze_trace
 from mash.core.agent import Agent
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
@@ -284,14 +286,41 @@ class MasherTests(unittest.TestCase):
     def test_trace_digest_workflow_trace_mode_returns_digest_without_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_store = self._build_runtime_store()
-            self._save_trace_log(runtime_store, session_id="s-1", trace_id="t-1", created_at=1.0)
             self._save_trace_log(
                 runtime_store,
                 session_id="s-1",
                 trace_id="t-1",
-                event_type="llm.request.complete",
+                event_type="runtime.request.accepted",
+                created_at=1.0,
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.llm.think.completed",
                 created_at=2.0,
-                payload={"input_tokens": 10, "output_tokens": 4},
+                loop_index=0,
+                payload={
+                    "duration_ms": 500,
+                    "action_type": "response",
+                    "token_usage": {"input": 10, "output": 4},
+                },
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.step.completed",
+                created_at=2.0,
+                loop_index=0,
+                payload={"duration_ms": 500},
+            )
+            self._save_trace_log(
+                runtime_store,
+                session_id="s-1",
+                trace_id="t-1",
+                event_type="runtime.request.completed",
+                created_at=2.1,
             )
             artifact_path = Path(tmp) / "masher" / "trace-digests.jsonl"
 
@@ -315,10 +344,17 @@ class MasherTests(unittest.TestCase):
 
             self.assertFalse(result.is_error)
             digest = json.loads(result.content)
+            self.assertEqual(digest["schema_version"], 2)
             self.assertEqual(digest["target_agent_id"], "primary")
             self.assertEqual(digest["session_id"], "s-1")
             self.assertEqual(digest["trace_id"], "t-1")
-            self.assertEqual(digest["metrics"]["input_tokens"], 10)
+            self.assertEqual(digest["tokens"]["input_tokens"], 10)
+            self.assertIn("timing", digest)
+            self.assertIn("total_duration_ms", digest["timing"])
+            self.assertIn("tool_stats", digest)
+            self.assertIn("step_breakdown", digest)
+            self.assertIn("slowest_operations", digest)
+            self.assertIn("subagent_traces", digest)
             self.assertFalse(artifact_path.exists())
 
     def test_shared_trace_bundle_extracts_eval_fields(self) -> None:
@@ -365,15 +401,18 @@ class MasherTests(unittest.TestCase):
             payload={"response": {"text": "It works like this."}},
         )
 
-        bundle = asyncio.run(
-            _load_trace_bundle(
+        events = asyncio.run(
+            _load_trace_events(
                 runtime_store,
                 target_agent_id="primary",
                 session_id="s-1",
                 trace_id="t-1",
             )
         )
-        row = _build_online_eval_row(bundle)
+        bundle = build_runtime_trace(events)
+        tree = build_span_tree(events)
+        analysis = analyze_trace(tree)
+        row = _build_online_eval_row(bundle, analysis)
 
         self.assertEqual(row["user_message"], "How should this work?")
         self.assertEqual(row["assistant_response"], "It works like this.")
@@ -382,6 +421,8 @@ class MasherTests(unittest.TestCase):
         self.assertEqual(row["step_count"], 1)
         self.assertEqual(row["input_tokens"], 12)
         self.assertEqual(row["output_tokens"], 5)
+        self.assertIn("timing", row)
+        self.assertIn("total_duration_ms", row["timing"])
 
     def test_trace_digest_workflow_incremental_mode_writes_jsonl_and_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -434,7 +475,9 @@ class MasherTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             digest = json.loads(lines[0])
             self.assertEqual(digest["trace_id"], "t-new")
-            self.assertEqual(digest["status"], "failed")
+            self.assertEqual(digest["schema_version"], 2)
+            self.assertIn("timing", digest)
+            self.assertIn("notable_events", digest)
 
     def test_online_eval_workflow_trace_mode_writes_dataset_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

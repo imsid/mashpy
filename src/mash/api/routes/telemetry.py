@@ -11,7 +11,12 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.api.logging import serialize_api_event
-from mash.runtime.events import serialize_runtime_event
+from mash.runtime.events import (
+    analyze_trace,
+    build_span_tree,
+    serialize_runtime_event,
+    serialize_span,
+)
 
 from .common import (
     APIError,
@@ -309,6 +314,78 @@ def build_telemetry_router() -> APIRouter:
                 "session_id": normalized_session_id,
                 "query": query_text,
                 "limit": resolved_limit,
+            }
+        )
+
+    @router.get("/telemetry/traces")
+    async def list_traces(
+        request: Request,
+        agent_id: str,
+        session_id: Optional[str] = Query(default=None),
+        limit: int = Query(default=5),
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        try:
+            agent = state.host.get_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        traces = await agent.runtime_store.list_recent_traces(
+            agent_id,
+            session_id=normalize_optional_text(session_id),
+            limit=max(1, min(limit, 100)),
+        )
+        return success({"traces": traces, "agent_id": agent_id})
+
+    @router.get("/telemetry/trace/analysis")
+    async def get_trace_analysis(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        trace_id: str,
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        try:
+            agent = state.host.get_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        events = await agent.runtime_store.list_events(
+            app_id=agent_id,
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+        if not events:
+            raise APIError(code="TRACE_NOT_FOUND", message=f"no events for trace {trace_id}", status_code=404)
+
+        tree = build_span_tree(events)
+        analysis = analyze_trace(tree)
+
+        return success(
+            {
+                "analysis": analysis.to_digest_dict(),
+                "span_tree": serialize_span(tree.root),
+                "trace_id": trace_id,
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "status": analysis.status,
+                "total_duration_ms": round(analysis.total_duration_ms, 3),
+                "tokens": {
+                    "input_tokens": analysis.input_tokens,
+                    "output_tokens": analysis.output_tokens,
+                },
+                "counts": {
+                    "step_count": analysis.step_count,
+                    "tool_call_count": analysis.tool_call_count,
+                    "tool_error_count": analysis.tool_error_count,
+                    "event_count": len(events),
+                },
             }
         )
 

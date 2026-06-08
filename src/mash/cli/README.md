@@ -53,6 +53,7 @@ Notes
 - `/sessions`: list sessions for the current agent.
 - `/history [limit]`: show conversation history for the current session.
 - `/use <agent_id>`: switch to a different agent, deriving the subagent session ID when moving from the primary agent to a subagent.
+- `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
 - `/workflow list`: list registered workflows.
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.

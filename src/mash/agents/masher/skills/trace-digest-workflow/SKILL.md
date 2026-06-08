@@ -1,6 +1,6 @@
 ---
 name: trace-digest-workflow
-description: Run Masher's diagnostic trace digest workflow.
+description: Run Masher's diagnostic trace digest workflow with latency analysis.
 ---
 
 # Trace Digest Workflow
@@ -8,9 +8,11 @@ description: Run Masher's diagnostic trace digest workflow.
 Use this skill only for workflow id `masher-trace-digest` and task id `digest-traces`.
 
 Purpose:
-- Explain and debug agent execution traces.
+- Produce deterministic latency analysis and diagnostics for agent execution traces.
+- Break down time spent in LLM inference, tool execution, cold start, context loading, and subagent calls.
+- Stitch child subagent traces for nested latency breakdowns (up to 3 levels deep).
 - Summarize status, metrics, and notable failure/error events.
-- In incremental mode, append diagnostic digest records to Masher's configured trace digest JSONL artifact.
+- In incremental mode, append diagnostic digest records (schema v2) to Masher's configured trace digest JSONL artifact.
 
 Workflow contract:
 1. Parse the request JSON.
@@ -21,6 +23,8 @@ Workflow contract:
 Input modes:
 - `trace`: requires `target_agent_id`, `session_id`, and `trace_id`; returns one digest and does not write the JSONL artifact.
 - `incremental`: requires `target_agent_id`; uses `task_state.checkpoints[target_agent_id].last_run_ts`, appends digest records, and returns checkpoint state.
+
+All latency stats are computed deterministically from runtime_event_log data. No model inference is used for metrics computation.
 
 Rules:
 - Treat `task_state` only as checkpoint data.

@@ -93,38 +93,34 @@ to:
 <MASH_DATA_DIR>/masher/online-evals.jsonl
 ```
 
-Both workflows share trace loading and metric extraction helpers for:
+Both workflows share trace loading and build a span tree
+(`build_span_tree`) and trace analysis (`analyze_trace`) from the raw runtime
+events. The analysis is deterministic — no LLM inference is used for metrics.
+Subagent traces are stitched recursively up to 3 levels deep.
 
-- user message
-- assistant response
-- tool calls
-- step count
-- token totals
-
-Digest rows include:
+Digest rows (schema v2) include:
 
 - `schema_version`
-- `target_agent_id`
-- `session_id`
-- `trace_id`
+- `target_agent_id`, `session_id`, `trace_id`
 - `status`
-- `summary`
-- `metrics`
+- `summary` (deterministic formatted string)
+- `timing`: `total_duration_ms`, `cold_start_ms`, `context_load_ms`, `total_think_ms`, `total_tool_ms`, `total_subagent_ms`, `idle_ms`, plus percentage breakdowns
+- `tokens`: `input_tokens`, `output_tokens`, `total_tokens`
+- `counts`: `step_count`, `tool_call_count`, `tool_error_count`, `event_count`
+- `tool_stats`: per-tool count, total/avg/max/min latency, error count
+- `step_breakdown`: per-step think/tool/subagent/overhead timing and tool call list
+- `slowest_operations`: top 10 slowest spans by duration
+- `subagent_traces`: nested child trace analysis (recursive)
 - `notable_events`
 
-Online eval rows include:
+Online eval rows (schema v2) include:
 
 - `schema_version`
-- `target_agent_id`
-- `session_id`
-- `trace_id`
-- `user_message`
-- `assistant_response`
-- `tools_called`
-- `tool_call_count`
-- `step_count`
-- `input_tokens`
-- `output_tokens`
+- `target_agent_id`, `session_id`, `trace_id`
+- `user_message`, `assistant_response`
+- `tools_called`, `tool_call_count`, `step_count`
+- `input_tokens`, `output_tokens`
+- `timing`: same latency breakdown as digest rows
 
 The artifact is owned by Masher. The workflow framework stores checkpoint state
 and DBOS run output, but it does not own Masher artifact files.

@@ -342,6 +342,19 @@ scaling linearly per agent.
 - [`events/store.py`](./events/store.py)
   - event store protocol and Postgres implementation
 
+- [`events/spans.py`](./events/spans.py)
+  - span model (`Span`, `SpanKind`, `TraceSpanTree`) and tree builder
+  - `build_span_tree(events)` transforms a flat `RuntimeEvent` list into a hierarchical span tree
+  - `serialize_span(span)` converts a span tree to a JSON-serializable dict
+  - span kinds: `TRACE`, `COLD_START`, `CONTEXT_LOAD`, `STEP`, `THINK`, `TOOL_CALL`, `SUBAGENT_CALL`
+  - deterministic span IDs, payload-preferred durations, handles missing start events
+
+- [`events/analysis.py`](./events/analysis.py)
+  - deterministic trace analysis from span trees
+  - `analyze_trace(tree)` computes timing breakdown, token aggregation, per-tool stats, per-step breakdown, and slowest operations
+  - `TraceAnalysis` includes: timing (cold start, context load, think, tool, subagent, idle), token counts, tool stats, step breakdown, subagent details with recursive child analysis support
+  - all computation is pure — no DB access, no LLM inference
+
 ### `host/`
 
 - `host/host.py`

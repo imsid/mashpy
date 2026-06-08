@@ -12,7 +12,10 @@ events, and running hosted agents.
     - [Human-in-the-Loop Interactions](#human-in-the-loop-interactions)
     - [Workflows](#workflows)
 - [Observability](#observability)
-    - [Runtime Telemetry](#runtime-telemetry)
+    - [Spans and Trace Analysis](#spans-and-trace-analysis)
+    - [Telemetry API](#telemetry-api)
+    - [Telemetry UI](#telemetry-ui)
+    - [CLI Trace Inspection](#cli-trace-inspection)
     - [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
 - [Self-Hosted Interfaces](#self-hosted-interfaces)
     - [REPL](#repl)
@@ -141,34 +144,106 @@ runtime. This makes workflows a concrete execution model for repeatable,
 stateful agent tasks rather than a loose orchestration layer.
 
 
-### Observability 
+### Observability
 
-#### Runtime Telemetry
+When agents run as operational software, "it produced the right answer" is not
+enough. Teams need to know *where* time was spent, *which* tool call was
+slowest, whether cold start dominated latency, and what happened inside a
+subagent delegation — without wiring up a third-party APM or building a
+post-processing pipeline first. Mash ships observability as a first-class layer
+across the runtime, API, UI, and CLI so that every trace is inspectable the
+moment it completes.
 
-Mash includes runtime-level telemetry and replayable runtime events so teams can
-inspect how a request moved through the system, not just what the final answer
-was. The telemetry UI gives operators a request and trace view, and memory
-search is available alongside that runtime observability so teams can inspect
-both execution behavior and stored conversational context. This matters when
-agents become operational software and developers need traceability, debugging,
-and a clear view of runtime behavior.
+#### Spans and Trace Analysis
+
+Every request produces an ordered stream of `RuntimeEvent` records. Mash
+transforms those flat events into a hierarchical **span tree** and computes a deterministic
+**trace analysis** from that tree. No LLM inference is involved; all metrics
+are derived directly from event timestamps and payloads.
+
+The span tree models the full request lifecycle:
 
 ```
-GET /api/v1/telemetry/events           # runtime events
-GET /api/v1/telemetry/events/stream    # tail events (SSE)
-GET /api/v1/telemetry/memory/search    # search agent memory
-
-Telemetry UI → http://<MASH_HOST_URL>/telemetry
+TRACE
+├── COLD_START        (request accepted → trace started)
+├── CONTEXT_LOAD      (trace started → context loaded)
+├── STEP 0
+│   ├── THINK         (LLM inference, with token usage)
+│   ├── TOOL_CALL     (bash, 200ms)
+│   └── TOOL_CALL     (read_file, 150ms)
+├── STEP 1
+│   ├── THINK
+│   └── SUBAGENT_CALL (research agent, 3.2s)
+└── STEP 2
+    └── THINK         (final response)
 ```
+
+The trace analysis computed from this tree includes:
+
+- **Timing breakdown**: total duration, cold start, context load, LLM think,
+  tool execution, subagent calls, and idle time — each with absolute and
+  percentage values
+- **Per-tool stats**: call count, total/avg/max/min latency, error count —
+  sorted by total time so the most expensive tool surfaces first
+- **Per-step breakdown**: think, tool, and overhead time for each agent loop
+  iteration
+- **Slowest operations**: top 10 spans ranked by duration
+- **Subagent trace stitching**: child agent traces are linked and analyzed
+  recursively up to 3 levels deep
+
+#### Telemetry API
+
+The telemetry API exposes both raw events and structured analysis:
+
+```
+GET /telemetry/events                  # flat runtime events
+GET /telemetry/events/stream           # tail events (SSE)
+GET /telemetry/traces                  # list recent traces (lightweight)
+GET /telemetry/trace/analysis          # span tree + latency analysis
+GET /telemetry/api/events              # backend API request logs
+GET /telemetry/memory/search           # search agent memory
+```
+
+The `/telemetry/trace/analysis` endpoint returns the full span tree and
+analysis dict in a single call — no client-side computation needed.
+
+#### Telemetry UI
+
+The built-in telemetry dashboard at `http://<HOST>/telemetry` renders traces
+with a visual span waterfall — each span is a collapsible row showing kind,
+name, duration, and a proportional bar scaled to the trace total. A summary
+bar at the top shows the time distribution across think, tool, subagent, cold
+start, and idle phases. Below the waterfall, collapsible panels show tool stats,
+step breakdown, and slowest operations tables.
+
+#### CLI Trace Inspection
+
+The `/trace` REPL command gives developers instant access to trace analysis
+without leaving the terminal:
+
+```
+/trace        # analyze the most recent trace
+/trace 5      # analyze the 5 most recent traces
+```
+
+Each trace renders a summary line (status, duration, steps, tool calls, tokens),
+a timing breakdown table with visual bars, per-tool stats, and the top slowest
+operations.
 
 #### Built-In Eval and Trace Digest
 
-Mash includes Masher, a built-in agent that exposes workflows to:
-- summarize a trace into a digest that captures the key request, execution flow, and outcome
-- generate a normalized online eval record from that trace for downstream analysis and curation
+Masher, Mash's built-in workflow agent, exposes two workflows that build on the
+same span and analysis infrastructure:
 
-This gives teams an immediate built-in path for runtime analysis and eval
-generation without first building a separate post-processing pipeline.
+- **`masher-trace-digest`** produces a schema v2 digest with the full latency
+  breakdown, tool stats, step breakdown, slowest operations, nested subagent
+  traces, and notable events — a complete diagnostic snapshot of one trace.
+- **`masher-online-eval-curation`** writes normalized eval records with latency
+  context so teams can correlate quality with performance from day one.
+
+Both workflows run deterministically over the runtime event log. Incremental
+mode processes only new traces since the last checkpoint, making it safe to run
+on a schedule.
 
 ```
 /workflow run masher-trace-digest --input '{"mode": "trace", "target_agent_id": "..", "session_id": "..", "trace_id": ".."}'
@@ -212,5 +287,6 @@ Default CLI commands exposed by mash
 /session    Show current session info
 /history    View conversation history
 /use        Switch to a different agent
+/trace [N]  Show trace analysis for recent traces
 /workflow   List, run, and inspect workflows
 ```
