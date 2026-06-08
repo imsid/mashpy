@@ -216,6 +216,7 @@ class MashRemoteShell:
             interaction_id=interaction_id,
             response=response,
         )
+        self.chain_renderer.on_llm_request_start()
 
     def _render_interaction_ack(self, payload: dict[str, Any]) -> None:
         interaction_id = str(payload.get("interaction_id") or "")
@@ -231,6 +232,7 @@ class MashRemoteShell:
             self.renderer.info(f"  Accepted: {display}")
 
     def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
+        self.chain_renderer.on_llm_request_start()
         request_id = self.client.submit_request(
             ctx.agent_id,
             message=message,

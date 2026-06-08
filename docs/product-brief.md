@@ -11,9 +11,10 @@ events, and running hosted agents.
     - [Core Agent Loop: Context, Memory, Tools, Skills, Signals, Structured output](#core-agent-loop-context-memory-tools-skills-signals-structured-output)
     - [Human-in-the-Loop Interactions](#human-in-the-loop-interactions)
     - [Workflows](#workflows)
-- [Observability Built Into the Runtime](#observability-built-into-the-runtime)
-- [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
-- [Self-Hosted Interfaces for Use and Operations](#self-hosted-interfaces-for-use-and-operations)
+- [Observability](#observability)
+    - [Runtime Telemetry](#runtime-telemetry)
+    - [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
+- [Self-Hosted Interfaces](#self-hosted-interfaces)
     - [REPL](#repl)
     - [CLI Commands](#cli-commands)
 
@@ -51,7 +52,24 @@ automation.
 
 Each agent brings its own `LLMProvider`, so different agents in the same host
 can run on different models — a cheap model for triage, a capable one for
-complex reasoning. Mash ships providers for Anthropic, Google Gemini, and OpenAI out of the box.
+complex reasoning. Mash ships providers for Anthropic, Google Gemini, and OpenAI
+out of the box. Each provider handles prompt caching differently — Anthropic uses
+`cache_control` breakpoints on system and tool blocks, OpenAI uses explicit cache
+keys with configurable retention, and Gemini creates server-side cached content
+objects with a TTL. Mash abstracts all of this behind a single
+`prompt_caching_enabled` flag in `AgentConfig` (on by default). The runtime
+automatically applies the right caching strategy for whichever provider the agent
+uses, so repeated requests within a session avoid re-processing static context
+without requiring any provider-specific code from the developer.
+
+Long-running sessions accumulate token cost as conversation history grows. Mash
+handles this with automatic conversation compaction: when a session's total token
+count crosses a configurable threshold, the runtime summarizes earlier turns into
+a compact summary checkpoint using the agent's own LLM. Future requests load the
+summary instead of the full history, keeping context size bounded without losing
+key decisions, constraints, or user preferences. Compaction is configurable per
+agent via `compaction_token_threshold` and `compaction_turn_limit` in
+`AgentConfig`, and is disabled by default (threshold of 0).
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
@@ -123,7 +141,9 @@ runtime. This makes workflows a concrete execution model for repeatable,
 stateful agent tasks rather than a loose orchestration layer.
 
 
-### Observability Built Into the Runtime
+### Observability 
+
+#### Runtime Telemetry
 
 Mash includes runtime-level telemetry and replayable runtime events so teams can
 inspect how a request moved through the system, not just what the final answer
@@ -141,7 +161,7 @@ GET /api/v1/telemetry/memory/search    # search agent memory
 Telemetry UI → http://<MASH_HOST_URL>/telemetry
 ```
 
-### Built-In Eval and Trace Digest
+#### Built-In Eval and Trace Digest
 
 Mash includes Masher, a built-in agent that exposes workflows to:
 - summarize a trace into a digest that captures the key request, execution flow, and outcome
@@ -156,7 +176,7 @@ generation without first building a separate post-processing pipeline.
 /workflow run masher-online-eval-curation --input '{"mode": "incremental", "target_agent_id": ".."}'
 ```
 
-### Self-Hosted Interfaces for Use and Operations
+### Self-Hosted Interfaces
 
 Mash exposes agents over HTTP, supports streaming responses, includes a CLI and
 REPL, and fits naturally into local, server, and containerized deployments. The

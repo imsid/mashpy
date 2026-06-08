@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
-from rich.live import Live
+from rich.status import Status
 from rich.text import Text
 
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
@@ -32,7 +32,7 @@ class ChainOfThoughtRenderer:
         self._current_trace_label: Optional[str] = None
         self._current_step: int = 0
         self._steps: List[Dict[str, Any]] = []
-        self._live: Optional[Live] = None
+        self._status: Optional[Status] = None
         self._enabled = True
 
     def enable(self) -> None:
@@ -42,6 +42,18 @@ class ChainOfThoughtRenderer:
     def disable(self) -> None:
         """Disable rendering."""
         self._enabled = False
+
+    def _start_spinner(self, message: str) -> None:
+        self._stop_spinner()
+        if not self._enabled:
+            return
+        self._status = self._console.status(message)
+        self._status.__enter__()
+
+    def _stop_spinner(self) -> None:
+        if self._status is not None:
+            self._status.__exit__(None, None, None)
+            self._status = None
 
     def start_trace(self, trace_id: Optional[str], label: Optional[str] = None) -> None:
         """Start a new execution trace.
@@ -73,6 +85,14 @@ class ChainOfThoughtRenderer:
     ) -> None:
         """Render one canonical runtime event."""
         if not self._enabled:
+            return
+        self._stop_spinner()
+        if event.event_type == RuntimeEventType.LLM_THINK_STARTED.value:
+            self._start_spinner("Thinking...")
+            return
+        if event.event_type == RuntimeEventType.TOOL_CALL_STARTED.value:
+            tool_name = (event.payload or {}).get("tool_name", "tool")
+            self._start_spinner(f"Running {tool_name}...")
             return
         if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
             self._on_runtime_think_complete(event, trace_label=trace_label)
@@ -164,9 +184,7 @@ class ChainOfThoughtRenderer:
 
     def on_llm_request_start(self) -> None:
         """Handle LLM request start."""
-        if not self._enabled:
-            return
-        # Could show a spinner here if desired
+        self._start_spinner("Thinking...")
 
     def on_llm_request_complete(self, event: Any) -> None:
         """Handle LLM request complete.
@@ -178,6 +196,7 @@ class ChainOfThoughtRenderer:
 
     def finish_trace(self) -> None:
         """Finish the current trace."""
+        self._stop_spinner()
         if not self._enabled:
             return
         if self._steps:
@@ -226,7 +245,7 @@ class ChainOfThoughtRenderer:
             f"[dim]{think_duration}ms[/dim]"
         )
 
-        if assistant_text:
+        if assistant_text and action_type not in ("response", "finish"):
             self._console.print(f"    [dim]assistant: {assistant_text}[/dim]")
 
         # Show tool commands/arguments if available
@@ -334,6 +353,7 @@ class CompactChainRenderer:
         self._console = console or Console()
         self._enabled = True
         self._current_step = 0
+        self._status: Optional[Status] = None
 
     def enable(self) -> None:
         """Enable rendering."""
@@ -343,6 +363,22 @@ class CompactChainRenderer:
         """Disable rendering."""
         self._enabled = False
 
+    def _start_spinner(self, message: str) -> None:
+        self._stop_spinner()
+        if not self._enabled:
+            return
+        self._status = self._console.status(message)
+        self._status.__enter__()
+
+    def _stop_spinner(self) -> None:
+        if self._status is not None:
+            self._status.__exit__(None, None, None)
+            self._status = None
+
+    def on_llm_request_start(self) -> None:
+        """Handle LLM request start."""
+        self._start_spinner("Thinking...")
+
     def start_trace(self, trace_id: Optional[str]) -> None:
         """Start trace."""
         if not self._enabled:
@@ -350,7 +386,7 @@ class CompactChainRenderer:
         if not trace_id:
             return
         self._current_step = 0
-        self._console.print("[dim]Thinking...[/dim]", end=" ")
+        self._start_spinner("Thinking...")
 
     def on_runtime_event(
         self,
@@ -361,6 +397,14 @@ class CompactChainRenderer:
         """Render one canonical runtime event."""
         del trace_label
         if not self._enabled:
+            return
+        self._stop_spinner()
+        if event.event_type == RuntimeEventType.LLM_THINK_STARTED.value:
+            self._start_spinner("Thinking...")
+            return
+        if event.event_type == RuntimeEventType.TOOL_CALL_STARTED.value:
+            tool_name = (event.payload or {}).get("tool_name", "tool")
+            self._start_spinner(f"Running {tool_name}...")
             return
         if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
             self._on_runtime_think_complete(event)
@@ -388,6 +432,7 @@ class CompactChainRenderer:
 
     def finish_trace(self) -> None:
         """Finish trace."""
+        self._stop_spinner()
         if not self._enabled:
             return
         self._console.print()  # New line after all steps

@@ -47,7 +47,7 @@ class REPL:
             ctx: CLI context.
         """
         ctx.renderer.info(
-            f"{self.app_id} interactive session. Type /help for commands."
+            f"Connected to {self.app_id}. Type /help for commands."
         )
 
         # Setup prompt

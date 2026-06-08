@@ -326,6 +326,21 @@ async def plan_request_step(
 ) -> dict[str, Any]:
     runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=runtime.app_id,
+            agent_id=runtime.app_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            loop_index=loop_index,
+            step_key=f"llm.think.started.{loop_index}",
+            event_type=RuntimeEventType.LLM_THINK_STARTED.value,
+            dedupe_key=f"llm.think.started.{loop_index}",
+            payload={"loop_index": loop_index},
+        ),
+    )
     context = context_helpers.deserialize_context(
         runtime, workflow_state.get("context") or {}
     )
@@ -406,6 +421,24 @@ async def run_step_tool_call(
         id=str(tool_call_payload.get("id") or ""),
         name=str(tool_call_payload.get("name") or ""),
         arguments=dict(tool_call_payload.get("arguments") or {}),
+    )
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=runtime.app_id,
+            agent_id=runtime.app_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            loop_index=loop_index,
+            step_key=f"tool.call.started.{loop_index}.{tool_call.id}",
+            event_type=RuntimeEventType.TOOL_CALL_STARTED.value,
+            dedupe_key=f"tool.call.started.{loop_index}.{tool_call.id}",
+            payload={
+                "tool_call_id": tool_call.id,
+                "tool_name": tool_call.name,
+            },
+        ),
     )
     result, duration_ms = await _run_tool_call_payload(
         runtime,
