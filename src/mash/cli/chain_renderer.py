@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
-from rich.status import Status
 from rich.text import Text
 
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
@@ -22,18 +21,15 @@ class ChainOfThoughtRenderer:
     """Renders agent's chain of thought in real-time."""
 
     def __init__(self, console: Optional[Console] = None) -> None:
-        """Initialize renderer.
-
-        Args:
-            console: Rich console instance. Creates new one if not provided.
-        """
         self._console = console or Console()
         self._current_trace_id: Optional[str] = None
         self._current_trace_label: Optional[str] = None
         self._current_step: int = 0
         self._steps: List[Dict[str, Any]] = []
-        self._status: Optional[Status] = None
         self._enabled = True
+        self._subagent_steps: Dict[str, List[Dict[str, Any]]] = {}
+        self._subagent_step_counters: Dict[str, int] = {}
+        self._subagent_headers_shown: set[str] = set()
 
     def enable(self) -> None:
         """Enable rendering."""
@@ -42,18 +38,6 @@ class ChainOfThoughtRenderer:
     def disable(self) -> None:
         """Disable rendering."""
         self._enabled = False
-
-    def _start_spinner(self, message: str) -> None:
-        self._stop_spinner()
-        if not self._enabled:
-            return
-        self._status = self._console.status(message)
-        self._status.__enter__()
-
-    def _stop_spinner(self) -> None:
-        if self._status is not None:
-            self._status.__exit__(None, None, None)
-            self._status = None
 
     def start_trace(self, trace_id: Optional[str], label: Optional[str] = None) -> None:
         """Start a new execution trace.
@@ -72,6 +56,9 @@ class ChainOfThoughtRenderer:
         self._current_trace_label = label
         self._current_step = 0
         self._steps = []
+        self._subagent_steps = {}
+        self._subagent_step_counters = {}
+        self._subagent_headers_shown = set()
         title = "Agent Execution Started"
         if label:
             title = f"{label} Execution Started"
@@ -86,13 +73,10 @@ class ChainOfThoughtRenderer:
         """Render one canonical runtime event."""
         if not self._enabled:
             return
-        self._stop_spinner()
-        if event.event_type == RuntimeEventType.LLM_THINK_STARTED.value:
-            self._start_spinner("Thinking...")
-            return
-        if event.event_type == RuntimeEventType.TOOL_CALL_STARTED.value:
-            tool_name = (event.payload or {}).get("tool_name", "tool")
-            self._start_spinner(f"Running {tool_name}...")
+        if event.event_type in {
+            RuntimeEventType.LLM_THINK_STARTED.value,
+            RuntimeEventType.TOOL_CALL_STARTED.value,
+        }:
             return
         if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
             self._on_runtime_think_complete(event, trace_label=trace_label)
@@ -184,19 +168,12 @@ class ChainOfThoughtRenderer:
 
     def on_llm_request_start(self) -> None:
         """Handle LLM request start."""
-        self._start_spinner("Thinking...")
 
     def on_llm_request_complete(self, event: Any) -> None:
-        """Handle LLM request complete.
-
-        Args:
-            event: LLM event.
-        """
-        # Events are already captured in think_complete via token_usage
+        """Handle LLM request complete."""
 
     def finish_trace(self) -> None:
         """Finish the current trace."""
-        self._stop_spinner()
         if not self._enabled:
             return
         if self._steps:
@@ -289,13 +266,125 @@ class ChainOfThoughtRenderer:
             )
 
     def _render_step_complete(self, step: Dict[str, Any]) -> None:
-        """Render step completion.
+        """Render step completion."""
 
-        Args:
-            step: Step information.
-        """
-        # Just a blank line for spacing
-        # self._console.print()
+    def render_subagent_event(
+        self,
+        event: RuntimeEvent,
+        *,
+        agent_id: str,
+    ) -> None:
+        """Render a subagent trace event inline under the primary trace."""
+        if not self._enabled:
+            return
+        if event.event_type in {
+            RuntimeEventType.LLM_THINK_STARTED.value,
+            RuntimeEventType.TOOL_CALL_STARTED.value,
+        }:
+            return
+        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+            self._render_subagent_think(event, agent_id)
+            return
+        if event.event_type in {
+            RuntimeEventType.TOOL_CALL_COMPLETED.value,
+            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
+        }:
+            self._render_subagent_act(event, agent_id)
+            return
+
+    def _render_subagent_think(self, event: RuntimeEvent, agent_id: str) -> None:
+        if agent_id not in self._subagent_headers_shown:
+            self._subagent_headers_shown.add(agent_id)
+            self._console.print(f"    [bold magenta]┌ {agent_id}[/bold magenta]")
+
+        payload = dict(event.payload or {})
+        tool_calls_detail = _tool_calls_detail(payload)
+        step_info = {
+            "action_type": _clean_text(payload.get("action_type")),
+            "tool_calls": _tool_call_names(tool_calls_detail),
+            "tool_calls_detail": tool_calls_detail,
+            "token_usage": _dict_value(payload.get("token_usage")),
+            "think_duration": _as_int(payload.get("duration_ms")) or 0,
+        }
+        self._subagent_steps.setdefault(agent_id, []).append(step_info)
+        counter = self._subagent_step_counters.get(agent_id, 0) + 1
+        self._subagent_step_counters[agent_id] = counter
+
+        action_type = step_info["action_type"] or "unknown"
+        tool_calls = step_info["tool_calls"] or []
+        token_usage = step_info["token_usage"] or {}
+        think_duration = step_info["think_duration"]
+
+        if action_type == "tool_call" and tool_calls:
+            tools_str = ", ".join(f"[yellow]{t}[/yellow]" for t in tool_calls)
+            desc = f"Calling tools: {tools_str}"
+        elif action_type == "response":
+            desc = "[green]Generating response[/green]"
+        elif action_type == "finish":
+            desc = "[blue]Finishing execution[/blue]"
+        else:
+            desc = f"Action: {action_type}"
+
+        token_str = ""
+        if token_usage:
+            input_tok = token_usage.get("input", 0)
+            output_tok = token_usage.get("output", 0)
+            token_str = f" [dim]({input_tok}+{output_tok} tokens)[/dim]"
+
+        self._console.print(
+            f"    [magenta]│[/magenta] [cyan]→[/cyan] Step {counter}: {desc}{token_str} "
+            f"[dim]{think_duration}ms[/dim]"
+        )
+
+        if tool_calls_detail:
+            for tool_call in tool_calls_detail:
+                tool_name = tool_call.get("name", "unknown")
+                tool_args = tool_call.get("arguments", {})
+                if tool_name == "bash" and "command" in tool_args:
+                    command = tool_args["command"]
+                    if len(command) > 80:
+                        command = command[:77] + "..."
+                    self._console.print(f"    [magenta]│[/magenta]   [dim]$ {command}[/dim]")
+                elif tool_args:
+                    args_preview = []
+                    for key, value in list(tool_args.items())[:2]:
+                        if isinstance(value, str) and len(value) > 40:
+                            value = value[:37] + "..."
+                        args_preview.append(f"{key}={value}")
+                    if len(tool_args) > 2:
+                        args_preview.append(f"+{len(tool_args) - 2} more")
+                    args_str = ", ".join(args_preview)
+                    self._console.print(
+                        f"    [magenta]│[/magenta]   [dim]{tool_name}({args_str})[/dim]"
+                    )
+
+    def _render_subagent_act(self, event: RuntimeEvent, agent_id: str) -> None:
+        payload = dict(event.payload or {})
+        act_duration = _as_int(payload.get("duration_ms")) or 0
+        tool_name = _clean_text(payload.get("tool_name"))
+        steps = self._subagent_steps.get(agent_id)
+        if steps:
+            steps[-1]["act_duration"] = act_duration
+
+        if tool_name:
+            self._console.print(
+                f"    [magenta]│[/magenta]   [dim]✓ {tool_name} in {act_duration}ms[/dim]"
+            )
+        else:
+            self._console.print(
+                f"    [magenta]│[/magenta]   [dim]✓ Executed in {act_duration}ms[/dim]"
+            )
+
+    def finish_subagent(self, agent_id: str, duration_ms: int) -> None:
+        """Render subagent completion."""
+        if not self._enabled:
+            return
+        if agent_id not in self._subagent_headers_shown:
+            return
+        self._console.print(
+            f"    [bold magenta]└ {agent_id}[/bold magenta] "
+            f"[dim]{duration_ms:,}ms[/dim]"
+        )
 
     def _render_summary(self) -> None:
         """Render execution summary."""
@@ -345,15 +434,9 @@ class CompactChainRenderer:
     """Compact single-line renderer for agent execution."""
 
     def __init__(self, console: Optional[Console] = None) -> None:
-        """Initialize compact renderer.
-
-        Args:
-            console: Rich console instance.
-        """
         self._console = console or Console()
         self._enabled = True
         self._current_step = 0
-        self._status: Optional[Status] = None
 
     def enable(self) -> None:
         """Enable rendering."""
@@ -363,21 +446,8 @@ class CompactChainRenderer:
         """Disable rendering."""
         self._enabled = False
 
-    def _start_spinner(self, message: str) -> None:
-        self._stop_spinner()
-        if not self._enabled:
-            return
-        self._status = self._console.status(message)
-        self._status.__enter__()
-
-    def _stop_spinner(self) -> None:
-        if self._status is not None:
-            self._status.__exit__(None, None, None)
-            self._status = None
-
     def on_llm_request_start(self) -> None:
         """Handle LLM request start."""
-        self._start_spinner("Thinking...")
 
     def start_trace(self, trace_id: Optional[str]) -> None:
         """Start trace."""
@@ -386,7 +456,6 @@ class CompactChainRenderer:
         if not trace_id:
             return
         self._current_step = 0
-        self._start_spinner("Thinking...")
 
     def on_runtime_event(
         self,
@@ -398,13 +467,10 @@ class CompactChainRenderer:
         del trace_label
         if not self._enabled:
             return
-        self._stop_spinner()
-        if event.event_type == RuntimeEventType.LLM_THINK_STARTED.value:
-            self._start_spinner("Thinking...")
-            return
-        if event.event_type == RuntimeEventType.TOOL_CALL_STARTED.value:
-            tool_name = (event.payload or {}).get("tool_name", "tool")
-            self._start_spinner(f"Running {tool_name}...")
+        if event.event_type in {
+            RuntimeEventType.LLM_THINK_STARTED.value,
+            RuntimeEventType.TOOL_CALL_STARTED.value,
+        }:
             return
         if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
             self._on_runtime_think_complete(event)
@@ -432,7 +498,6 @@ class CompactChainRenderer:
 
     def finish_trace(self) -> None:
         """Finish trace."""
-        self._stop_spinner()
         if not self._enabled:
             return
-        self._console.print()  # New line after all steps
+        self._console.print()

@@ -33,17 +33,10 @@ def _resolve_connection(args: argparse.Namespace) -> tuple[str, str | None, str 
 def _resolve_agent(
     client: MashHostClient,
     explicit_agent: str | None,
-    renderer: RichRenderer | None = None,
 ) -> str:
     if explicit_agent:
         return explicit_agent
-    if renderer is not None:
-        ctx_mgr = renderer.status("Connecting to deployment...")
-    else:
-        from contextlib import nullcontext
-        ctx_mgr = nullcontext()
-    with ctx_mgr:
-        health = client.health()
+    health = client.health()
     deployment = health.get("deployment") or {}
     agent_id = deployment.get("primary_agent_id")
     if not isinstance(agent_id, str) or not agent_id.strip():
@@ -120,7 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     client = MashHostClient(base_url, api_key=api_key)
     try:
-        agent_id = _resolve_agent(client, getattr(args, "agent", None) or configured_agent, renderer=renderer)
+        agent_id = _resolve_agent(client, getattr(args, "agent", None) or configured_agent)
 
         if args.command == "status":
             health = client.health()

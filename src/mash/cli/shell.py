@@ -142,31 +142,36 @@ class MashRemoteShell:
         outer_payload = payload.get("payload")
         if not isinstance(outer_payload, dict):
             outer_payload = {}
+        inner = outer_payload.get("payload")
+        if isinstance(inner, dict) and "agent_id" in inner:
+            outer_payload = inner
         agent_id = str(outer_payload.get("agent_id") or "subagent")
         nested = outer_payload.get("data")
-        trace_label = f"Subagent {agent_id}"
 
         if event_type == "subagent.agent.trace" and isinstance(nested, dict):
-            nested_payload = dict(nested)
-            self._render_runtime_trace_payload(
-                nested_payload,
-                trace_label=trace_label,
+            event = runtime_event_from_stream_payload(
+                nested,
+                app_id=agent_id,
                 agent_id=agent_id,
             )
+            if event is not None:
+                self.chain_renderer.render_subagent_event(event, agent_id=agent_id)
             return
 
         if event_type == "subagent.request.started":
-            self.renderer.info(f"{trace_label} started")
             return
 
         if event_type == "subagent.request.completed":
-            self.renderer.info(f"{trace_label} completed")
+            duration_ms = 0
+            if isinstance(nested, dict):
+                duration_ms = int(nested.get("duration_ms") or 0)
+            self.chain_renderer.finish_subagent(agent_id, duration_ms)
             return
 
         if event_type == "subagent.request.error":
-            error_payload = nested if isinstance(nested, dict) else {}
-            error = error_payload.get("error")
-            self.renderer.error(f"{trace_label} error: {error or 'request failed'}")
+            error_data = nested if isinstance(nested, dict) else {}
+            error = error_data.get("error")
+            self.renderer.error(f"    Subagent {agent_id} error: {error or 'request failed'}")
 
     def _handle_interaction(
         self, ctx: CLIContext, request_id: str, payload: dict[str, Any]
@@ -216,7 +221,6 @@ class MashRemoteShell:
             interaction_id=interaction_id,
             response=response,
         )
-        self.chain_renderer.on_llm_request_start()
 
     def _render_interaction_ack(self, payload: dict[str, Any]) -> None:
         interaction_id = str(payload.get("interaction_id") or "")
@@ -232,7 +236,6 @@ class MashRemoteShell:
             self.renderer.info(f"  Accepted: {display}")
 
     def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
-        self.chain_renderer.on_llm_request_start()
         request_id = self.client.submit_request(
             ctx.agent_id,
             message=message,

@@ -550,14 +550,13 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.chain_renderer, "on_runtime_event") as runtime_event:
             with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
                 shell.handle_repl_message(shell.context, "hello")
-        self.assertEqual(runtime_event.call_count, 3)
+        self.assertEqual(runtime_event.call_count, 2)
         self.assertEqual(
             [
                 call.args[0].event_type
                 for call in runtime_event.call_args_list
             ],
             [
-                RuntimeEventType.LLM_THINK_COMPLETED.value,
                 RuntimeEventType.LLM_THINK_COMPLETED.value,
                 RuntimeEventType.STEP_COMPLETED.value,
             ],
@@ -566,10 +565,12 @@ class MashRemoteShellTests(unittest.TestCase):
 
     def test_handle_repl_message_renders_subagent_lifecycle(self) -> None:
         shell = self._build_shell()
-        with patch.object(shell.renderer, "info") as info:
-            shell.handle_repl_message(shell.context, "hello")
-        info.assert_any_call("Subagent research started")
-        info.assert_any_call("Subagent research completed")
+        with patch.object(shell.chain_renderer, "render_subagent_event") as render_sub:
+            with patch.object(shell.chain_renderer, "finish_subagent") as finish_sub:
+                shell.handle_repl_message(shell.context, "hello")
+        self.assertEqual(render_sub.call_count, 1)
+        self.assertEqual(render_sub.call_args[1]["agent_id"], "research")
+        finish_sub.assert_called_once_with("research", 0)
 
     def test_handle_repl_message_ignores_null_subagent_payloads(self) -> None:
         shell = self._build_shell()
@@ -590,7 +591,7 @@ class MashRemoteShellTests(unittest.TestCase):
         shell.client.stream_request = stream_with_null_subagent_payload
         with patch.object(shell.renderer, "error") as error:
             shell.handle_repl_message(shell.context, "hello")
-        error.assert_called_once_with("Subagent subagent error: request failed")
+        error.assert_called_once_with("    Subagent subagent error: request failed")
 
 
 class ChainOfThoughtRendererTests(unittest.TestCase):
