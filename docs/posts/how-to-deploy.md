@@ -1,3 +1,13 @@
+---
+title: How to Deploy a Mash Host
+description: Deploy a Mash Host with one or more agents — on your laptop, in Docker, or on any cloud provider.
+date: 2026-06-02
+author: imsid
+tags:
+  - deploy
+  - ops
+---
+
 # How to Deploy a Mash Host
 
 This guide covers deploying a Mash Host with one or more agents — on your
