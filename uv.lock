@@ -815,7 +815,7 @@ wheels = [
 
 [[package]]
 name = "mashpy"
-version = "0.4.5"
+version = "0.4.7"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
