@@ -101,7 +101,7 @@ class TraceAnalysis:
     slowest_spans: list[dict[str, Any]]
     subagent_details: list[SubagentDetail]
 
-    def _pct(self, value: float) -> float:
+    def pct(self, value: float) -> float:
         if self.total_duration_ms <= 0:
             return 0.0
         return round(value / self.total_duration_ms * 100.0, 1)
@@ -115,10 +115,10 @@ class TraceAnalysis:
             "total_tool_ms": round(self.total_tool_ms, 3),
             "total_subagent_ms": round(self.total_subagent_ms, 3),
             "idle_ms": round(self.idle_ms, 3),
-            "pct_think": self._pct(self.total_think_ms),
-            "pct_tool": self._pct(self.total_tool_ms),
-            "pct_subagent": self._pct(self.total_subagent_ms),
-            "pct_cold_start": self._pct(self.cold_start_ms),
+            "pct_think": self.pct(self.total_think_ms),
+            "pct_tool": self.pct(self.total_tool_ms),
+            "pct_subagent": self.pct(self.total_subagent_ms),
+            "pct_cold_start": self.pct(self.cold_start_ms),
         }
 
     def to_digest_dict(self) -> dict[str, Any]:

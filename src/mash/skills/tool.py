@@ -14,6 +14,7 @@ class SkillTool:
     """Meta-tool that loads a skill's instructions at runtime."""
 
     name = "Skill"
+    requires_approval = False
 
     def __init__(self, registry: SkillRegistry) -> None:
         self._registry = registry

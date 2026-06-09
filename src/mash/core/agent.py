@@ -108,6 +108,7 @@ class Agent:
     def set_trace_id(self, trace_id: Optional[str]) -> None:
         """Bind a trace ID for externally managed execution flows."""
         self._trace_id = trace_id
+        set_trace_id(trace_id)
         if hasattr(self.llm, "set_trace_id"):
             self.llm.set_trace_id(trace_id)
 

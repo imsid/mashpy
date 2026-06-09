@@ -483,8 +483,8 @@ async def _load_trace_bundle(
 
 def _build_trace_digest(bundle: RuntimeTrace, analysis: TraceAnalysis) -> dict[str, Any]:
     total = analysis.total_duration_ms
-    pct_think = analysis._pct(analysis.total_think_ms)
-    pct_tool = analysis._pct(analysis.total_tool_ms)
+    pct_think = analysis.pct(analysis.total_think_ms)
+    pct_tool = analysis.pct(analysis.total_tool_ms)
 
     summary = (
         f"Trace {bundle.trace_id}: {total:.0f}ms total, "
