@@ -271,6 +271,7 @@ export default function App() {
           session_id: selectedSessionId,
           trace_id: selectedTraceId
         });
+        params.set('stitch', 'true');
         const response = await fetch(`${API_BASE}/telemetry/trace/analysis?${params.toString()}`);
         const payload = await response.json().catch(() => ({}));
         if (cancelled) return;
@@ -1115,6 +1116,7 @@ function TraceStatsPanel({ analysis }) {
   const toolStats = data.tool_stats || [];
   const stepBreakdown = data.step_breakdown || [];
   const slowest = data.slowest_operations || [];
+  const subagentTraces = data.subagent_traces || [];
 
   return (
     <div className="space-y-4">
@@ -1238,6 +1240,154 @@ function TraceStatsPanel({ analysis }) {
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {subagentTraces.length > 0 && (
+        <div className="rounded-2xl border border-purple-200 bg-white">
+          <button
+            className="w-full px-4 py-3 text-left"
+            onClick={(e) => {
+              const panel = e.currentTarget.nextElementSibling;
+              panel.classList.toggle('hidden');
+            }}
+          >
+            <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-600">
+              Subagent Traces ({subagentTraces.length})
+            </h3>
+          </button>
+          <div className="border-t border-purple-100 divide-y divide-purple-50">
+            {subagentTraces.map((sub, idx) => (
+              <div key={idx} className="px-4 py-3">
+                <SubagentTraceDetail sub={sub} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubagentTraceDetail({ sub }) {
+  const child = sub.child_analysis;
+  if (!child) {
+    return (
+      <div className="flex items-center justify-between px-4 py-2">
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${SPAN_COLORS.subagent_call.badge}`}>
+            subagent_call
+          </span>
+          <span className="text-xs font-medium text-slate-800">{sub.agent_id}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-600">{formatMs(sub.duration_ms)}</span>
+          <span className="text-[10px] text-slate-400">trace data unavailable</span>
+        </div>
+      </div>
+    );
+  }
+
+  const timing = child.timing || {};
+  const toolStats = child.tool_stats || [];
+  const slowest = child.slowest_operations || [];
+  const subagentTraces = child.subagent_traces || [];
+  const totalTokens = (child.input_tokens || 0) + (child.output_tokens || 0);
+
+  const segments = [
+    { label: 'think', ms: timing.total_think_ms, pct: timing.pct_think, color: 'bg-sky-400' },
+    { label: 'tool_call', ms: timing.total_tool_ms, pct: timing.pct_tool, color: 'bg-amber-400' },
+    { label: 'subagent_call', ms: timing.total_subagent_ms, pct: timing.pct_subagent, color: 'bg-purple-400' },
+    { label: 'cold_start', ms: timing.cold_start_ms, pct: timing.pct_cold_start, color: 'bg-slate-400' },
+    { label: 'idle', ms: timing.idle_ms, pct: timing.total_duration_ms > 0 ? ((timing.idle_ms || 0) / timing.total_duration_ms * 100) : 0, color: 'bg-slate-200' },
+  ].filter((s) => s.ms > 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${SPAN_COLORS.subagent_call.badge}`}>
+            subagent_call
+          </span>
+          <span className="text-xs font-semibold text-slate-800">{sub.agent_id}</span>
+          <span className="text-xs text-slate-600">{formatMs(timing.total_duration_ms)}</span>
+        </div>
+        <div className="flex flex-wrap gap-3 text-[10px] text-slate-500">
+          <span>{child.step_count || 0} steps</span>
+          <span>{child.tool_call_count || 0} tool calls</span>
+          {totalTokens > 0 && <span>{totalTokens} tokens</span>}
+        </div>
+      </div>
+
+      {segments.length > 0 && (
+        <>
+          <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            {segments.map((seg) => (
+              <div
+                key={seg.label}
+                className={`${seg.color} h-full`}
+                style={{ width: `${Math.max(seg.pct, 0.5)}%` }}
+                title={`${seg.label}: ${formatMs(seg.ms)} (${seg.pct.toFixed(1)}%)`}
+              />
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-3 text-[10px] text-slate-500">
+            {segments.map((seg) => (
+              <span key={seg.label} className="flex items-center gap-1">
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${seg.color}`} />
+                {seg.label} {formatMs(seg.ms)} ({seg.pct.toFixed(1)}%)
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {toolStats.length > 0 && (
+        <div className="rounded-xl border border-slate-100 bg-slate-50/50">
+          <div className="divide-y divide-slate-100">
+            {toolStats.map((tool) => (
+              <div key={tool.tool_name} className="flex items-center justify-between px-3 py-1.5">
+                <span className="font-mono text-[11px] text-slate-700">{tool.tool_name}</span>
+                <span className="text-[10px] text-slate-500">
+                  {tool.count} {tool.count === 1 ? 'call' : 'calls'} · {formatMs(tool.total_ms)} total · {formatMs(tool.avg_ms)} avg
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {slowest.length > 0 && (
+        <div className="rounded-xl border border-slate-100 bg-slate-50/50">
+          <div className="divide-y divide-slate-100">
+            {slowest.slice(0, 5).map((op, idx) => {
+              const colors = SPAN_COLORS[op.kind] || SPAN_COLORS.trace;
+              return (
+                <div key={idx} className="flex items-center justify-between px-3 py-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`rounded-full border px-1.5 py-0 text-[9px] font-medium ${colors.badge}`}>
+                      {op.kind}
+                    </span>
+                    <span className="text-[11px] text-slate-700">{op.name}</span>
+                    {op.step_index != null && (
+                      <span className="text-[9px] text-slate-400">step {op.step_index}</span>
+                    )}
+                  </div>
+                  <span className="text-[11px] font-medium text-slate-600">{formatMs(op.duration_ms)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {subagentTraces.length > 0 && (
+        <div className="space-y-2">
+          {subagentTraces.map((nestedSub, idx) => (
+            <div key={idx} className="ml-3 rounded-xl border-l-2 border-purple-200 pl-3">
+              <SubagentTraceDetail sub={nestedSub} />
+            </div>
+          ))}
         </div>
       )}
     </div>

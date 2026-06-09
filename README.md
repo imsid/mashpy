@@ -1,153 +1,67 @@
-# mashpy
+# Mash
 
-Mash is an SDK and host runtime for building self-hosted multi-agent applications.
-It gives app developers a Python `AgentSpec` contract, a host API for composing
-agents and workflows, a FastAPI server for deployment, and a CLI/REPL for talking
-to a running host.
+A Python SDK and host runtime for building self-hosted multi-agent applications.
 
-## What Is Mash?
+Mash gives you a Python `AgentSpec` contract for defining agents, a `HostBuilder`
+for composing them into a multi-agent host, a FastAPI server for deployment, and
+a CLI/REPL for interacting with a running host.
 
-Mash is organized around three surfaces:
+## Install
 
-- **SDK and runtime**: define agents, tools, skills, workflows, memory, and request
-  execution.
-- **API server**: serve a Mash host over HTTP, including request streaming,
-  workflow routes, and telemetry.
-- **CLI**: connect to a running host, open an interactive REPL, inspect sessions,
-  and run workflows.
-
-`pilot/` is the in-repo example host app. It uses the same public Mash contracts
-that external host apps use, and adds Pilot-specific REPL commands such as
-`/changelog [N]`.
-
-At a high level, a Mash request flows through the host API, into an agent
-runtime, through the durable request engine, and back out as replayable runtime
-events:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant API as mash.api
-    participant Host as AgentHost
-    participant Client as AgentClient
-    participant Server as AgentServer
-    participant Runtime as AgentRuntime
-    participant Events as RuntimeStore
-    participant Engine as RequestEngine
-    participant Agent as mash.core.Agent
-    participant Memory as Memory Store
-
-    User->>API: POST /api/v1/agents/{agent_id}/requests
-    API->>Host: get_client(agent_id)
-    Host-->>API: AgentClient
-    API->>Client: post_request(...) / stream(...)
-    Client->>Server: HTTP request + SSE stream
-    Server->>Runtime: submit_request(...) / stream_request_events(...)
-    Runtime->>Events: append request.accepted
-    Runtime->>Engine: start_request(...)
-    Engine->>Agent: think (plan step)
-    Agent-->>Engine: action + tool calls
-
-    opt interaction needed (approval or AskUser)
-        Engine->>Events: append request.interaction.create
-        Events-->>Server: SSE request.interaction.create
-        Server-->>Client: SSE request.interaction.create
-        Client-->>API: interaction event
-        API-->>User: prompt for input
-        User->>API: POST .../interaction {interaction_id, response}
-        API->>Client: post_interaction(...)
-        Client->>Server: POST .../interaction
-        Server->>Engine: DBOS.send (resume workflow)
-        Engine->>Events: append request.interaction.ack
-    end
-
-    Engine->>Agent: act (execute tools) -> observe
-    Agent-->>Engine: response + trace + token usage
-    Engine->>Memory: save_turn(...)
-    Engine->>Events: append request.started / agent.trace / request.completed
-    Runtime-->>Server: replay persisted events
-    Server-->>Client: SSE runtime events
-    Client-->>API: streamed runtime events
-    API-->>User: SSE / final payload
+```bash
+pip install mashpy
 ```
 
-## What Is In This Repo?
+Requires Python >= 3.10. Set your LLM provider key:
 
-```text
-src/mash/                  Mash package: SDK, runtime, API, CLI, workflows
-pilot/                     Example Mash host app built on the SDK
-docs/rfcs/                 Protocol and design RFCs
-tests/                     Mash and Pilot test suites
-Dockerfile                 Base image for Mash host deployments
+```bash
+export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY or GEMINI_API_KEY
 ```
+
+## What Mash Provides
+
+- **Multi-agent composition** — define a primary agent, add specialized subagents,
+  and compose workflows behind a single host. Agents delegate to each other
+  without a separate coordination layer.
+- **Durable harness** — requests execute through a durable engine and are recorded
+  as replayable runtime events. Retries, restarts, and long-running work just
+  work.
+- **Human-in-the-loop** — agents can pause for approval or ask users questions
+  mid-execution. Interactions survive host restarts.
+- **Workflows** — ordered task sequences with structured output, defined in code
+  or published dynamically at runtime.
+- **Observability** — span trees, trace analysis, telemetry API, built-in
+  dashboard, and CLI trace inspection. No external APM needed.
+- **Self-hosted interfaces** — HTTP API with streaming, CLI, and interactive REPL.
+  Deploy locally, in Docker, or on any cloud.
+
+```
+                  ┌─────────────────────────────────────────┐
+                  │          Durable Request                │
+                  │                                         │
+                  │   ┌─ context ─── memory ──┐             │
+                  │   │                       │             │
+request ────────► │   │     Agent Loop        │ ──► signals │
+(cli/api)         │   │ think → act → observe │      │      │
+                  │   │                       │      ▼      │
+                  │   └─ tools ───── skills ──┘  structured │
+workflow ───────► │        ▲                      output    │
+(schedule/trigger)│        │ user interaction               │
+                  │        ▼ (approval / ask-user)          │
+                  │                                         │
+                  │       resumable · replayable            │
+                  └─────────────────────────────────────────┘
+```
+
+See the [product brief](docs/product-brief.md) for a deeper look at each
+capability.
 
 ## Quick Start
 
-Create and activate the repo environment:
-
-```bash
-uv venv
-uv sync
-source .venv/bin/activate
-```
-
-Run the main test suites:
-
-```bash
-uv run --extra dev pytest -q tests/mash
-uv run --extra dev pytest -q tests/pilot
-```
-
-## Build with a Coding Agent
-
-This repo includes [`CLAUDE.md`](CLAUDE.md) so coding agents like Claude Code,
-Codex, and Cursor can scaffold a Mash-powered agent from a natural language
-prompt. Copy it into your project or point your agent at this repo to get
-started. The [Pilot](https://github.com/imsid/mash-pilot) agent also includes
-a `build-mash-agent` skill for interactive agent scaffolding.
-
-## Run Pilot Locally
-
-Start the Pilot host:
-
-```bash
-mash host serve --host-app pilot.spec:build_host --host 127.0.0.1 --port 8001
-```
-
-In another terminal, connect the Mash CLI:
-
-```bash
-mash connect --api-base-url http://127.0.0.1:8001 --api-key secret --agent pilot
-mash status
-mash agents
-```
-
-Open the Pilot REPL, which includes Pilot-only commands such as `/changelog [N]`:
-
-```bash
-pilot repl
-```
-
-Example messages inside the REPL:
-
-```text
-> Summarize how HostBuilder wires the primary agent, subagents, and workflows. Cite the key files.
-> Trace how an accepted request moves through AgentRuntime, RuntimeStore, and RequestEngine.
-> Explain when request.waiting is emitted and what that means for a busy session.
-> Compare src/mash/runtime and src/mash/workflows responsibilities in this repo.
-/changelog 5
-```
-
-The API server also serves the telemetry UI at:
-
-- [http://127.0.0.1:8001/telemetry](http://127.0.0.1:8001/telemetry)
-
-## Build Your Own Host
-
-A Mash app defines one or more `AgentSpec`s and returns a host from
-`build_host()`:
+### 1. Define an agent
 
 ```python
+# my_agent/spec.py
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.runtime import AgentSpec, HostBuilder
@@ -171,7 +85,7 @@ class PrimaryAgent(AgentSpec):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
             app_id="primary",
-            system_prompt="You are helpful.",
+            system_prompt="You are a helpful assistant.",
         )
 
 
@@ -179,64 +93,50 @@ def build_host():
     return HostBuilder().primary(PrimaryAgent()).build()
 ```
 
-Serve it with:
+### 2. Serve it
 
 ```bash
-mash host serve --host-app my_app:build_host --host 0.0.0.0 --port 8000
+mash host serve --host-app my_agent.spec:build_host --port 8000
 ```
 
-For containerized deployments, use the root [Dockerfile](Dockerfile) as the base
-host image and configure startup with `MASH_HOST_APP`, `MASH_DATA_DIR`, and
-`MASH_DATABASE_URL`.
-
-## Documentation Map
-
-- [Product brief](docs/product-brief.md): product-level pitch of what Mash
-  offers and where it fits.
-- [Mash package](src/mash/README.md): package overview and boundaries.
-- [Runtime](src/mash/runtime/README.md): host composition, request execution,
-  persistence, structured output, and runtime internals.
-- [Workflows](src/mash/workflows/README.md): code-defined workflows, dynamic
-  publishing, task state, and DBOS orchestration.
-- [Skills](src/mash/skills/README.md): filesystem and inline skills plus dynamic
-  skill registration.
-- [API](src/mash/api/README.md): HTTP surface, request/response shapes, telemetry,
-  and dynamic publishing endpoints.
-- [CLI](src/mash/cli/README.md): `mash` commands and REPL slash commands.
-- [LLM providers](src/mash/core/llm/README.md): provider adapters, normalized LLM
-  contracts, and provider-native structured output.
-- [Masher](src/mash/agents/masher/README.md): built-in workflow-only trace
-  digest and online eval worker.
-- [Pilot](pilot/README.md): example host composition and Pilot-specific REPL
-  behavior.
-
-Other useful module guides:
-
-- [Core](src/mash/core/README.md)
-- [Tools](src/mash/tools/README.md)
-- [Agents](src/mash/agents/README.md)
-- [Memory](src/mash/memory/README.md)
-- [MCP](src/mash/mcp/README.md)
-- [Logging](src/mash/logging/README.md)
-
-## Development
-
-Use the focused module READMEs above as the source of truth when changing a
-subsystem. For cross-surface behavior, update tests across the relevant layers:
-
-- runtime changes: `tests/mash/runtime`
-- API changes: `tests/mash/api`
-- CLI/REPL changes: `tests/mash/cli`
-- workflow changes: `tests/mash/workflows`
-- Pilot changes: `tests/pilot`
-
-Before handing off broad changes, run:
+### 3. Connect
 
 ```bash
-uv run --extra dev pytest -q tests/mash
-uv run --extra dev pytest -q tests/pilot
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent primary
+mash repl
 ```
 
-## RFCs
+## Key Concepts
 
-- [Host-to-Agent Protocol (H2A)](docs/rfcs/host-to-agent-protocol.md)
+| Concept | What it is |
+|---|---|
+| **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
+| **HostBuilder** | Fluent builder that composes agents and workflows into an AgentHost |
+| **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
+| **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
+| **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
+| **WorkflowSpec** | Ordered task chains with structured output, orchestrated by DBOS |
+
+## Example: Mash Pilot
+
+[Mash Pilot](https://github.com/imsid/mash-pilot) is a full example host app
+built on the Mash SDK. It demonstrates multi-agent composition, custom REPL
+commands, workflows, and deployment. Use it as a reference when building your
+own host.
+
+## Build with a Coding Agent
+
+This repo includes [`CLAUDE.md`](CLAUDE.md) so coding agents like Claude Code,
+Codex, and Cursor can scaffold a Mash-powered agent from a natural language
+prompt. Copy it into your project or point your agent at this repo to get
+started. The [Pilot](https://github.com/imsid/mash-pilot) agent also includes
+a `build-mash-agent` skill for interactive agent scaffolding.
+
+## Documentation
+
+- [Product brief](docs/product-brief.md) — what Mash offers and where it fits
+- [Deployment guide](docs/how-to-deploy.md) — Docker, cloud, horizontal scaling
+- [Building agent CLIs](docs/building-agent-clis.md) — custom CLI development
+- [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
+- [Package overview](src/mash/README.md) — subsystem boundaries and module guides
+- [Contributing](CONTRIBUTING.md) — development setup, tests, repo structure

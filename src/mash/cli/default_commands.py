@@ -17,10 +17,108 @@ def _fmt_ms(ms: float) -> str:
 
 def _fmt_status(status: str) -> str:
     if status == "completed":
-        return "[ok]"
+        return "✓"
     if status == "error":
-        return "[error]"
-    return f"[{status}]"
+        return "✗"
+    return status
+
+
+def _render_trace(renderer, data: dict, *, depth: int = 0) -> None:
+    prefix = "│  " * depth
+    analysis = data.get("analysis") or {}
+    timing = analysis.get("timing") or {}
+    tokens = data.get("tokens") or {}
+    counts = data.get("counts") or {}
+
+    if not counts:
+        counts = {
+            "step_count": analysis.get("step_count", 0),
+            "tool_call_count": analysis.get("tool_call_count", 0),
+        }
+    if not tokens:
+        tokens = {
+            "input_tokens": analysis.get("input_tokens", 0),
+            "output_tokens": analysis.get("output_tokens", 0),
+        }
+
+    total_ms = timing.get("total_duration_ms", 0)
+    status = data.get("status", "unknown")
+    total_tokens = tokens.get("input_tokens", 0) + tokens.get("output_tokens", 0)
+
+    _p = lambda text: renderer.print(f"{prefix}{text}")  # noqa: E731
+
+    _p(
+        f"  {_fmt_status(status)}  {_fmt_ms(total_ms)}"
+        f"  |  {counts.get('step_count', 0)} steps"
+        f"  {counts.get('tool_call_count', 0)} tool calls"
+        f"  {total_tokens} tokens"
+    )
+    _p("")
+
+    segments = [
+        ("subagent_call", timing.get("total_subagent_ms", 0), timing.get("pct_subagent", 0)),
+        ("think", timing.get("total_think_ms", 0), timing.get("pct_think", 0)),
+        ("tool_call", timing.get("total_tool_ms", 0), timing.get("pct_tool", 0)),
+        ("cold_start", timing.get("cold_start_ms", 0), timing.get("pct_cold_start", 0)),
+        ("context_load", timing.get("context_load_ms", 0), 0),
+        ("idle", timing.get("idle_ms", 0), 0),
+    ]
+    visible = [(label, ms, pct) for label, ms, pct in segments if ms > 0]
+    if visible:
+        _p("  [bold]Spans by time[/bold]")
+        _p("  " + "─" * 50)
+        label_width = max(len(label) for label, _, _ in visible)
+        dur_width = max(len(_fmt_ms(ms)) for _, ms, _ in visible)
+        for label, ms, pct in visible:
+            bar = "█" * int(pct / 2.5) if pct > 0 else ""
+            pct_str = f"{pct:5.1f}%" if pct else ""
+            _p(f"  {label:<{label_width}}  {_fmt_ms(ms):>{dur_width}}  {pct_str}  {bar}")
+        _p("")
+
+    tool_stats = analysis.get("tool_stats") or []
+    if tool_stats:
+        _p("  [bold]Tool spans[/bold]")
+        _p("  " + "─" * 50)
+        name_width = max(len(str(t.get("tool_name", ""))) for t in tool_stats)
+        for t in tool_stats:
+            name = str(t.get("tool_name", ""))
+            count = t.get("count", 0)
+            total = _fmt_ms(t.get("total_ms", 0))
+            avg = _fmt_ms(t.get("avg_ms", 0))
+            call_word = "call" if count == 1 else "calls"
+            _p(f"  {name:<{name_width}}  {count} {call_word}  {total} total  {avg} avg")
+        _p("")
+
+    slowest = analysis.get("slowest_operations") or []
+    if slowest:
+        _p("  [bold]Slowest spans[/bold]")
+        _p("  " + "─" * 50)
+        kind_width = max(len(str(s.get("kind", ""))) for s in slowest[:5])
+        name_width = max(len(str(s.get("name", ""))) for s in slowest[:5])
+        dur_width = max(len(_fmt_ms(s.get("duration_ms", 0))) for s in slowest[:5])
+        for s in slowest[:5]:
+            kind = str(s.get("kind", ""))
+            name = str(s.get("name", ""))
+            dur = _fmt_ms(s.get("duration_ms", 0))
+            step = f"step {s['step_index']}" if s.get("step_index") is not None else ""
+            _p(f"  {kind:<{kind_width}}  {name:<{name_width}}  {dur:>{dur_width}}  {step}")
+        _p("")
+
+    subagent_traces = analysis.get("subagent_traces") or []
+    for sub in subagent_traces:
+        agent_id = sub.get("agent_id", "unknown")
+        child = sub.get("child_analysis")
+        if child:
+            child_data = {
+                "analysis": child,
+                "status": "completed",
+            }
+            _p(f"  ┌─ subagent_call: {agent_id} " + "─" * max(0, 32 - len(agent_id)))
+            _render_trace(renderer, child_data, depth=depth + 1)
+            renderer.print(f"{'│  ' * depth}  └" + "─" * 51)
+        else:
+            dur = _fmt_ms(sub.get("duration_ms", 0))
+            _p(f"  subagent_call: {agent_id}  {dur}  (trace data unavailable)")
 
 
 def register_default_commands(shell) -> None:
@@ -356,66 +454,8 @@ def register_default_commands(shell) -> None:
                 ctx.renderer.error(f"Failed to load analysis for trace {trace_id}: {exc}")
                 continue
 
-            analysis = data.get("analysis") or {}
-            timing = analysis.get("timing") or {}
-            tokens = data.get("tokens") or {}
-            counts = data.get("counts") or {}
-
-            total_ms = timing.get("total_duration_ms", 0)
-            status = data.get("status", "unknown")
-
             ctx.renderer.info(f"Trace {trace_id}")
-            ctx.renderer.print(
-                f"  {_fmt_status(status)}  {_fmt_ms(total_ms)}"
-                f"  |  {counts.get('step_count', 0)} steps"
-                f"  {counts.get('tool_call_count', 0)} tool calls"
-                f"  {(tokens.get('input_tokens', 0) + tokens.get('output_tokens', 0))} tokens"
-            )
-
-            segments = [
-                ("Think", timing.get("total_think_ms", 0), timing.get("pct_think", 0)),
-                ("Tool", timing.get("total_tool_ms", 0), timing.get("pct_tool", 0)),
-                ("Subagent", timing.get("total_subagent_ms", 0), timing.get("pct_subagent", 0)),
-                ("Cold Start", timing.get("cold_start_ms", 0), timing.get("pct_cold_start", 0)),
-                ("Context", timing.get("context_load_ms", 0), 0),
-                ("Idle", timing.get("idle_ms", 0), 0),
-            ]
-            timing_rows = []
-            for label, ms, pct in segments:
-                if ms > 0:
-                    bar_len = int(pct / 2) if pct > 0 else 0
-                    bar = "█" * bar_len
-                    timing_rows.append([label, _fmt_ms(ms), f"{pct:.1f}%" if pct else "", bar])
-            if timing_rows:
-                ctx.renderer.table(["Phase", "Duration", "%", ""], timing_rows)
-
-            tool_stats = analysis.get("tool_stats") or []
-            if tool_stats:
-                tool_rows = [
-                    [
-                        str(t.get("tool_name", "")),
-                        str(t.get("count", 0)),
-                        _fmt_ms(t.get("total_ms", 0)),
-                        _fmt_ms(t.get("avg_ms", 0)),
-                        _fmt_ms(t.get("max_ms", 0)),
-                        str(t.get("error_count", 0)),
-                    ]
-                    for t in tool_stats
-                ]
-                ctx.renderer.table(["Tool", "Count", "Total", "Avg", "Max", "Errors"], tool_rows)
-
-            slowest = analysis.get("slowest_operations") or []
-            if slowest:
-                slow_rows = [
-                    [
-                        str(s.get("kind", "")),
-                        str(s.get("name", "")),
-                        _fmt_ms(s.get("duration_ms", 0)),
-                        f"step {s['step_index']}" if s.get("step_index") is not None else "",
-                    ]
-                    for s in slowest[:5]
-                ]
-                ctx.renderer.table(["Kind", "Name", "Duration", "Step"], slow_rows)
+            _render_trace(ctx.renderer, data)
 
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))

@@ -130,6 +130,10 @@ class TraceAnalysis:
             "subagent_traces": [
                 d.to_dict(include_children=True) for d in self.subagent_details
             ],
+            "step_count": self.step_count,
+            "tool_call_count": self.tool_call_count,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
         }
 
 

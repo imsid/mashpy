@@ -346,6 +346,7 @@ def build_telemetry_router() -> APIRouter:
         agent_id: str,
         session_id: str,
         trace_id: str,
+        stitch: bool = False,
     ) -> dict[str, Any]:
         state = state_from_request(request)
         if not state.observability_enabled:
@@ -366,6 +367,11 @@ def build_telemetry_router() -> APIRouter:
 
         tree = build_span_tree(events)
         analysis = analyze_trace(tree)
+
+        if stitch and analysis.subagent_details:
+            from mash.agents.masher.tool import _stitch_subagent_traces
+
+            analysis = await _stitch_subagent_traces(agent.runtime_store, analysis)
 
         return success(
             {
