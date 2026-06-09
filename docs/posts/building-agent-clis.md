@@ -1,3 +1,13 @@
+---
+title: Building an Agent CLI with Mash
+description: Build a custom CLI for your Mash agent — serve it, connect as a remote shell, and add your own REPL commands.
+date: 2026-06-08
+author: imsid
+tags:
+  - guide
+  - cli
+---
+
 # Building an Agent CLI with Mash
 
 This guide walks through building a custom CLI for your Mash agent. You

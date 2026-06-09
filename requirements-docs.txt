@@ -1,0 +1,4 @@
+# Tooling for building the Mash docs/blog site (Zensical). Kept separate from
+# the package's runtime dependencies in pyproject.toml so it never ships with
+# `pip install mashpy`. Install with:  pip install -r requirements-docs.txt
+zensical==0.0.45

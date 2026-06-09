@@ -1,7 +1,17 @@
+---
+title: Mash Product Brief
+description: What Mash offers and where it fits — a self-hosted runtime for multi-agent applications.
+date: 2026-05-27
+author: imsid
+tags:
+  - product
+  - overview
+---
+
 # Mash Product Brief
 
 Mash is a self-hosted runtime for multi-agent applications. It is built around
-[Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) -- protocol boundary for submitting requests, streaming
+[Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) -- protocol boundary for submitting requests, streaming
 events, and running hosted agents.
 
 ## What Mash Provides
