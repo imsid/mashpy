@@ -68,13 +68,23 @@ Notes
 
 ### Live token streaming
 
-When the host streams a response, the chain renderer prints `llm.response.delta`
-chunks incrementally as they arrive (`chain_renderer._on_runtime_response_delta`)
-instead of waiting for the full answer. To avoid showing the answer twice,
-`chain_renderer.take_response_streamed()` reports whether deltas were rendered
-live; `shell.py` then suppresses the duplicate full-text markdown render at
-`think.complete`. If the provider doesn't stream (no deltas), the shell falls
-back to rendering the complete response as before.
+When the host streams a response (`llm.response.delta` events), the chain
+renderer shows the answer live and formatted, then renders it exactly once:
+
+- `chain_renderer._on_runtime_response_delta` buffers incoming chunks and flushes
+  each *completed* markdown block (`_flush_response_markdown` /
+  `_split_complete_markdown`) as it finishes — so the answer streams in with full
+  markdown formatting (headings, bold, syntax-highlighted code) rather than as
+  raw text or a single end-of-turn dump. Block-at-a-time flushing avoids the
+  scrollback artifacts a whole-buffer `rich.Live` repaint produces on long
+  output, and keeps unterminated code fences buffered until they close.
+- Single render is enforced in `shell.py`: the legacy per-step preview render is
+  gated on `chain_renderer.response_streamed()` (a non-consuming peek) and the
+  terminal `request.completed` render is gated on
+  `chain_renderer.take_response_streamed()` (consuming). When tokens streamed
+  live, both fall through and nothing re-renders.
+- Non-streaming providers (no deltas) keep the previous behavior: the preview
+  and/or terminal `renderer.markdown` panel renders the complete response once.
 
 ## Public Exports
 - `MashHostClient`, `MashHostClientError`
