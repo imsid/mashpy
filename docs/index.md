@@ -8,37 +8,70 @@ hide:
 
 # Mash
 
-**Build self-hosted, multi-agent applications in Python.**
+**Build self-hosted, multi-agent applications.**
 
-Mash is a Python SDK and host runtime for composing a primary agent, specialized
-subagents, and durable workflows behind a single host — with built-in tools,
-skills, memory, observability, and a CLI/REPL.
+Mash is a Python SDK and a host runtime for composing agents. 
+It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that standardizes interactions between user applications and agents. Agents are model agnostic and come with powerful built-in tools, skills, memory, observability, and a API/CLI for access.
+
+Install:
 
 ```bash
-pip install mashpy
+uv add mashpy
 ```
 
+Compose Agents:
+
 ```python
+## my_agent/spec.py
+
 from mash.runtime import HostBuilder
 
-host = (
-    HostBuilder()
-    .primary(PrimaryAgent())
-    .subagent(ResearchAgent(), metadata=...)
-    .build()
-)
+def build_host():
+  host = (
+      HostBuilder()
+      .primary(PrimaryAgent())
+      .subagent(ResearchAgent(), metadata=...)
+      .build()
+  )
+  return host
+```
+
+Start the host:
+
+```bash
+mash host serve --host-app my_agent.spec:build_host --host 127.0.0.1 --port 8000
+```
+
+Talk to your agent with the Mash CLI:
+
+```bash
+mash repl --api-base-url http://127.0.0.1:8000 --agent my-agent
 ```
 
 ## Start here
 
 - [**Product brief**](posts/product-brief.md) — what Mash offers and where it fits
-- [**Deploying a Mash Host**](posts/how-to-deploy.md) — laptop, Docker, and cloud
-- [**Building an agent CLI**](posts/building-agent-clis.md) — custom CLI development
 - [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md) — the host-to-agent boundary
 
-## Links
+## Internals
 
-- [GitHub repository](https://github.com/imsid/mashpy)
-- [Pilot example app](https://github.com/imsid/mash-pilot)
+- [**The life of a Mash request**](posts/request-lifecycle.md) — follow one message from POST to `request.completed`
+- [**The agent loop, durably**](posts/durable-agent-loop.md) — checkpoints, retries, and surviving `kill -9`
+- [**Two stores, on purpose**](posts/two-stores.md) — the event log vs. conversation memory
+- [**Human-in-the-loop**](posts/human-in-the-loop.md) — tool approval and ask-user on one durable mechanism
+- [**Remote tools over MCP**](posts/remote-tools-mcp.md) — connecting MCP servers and their tools
+- [**One LLM contract, three providers**](posts/one-llm-contract.md) — normalized requests, caching, streaming
+- [**Skills: instructions on demand**](posts/skills-on-demand.md) — markdown bundles loaded through one meta-tool
+- [**Memory that doesn't grow forever**](posts/memory-and-compaction.md) — history, compaction, and signals
+- [**Composing agents under one host**](posts/composing-agents.md) — subagents, delegation, shared plumbing
+- [**Workflows and task state**](posts/workflows-and-task-state.md) — ordered tasks with append-only checkpoints
+- [**Reading a trace**](posts/reading-a-trace.md) — events to spans to latency answers
 
-Use the search bar (top right) to find anything across the site.
+## Guides
+
+- [**Building an agent CLI**](posts/building-agent-clis.md) — custom CLI development
+- [**Deploying a Mash Host**](posts/how-to-deploy.md) — laptop, Docker, and cloud
+
+## Applications
+
+- [**Pilot CLI**](https://github.com/imsid/mash-pilot) - a multi-agent CLI guide to build and deploy Mash agents.

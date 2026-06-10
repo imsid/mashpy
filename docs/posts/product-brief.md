@@ -10,9 +10,10 @@ tags:
 
 # Mash Product Brief
 
-Mash is a self-hosted runtime for multi-agent applications. It is built around
-[Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) -- protocol boundary for submitting requests, streaming
-events, and running hosted agents.
+Mash is a Python SDK and a self hosted runtime for composing agents. 
+It's designed around [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) that standardizes interactions between user applications and agents. 
+
+Agents are model agnostic and come with powerful built-in tools, skills, memory, observability, and a API/CLI for access.
 
 ## What Mash Provides
 
