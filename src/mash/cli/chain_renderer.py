@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.text import Text
 
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
@@ -33,6 +34,7 @@ class ChainOfThoughtRenderer:
         # Live token streaming state for llm.response.delta events.
         self._response_streaming = False
         self._response_streamed = False
+        self._response_buffer = ""
 
     def enable(self) -> None:
         """Enable rendering."""
@@ -64,6 +66,7 @@ class ChainOfThoughtRenderer:
         self._subagent_headers_shown = set()
         self._response_streaming = False
         self._response_streamed = False
+        self._response_buffer = ""
         title = "Agent Execution Started"
         if label:
             title = f"{label} Execution Started"
@@ -145,16 +148,56 @@ class ChainOfThoughtRenderer:
         if not text:
             return
         if not self._response_streaming:
-            self._console.print()  # separate the streamed block from prior output
+            self._console.rule("[cyan]Assistant[/cyan]", style="cyan")
             self._response_streaming = True
             self._response_streamed = True
-        self._console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+        self._response_buffer += text
+        self._flush_response_markdown(final=False)
+
+    @staticmethod
+    def _split_complete_markdown(buffer: str) -> tuple[str, str]:
+        """Split a streamed buffer into (renderable, remainder).
+
+        Markdown needs whole blocks to format correctly (a code fence is not
+        valid until it closes), so only return text up to the last blank-line
+        block boundary that sits outside an open code fence. The remainder stays
+        buffered until more text arrives.
+        """
+        lines = buffer.split("\n")
+        fence_open = False
+        boundary = 0
+        for index, line in enumerate(lines):
+            if line.lstrip().startswith("```"):
+                fence_open = not fence_open
+                continue
+            if not fence_open and line.strip() == "":
+                boundary = index + 1
+        if boundary == 0:
+            return "", buffer
+        return "\n".join(lines[:boundary]), "\n".join(lines[boundary:])
+
+    def _flush_response_markdown(self, *, final: bool) -> None:
+        """Render completed markdown blocks from the streamed buffer."""
+        if final:
+            chunk = self._response_buffer
+            self._response_buffer = ""
+            if chunk.strip():
+                self._console.print(Markdown(chunk))
+            return
+        complete, remainder = self._split_complete_markdown(self._response_buffer)
+        if complete.strip():
+            self._console.print(Markdown(complete))
+            self._response_buffer = remainder
 
     def _close_response_stream(self) -> None:
-        """Terminate the live-streamed line, if one is open."""
+        """Flush any buffered markdown and end the streamed response block."""
         if self._response_streaming:
-            self._console.print()
+            self._flush_response_markdown(final=True)
             self._response_streaming = False
+
+    def response_streamed(self) -> bool:
+        """Return whether response text streamed live (non-consuming peek)."""
+        return self._response_streamed
 
     def take_response_streamed(self) -> bool:
         """Return whether response text was streamed live, resetting the flag.

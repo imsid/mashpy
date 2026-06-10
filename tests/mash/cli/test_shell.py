@@ -503,6 +503,57 @@ class MashRemoteShellTests(unittest.TestCase):
             ["streamed from runtime", "final response"],
         )
 
+    def test_handle_repl_message_single_render_when_tokens_stream(self) -> None:
+        shell = self._build_shell()
+        answer = "# Title\n\nBody paragraph one.\n\nDone."
+
+        def stream_with_deltas(_agent_id: str, _request_id: str):
+            for chunk in ["# Title\n\n", "Body paragraph one.\n\n", "Done."]:
+                yield {
+                    "event": "agent.trace",
+                    "data": {
+                        "event_type": "llm.response.delta",
+                        "trace_id": "trace-1",
+                        "loop_index": 0,
+                        "payload": {"payload": {"text": chunk, "index": 0}},
+                    },
+                }
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "runtime.llm.think.completed",
+                    "trace_id": "trace-1",
+                    "loop_index": 0,
+                    "payload": {
+                        "action_type": "finish",
+                        "assistant_text": answer,
+                        "tool_calls": [],
+                        "token_usage": {"input": 2, "output": 1},
+                        "duration_ms": 5,
+                    },
+                },
+            }
+            yield {
+                "event": "request.completed",
+                "data": {"session_id": "s-1", "response": {"text": answer}},
+            }
+
+        shell.client.stream_request = stream_with_deltas
+        with patch.object(shell.context.renderer, "markdown") as markdown:
+            shell.handle_repl_message(shell.context, "hello")
+        # The answer rendered live (token streaming); the terminal/preview
+        # markdown panel must not fire — otherwise it shows twice.
+        markdown.assert_not_called()
+
+    def test_split_complete_markdown_buffers_open_code_fence(self) -> None:
+        renderer = ChainOfThoughtRenderer(Console(record=True, width=80))
+        complete, remainder = renderer._split_complete_markdown(
+            "para one\n\n```\ncode\n"
+        )
+        self.assertEqual(complete, "para one\n")
+        # An unterminated code fence stays buffered until it closes.
+        self.assertEqual(remainder, "```\ncode\n")
+
     def test_chain_renderer_runtime_events_preserve_durations(self) -> None:
         console = Console(record=True, width=120)
         renderer = ChainOfThoughtRenderer(console)

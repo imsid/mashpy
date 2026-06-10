@@ -256,12 +256,12 @@ class MashRemoteShell:
                         payload,
                         agent_id=ctx.agent_id,
                     )
-                    if streamed_text:
+                    if streamed_text and not self.chain_renderer.response_streamed():
+                        # Legacy per-step preview render, used only when the
+                        # provider does not stream tokens. When tokens stream
+                        # live, the answer is already shown formatted in place.
                         streamed_response_text = streamed_text
-                        # If the answer already streamed token-by-token, don't
-                        # re-render the full text — that would show it twice.
-                        if not self.chain_renderer.take_response_streamed():
-                            ctx.renderer.markdown(streamed_text)
+                        ctx.renderer.markdown(streamed_text)
                     continue
 
                 if event_name == "request.interaction.create":
@@ -295,7 +295,14 @@ class MashRemoteShell:
             text = str(response_payload.get("text") or "")
         else:
             text = str(final_payload.get("text") or "")
-        if text and text != streamed_response_text:
+        # Skip the terminal render when the answer already streamed live; only
+        # render here for non-streaming providers (and dedupe against any
+        # legacy preview render above).
+        if (
+            text
+            and text != streamed_response_text
+            and not self.chain_renderer.take_response_streamed()
+        ):
             ctx.renderer.markdown(text)
 
     def run(self) -> None:
