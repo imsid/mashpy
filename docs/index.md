@@ -50,7 +50,8 @@ mash repl --api-base-url http://127.0.0.1:8000 --agent my-agent
 
 ## Start here
 
-- [**Product brief**](posts/product-brief.md) — what Mash offers and where it fits
+- [**Product brief**](posts/product-brief.md) — the pitch: why the seam between applications and agents needs a standard
+- [**Mash under the hood**](posts/mash-under-the-hood.md) — what Mash provides and where it fits
 - [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md) — the host-to-agent boundary
 
 ## Internals

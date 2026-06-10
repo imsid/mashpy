@@ -53,8 +53,9 @@ workflow ───────► │        ▲                      output    
                   └─────────────────────────────────────────┘
 ```
 
-See the [product brief](docs/posts/product-brief.md) for a deeper look at each
-capability.
+See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
+at each capability, and the [product brief](docs/posts/product-brief.md) for
+the pitch.
 
 ## Quick Start
 
@@ -134,7 +135,8 @@ a `build-mash-agent` skill for interactive agent scaffolding.
 
 ## Documentation
 
-- [Product brief](docs/posts/product-brief.md) — what Mash offers and where it fits
+- [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
+- [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
 - [Deployment guide](docs/posts/how-to-deploy.md) — Docker, cloud, horizontal scaling
 - [Building agent CLIs](docs/posts/building-agent-clis.md) — custom CLI development
 - [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
