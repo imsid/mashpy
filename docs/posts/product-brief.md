@@ -273,7 +273,7 @@ mash host serve --host-app <MASH_HOST> --port 8001
 mash connect --api-base-url <MASH_HOST_URL> --api-key secret
 ```
 
-### REPL
+#### REPL
 REPL gives you the interface to interact with the agents
 
 ```bash
@@ -288,7 +288,7 @@ Example messages inside the REPL:
 > ...
 ```
 
-### CLI Commands
+#### CLI Commands
 Default CLI commands exposed by mash
 ```
 /status     Show deployment status
