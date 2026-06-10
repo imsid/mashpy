@@ -397,6 +397,8 @@ class LLMEvent(LogEvent):
 
     Example event_types:
     - "llm.request.start" - Starting LLM API call
+    - "llm.response.delta" - Incremental streamed text chunk (coalesced);
+      the chunk text and ordinal live in payload as {"text", "index"}
     - "llm.request.complete" - LLM responded successfully
     - "llm.request.error" - LLM request failed
 

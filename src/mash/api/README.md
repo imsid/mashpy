@@ -150,6 +150,11 @@ validation).
 - Emits runtime events with:
   - `event: <event_name>`
   - `data: <json payload>`
+- Streamed token output arrives as `event: agent.trace` frames whose
+  `data.event_type` is `llm.response.delta`, with the coalesced text chunk at
+  `data.payload.payload.text`. Concatenate these in arrival order to render the
+  answer live before the terminal event. The final, authoritative response is
+  still delivered on `request.completed`.
 - Terminates when event name is `request.completed` or `request.error`.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/status`

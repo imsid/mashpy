@@ -112,6 +112,7 @@ AgentConfig(
     temperature=1.0,                      # sampling temperature
     skills_enabled=False,                 # enable the Skill meta-tool
     prompt_caching_enabled=True,          # provider prompt caching
+    streaming_enabled=True,               # stream tokens + emit llm.response.delta events
     conversation_history_turns=3,         # turns of history in context
 )
 ```

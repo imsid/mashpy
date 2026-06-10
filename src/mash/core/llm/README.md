@@ -31,9 +31,15 @@ Behavior:
 - Supports provider beta flags via `request.provider_options["betas"]`.
 - Translates `request.provider_options["structured_output"]` into the
   Messages API `output_config` json_schema format.
+- When `request.streaming` is set, uses the Messages streaming helper
+  (`messages.stream()` / `beta.messages.stream()`), emits coalesced
+  `llm.response.delta` events as text arrives, then returns the fully
+  accumulated message via `get_final_message()` (response shape and final
+  `usage` unchanged).
 - Returns capability flags:
   - `beta_flags=True`
   - `server_tools=True`
+  - `streaming=True`
 
 ### `GeminiProvider`
 - Provider name: `gemini`
@@ -50,6 +56,7 @@ Behavior:
 - Disables automatic function calling to ensure explicit Mash tool runtime control.
 - Supports prompt caching via Gemini's `CachedContent` API. When `use_prompt_caching` is enabled, the provider creates a server-side cache resource containing the system instruction and tool definitions, then references it in subsequent requests. The cache is reused as long as system/tools remain unchanged and is automatically recreated when they change. Cache creation failures fall back silently to non-cached requests. The cache is cleaned up on provider `close()` and also expires via TTL (default `3600s`, configurable via `provider_options["cache_ttl"]`).
 - Translates structured outputs into standard `response_mime_type` and `response_schema` parameters.
+- Does not yet honor `request.streaming` (no `llm.response.delta` emission); every request uses the non-streaming `generate_content` call.
 - Returns all-false capability flags (`LLMCapabilities()`).
 
 ### `OpenAIProvider`
@@ -69,8 +76,14 @@ Behavior:
 - Translates `request.provider_options["structured_output"]` into the
   Responses API `text.format` json_schema entry; honors
   `request.provider_options["structured_output_strict"]` (default `True`).
+- When `request.streaming` is set, uses the Responses streaming helper
+  (`responses.stream()`), emits coalesced `llm.response.delta` events from
+  `response.output_text.delta` chunks, then returns the fully accumulated
+  response via `get_final_response()` (response shape and final `usage`
+  unchanged).
 - Returns capability flags:
   - `reasoning_controls=True`
+  - `streaming=True`
 
 ## `LLMProvider` Protocol
 
@@ -84,6 +97,11 @@ Required members:
 `send(request: LLMRequest) -> LLMResponse`
 - Accepts a normalized request.
 - Returns a normalized response regardless of provider-specific wire format.
+- Remains the single generation entry point even when streaming: if
+  `request.streaming` is set and the adapter supports it, the provider streams
+  internally (emitting `llm.response.delta` events) but still returns the fully
+  accumulated `LLMResponse`. The return contract is identical whether or not
+  streaming is used.
 
 `set_event_logger(logger, session_id, app_id) -> None`
 - Binds structured LLM logging to the provider.
@@ -119,6 +137,7 @@ LLMRequest(
     max_tokens: int,
     temperature: float = 1.0,
     use_prompt_caching: bool = True,
+    streaming: bool = False,
     provider_options: dict[str, Any] = {},
 )
 ```
@@ -131,6 +150,11 @@ Field notes:
 - `max_tokens`: requested output cap
 - `temperature`: provider sampling control when supported
 - `use_prompt_caching`: hint for providers that support caching
+- `streaming`: hint to stream the response and emit incremental
+  `llm.response.delta` events; adapters that don't support streaming ignore it
+  and the response is identical. Set by the agent loop from
+  `AgentConfig.streaming_enabled` (default `True`); the structured-output
+  finalizer and compaction leave it `False`.
 - `provider_options`: adapter-specific escape hatch for provider-native options
 
 ## Normalized Message And Content Shapes
@@ -225,10 +249,9 @@ Providers should map their native token accounting into these fields when availa
 - `streaming`
 
 Current provider capability summary:
-- `AnthropicProvider`: beta flags and server tools
-- `GeminiProvider`: all-false (no provider-specific capability flags)
-- `OpenAIProvider`: reasoning controls
-- No adapter currently advertises `streaming=True`
+- `AnthropicProvider`: beta flags, server tools, streaming
+- `GeminiProvider`: all-false (no provider-specific capability flags; streaming not yet implemented)
+- `OpenAIProvider`: reasoning controls, streaming
 
 ## Provider Option Notes
 
@@ -321,6 +344,7 @@ response shape, HTTP API), see
 
 Concrete providers built on `BaseLLMProvider` automatically emit:
 - `llm.request.start`
+- `llm.response.delta` (only on streaming requests; see below)
 - `llm.request.complete`
 - `llm.request.error`
 
@@ -332,6 +356,24 @@ Logged fields include:
 - trace id
 - tool names
 - beta flags when applicable
+
+### Streaming deltas (`llm.response.delta`)
+
+When a request streams, the provider emits incremental `llm.response.delta`
+events between `llm.request.start` and `llm.request.complete`. Helpers on
+`BaseLLMProvider` standardize this so every adapter behaves the same:
+- `_emit_response_delta(request, *, text, index)` emits one delta `LLMEvent`
+  (chunk text + ordinal in `payload`), correlated via the provider's bound
+  trace/session/app ids.
+- `_delta_stream(request)` returns a `_DeltaStream` coalescer; adapters
+  `push()` raw chunks and `flush()` the remainder. Chunks are coalesced (flush
+  at `DEFAULT_DELTA_MAX_CHARS` chars or `DEFAULT_DELTA_MAX_INTERVAL` seconds) so
+  event volume stays bounded (~tens per turn) while the visible stream stays
+  responsive.
+
+`llm.request.complete` still carries the final, authoritative `duration_ms` and
+token counts (measured over the whole stream). Deltas are a live-progress
+channel, not the source of truth for usage.
 
 ## Source Of Truth
 - Provider contract: [base.py](/Users/sid/Projects/mashpy/src/mash/core/llm/base.py)

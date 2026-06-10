@@ -258,7 +258,10 @@ class MashRemoteShell:
                     )
                     if streamed_text:
                         streamed_response_text = streamed_text
-                        ctx.renderer.markdown(streamed_text)
+                        # If the answer already streamed token-by-token, don't
+                        # re-render the full text — that would show it twice.
+                        if not self.chain_renderer.take_response_streamed():
+                            ctx.renderer.markdown(streamed_text)
                     continue
 
                 if event_name == "request.interaction.create":

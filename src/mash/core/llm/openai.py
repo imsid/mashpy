@@ -60,10 +60,27 @@ class OpenAIProvider(BaseLLMProvider):
             ) from exc
 
     def capabilities(self) -> LLMCapabilities:
-        return LLMCapabilities(reasoning_controls=True)
+        return LLMCapabilities(reasoning_controls=True, streaming=True)
+
+    async def _stream_response(self, request: LLMRequest, params: Dict[str, Any]) -> Any:
+        """Stream a request and accumulate it into a complete Response.
+
+        Uses the SDK's streaming helper so bytes start flowing immediately
+        (avoiding request timeouts on long generations) and emits incremental
+        ``llm.response.delta`` events as text arrives, then returns the fully
+        accumulated response so the caller contract is unchanged: the result is
+        shaped exactly like a ``responses.create()`` response, including final
+        ``usage`` token counts.
+        """
+        async with self._client.responses.stream(**params) as stream:
+            deltas = self._delta_stream(request)
+            async for event in stream:
+                if getattr(event, "type", None) == "response.output_text.delta":
+                    await deltas.push(event.delta)
+            await deltas.flush()
+            return await stream.get_final_response()
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-
         request_start = time.time()
         params: Dict[str, Any] = {
             "model": self.model,
@@ -113,7 +130,10 @@ class OpenAIProvider(BaseLLMProvider):
             payload={"input": params["input"], "tools": params.get("tools", [])},
         )
         try:
-            raw_response = await self._client.responses.create(**params)
+            if request.streaming:
+                raw_response = await self._stream_response(request, params)
+            else:
+                raw_response = await self._client.responses.create(**params)
             response = self._parse_openai_response(raw_response)
             await self._emit_request_complete(
                 request,

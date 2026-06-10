@@ -30,6 +30,9 @@ class ChainOfThoughtRenderer:
         self._subagent_steps: Dict[str, List[Dict[str, Any]]] = {}
         self._subagent_step_counters: Dict[str, int] = {}
         self._subagent_headers_shown: set[str] = set()
+        # Live token streaming state for llm.response.delta events.
+        self._response_streaming = False
+        self._response_streamed = False
 
     def enable(self) -> None:
         """Enable rendering."""
@@ -59,6 +62,8 @@ class ChainOfThoughtRenderer:
         self._subagent_steps = {}
         self._subagent_step_counters = {}
         self._subagent_headers_shown = set()
+        self._response_streaming = False
+        self._response_streamed = False
         title = "Agent Execution Started"
         if label:
             title = f"{label} Execution Started"
@@ -77,6 +82,9 @@ class ChainOfThoughtRenderer:
             RuntimeEventType.LLM_THINK_STARTED.value,
             RuntimeEventType.TOOL_CALL_STARTED.value,
         }:
+            return
+        if event.event_type == "llm.response.delta":
+            self._on_runtime_response_delta(event, trace_label=trace_label)
             return
         if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
             self._on_runtime_think_complete(event, trace_label=trace_label)
@@ -117,12 +125,54 @@ class ChainOfThoughtRenderer:
             )
         self.finish_trace()
 
+    def _on_runtime_response_delta(
+        self,
+        event: RuntimeEvent,
+        *,
+        trace_label: str | None = None,
+    ) -> None:
+        """Render a coalesced llm.response.delta chunk live as it streams."""
+        if event.trace_id != self._current_trace_id:
+            self.start_trace(event.trace_id, label=trace_label)
+        payload = event.payload or {}
+        if not isinstance(payload, dict):
+            return
+        # LLMEvent fields are wrapped under "payload" by the logging layer;
+        # tolerate either the wrapped or a flattened shape.
+        text = payload.get("text")
+        if text is None and isinstance(payload.get("payload"), dict):
+            text = payload["payload"].get("text")
+        if not text:
+            return
+        if not self._response_streaming:
+            self._console.print()  # separate the streamed block from prior output
+            self._response_streaming = True
+            self._response_streamed = True
+        self._console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+
+    def _close_response_stream(self) -> None:
+        """Terminate the live-streamed line, if one is open."""
+        if self._response_streaming:
+            self._console.print()
+            self._response_streaming = False
+
+    def take_response_streamed(self) -> bool:
+        """Return whether response text was streamed live, resetting the flag.
+
+        Lets the caller suppress a duplicate full-text render when the answer
+        was already shown token-by-token.
+        """
+        streamed = self._response_streamed
+        self._response_streamed = False
+        return streamed
+
     def _on_runtime_think_complete(
         self,
         event: RuntimeEvent,
         *,
         trace_label: str | None = None,
     ) -> None:
+        self._close_response_stream()
         if event.trace_id != self._current_trace_id:
             self.start_trace(event.trace_id, label=trace_label)
 
@@ -176,6 +226,7 @@ class ChainOfThoughtRenderer:
         """Finish the current trace."""
         if not self._enabled:
             return
+        self._close_response_stream()
         if self._steps:
             self._render_summary()
         self._current_trace_id = None
