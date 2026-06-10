@@ -73,14 +73,14 @@ Illustrative runtime topology:
 
 ```mermaid
 flowchart TD
-    U["User Application"] --> H["Host"]
-    H --> R["Client Registry"]
-    R --> C1["Client for Agent A"]
-    R --> C2["Client for Agent B"]
-    C1 --> A1["Agent A Runtime Endpoint"]
-    C2 --> A2["Agent B Runtime Endpoint"]
-    A1 --> E1["Agent Execution Loop"]
-    A2 --> E2["Agent Execution Loop"]
+    U["User application<br/>(web · service · app)"] --> H["Host<br/>(Deployable service)"]
+    H --> R["Agent Registry"]
+    R --> C1["Client for <br/>Agent A"]
+    R --> C2["Client for <br/>Agent B"]
+    C1 --> A1["Agent A runtime"]
+    C2 --> A2["Agent B runtime"]
+    A1 --> E1["Agent A loop"]
+    A2 --> E2["Agent B loop"]
 ```
 
 ### 3.3 Conformance
