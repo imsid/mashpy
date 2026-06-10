@@ -66,6 +66,16 @@ Notes
 - `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained/subagent output.
 - `config.py`, `repl.py`, and `types.py`: saved connection config and shell state types.
 
+### Live token streaming
+
+When the host streams a response, the chain renderer prints `llm.response.delta`
+chunks incrementally as they arrive (`chain_renderer._on_runtime_response_delta`)
+instead of waiting for the full answer. To avoid showing the answer twice,
+`chain_renderer.take_response_streamed()` reports whether deltas were rendered
+live; `shell.py` then suppresses the duplicate full-text markdown render at
+`think.complete`. If the provider doesn't stream (no deltas), the shell falls
+back to rendering the complete response as before.
+
 ## Public Exports
 - `MashHostClient`, `MashHostClientError`
 - `MashRemoteShell`, `ShellTarget`

@@ -16,6 +16,58 @@ from .types import (
 )
 
 
+# Coalescing thresholds for streamed response deltas. Deltas are flushed into a
+# single ``llm.response.delta`` event when the buffer reaches this many
+# characters, or this many seconds elapse since the last flush (whichever comes
+# first). This bounds event volume (~tens per turn instead of one per token
+# chunk) while keeping the visible stream responsive.
+DEFAULT_DELTA_MAX_CHARS = 80
+DEFAULT_DELTA_MAX_INTERVAL = 0.5
+
+
+class _DeltaStream:
+    """Coalesces streamed text deltas into bounded ``llm.response.delta`` events.
+
+    Providers push raw text chunks via :meth:`push`; the stream flushes a
+    coalesced delta event when the buffer crosses the size or time threshold,
+    and :meth:`flush` emits any trailing partial buffer when the stream ends.
+    """
+
+    def __init__(
+        self,
+        provider: "BaseLLMProvider",
+        request: LLMRequest,
+        *,
+        max_chars: int = DEFAULT_DELTA_MAX_CHARS,
+        max_interval: float = DEFAULT_DELTA_MAX_INTERVAL,
+    ) -> None:
+        self._provider = provider
+        self._request = request
+        self._max_chars = max_chars
+        self._max_interval = max_interval
+        self._buffer = ""
+        self._index = 0
+        self._last_flush = time.monotonic()
+
+    async def push(self, text: str) -> None:
+        if not text:
+            return
+        self._buffer += text
+        elapsed = time.monotonic() - self._last_flush
+        if len(self._buffer) >= self._max_chars or elapsed >= self._max_interval:
+            await self.flush()
+
+    async def flush(self) -> None:
+        if not self._buffer:
+            return
+        await self._provider._emit_response_delta(
+            self._request, text=self._buffer, index=self._index
+        )
+        self._index += 1
+        self._buffer = ""
+        self._last_flush = time.monotonic()
+
+
 class LLMProvider(ABC):
     """Interface for LLM providers."""
 
@@ -148,6 +200,38 @@ class BaseLLMProvider(LLMProvider):
                 trace_id=self._trace_id,
                 tools=self._tool_names(request.tools),
                 betas=self._request_betas(request),
+            )
+        )
+
+    def _delta_stream(self, request: LLMRequest) -> _DeltaStream:
+        """Create a coalescing delta stream for a streamed request."""
+        return _DeltaStream(self, request)
+
+    async def _emit_response_delta(
+        self,
+        request: LLMRequest,
+        *,
+        text: str,
+        index: int,
+    ) -> None:
+        """Emit one incremental ``llm.response.delta`` event.
+
+        Correlates with ``llm.request.start`` / ``llm.request.complete`` via the
+        provider's bound trace/session/app ids. The coalesced text chunk lives
+        in ``payload`` so consumers can render it live.
+        """
+        if self._event_logger is None:
+            return
+
+        await self._event_logger.emit(
+            LLMEvent(
+                event_type="llm.response.delta",
+                app_id=self._app_id,
+                session_id=self._session_id,
+                provider=self.provider_name,
+                model=request.model,
+                trace_id=self._trace_id,
+                payload={"text": text, "index": index},
             )
         )
 

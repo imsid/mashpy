@@ -351,6 +351,9 @@ class GeminiProvider(BaseLLMProvider):
         )
 
     async def send(self, request: LLMRequest) -> LLMResponse:
+        # NOTE: This provider does not yet honor ``request.streaming``; every
+        # request uses the non-streaming generate call below. See
+        # AnthropicProvider for the streaming pattern if this is added later.
         request_start = time.time()
 
         cached_content_name = await self._ensure_cache(request)

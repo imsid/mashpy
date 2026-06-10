@@ -65,7 +65,34 @@ class AnthropicProvider(BaseLLMProvider):
             ) from exc
 
     def capabilities(self) -> LLMCapabilities:
-        return LLMCapabilities(beta_flags=True, server_tools=True)
+        return LLMCapabilities(beta_flags=True, server_tools=True, streaming=True)
+
+    async def _stream_response(
+        self,
+        request: LLMRequest,
+        params: Dict[str, Any],
+        *,
+        betas: Optional[List[str]],
+    ) -> Any:
+        """Stream a request and accumulate it into a complete Message.
+
+        Uses the SDK's streaming helper so bytes start flowing immediately
+        (avoiding request timeouts on long generations) and emits incremental
+        ``llm.response.delta`` events as text arrives, then returns the fully
+        accumulated message so the caller contract is unchanged: the result is
+        shaped exactly like a ``messages.create()`` response, including final
+        ``usage`` token counts.
+        """
+        if betas:
+            stream_cm = self._client.beta.messages.stream(**params, betas=betas)
+        else:
+            stream_cm = self._client.messages.stream(**params)
+        async with stream_cm as stream:
+            deltas = self._delta_stream(request)
+            async for text in stream.text_stream:
+                await deltas.push(text)
+            await deltas.flush()
+            return await stream.get_final_message()
 
     async def send(self, request: LLMRequest) -> LLMResponse:
 
@@ -112,7 +139,9 @@ class AnthropicProvider(BaseLLMProvider):
         )
 
         try:
-            if betas:
+            if request.streaming:
+                raw_response = await self._stream_response(request, params, betas=betas)
+            elif betas:
                 raw_response = await self._client.beta.messages.create(**params, betas=betas)
             else:
                 raw_response = await self._client.messages.create(**params)

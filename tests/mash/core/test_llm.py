@@ -8,12 +8,49 @@ from types import SimpleNamespace
 
 from mash.core.context import ToolCall
 from mash.core.llm import AnthropicProvider, OpenAIProvider, GeminiProvider
+from mash.core.llm.base import _DeltaStream
 from mash.core.llm.types import (
     LLMContentBlock,
     LLMMessage,
     LLMRequest,
     LLMToolDefinition,
 )
+
+
+async def _aiter(items):
+    for item in items:
+        yield item
+
+
+class _FakeAnthropicStream:
+    """Async-context streaming stub exposing text_stream + get_final_message."""
+
+    def __init__(self, chunks, final):
+        self.text_stream = _aiter(chunks)
+        self.get_final_message = AsyncMock(return_value=final)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeOpenAIStream:
+    """Async-context streaming stub that is itself async-iterable."""
+
+    def __init__(self, events, final):
+        self._events = events
+        self.get_final_response = AsyncMock(return_value=final)
+
+    def __aiter__(self):
+        return _aiter(self._events)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
@@ -108,6 +145,55 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
                 "strict": True,
             },
         )
+
+    async def test_openai_send_streams_when_requested(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        provider._model = "gpt-4.1"
+        provider._app_id = "test"
+
+        final_response = SimpleNamespace(text="streamed", tool_calls=[], usage=None)
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="hello "),
+            SimpleNamespace(type="response.completed"),  # non-text event ignored
+            SimpleNamespace(type="response.output_text.delta", delta="world"),
+        ]
+        stream_obj = _FakeOpenAIStream(events, final_response)
+        responses = SimpleNamespace(
+            create=AsyncMock(),
+            stream=Mock(return_value=stream_obj),
+        )
+        provider._client = SimpleNamespace(responses=responses)
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._emit_response_delta = AsyncMock()
+        provider._parse_openai_response = Mock(
+            return_value=SimpleNamespace(text="streamed", tool_calls=[], provider_metadata={})
+        )
+        request = LLMRequest(
+            model="gpt-4.1",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            streaming=True,
+        )
+
+        await provider.send(request)
+
+        # Streaming path is used, not the blocking create() call.
+        provider._client.responses.stream.assert_called_once()
+        provider._client.responses.create.assert_not_called()
+        stream_obj.get_final_response.assert_awaited_once()
+        # Only text deltas were forwarded (non-text events filtered), coalesced
+        # into a single trailing flush.
+        provider._emit_response_delta.assert_awaited_once()
+        self.assertEqual(
+            provider._emit_response_delta.await_args.kwargs["text"], "hello world"
+        )
+        # The accumulated final response is parsed into the same response shape.
+        provider._parse_openai_response.assert_called_once_with(final_response)
+        provider._emit_request_complete.assert_awaited_once()
 
     def test_openai_parser_normalizes_text_and_tool_calls(self) -> None:
         provider = object.__new__(OpenAIProvider)
@@ -281,6 +367,72 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
                 }
             },
         )
+
+    async def test_anthropic_send_streams_when_requested(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        provider._model = "claude-sonnet-4-5"
+        provider._app_id = "test"
+
+        final_message = SimpleNamespace(text="streamed", tool_calls=[], usage=None)
+        stream_obj = _FakeAnthropicStream(["hello ", "world"], final_message)
+        messages = SimpleNamespace(
+            create=AsyncMock(),
+            stream=Mock(return_value=stream_obj),
+        )
+        provider._client = SimpleNamespace(messages=messages)
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._emit_response_delta = AsyncMock()
+        provider._parse_anthropic_response = Mock(
+            return_value=SimpleNamespace(text="streamed", tool_calls=[], provider_metadata={})
+        )
+        request = LLMRequest(
+            model="claude-sonnet-4-5",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            streaming=True,
+        )
+
+        await provider.send(request)
+
+        # Streaming path is used, not the blocking create() call.
+        provider._client.messages.stream.assert_called_once()
+        provider._client.messages.create.assert_not_called()
+        stream_obj.get_final_message.assert_awaited_once()
+        # Text deltas were forwarded and coalesced into a single trailing flush.
+        provider._emit_response_delta.assert_awaited_once()
+        self.assertEqual(
+            provider._emit_response_delta.await_args.kwargs["text"], "hello world"
+        )
+        # The accumulated final message is parsed into the same response shape.
+        provider._parse_anthropic_response.assert_called_once_with(final_message)
+        provider._emit_request_complete.assert_awaited_once()
+
+    async def test_delta_stream_coalesces_by_size_and_flushes_remainder(self) -> None:
+        provider = SimpleNamespace(_emit_response_delta=AsyncMock())
+        request = LLMRequest(
+            model="claude-sonnet-4-5",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=10,
+        )
+        stream = _DeltaStream(provider, request, max_chars=80, max_interval=99.0)
+
+        await stream.push("a" * 50)  # under threshold, buffered
+        await stream.push("b" * 50)  # crosses 80 chars -> flush index 0
+        await stream.push("c" * 10)  # under threshold, buffered
+        await stream.flush()         # trailing remainder -> flush index 1
+
+        calls = provider._emit_response_delta.await_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].kwargs["index"], 0)
+        self.assertEqual(calls[0].kwargs["text"], "a" * 50 + "b" * 50)
+        self.assertEqual(calls[1].kwargs["index"], 1)
+        self.assertEqual(calls[1].kwargs["text"], "c" * 10)
 
 
 class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):

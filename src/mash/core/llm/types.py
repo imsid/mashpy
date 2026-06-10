@@ -121,6 +121,7 @@ class LLMRequest:
     max_tokens: int
     temperature: float = 1.0
     use_prompt_caching: bool = True
+    streaming: bool = False
     provider_options: Dict[str, Any] = field(default_factory=dict)
 
 

@@ -172,6 +172,7 @@ Notes:
 
 ### LLM Provider Lifecycle
 - `llm.request.start`
+- `llm.response.delta`
 - `llm.request.complete`
 - `llm.request.error`
 
@@ -189,6 +190,15 @@ Typical fields:
 
 Typical metadata:
 - Provider-specific response metadata on `llm.request.complete`
+
+`llm.response.delta` notes:
+- Emitted only for streaming requests (`request.streaming`), interleaved
+  between `llm.request.start` and `llm.request.complete`.
+- Carries a coalesced text chunk in `payload` as `{"text", "index"}` (no
+  duration/token fields); chunks are coalesced by the provider so volume stays
+  bounded (~tens per turn).
+- `llm.request.complete` remains the source of truth for final `duration_ms`
+  and token counts.
 
 ### MCP Client And Tool Events
 - `mcp.client.connect`

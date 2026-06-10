@@ -23,6 +23,7 @@ class AgentConfig:
     temperature: float = 1.0
     skills_enabled: bool = False
     prompt_caching_enabled: bool = True
+    streaming_enabled: bool = True
     conversation_history_turns: int = 3
     compaction_token_threshold: int = 0
     compaction_turn_limit: int = 50
