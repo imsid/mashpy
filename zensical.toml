@@ -33,6 +33,7 @@ nav = [
             { "Reading a Trace" = "posts/reading-a-trace.md" },
         ] },
         { "Guides" = [
+            { "Exploring Mash with Pilot" = "posts/exploring-mash-with-pilot.md" },
             { "Building an Agent CLI" = "posts/building-agent-clis.md" },
             { "How to Deploy a Mash Host" = "posts/how-to-deploy.md" },
         ] },

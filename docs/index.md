@@ -71,6 +71,7 @@ mash repl --api-base-url http://127.0.0.1:8000 --agent my-agent
 
 ## Guides
 
+- [**Exploring Mash with Pilot**](posts/exploring-mash-with-pilot.md): ask the Pilot CLI questions about the Mash codebase
 - [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development
 - [**Deploying a Mash Host**](posts/how-to-deploy.md): laptop, Docker, and cloud
 
