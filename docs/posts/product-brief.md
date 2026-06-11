@@ -11,7 +11,7 @@ tags:
 # Mash Product Brief
 
 Most of the focus in building agents today goes into the harness: the loop, the
-context engineering, the tool plumbing. As models get smarter agents will proliferate 
+context engineering, the tool plumbing. As models get smarter, agents will proliferate 
 the way apps did once the app store gave them a standard place to live. 
 Every person will run a collection of agents inside a single app that automates their life: 
 one that prepares a morning brief before you're up, one that triages email, 
@@ -22,16 +22,15 @@ and release readiness, and external ones like an onboarding assistant or a repor
 ## Host-to-Agent Protocol (H2A)
 
 The part that's still missing is how a user application or an enterprise
-platform, the app store of this analogy, talks to agents. Today every team
-builds that seam from scratch, a bespoke endpoint with ad-hoc streaming or a
-homegrown approval flow bolted on. The
+platform (the app store of this analogy) talks to agents. Today that's largely built
+as a bespoke endpoint with ad-hoc streaming or a homegrown approval flow bolted on. The
 [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) standardizes
 that interaction model: how a request is submitted, how its lifecycle streams
 back, how an agent pauses for human approval or input, and how it recovers
 from failure.
 
 When agents are commodities, they get added and swapped constantly. The
-interaction pattern has to be standardized somewhere stable, and the **host**
+interaction pattern has to be standardized somewhere stable, and the **Host**
 is that place. The host gives every agent behind it a stable address, one
 session model, one event contract, and one human-in-the-loop interaction
 model. The host becomes the unit of deploy and your application integrates
