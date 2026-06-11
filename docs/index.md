@@ -50,28 +50,29 @@ mash repl --api-base-url http://127.0.0.1:8000 --agent my-agent
 
 ## Start here
 
-- [**Product brief**](posts/product-brief.md) — the pitch: why the seam between applications and agents needs a standard
-- [**Mash under the hood**](posts/mash-under-the-hood.md) — what Mash provides and where it fits
-- [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md) — the host-to-agent boundary
+- [**Product brief**](posts/product-brief.md): the pitch, why applications and agents needs a standard
+- [**Mash under the hood**](posts/mash-under-the-hood.md): what Mash provides and where it fits
+- [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md): the host-to-agent boundary
 
 ## Internals
 
-- [**The life of a Mash request**](posts/request-lifecycle.md) — follow one message from POST to `request.completed`
-- [**The agent loop, durably**](posts/durable-agent-loop.md) — checkpoints, retries, and surviving `kill -9`
-- [**Two stores, on purpose**](posts/two-stores.md) — the event log vs. conversation memory
-- [**Human-in-the-loop**](posts/human-in-the-loop.md) — tool approval and ask-user on one durable mechanism
-- [**Remote tools over MCP**](posts/remote-tools-mcp.md) — connecting MCP servers and their tools
-- [**One LLM contract, three providers**](posts/one-llm-contract.md) — normalized requests, caching, streaming
-- [**Skills: instructions on demand**](posts/skills-on-demand.md) — markdown bundles loaded through one meta-tool
-- [**Memory that doesn't grow forever**](posts/memory-and-compaction.md) — history, compaction, and signals
-- [**Composing agents under one host**](posts/composing-agents.md) — subagents, delegation, shared plumbing
-- [**Workflows and task state**](posts/workflows-and-task-state.md) — ordered tasks with append-only checkpoints
-- [**Reading a trace**](posts/reading-a-trace.md) — events to spans to latency answers
+- [**The life of a Mash request**](posts/request-lifecycle.md): follow one message from POST to `request.completed`
+- [**The durable agent loop**](posts/durable-agent-loop.md): checkpoints, retries, and surviving `kill -9`
+- [**Two stores**](posts/two-stores.md): the event log vs. conversation memory
+- [**Human-in-the-loop**](posts/human-in-the-loop.md): tool approval and ask-user on one durable mechanism
+- [**Remote tools over MCP**](posts/remote-tools-mcp.md): connecting MCP servers and their tools
+- [**One LLM contract**](posts/one-llm-contract.md): normalized requests, caching, streaming
+- [**Skills: instructions on demand**](posts/skills-on-demand.md): markdown bundles loaded through one meta-tool
+- [**Memory and compaction**](posts/memory-and-compaction.md): history, summary checkpoints, and signals
+- [**Composing agents under one host**](posts/composing-agents.md): subagents, delegation, shared plumbing
+- [**Workflows**](posts/workflows-and-task-state.md): code authored and dynamic specs for deterministic tasks
+- [**The host API and CLI**](posts/host-api-and-cli.md): the HTTP surface applications integrate with, and the REPL built on it
+- [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 
 ## Guides
 
-- [**Building an agent CLI**](posts/building-agent-clis.md) — custom CLI development
-- [**Deploying a Mash Host**](posts/how-to-deploy.md) — laptop, Docker, and cloud
+- [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development
+- [**Deploying a Mash Host**](posts/how-to-deploy.md): laptop, Docker, and cloud
 
 ## Applications
 

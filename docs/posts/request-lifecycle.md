@@ -1,6 +1,6 @@
 ---
 title: The Life of a Mash Request
-description: Follow one message from POST to request.completed — the events the runtime emits along the way and what each one tells you.
+description: Follow one message from POST to request.completed, through the events the runtime emits along the way.
 date: 2026-06-10
 author: imsid
 tags:
@@ -23,22 +23,22 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request \
 {"data": {"request_id": "7c9e1f0a-…", "agent_id": "pilot", "session_id": "s1", "status": "accepted"}}
 ```
 
-The answer arrives as a stream of events on `GET /api/v1/agent/pilot/request/{request_id}/events`, ending in a `request.completed` frame that carries the response text. This post follows one request from submission to completion and walks through the events the runtime emits along the way — each one recorded and replayable.
+The answer arrives as a stream of events on `GET /api/v1/agent/pilot/request/{request_id}/events`, ending in a `request.completed` frame that carries the response text. This post follows one request from submission to completion and walks through the events the runtime emits along the way.
 
-## Two calls, not one
+## Submit, then stream
 
-The split into *submit* and *stream* is deliberate. Mash accepts the request, makes it durable, and lets you attach to its progress from anywhere — across client disconnects and host restarts:
+Mash splits the interaction into two calls so that accepting a request and watching its progress stay independent. The host accepts the request, makes it durable, and lets you attach to its progress from anywhere, across client disconnects and host restarts:
 
 ```bash
 curl -N http://127.0.0.1:8000/api/v1/agent/pilot/request/7c9e1f0a-…/events \
   -H "Authorization: Bearer $MASH_API_KEY"
 ```
 
-You can attach late. You can detach and re-attach. You'll see the same events either way, because the stream is a **replay of persisted records**.
+You can attach late, or detach and re-attach, and you'll see the same events either way, because the stream is a replay of persisted records.
 
 ## The path a message takes
 
-Between those two calls, the message moves through a handful of layers. Each one has a narrow job:
+Between those two calls, the message moves through a handful of layers, each with a narrow job:
 
 ```mermaid
 sequenceDiagram
@@ -65,7 +65,7 @@ sequenceDiagram
     Log-->>Client: frames … request.completed
 ```
 
-One ordering detail matters here: `request.accepted` is appended to the log **before** execution starts. The order in `submit_request` is append first, start second:
+One ordering detail: `request.accepted` is appended to the log before execution starts. The order in `submit_request` is append first, start second:
 
 ```python
 # src/mash/runtime/requests.py (trimmed)
@@ -78,7 +78,7 @@ accepted_event = await append_runtime_event(self, RuntimeEvent(
 await self.engine.start_request(request_id=request_id, ...)
 ```
 
-By the time you hold a `request_id`, the request already exists durably — even if the process dies before the first model call.
+By the time you hold a `request_id`, the request already exists durably, even if the process dies before the first model call.
 
 ## Everything is an event
 
@@ -101,11 +101,11 @@ class RuntimeEventType(str, Enum):
     # ... plus started/failed variants for steps and tool calls
 ```
 
-`to_public_event` in `requests.py` maps each internal record to one of a small set of public frames before it reaches your SSE client: lifecycle events get first-class names (`request.accepted`, `request.started`, `request.completed`, `request.error`, `request.interaction.*`), and everything that happened *inside* execution arrives as an `agent.trace` frame carrying the internal `event_type` in its data. Two vocabularies on purpose — the public one is the contract your client code matches on; the internal one can grow without breaking you.
+`to_public_event` in `requests.py` maps each internal record to one of a small set of public frames before it reaches your SSE client. Lifecycle events get first-class names (`request.accepted`, `request.started`, `request.completed`, `request.error`, `request.interaction.*`), and everything that happened inside execution arrives as an `agent.trace` frame carrying the internal `event_type` in its data. Keeping two vocabularies lets the internal one grow without breaking client code, which only ever matches on the public names.
 
 ## Reading one request, frame by frame
 
-Here's the stream for the commit-summary request above, against a Pilot host with a `bash` tool. Annotated:
+Here's the stream for the commit-summary request above, against a Pilot host with a `bash` tool, annotated:
 
 ```text
 event: request.accepted          ← the request exists; execution may not have started yet
@@ -128,21 +128,17 @@ event: agent.trace               ← event_type: runtime.llm.think.completed
 
 event: agent.trace               ← event_type: runtime.turn.persisted
                                    the completed turn was written to conversation
-                                   memory — this is the only thing the next request
+                                   memory; this is the only thing the next request
                                    in this session will see
 
 event: request.completed         ← terminal; payload carries the response text
 ```
 
-A few things this stream tells you:
+The stream already answers the questions you would normally add instrumentation for. Each think and tool frame carries its own duration, so if a request felt slow, you can see whether the model or the tool was responsible. The tool frames record names, arguments, and result previews, the actual sequence as it ran. And `turn.persisted` appears exactly once, at the end: the intermediate steps are visible here, but they never become conversation history. That distinction gets its own post.
 
-- **Where time went.** Each think and tool frame carries its own duration. If a request felt slow, the stream already says whether it was the model or the tool.
-- **What the agent actually did.** Tool names, arguments, result previews — the actual sequence, as it ran.
-- **Where the turn boundary is.** `turn.persisted` appears exactly once, at the end. The intermediate steps are visible here but they never become conversation history. That distinction gets its own post.
+If the agent streams text (`streaming_enabled`, on by default), you'll also see `agent.trace` frames with `event_type: llm.response.delta` between think start and completion. These carry coalesced text chunks you can concatenate to render the answer live. The final, authoritative text still arrives on `request.completed`; deltas are a progress channel.
 
-If the agent streams text (`streaming_enabled`, on by default), you'll also see `agent.trace` frames with `event_type: llm.response.delta` between think start and completion — coalesced text chunks you can concatenate to render the answer live. The final, authoritative text still arrives on `request.completed`; deltas are a progress channel.
-
-Two terminal frames exist, and exactly one of them always arrives. `request.completed` carries the response. `request.error` carries an `error_code` and a `retryable` flag, which tell you whether retrying is sensible — more on that in the next post.
+Two terminal frames exist, and exactly one of them always arrives. `request.completed` carries the response. `request.error` carries an `error_code` and a `retryable` flag, which tell you whether retrying is sensible. More on that in the next post.
 
 ## Streaming is replay
 
@@ -157,15 +153,15 @@ public_events = [to_public_event(event) for event in stored_events]
 done = await self.runtime_store.is_request_terminal(request_id)
 ```
 
-This is why reconnecting is uneventful: a client that drops mid-request reconnects, replays from the start (or its last cursor), and sees an identical stream. It's also why `GET .../request/{id}/status` can report a request's fate hours after the fact — the log *is* the request's history.
+This is why reconnecting is uneventful: a client that drops mid-request reconnects, replays from the start (or its last cursor), and sees an identical stream. It's also why `GET .../request/{id}/status` can report a request's fate hours after the fact, since the log holds the request's whole history.
 
-## Recorded vs. executed
+## The log and the engine
 
-One distinction underpins everything above, and it's the spine of this series:
+The layering above separates two jobs:
 
-- The **event log** records the request — what happened, in what order, replayable forever.
-- The **request engine** executes the request — durably, with checkpoints, surviving restarts.
+- The **event log** records the request: what happened, in what order, replayable forever.
+- The **request engine** executes the request durably, with checkpoints, surviving restarts.
 
-These are separate layers with separate stores, and neither absorbs the other's job. The log you just read is the first layer. The second one is what makes a half-finished request survive a `kill -9` — and that's where we go next.
+Neither layer absorbs the other's job. The log is what this post covered. The engine is what makes a half-finished request survive a `kill -9`, and it's the subject of the next post.
 
-*Next: [The Agent Loop, Durably](durable-agent-loop.md) — why the engine checkpoints individual steps instead of running the agent loop in one piece.*
+*Next: [The Durable Agent Loop](durable-agent-loop.md).*

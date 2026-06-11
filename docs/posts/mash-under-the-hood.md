@@ -1,6 +1,6 @@
 ---
 title: Mash Under the Hood
-description: What Mash provides — one host over many agents, a durable harness, observability, and self-hosted interfaces.
+description: What Mash provides. One host over many agents, a durable harness, observability, and self-hosted interfaces.
 date: 2026-06-10
 author: imsid
 tags:
@@ -11,11 +11,10 @@ tags:
 # Mash Under the Hood
 
 The [product brief](product-brief.md) makes the pitch: applications should
-integrate with agents through one standardized seam, and the host — not the
-agent — is the unit of deploy. This post covers both halves in practice: the
-seam — the host and its interfaces — and the runtime underneath it — the
-durable harness and observability — that Mash ships so you never build it
-yourself.
+integrate with agents through one standardized seam, and the host, not the
+agent, is the unit of deploy. This post covers what Mash actually ships on
+both sides of that seam: the host and its interfaces above, and the durable
+harness and observability underneath.
 
 - [One Host, Many Agents](#one-host-many-agents)
 - [Durable Harness](#durable-harness)
@@ -35,9 +34,9 @@ yourself.
 ## One Host, Many Agents
 
 Mash lets teams define a primary agent, add specialized subagents, and compose
-workflow-only agents behind the same host. That makes it possible to build
-systems where general-purpose agents delegate to focused specialists without
-introducing a separate coordination layer outside the runtime.
+workflow-only agents behind the same host. General-purpose agents can delegate
+to focused specialists without a separate coordination layer outside the
+runtime.
 
 ```python
 host = (
@@ -51,30 +50,30 @@ host = (
 
 ## Durable Harness
 
-Mash provides the harness to durably execute a request — accepted, executed
-through a durable request engine, and recorded as replayable runtime events. That gives teams a stronger operational model than a
-single in-memory agent loop and makes retries, restarts, and long-running work
-much easier to manage.
+Mash provides the harness that durably executes a request: it is accepted,
+executed through a durable request engine, and recorded as replayable runtime
+events. That is a stronger operational model than a single in-memory agent
+loop, and it makes retries, restarts, and long-running work easier to manage.
 
-### Core Agent Loop: Context, Memory, Tools, Skills, Signals, Structured output
+### Core Agent Loop: context, memory, tools, skills, signals, structured output
 
-This gives teams a practical way to move beyond text-in, text-out
-behavior and build agents that can act with context, preserve useful state, and
-expose structured outputs from each completed loop which makes it easier to build typed
-integrations, machine-readable agent responses, and predictable downstream
-automation.
+Each request runs a think → act → observe loop with context loaded from
+memory, tools and skills available to it, and signals plus optional structured
+output produced when it completes. Structured output gives integrations a
+typed payload to consume instead of prose, which is what makes machine-readable
+agent responses and predictable downstream automation practical.
 
 Each agent brings its own `LLMProvider`, so different agents in the same host
-can run on different models — a cheap model for triage, a capable one for
+can run on different models, a cheap model for triage and a capable one for
 complex reasoning. Mash ships providers for Anthropic, Google Gemini, and OpenAI
-out of the box. Each provider handles prompt caching differently — Anthropic uses
+out of the box. Each provider handles prompt caching differently: Anthropic uses
 `cache_control` breakpoints on system and tool blocks, OpenAI uses explicit cache
 keys with configurable retention, and Gemini creates server-side cached content
 objects with a TTL. Mash abstracts all of this behind a single
 `prompt_caching_enabled` flag in `AgentConfig` (on by default). The runtime
-automatically applies the right caching strategy for whichever provider the agent
-uses, so repeated requests within a session avoid re-processing static context
-without requiring any provider-specific code from the developer.
+applies the right caching strategy for whichever provider the agent uses, so
+repeated requests within a session avoid re-processing static context without
+any provider-specific code from the developer.
 
 Long-running sessions accumulate token cost as conversation history grows. Mash
 handles this with automatic conversation compaction: when a session's total token
@@ -87,11 +86,11 @@ agent via `compaction_token_threshold` and `compaction_turn_limit` in
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
-- **BashTool** — execute shell commands in the host environment
-- **AskUserTool** — pause execution to ask the user a question
-- **InvokeSubagent** — delegate work to a registered subagent and stream its response back
-- **search_conversations** — search stored conversation turns and return ranked previews
-- **get_full_turn_message** — expand search results into full turn text
+- **BashTool**: execute shell commands in the host environment
+- **AskUserTool**: pause execution to ask the user a question
+- **InvokeSubagent**: delegate work to a registered subagent and stream its response back
+- **search_conversations**: search stored conversation turns and return ranked previews
+- **get_full_turn_message**: expand search results into full turn text
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -117,15 +116,15 @@ Mash supports durable agent-to-user interactions as part of the hosted runtime.
 An agent can pause mid-execution to request approval before a sensitive tool
 runs, or ask the user a question when it needs information to continue. These
 interactions are durable: the runtime can restart, and the waiting agent resumes
-exactly where it left off when the user responds — whether that takes seconds or
+exactly where it left off when the user responds, whether that takes seconds or
 hours.
 
 Tool developers gate execution behind user consent by setting a single attribute
 on the tool definition. Agents ask users questions by calling a built-in tool
 that the runtime intercepts and translates into a durable interaction. Both paths
 use the same protocol-level interaction events and the same host-to-client
-response flow, so the operational model stays simple regardless of who initiates
-the interaction.
+response flow, so the operational model stays the same regardless of who
+initiates the interaction.
 
 ```python
 # tool gated behind user consent
@@ -157,20 +156,19 @@ stateful agent tasks rather than a loose orchestration layer.
 
 ## Observability
 
-When agents run as operational software, "it produced the right answer" is not
-enough. Teams need to know *where* time was spent, *which* tool call was
-slowest, whether cold start dominated latency, and what happened inside a
-subagent delegation — without wiring up a third-party APM or building a
-post-processing pipeline first. Mash ships observability as a first-class layer
-across the runtime, API, UI, and CLI so that every trace is inspectable the
-moment it completes.
+When agents run as operational software, producing the right answer is not
+enough; teams also need to know where the time went, down to the level of a
+single tool call or a subagent delegation. Mash ships observability across the
+runtime, API, UI, and CLI, so every trace is inspectable the moment it
+completes, without wiring up a third-party APM or building a post-processing
+pipeline first.
 
 ### Spans and Trace Analysis
 
 Every request produces an ordered stream of `RuntimeEvent` records. Mash
-transforms those flat events into a hierarchical **span tree** and computes a deterministic
-**trace analysis** from that tree. No LLM inference is involved; all metrics
-are derived directly from event timestamps and payloads.
+transforms those flat events into a hierarchical **span tree** and computes a
+deterministic **trace analysis** from that tree. No LLM inference is involved;
+all metrics are derived directly from event timestamps and payloads.
 
 The span tree models the full request lifecycle:
 
@@ -192,9 +190,9 @@ TRACE
 The trace analysis computed from this tree includes:
 
 - **Timing breakdown**: total duration, cold start, context load, LLM think,
-  tool execution, subagent calls, and idle time — each with absolute and
+  tool execution, subagent calls, and idle time, each with absolute and
   percentage values
-- **Per-tool stats**: call count, total/avg/max/min latency, error count —
+- **Per-tool stats**: call count, total/avg/max/min latency, error count,
   sorted by total time so the most expensive tool surfaces first
 - **Per-step breakdown**: think, tool, and overhead time for each agent loop
   iteration
@@ -216,12 +214,12 @@ GET /telemetry/memory/search           # search agent memory
 ```
 
 The `/telemetry/trace/analysis` endpoint returns the full span tree and
-analysis dict in a single call — no client-side computation needed.
+analysis dict in a single call, with no client-side computation needed.
 
 ### Telemetry UI
 
 The built-in telemetry dashboard at `http://<HOST>/telemetry` renders traces
-with a visual span waterfall — each span is a collapsible row showing kind,
+with a visual span waterfall. Each span is a collapsible row showing kind,
 name, duration, and a proportional bar scaled to the trace total. A summary
 bar at the top shows the time distribution across think, tool, subagent, cold
 start, and idle phases. Below the waterfall, collapsible panels show tool stats,
@@ -229,7 +227,7 @@ step breakdown, and slowest operations tables.
 
 ### CLI Trace Inspection
 
-The `/trace` REPL command gives developers instant access to trace analysis
+The `/trace` REPL command gives developers access to trace analysis
 without leaving the terminal:
 
 ```
@@ -248,7 +246,7 @@ same span and analysis infrastructure:
 
 - **`masher-trace-digest`** produces a schema v2 digest with the full latency
   breakdown, tool stats, step breakdown, slowest operations, nested subagent
-  traces, and notable events — a complete diagnostic snapshot of one trace.
+  traces, and notable events: a complete diagnostic snapshot of one trace.
 - **`masher-online-eval-curation`** writes normalized eval records with latency
   context so teams can correlate quality with performance from day one.
 
@@ -264,10 +262,11 @@ on a schedule.
 
 ## Self-Hosted Interfaces
 
-Mash exposes agents over HTTP, supports streaming responses, includes a CLI and
-REPL, and fits naturally into local, server, and containerized deployments. The
-same platform can be used to develop an agent system, integrate it into product
-surfaces, and operate it in a controlled environment. Checkout [Pilot Agent](https://github.com/imsid/mash-pilot/blob/main/README.md) for an implementation.
+Mash exposes agents over HTTP, supports streaming responses, and includes a CLI
+and REPL, so the same platform covers local development, integration into
+product surfaces, and operating the system in a controlled environment. See
+[Pilot Agent](https://github.com/imsid/mash-pilot/blob/main/README.md) for an
+implementation.
 
 ```bash
 mash host serve --host-app <MASH_HOST> --port 8001
@@ -275,7 +274,7 @@ mash connect --api-base-url <MASH_HOST_URL> --api-key secret
 ```
 
 ### REPL
-REPL gives you the interface to interact with the agents
+The REPL is the interactive interface to a running host:
 
 ```bash
 mash repl

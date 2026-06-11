@@ -1,6 +1,6 @@
 ---
-title: Two Stores, On Purpose
-description: Why every Mash runtime is built on two separate stores — an append-only event log and conversation memory — and what each one answers.
+title: Two Stores
+description: Why every Mash runtime keeps an append-only event log and conversation memory as two separate stores, and what each one answers.
 date: 2026-06-10
 author: imsid
 tags:
@@ -8,27 +8,27 @@ tags:
   - storage
 ---
 
-# Two Stores, On Purpose
+# Two Stores
 
 Construct an `AgentRuntime` and you have to hand it two stores:
 
 ```python
 runtime = AgentRuntime(
     spec=spec,
-    memory_store=memory_store,    # conversation truth
-    runtime_store=runtime_store,  # request truth
+    memory_store=memory_store,
+    runtime_store=runtime_store,
     ...
 )
 ```
 
-Two Postgres-backed stores, owned by the same runtime, often living in the same database. The split is deliberate: each store serves different readers with a different write pattern, and merging them would force one schema to serve both — every boundary in the runtime that leans on these contracts would blur. This post covers what each store owns and the rule that keeps them separate.
+Both are Postgres-backed, both are owned by the same runtime, and they often live in the same database, so it's fair to ask why there are two of them. They stay separate because they serve different readers with different write patterns. Merging them would force one schema to do both jobs, and several layers in the runtime depend on each contract staying narrow. This post covers what each store owns.
 
 ## What each store owns
 
-**`runtime_store` holds the record of what happened during a request.** It's the append-only event log from [the first post in this series](request-lifecycle.md) — every accepted request, every think phase, every tool call, every terminal state, in order, forever. Its interface is deliberately small:
+**`runtime_store` holds the record of what happened during a request.** It is the append-only event log from [the first post in this series](request-lifecycle.md). Every event a request produces, from `request.accepted` through its terminal state, is appended in order and kept. The interface is small:
 
 ```python
-# src/mash/runtime/events/store.py — the RuntimeStore boundary
+# src/mash/runtime/events/store.py: the RuntimeStore boundary
 append_event(...)
 list_events(...)
 list_request_events(...)
@@ -38,9 +38,9 @@ get_latest_trace(...)
 list_recent_traces(...)
 ```
 
-The contract is append and read. That's what makes SSE replay, status reconstruction, and trace analysis trivial: they're all reads over an immutable sequence.
+The contract is append and read. Everything that consumes the log later, whether that's SSE replay or trace analysis, is a read over an immutable sequence, and reconstructing a request's status works the same way.
 
-**`memory_store` holds what the conversation has established.** It owns turns, per-turn signals, compaction summaries, and the search index over past conversations. This is the store the *next* request reads when it loads context — when the agent "remembers" what you discussed, this is where the memory came from.
+**`memory_store` holds what the conversation has established.** It owns turns, per-turn signals, compaction summaries, and the search index over past conversations. This is the store the next request reads when it loads context. When the agent remembers something you discussed last week, the memory came from here.
 
 ```mermaid
 flowchart LR
@@ -56,13 +56,11 @@ flowchart LR
     MS --> F["conversation search"]
 ```
 
-## Forty events, one turn
+## One turn per request
 
-The clearest way to see the boundary is to count writes. A request that takes five agent steps with a few tool calls each produces a few dozen runtime events — accepted, trace started, context loaded, five thinks, the tool completions, turn persisted, completed.
+Counting writes makes the boundary visible. A request that takes five agent steps with a few tool calls each appends a few dozen runtime events along the way: accepted, trace started, context loaded, the thinks, the tool completions, and so on. The same request writes one turn to memory, at the end.
 
-It produces **exactly one turn**.
-
-It's enforced by where in the workflow the memory write lives — `persist_completed_turn` runs once, only after the loop reaches a terminal state:
+The enforcement is structural. `persist_completed_turn` runs once in the workflow, only after the loop reaches a terminal state:
 
 ```python
 # src/mash/runtime/engine/workflow.py (trimmed)
@@ -78,13 +76,13 @@ if bool(workflow_state.get("done")):
     return
 ```
 
-Intermediate steps are never written as turns. A request that fails on step 4 of 12 leaves a complete forensic trail in the event log — and contributes *nothing* to conversation history. The next request in that session sees the conversation as if the failed attempt never happened: history contains what the agent actually concluded.
+Intermediate steps are never written as turns. A request that fails on step 4 of 12 leaves a complete forensic trail in the event log but adds nothing to conversation history, so the next request in that session sees the conversation as if the failed attempt never happened. History contains what the agent actually concluded.
 
-The turn that does get written is dense. `save_turn` persists the user message, the final response, aggregate token usage, the trace id (which doubles as the turn id — your bridge from a conversation back to its full event trail), and a bag of **signals**: small structured values collected at the end of the run, like token counts and tool activity, that let you query sessions without parsing transcripts.
+The turn that does get written is dense. `save_turn` persists the user message, the final response, aggregate token usage, and the trace id, which doubles as the turn id and is your path from a conversation back to its full event trail. It also persists a bag of signals: small structured values collected at the end of the run, like token counts and tool activity, that let you query sessions without parsing transcripts.
 
-## Different readers, different rules
+## The two contracts side by side
 
-Side by side, the two contracts barely overlap:
+The contracts barely overlap:
 
 | | `runtime_store` | `memory_store` |
 |---|---|---|
@@ -95,16 +93,16 @@ Side by side, the two contracts barely overlap:
 | Holds | what happened, in what order | what the session has established |
 | Failed request leaves | full partial trail | nothing |
 
-The mutability row deserves a word. The event log never changes shape — replay depends on it. Conversation memory does the opposite: when a session's token count crosses the compaction threshold, the runtime summarizes earlier turns into a checkpoint and future context loads read the summary instead of the full history. Memory is *allowed* to be lossy because its job is to keep context useful and bounded; the log is *forbidden* from being lossy because its job is to be the record. One store can't have both properties.
+The mutability row carries the most weight. Replay depends on the event log never changing, so it never does. Conversation memory gets summarized: when a session's token count crosses the compaction threshold, the runtime condenses earlier turns into a checkpoint, and future context loads read the summary instead of the full history. Losing detail is acceptable there, since memory's job is to keep context useful and bounded. The log can't tolerate that kind of loss, because its job is to be the record.
 
-There's also a third kind of state worth placing on this map, from [the previous post](durable-agent-loop.md): DBOS workflow state, which carries the serialized context between checkpoints while a request is in flight. It's execution scaffolding — alive for the duration of one request, never a public surface. In-flight state belongs to the engine, history belongs to the log, knowledge belongs to memory.
+A third kind of state from [the previous post](durable-agent-loop.md) belongs on this map too: DBOS workflow state, which carries the serialized context between checkpoints while a request is in flight. It's execution scaffolding, alive for the duration of one request and never a public surface, so neither store holds it.
 
 ## One pool for the whole host
 
 The two stores share their connection infrastructure. In a multi-agent host, `AgentHost` creates one shared `PostgresRuntimeStore` and one shared `PostgresStore` and injects them into every runtime that uses the default `build_memory_store()`:
 
 ```python
-# the host owns store lifecycle, not the runtimes
+# the host owns the store lifecycle
 host = (
     HostBuilder()
     .primary(PilotSpec())
@@ -114,12 +112,12 @@ host = (
 )
 ```
 
-Pilot's host above runs three agents but holds one connection pool, one LISTEN connection for event wakeups, and one memory connection — the same count it would have with one agent or ten. Runtimes never open or close their stores; the host opens the shared stores before any runtime starts and closes them after all runtimes shut down. (A spec that overrides `build_memory_store()` opts out and gets its own instance — useful when one agent's memory genuinely must live elsewhere.)
+Pilot's host above runs three agents but holds a single connection pool, a single LISTEN connection for event wakeups, and a single memory connection. The count would be the same with one agent or ten. Runtimes never open or close their stores; the host opens the shared stores before any runtime starts and closes them after all runtimes shut down. (A spec that overrides `build_memory_store()` opts out and gets its own instance, which is useful when one agent's memory genuinely must live elsewhere.)
 
-This is also why the design rule at the top of the runtime package reads the way it does: *`memory_store` and `runtime_store` stay separate.* Every layer above them — replay, compaction, trace analysis, search — leans on one of the two contracts being exactly what it claims to be.
+The design rule at the top of the runtime package says it directly: `memory_store` and `runtime_store` stay separate. Replay, compaction, trace analysis, and search each lean on one of the two contracts holding.
 
 ## Where this leads
 
-You now have the full skeleton: events record a request, the engine executes it durably, and two stores keep "what happened" and "what we know" from contaminating each other. Everything else in Mash is built on top of these seams — starting with the pauses for people built into the loop: tool approval and `AskUser`.
+At this point the skeleton is complete: events record a request, the engine executes it durably, and the two stores keep the record and the conversation's knowledge apart. The rest of Mash builds on those seams. The next post covers the pauses for people built into the loop, tool approval and `AskUser`.
 
-*Next: [Human-in-the-Loop](human-in-the-loop.md) — durable approval and ask-user interactions.*
+*Next: [Human-in-the-Loop](human-in-the-loop.md).*

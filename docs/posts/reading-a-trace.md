@@ -10,9 +10,9 @@ tags:
 
 # Reading a Trace
 
-Every post in this series ended up at the same place: events in an append-only log. This one is about reading them back out — specifically, turning the flat event stream of one request into the answer operations work actually needs: where the time went.
+Every post in this series ended up at the same place, events in an append-only log. This one is about reading them back out: turning the flat event stream of one request into an answer to where the time went.
 
-The pipeline has three stages, all deterministic:
+The pipeline has three stages:
 
 ```mermaid
 flowchart LR
@@ -23,7 +23,7 @@ flowchart LR
     A --> S3["telemetry UI waterfall"]
 ```
 
-All three stages are pure computation over event timestamps and payloads — run `analyze_trace` twice on the same trace and you get the same numbers, which is precisely the property you want from the thing you'll use to argue about latency.
+All three stages are pure computation over event timestamps and payloads. Run `analyze_trace` twice on the same trace and you get the same numbers, which matters when the output is what you'll use to argue about latency.
 
 ## From events to spans
 
@@ -56,33 +56,31 @@ TRACE                                    4.81s
     └── THINK                            260ms   final response
 ```
 
-Two of these kinds measure gaps. `COLD_START` is the gap between `request.accepted` and `trace.started` — the cost of the engine picking the request up, which the [lifecycle post](request-lifecycle.md) showed are two separate events for exactly this reason. And whatever time remains inside the trace that no span claims gets reported as **idle** — gaps between steps, scheduling overhead, anything unaccounted. A request that "feels slow" with fast thinks and fast tools shows its problem in cold start or idle — host-side numbers.
+Two of these kinds measure gaps. `COLD_START` is the gap between `request.accepted` and `trace.started`, the cost of the engine picking the request up, which the [lifecycle post](request-lifecycle.md) showed are two separate events for exactly this reason. Whatever time inside the trace no span claims gets reported as **idle**: gaps between steps, scheduling overhead, anything unaccounted for. A request that feels slow despite fast thinks and fast tools shows its problem in cold start or idle, which are host-side numbers.
 
 ## From spans to answers
 
-`analyze_trace(tree)` reduces the tree to the standard interrogation set:
+`analyze_trace(tree)` reduces the tree to a few summaries:
 
-- **Timing breakdown** — total duration split across cold start, context load, think, tool, subagent, and idle, each with absolute and percentage values. The one-line summary of where a request spent its life.
-- **Per-tool stats** — call count, total/avg/max/min latency, error count, sorted by total time so the most expensive tool reads first.
-- **Per-step breakdown** — think vs. tool vs. overhead for each loop iteration; the shape tells you whether a request was slow because of one bad step or uniformly heavy.
-- **Slowest operations** — top spans by duration, the straight-to-the-point list.
+- **Timing breakdown**: total duration split across cold start, context load, think, tool, subagent, and idle, each with absolute and percentage values.
+- **Per-tool stats**: call count, total/avg/max/min latency, error count, sorted by total time so the most expensive tool reads first.
+- **Per-step breakdown**: think vs. tool vs. overhead for each loop iteration. The shape tells you whether a request was slow because of one bad step or uniformly heavy.
+- **Slowest operations**: top spans by duration.
 
-Delegation costs flow through the tree. A `SUBAGENT_CALL` span links the child's trace, and analysis recurses into it up to three levels deep — a slow primary request whose time went into a subagent's tool call attributes the cost to that tool. The mirrored `subagent.*` events from [the composition post](composing-agents.md) are what make the stitching possible.
+Delegation costs flow through the tree. A `SUBAGENT_CALL` span links the child's trace, and analysis recurses into it up to three levels deep, so a slow primary request whose time went into a subagent's tool call attributes the cost to that tool. The mirrored `subagent.*` events from [the composition post](composing-agents.md) are what make the stitching possible.
 
-## Three doors to the same numbers
+## Where the analysis renders
 
-The analysis renders in three places, all backed by the same computation:
+The analysis renders in three places, all backed by the same computation.
 
-In the REPL, `/trace` analyzes the most recent trace (or `/trace 5` for the last five) — summary line, timing table with bars, tool stats, slowest operations, right in the terminal. This is the development-loop door: send a message, feel the lag, type `/trace`, see the breakdown while the request is still fresh.
+In the REPL, `/trace` analyzes the most recent trace (or `/trace 5` for the last five): summary line, timing table with bars, tool stats, and slowest operations, right in the terminal. It fits the development loop, since you can type `/trace` the moment a reply feels slow and see the breakdown while the request is still fresh.
 
-Over HTTP, `GET /api/v1/telemetry/trace/analysis?agent_id=…&session_id=…&trace_id=…` returns the span tree and the full analysis dict in one call. This is the integration door — dashboards, alerts, regression checks in CI — and the trace id to query for is sitting on each turn in memory, since [trace id doubles as turn id](two-stores.md).
+Over HTTP, `GET /api/v1/telemetry/trace/analysis?agent_id=…&session_id=…&trace_id=…` returns the span tree and the full analysis dict in one call, which suits dashboards, alerts, and regression checks in CI. The trace id to query for is sitting on each turn in memory, since [trace id doubles as turn id](two-stores.md).
 
-In the browser, `/telemetry` renders the waterfall: collapsible spans with proportional bars, a phase-distribution summary on top, tool and step tables below. The investigation door, for when you're comparing several traces and a terminal table stops scaling.
+In the browser, `/telemetry` renders the waterfall: collapsible spans with proportional bars, a phase-distribution summary on top, tool and step tables below. This is the view for comparing several traces, where a terminal table stops scaling.
 
-For continuous use, Masher — the built-in workflow-only agent from the composition post — packages the same analysis into scheduled workflows: `masher-trace-digest` emits a full diagnostic snapshot per trace, and `masher-online-eval-curation` writes eval records with latency context. Both run incrementally over the event log, checkpointed by [task state](workflows-and-task-state.md), which makes them safe on a schedule.
+For continuous use, Masher (the built-in workflow-only agent from the composition post) packages the same analysis into scheduled workflows. `masher-trace-digest` emits a full diagnostic snapshot per trace, and `masher-online-eval-curation` writes eval records with latency context. Both run incrementally over the event log, checkpointed by [task state](workflows-and-task-state.md), which makes them safe on a schedule.
 
-## The series, closed
+## Wrapping up
 
-This post is the payoff of the first one. The event log was designed as the record of what happened, and spans and analysis read that record directly — the same events that drive SSE replay drive the latency breakdown.
-
-That's the full tour of the internals: a request becomes events, the engine executes it in checkpoints, two stores keep record and memory apart, tools and interactions and providers plug into the loop through narrow contracts, and hosts compose agents and workflows out of the same parts. From here, the [CLI guide](building-agent-clis.md) puts a custom shell on top of what you've built, and the [deploy guide](how-to-deploy.md) takes it to production.
+The event log was introduced in the first post as the record of what happened, and this post read that record directly; the same events that drive SSE replay drive the latency breakdown. That closes the tour of the internals. From here, the [CLI guide](building-agent-clis.md) puts a custom shell on top of what you've built, and the [deploy guide](how-to-deploy.md) covers running it in production.
