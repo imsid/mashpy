@@ -1,6 +1,6 @@
 ---
 title: How to Deploy a Mash Host
-description: Deploy a Mash Host with one or more agents — on your laptop, in Docker, or on any cloud provider.
+description: Deploy a Mash Host with one or more agents, on your laptop, in Docker, or on any cloud provider.
 date: 2026-06-02
 author: imsid
 tags:
@@ -10,7 +10,7 @@ tags:
 
 # How to Deploy a Mash Host
 
-This guide covers deploying a Mash Host with one or more agents — on your
+This guide covers deploying a Mash Host with one or more agents, on your
 laptop, in Docker, or on any cloud provider. It uses the
 [Pilot agent](https://github.com/imsid/mash-pilot) as a running example but the steps apply to any
 Mash application.
@@ -44,7 +44,7 @@ Mash follows the **Host → Client → AgentRuntime** model (H2A protocol):
 ```
 
 A single Host process manages all agents in-process. The primary agent
-delegates to subagents via `InvokeSubagent` — these calls are in-memory
+delegates to subagents via `InvokeSubagent`; these calls are in-memory
 function calls, not network hops. All durable state (events, memory, DBOS
 workflows) lives in PostgreSQL.
 
@@ -111,7 +111,7 @@ mash connect --api-base-url http://127.0.0.1:8000 --api-key dev-key --agent pilo
 
 ## 2. Horizontal Scaling (Multiple Replicas)
 
-Mash Hosts are stateless — all durable state lives in Postgres. You can run N
+Mash Hosts are stateless, since all durable state lives in Postgres. You can run N
 identical replicas of the same Host behind a load balancer, all pointing at the
 same Postgres instance.
 
@@ -144,7 +144,7 @@ is a fully self-contained, identical copy.
 
 - **Event streaming across replicas.** The runtime event store uses Postgres
   `LISTEN/NOTIFY`. A request can be submitted to Replica A while the SSE
-  stream is served from Replica B — Postgres broadcasts event notifications
+  stream is served from Replica B, because Postgres broadcasts event notifications
   to all listeners.
 - **Subagent calls are always in-process.** When the primary agent invokes a
   subagent, it calls the subagent runtime in the same process via
@@ -285,7 +285,7 @@ Host containers + managed PostgreSQL.
 
 [Render](https://render.com) is the fastest path to production. A single
 `render.yaml` Blueprint provisions both the Mash Host and a managed Postgres
-database — no Dockerfiles to push, no load balancers to configure.
+database, with no Dockerfile registry or load balancer to configure.
 
 **1. Add a `render.yaml` to your repo root:**
 
@@ -333,8 +333,8 @@ mash connect \
 ```
 
 Render handles TLS, health checks, and zero-downtime deploys out of the box.
-To scale horizontally, increase the instance count in the Render dashboard —
-no load balancer setup needed.
+To scale horizontally, increase the instance count in the Render dashboard;
+no load balancer setup is needed.
 
 ### Deployment Steps (Other Providers)
 
@@ -384,8 +384,8 @@ Postgres has a finite connection limit.
 The Mash Host exposes `/api/v1/health` which returns agent status and session
 information. For container orchestrators, configure:
 
-- **Liveness probe:** `GET /api/v1/health` — confirms the process is alive
-- **Readiness probe:** `GET /api/v1/health` — confirms agents are initialized
+- **Liveness probe:** `GET /api/v1/health` confirms the process is alive
+- **Readiness probe:** `GET /api/v1/health` confirms agents are initialized
   and Postgres is reachable
 
 ## 4. Accessing the Host from External Applications
@@ -407,10 +407,10 @@ X-API-Key: <api-key>          # alternative header
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/api/v1/health` | Health check and agent info |
-| `GET` | `/api/v1/agents` | List registered agents |
+| `GET` | `/api/v1/agent` | List registered agents |
 | `POST` | `/api/v1/agent/{agent_id}/request` | Submit a request |
 | `GET` | `/api/v1/agent/{agent_id}/request/{request_id}/events` | Stream response (SSE) |
-| `POST` | `/api/v1/agent/{agent_id}/request/{request_id}/interaction/{interaction_id}` | Respond to an interaction (e.g. AskUser) |
+| `POST` | `/api/v1/agent/{agent_id}/request/{request_id}/interaction` | Respond to an interaction (e.g. AskUser); `interaction_id` goes in the body |
 
 ### Example: Submit a Request and Stream the Response
 
@@ -474,7 +474,7 @@ CLI flag (repeatable) or configure `cors_allow_origins` in `MashHostConfig`.
 ## 5. Tearing Down and Restarting
 
 Mash Hosts are designed to be ephemeral. You can tear down and restart
-replicas at any time without data loss — all state is in Postgres.
+replicas at any time without data loss, because all state is in Postgres.
 
 - **Restart a replica:** The new process calls `build_host()`, initializes all
   agent runtimes, reconnects to Postgres, and starts serving.

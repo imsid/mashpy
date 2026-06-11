@@ -1,6 +1,6 @@
 ---
 title: Building an Agent CLI
-description: Build a custom CLI for your Mash agent — serve it, connect as a remote shell, and add your own REPL commands.
+description: Build a custom CLI for your Mash agent. Serve it, connect as a remote shell, and add your own REPL commands.
 date: 2026-06-08
 author: imsid
 tags:
@@ -19,11 +19,11 @@ commands and your own custom REPL commands.
 
 A Mash agent CLI has three layers:
 
-1. **Agent definition** — an `AgentSpec` subclass plus a `build_host()`
+1. **Agent definition**: an `AgentSpec` subclass plus a `build_host()`
    function that composes agents into an `AgentHost`.
-2. **Host server** — `mash host serve` (or programmatic `run_host`) exposes
+2. **Host server**: `mash host serve` (or programmatic `run_host`) exposes
    the agent over HTTP.
-3. **CLI client** — a Python entrypoint that creates a `MashRemoteShell`,
+3. **CLI client**: a Python entrypoint that creates a `MashRemoteShell`,
    registers custom commands, and runs the interactive REPL.
 
 ```
@@ -352,10 +352,10 @@ The CLI entrypoint (`pilot/cli.py`) is ~95 lines:
 
 The workflow commands (`/changelog`, `/quiz`) demonstrate two patterns:
 
-- **Dynamic workflows** — `/changelog` registers a skill and workflow
+- **Dynamic workflows**: `/changelog` registers a skill and workflow
   definition at runtime, then runs it. Good for workflows that need
   runtime configuration.
-- **Static workflows** — `/quiz` relies on a workflow pre-registered during
+- **Static workflows**: `/quiz` relies on a workflow pre-registered during
   `build_host()`. The command just triggers a run and streams the output.
   Good for workflows that are always available.
 

@@ -1,6 +1,6 @@
 ---
 title: Remote Tools over MCP
-description: build_mcp_servers() connects an agent to Model Context Protocol servers — their tools are discovered at startup and registered next to the local ones.
+description: build_mcp_servers() connects an agent to Model Context Protocol servers. Their tools are discovered at startup and registered next to the local ones.
 date: 2026-06-10
 author: imsid
 tags:
@@ -45,7 +45,7 @@ for mcp_tool in mcp_tools:
     agent.tools.register(adapter)
 ```
 
-Remote tools get namespaced names — `mcp_github_search_issues` for a `search_issues` tool on the `github` server — with the original name and server kept in metadata for routing the call back. The naming does two jobs at once: the model can tell remote tools apart from local ones (and from the same tool name on two different servers), and the registry's one-flat-namespace rule keeps holding.
+Remote tools get namespaced names, like `mcp_github_search_issues` for a `search_issues` tool on the `github` server, with the original name and server kept in metadata for routing the call back. The prefix lets the model tell remote tools apart from local ones (and from the same tool name on two different servers), and it keeps the registry's flat namespace collision-free.
 
 ```mermaid
 flowchart LR
@@ -60,11 +60,11 @@ flowchart LR
     M -- "HTTP / SSE" --> S2["MCP server: …"]
 ```
 
-From the model's side, a remote tool is indistinguishable from a local one — the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). From the loop's side it's a tool whose `execute()` crosses the network: the adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
+To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
 
 ## Failure stays inside the tool result
 
-Remote calls add failure modes — server down, auth expired, network gone — and the integration keeps all of them inside the existing tool contract. A tool call that fails returns an error `ToolResult`, the same shape a local tool produces, and the model reasons about it on the next think phase. A server that fails during startup discovery is logged and skipped, and the agent starts with the tools that did resolve.
+Remote calls add failure modes like an unreachable server or expired auth, and the integration keeps all of them inside the existing tool contract. A tool call that fails returns an error `ToolResult`, the same shape a local tool produces, and the model reasons about it on the next think phase. A server that fails during startup discovery is logged and skipped, and the agent starts with the tools that did resolve.
 
 Because an MCP call is just a tool call, the durability machinery from [the durable loop post](durable-agent-loop.md) applies unchanged: each call is its own checkpoint, completed calls are skipped on resume, and transient failures get the standard retry treatment.
 
@@ -72,16 +72,16 @@ Because an MCP call is just a tool call, the durability machinery from [the dura
 
 Tools are the most-used MCP surface, and the client speaks the rest of the core protocol too:
 
-- **Resources** — `read_resource(uri)` pulls remote content (documents, records, files) into the conversation; resource templates parameterize the URIs.
-- **Prompts** — `get_prompt(name)` fetches server-defined prompt templates.
-- **Elicitation** — a server can ask for structured input mid-call, and the client surfaces those requests for the host to answer.
+- **Resources**: `read_resource(uri)` pulls remote content (documents, records, files) into the conversation; resource templates parameterize the URIs.
+- **Prompts**: `get_prompt(name)` fetches server-defined prompt templates.
+- **Elicitation**: a server can ask for structured input mid-call, and the client surfaces those requests for the host to answer.
 
-The package boundary in `src/mash/mcp` keeps protocol details in one place: `types.py` for config, `client.py` for the wire protocol, `manager.py` for server lifecycle and tool routing. Runtime and tool code consume MCP through this package, so protocol changes land in one module.
+The package boundary in `src/mash/mcp` keeps protocol details in one place: `types.py` for config, `client.py` for the wire protocol, and `manager.py` for server lifecycle and tool routing. Runtime and tool code consume MCP through this package, so protocol changes land in one module.
 
 ## The same observability
 
-MCP activity emits structured events alongside everything else in the [event stream](request-lifecycle.md): `mcp.client.connect` / `connected` / `disconnect` / `error` for lifecycle, and `mcp.tool.call` / `result` / `error` for execution — each carrying `server_name`, `tool_name`, `duration_ms`, and the current `trace_id`. In [trace analysis](reading-a-trace.md), remote calls show up as tool spans under their `mcp_`-prefixed names, so a slow remote server surfaces in the per-tool stats table like any other expensive tool.
+MCP activity emits structured events alongside everything else in the [event stream](request-lifecycle.md): `mcp.client.connect` / `connected` / `disconnect` / `error` for lifecycle, and `mcp.tool.call` / `result` / `error` for execution, each carrying `server_name`, `tool_name`, `duration_ms`, and the current `trace_id`. In [trace analysis](reading-a-trace.md), remote calls show up as tool spans under their `mcp_`-prefixed names, so a slow remote server surfaces in the per-tool stats table like any other expensive tool.
 
-Local or remote, every registered tool is serialized into the `tools` list on each LLM request — and the contract that carries them across three very different provider APIs is next.
+Every registered tool, local or remote, is serialized into the `tools` list on each LLM request. The contract that carries that list across three different provider APIs is the subject of the next post.
 
-*Next: [One LLM Contract, Three Providers](one-llm-contract.md).*
+*Next: [One LLM Contract for Three Providers](one-llm-contract.md).*
