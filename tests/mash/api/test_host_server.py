@@ -212,6 +212,44 @@ def test_host_routes_define_inspect_and_list() -> None:
             assert invalid.json()["error"]["code"] == "INVALID_HOST"
 
 
+def test_workflow_list_host_filter() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            unfiltered = client.get("/api/v1/workflow")
+            assert unfiltered.status_code == 200
+            assert [
+                workflow["workflow_id"]
+                for workflow in unfiltered.json()["data"]["workflows"]
+            ] == ["changelog"]
+
+            # The default host has no attached workflows.
+            empty = client.get("/api/v1/workflow", params={"host": "assistant"})
+            assert empty.status_code == 200
+            assert empty.json()["data"]["workflows"] == []
+
+            attached = client.put(
+                "/api/v1/hosts/assistant",
+                json={
+                    "primary": "primary",
+                    "subagents": ["research"],
+                    "workflows": ["changelog"],
+                },
+            )
+            assert attached.status_code == 200
+
+            filtered = client.get("/api/v1/workflow", params={"host": "assistant"})
+            assert filtered.status_code == 200
+            assert [
+                workflow["workflow_id"]
+                for workflow in filtered.json()["data"]["workflows"]
+            ] == ["changelog"]
+
+            missing = client.get("/api/v1/workflow", params={"host": "unknown"})
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
+
+
 def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

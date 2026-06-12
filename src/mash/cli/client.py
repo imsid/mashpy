@@ -321,8 +321,9 @@ class MashHostClient:
         )
         return response.json()["data"]
 
-    def list_workflows(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/api/v1/workflow")
+    def list_workflows(self, *, host: str | None = None) -> list[dict[str, Any]]:
+        query = {"host": host} if host else None
+        response = self._request("GET", "/api/v1/workflow", query=query)
         workflows = response.json()["data"].get("workflows")
         if not isinstance(workflows, list):
             return []
