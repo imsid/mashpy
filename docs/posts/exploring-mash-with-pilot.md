@@ -1,7 +1,7 @@
 ---
 title: Exploring Mash with Pilot
-description: Install the Pilot CLI, connect to the hosted Pilot agent, and ask it questions about the Mash codebase.
-date: 2026-06-11
+description: Run Pilot, the self-hosted app store for agents built on Mash — browse the catalog, compose agent teams into hosts, and enter them from the CLI.
+date: 2026-06-12
 author: imsid
 tags:
   - guide
@@ -10,18 +10,94 @@ tags:
 
 # Exploring Mash with Pilot
 
-[Pilot](https://github.com/imsid/mash-pilot) is a multi-agent codebase guide for mashpy, built with Mash itself. You ask it questions about the codebase in a terminal REPL, and a primary agent routes each one to the copilot that owns the relevant module, then synthesizes the answer. It's also the reference application behind this documentation, so the delegation, workflows, dynamic skills, and traces from the internals series are all observable in one running system.
+[Pilot](https://github.com/imsid/mash-pilot) is the reference user
+application for the seam the [product brief](product-brief.md) describes: a
+self-hosted **app store for agents**, built with Mash itself. The repo is a
+catalog of agents, a deployment is your store, host compositions are your
+installed apps, and a terminal CLI is the storefront. It's also the
+application behind this documentation series, so the delegation, dynamic
+composition, workflows, skills, and traces from the internals posts are all
+observable in one running system.
 
-## Install and connect
+## Start your store
+
+A Pilot deployment is one container (Postgres embedded) plus the CLI:
 
 ```bash
+docker run -d --name pilot -p 8000:8000 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v pilot-data:/var/lib/pilot \
+  ghcr.io/imsid/mash-pilot:latest
+
 curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
-pilot repl
+pilot browse
 ```
 
-## Asking questions
+(Add `-e GITHUB_MCP_PAT=...` for the GitHub-backed agent; set
+`MASH_DATABASE_URL` to bring your own Postgres instead of the embedded one.)
 
-Plain input goes to the agent. Questions about the Mash codebase are what Pilot is tuned for:
+`pilot browse` renders the catalog: nine pooled agents, each listed through
+the `AgentMetadata` it registered with — the same metadata that becomes the
+delegation directory when an agent serves as a subagent, as
+[the composition post](composing-agents.md) covered. The store runs wherever
+you run the container: laptop, homelab, your own server.
+
+## Compose a team
+
+The pool is flat — the deployment ships no host compositions. Which agents
+work together is your configuration:
+
+```bash
+pilot compose my-morning --primary morning-brief --subagents finance-watch
+pilot repl --host my-morning
+```
+
+Compositions live in the CLI's host config file (`~/.pilot/hosts.json`),
+which ships with the `mash-guide` composition as its default entry and is
+what `pilot hosts` lists. The deployment side is [dynamic host
+definition](building-dynamic-hosts-apis.md): a host is a few strings,
+validated synchronously, held in server memory — so the CLI publishes your
+config with idempotent `PUT`s every time it enters a REPL, and deployment
+restarts don't matter.
+
+Inside the REPL everything is scoped to the host you entered: plain messages
+route to its primary, delegation is limited to its subagents, and `/agents`
+shows exactly the team you composed. To change the team, exit and re-run
+`pilot compose` (define-or-replace), or switch with
+`pilot repl --host <other>`.
+
+## The personal agents
+
+Two catalog agents bracket the integration space the product brief sketches:
+
+- **`morning-brief`** — your GitHub world (PRs awaiting review, your open
+  PRs, assigned issues, recent activity) over the GitHub MCP server, with a
+  read-only per-agent tool allowlist ([remote tools over
+  MCP](remote-tools-mcp.md)). Unconfigured, it stays in the catalog and
+  explains that it needs `GITHUB_MCP_PAT`.
+- **`finance-watch`** — a transactions ledger on the deployment's own disk,
+  watched for duplicate charges, new merchants, subscription price changes,
+  and outliers. No credentials, no network; a synthetic sample ledger is
+  seeded on first start, anomalies included.
+
+One agent reaches out to a cloud service through a guarded connector; the
+other never leaves your server. Both only make sense because the store is
+self-hosted.
+
+## The featured app: mash-guide
+
+`pilot repl --host mash-guide` opens the Mash codebase guide — the
+composition from [the internals series](composing-agents.md), shipped as
+the default entry in the host config file:
+
+| Agent | Scope |
+|-------|-------|
+| `mash-guide` (primary) | shared and cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
+| `cli-copilot` | `src/mash/cli`: commands, REPL, terminal rendering |
+| `api-copilot` | `src/mash/api`: HTTP routes, FastAPI, telemetry UI |
+| `mcp-copilot` | `src/mash/mcp`: MCP client/server, transport, tool adaptation |
+| `runtime-copilot` | `src/mash/runtime`: request lifecycle, event sourcing, durability |
+| `workflow-copilot` | `src/mash/workflows`: DBOS orchestration, task state, run status |
 
 ```text
 > Summarize how HostBuilder composes the agent pool, hosts, and workflows.
@@ -29,55 +105,55 @@ Plain input goes to the agent. Questions about the Mash codebase are what Pilot 
 > Compare src/mash/runtime and src/mash/workflows responsibilities.
 ```
 
-Behind the prompt is the [composition](composing-agents.md) from the internals series: a host whose primary delegates to five copilots, each scoped to one package.
-
-| Agent | Scope |
-|-------|-------|
-| `pilot` (primary) | shared and cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
-| `cli-copilot` | `src/mash/cli`: commands, REPL, terminal rendering |
-| `api-copilot` | `src/mash/api`: HTTP routes, FastAPI, telemetry UI |
-| `mcp-copilot` | `src/mash/mcp`: MCP client/server, transport, tool adaptation |
-| `runtime-copilot` | `src/mash/runtime`: request lifecycle, event sourcing, durability |
-| `workflow-copilot` | `src/mash/workflows`: DBOS orchestration, task state, run status |
-
-The primary delegates based on the question and synthesizes across copilots when a question spans modules. The routing is visible as it happens, because the shell renders subagent trace frames live: ask about request durability and you can watch the question get handed to `runtime-copilot`. To skip the routing and talk to one specialist directly, exit and reconnect with `mash connect --agent cli-copilot`.
-
-## Scaffolding your own agent
-
-Pilot carries a `build-mash-agent` skill, so it can go from answering questions about Mash to generating a Mash application from a description:
-
-```text
-> Build me a customer support agent with a knowledge base search tool and human approval for refunds.
-> Scaffold a multi-agent code reviewer with separate agents for security, style, and correctness.
-> I need an agent that connects to my MCP server at localhost:3000 and uses Gemini as the LLM.
-```
+The primary delegates by reading the copilots' metadata and synthesizes
+across them when a question spans modules; the shell renders the subagent
+trace frames live, so you watch the routing happen. It also carries a
+`build-mash-agent` skill, so it can scaffold a new Mash application from a
+description.
 
 ## Two commands worth trying
 
-Each of Pilot's custom commands exists to demonstrate a Mash feature in use.
+`/changelog [N]` generates a changelog from the last N mashpy commits. The
+command registers its skill and workflow definition on the host at the
+moment it runs — the [dynamic publishing](workflows-and-task-state.md) flow
+exercised end to end.
 
-`/changelog [N]` generates a changelog from the last N mashpy commits (default 5). The command registers its skill and workflow definition on the host at the moment it runs, which is the [dynamic publishing](workflows-and-task-state.md) flow exercised end to end: the workflow definition stays a thin pointer and the instructions travel as skill markdown.
-
-`/quiz` starts an interactive quiz about Mash internals: three questions of increasing difficulty, with follow-up questions welcome at any point. It runs on a dedicated [workflow-only agent](composing-agents.md) registered at startup, composed alongside the primary and its copilots.
+`/quiz` starts an interactive quiz about Mash internals, executed by the
+pooled `quiz-me` agent through the `pilot-quiz`
+[workflow](workflows-and-task-state.md). Workflows are attached to hosts in
+your config (`mash-guide` attaches `pilot-quiz` by default), and `/quiz`
+only exists in REPLs of hosts that attach it — compose it onto your own
+host with `--workflows pilot-quiz`.
 
 ## Watching it run
 
-After any answer, `/trace` shows where the time went: the timing breakdown, per-tool stats, and slowest operations from [the trace post](reading-a-trace.md). For a delegated question, the subagent call appears as its own span, so you can see how much of the answer's latency belonged to the copilot.
+After any answer, `/trace` shows where the time went: the timing breakdown,
+per-tool stats, and slowest operations from [the trace
+post](reading-a-trace.md). For a delegated question the subagent call is its
+own span, so you can see how much latency belonged to the copilot. The host
+also serves the telemetry UI with the span waterfall at
+`http://127.0.0.1:8000/telemetry`.
 
-The host also serves the telemetry UI with the span waterfall, at `/telemetry` on whichever deployment you're connected to ([hosted](https://pilot-tk3b.onrender.com/telemetry), or `http://127.0.0.1:8000/telemetry` locally).
+## Reference
 
-## REPL reference
+| CLI command | What it does |
+|---|---|
+| `pilot browse` | catalog listings and the hosts composed on the deployment |
+| `pilot compose <id> --primary <agent> [--subagents a,b]` | define-or-replace a composition |
+| `pilot hosts` | your saved compositions, with live status |
+| `pilot repl --host <id>` | enter a host's REPL, scoped to its team (`--agent <id>` for one bare agent) |
+| `pilot serve` | run the store from a source install |
 
-| Command | What it does |
-|---------|--------------|
-| `/agents` | list pilot and its copilots |
-| `/hosts` | list the host compositions defined on the deployment |
-| `/history [N]` | recent turns in this session |
-| `/trace [N]` | latency analysis for recent traces |
-| `/workflow list\|run\|status` | inspect or run registered workflows |
-| `/changelog [N]` | changelog from the last N mashpy commits |
-| `/quiz` | interactive quiz about Mash internals |
+| REPL command | What it does |
+|---|---|
+| `/agents`, `/hosts` | list agents and compositions |
+| `/history [N]`, `/trace [N]` | recent turns; latency analysis |
+| `/workflow list\|run\|status` | inspect or run the workflows attached to this host |
+| `/changelog [N]`, `/quiz` | the two feature demos |
 | `/status`, `/session`, `/sessions` | connection and session info |
 | `/help`, `/clear`, `/exit` | shell basics |
 
-Pilot's CLI is about a hundred lines on top of `MashRemoteShell`: argument parsing, agent resolution, and the two custom command registrations. [Building an Agent CLI](building-agent-clis.md) walks through building the same thing for your own agent.
+Pilot's CLI is a thin layer over `MashRemoteShell` and `MashHostClient`:
+argument parsing, the storefront commands, and local persistence for
+compositions. [Building an Agent CLI](building-agent-clis.md) walks through
+building the same thing for your own agent.

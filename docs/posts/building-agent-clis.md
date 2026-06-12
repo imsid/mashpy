@@ -489,27 +489,27 @@ real-world example that follows this pattern. Its structure:
 
 ```
 pilot/
-  spec.py       # PilotSpec + copilot specs + build_pool()
-  cli.py        # CLI entrypoint with MashRemoteShell
+  catalog/      # one package per agent: mash_guide/ (+ copilots),
+                # personal/, workflows/
+  spec.py       # build_pool(): registers the catalog as a flat pool
+  cli.py        # CLI entrypoint with MashRemoteShell + storefront commands
+  store.py      # the host config file (source of truth for compositions)
   tools.py      # Custom tools (UpdateDocsTool)
   prompt.py     # System prompt construction
-  workflows/
-    changelog.py  # /changelog command + workflow definition
-    quiz.py       # /quiz command + QuizAgentSpec + workflow definition
   skills/
     changelog/SKILL.md
     mash-quiz/SKILL.md
 ```
 
-`spec.py` registers the pilot agent and its five copilots into the pool.
-The CLI entrypoint (`pilot/cli.py`):
+`spec.py` registers the catalog into the pool; hosts are configuration, not
+code. The CLI entrypoint (`pilot/cli.py`):
 
 1. Parse args and resolve the connection
-2. Create `MashHostClient`, define the `pilot` host (primary `pilot`, the
-   copilots as subagents; `define_host` is idempotent), and build a
-   `ShellTarget` with `host_id="pilot"`
+2. Create `MashHostClient`, publish the configured host compositions
+   (`define_host` is idempotent), and build a `ShellTarget` with the
+   requested `host_id` (or a bare agent id)
 3. Create the `MashRemoteShell` and register custom commands
-   (`/changelog`, `/quiz`)
+   (`/changelog`, `/quiz`, a host-scoped `/agents`)
 4. Call `shell.run()`
 
 The workflow commands (`/changelog`, `/quiz`) demonstrate two patterns:
