@@ -189,7 +189,7 @@ SQLite behavior:
 ## Backend Selection
 - `AgentSpec.build_memory_store()` uses `MASH_DATABASE_URL` when it is set.
 - When `MASH_DATABASE_URL` is unset, the default fallback is SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`.
-- In multi-agent hosts, `AgentHost` shares a single `PostgresStore` instance
+- In multi-agent pools, `AgentPool` shares a single `PostgresStore` instance
   across all agents that use the default `build_memory_store()`. Agents that
   override `build_memory_store()` get their own store instance. Store lifecycle
   (open/close) is owned by the host, not by individual runtimes.

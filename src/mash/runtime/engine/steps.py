@@ -12,6 +12,7 @@ from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
+from .. import factory as factory_helpers
 from ..events import RuntimeEvent, RuntimeEventType
 from ..requests import append_runtime_event
 
@@ -111,8 +112,11 @@ async def _plan_step_payload(
     context: Context,
     session_id: str,
     trace_id: str,
+    host: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    agent = runtime.build_turn_agent(session_id=session_id, trace_id=trace_id)
+    agent = runtime.build_turn_agent(
+        session_id=session_id, trace_id=trace_id, host=host
+    )
     try:
         plan = await agent.plan_step(context)
         action = plan.action
@@ -145,8 +149,11 @@ async def _run_tool_call_payload(
     tool_call: ToolCall,
     session_id: str,
     trace_id: str,
+    host: dict[str, Any] | None = None,
 ) -> tuple[ContextToolResult, int]:
-    agent = runtime.build_turn_agent(session_id=session_id, trace_id=trace_id)
+    agent = runtime.build_turn_agent(
+        session_id=session_id, trace_id=trace_id, host=host
+    )
     started_at = time.time()
     try:
         result = await agent.execute_step_tool_call(tool_call)
@@ -284,12 +291,18 @@ async def load_request_context(
     session_id: str,
     trace_id: str,
     message: str,
+    request_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime = _require_runtime(agent_id)
+    # The host snapshot is captured in this persisted step output, so recovery
+    # replays the original composition even if the host is redefined while the
+    # request is in flight.
+    host = dict(request_metadata or {}).get("host") or None
     context_payload = await context_helpers.build_context_payload(
         runtime,
         session_id=session_id,
         message=message,
+        system_prompt=factory_helpers.resolve_host_system_prompt(runtime, host),
     )
     await append_runtime_event(
         runtime,
@@ -307,6 +320,7 @@ async def load_request_context(
     return {
         "context": dict(context_payload.get("context") or {}),
         "compaction": dict(context_payload.get("compaction") or {}),
+        "host": host,
         "loop_index": 0,
         "aggregate_usage": {"input": 0, "output": 0},
         "tool_usage": {},
@@ -349,6 +363,7 @@ async def plan_request_step(
         context=context,
         session_id=session_id,
         trace_id=trace_id,
+        host=workflow_state.get("host") or None,
     )
     action_payload = {
         key: value
@@ -445,6 +460,7 @@ async def run_step_tool_call(
         tool_call=tool_call,
         session_id=session_id,
         trace_id=trace_id,
+        host=workflow_state.get("host") or None,
     )
     result_payload = _step_tool_result_payload(
         tool_call,

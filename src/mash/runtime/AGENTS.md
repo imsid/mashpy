@@ -5,12 +5,12 @@
 - `HostBuilder` composes one primary agent with optional subagents.
 - `AgentRuntime` is the per-agent execution core.
 - `AgentServer` is the per-agent HTTP/SSE adapter.
-- `AgentHost` owns multi-agent composition and lifecycle.
+- `AgentPool` owns agent registration, host definitions, and lifecycle.
 - Hosted request execution is event-sourced through `runtime_store`.
 - `RequestEngine` and the `engine/` package remain the workflow/backend boundary.
 - `memory_store` and `runtime_store` remain separate responsibilities.
 - `AgentRuntime` receives stores via constructor injection — it never creates or closes them.
-- `AgentHost` owns shared store instances and their lifecycle; `AgentServer` owns its own.
+- `AgentPool` owns shared store instances and their lifecycle; `AgentServer` owns its own.
 - Runtime servers and clients preserve the current host/session contracts.
 - Subagent session derivation remains deterministic.
 - Interactions (approval/info/choice) block durably via DBOS `recv`/`send` in the workflow loop.

@@ -10,22 +10,24 @@ Global
 
 Connection bootstrap
 
-- `connect --api-base-url URL [--api-key KEY] [--agent ID]`: persist a default deployment connection used by the other commands.
+- `connect --api-base-url URL [--api-key KEY] [--agent ID | --host ID]`: persist a default deployment connection and target used by the other commands. `--host` targets an existing composition (validated against the deployment).
+- `compose --host ID --primary AGENT [--subagents a,b] [--workflows w1,w2]`: define (or replace) the host composition on the deployment, then pin it as the target. The `PUT` is idempotent; re-run `compose` to recompose. `--api-base-url` falls back to env or the saved config, and the saved `--agent` target is cleared so the host takes effect.
 
 Common options shared by most host-facing commands
 
 - `--api-base-url URL`
 - `--api-key KEY`
-- `--agent ID`
+- `--agent ID` (bare-agent targeting) or `--host ID` (host targeting)
 - If these are omitted, the CLI resolves them from env (`MASH_API_BASE_URL`, `MASH_API_KEY`) or saved config from `mash connect`.
 
 Host-facing commands
 
-- `status [common]`: show deployment base URL, primary agent, and agent count.
-- `agents [common]`: list available agents and their roles.
+- `status [common]`: show deployment base URL, agent count, and defined hosts.
+- `agents [common]`: list pooled agents and their display names.
+- `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID]`: start an interactive remote shell session.
+- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the connected target. To change the composition, exit and run `mash compose` (or `mash connect --agent`) again.
 
 Host management
 
@@ -52,7 +54,7 @@ Notes
 - `/session`: show the current remote session details.
 - `/sessions`: list sessions for the current agent.
 - `/history [limit]`: show conversation history for the current session.
-- `/use <agent_id>`: switch to a different agent, deriving the subagent session ID when moving from the primary agent to a subagent.
+- `/hosts`: list the host compositions defined on the deployment. The shell's own target is fixed at connect time.
 - `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
 - `/workflow list`: list registered workflows.
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run.

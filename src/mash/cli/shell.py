@@ -28,6 +28,7 @@ class ShellTarget:
     api_base_url: str
     agent_id: str
     session_id: str
+    host_id: str | None = None
 
 
 class MashRemoteShell:
@@ -50,6 +51,7 @@ class MashRemoteShell:
             client=self.client,
             renderer=self.renderer,
             session_ids={self.target.agent_id: self.target.session_id},
+            host_id=self.target.host_id,
         )
         register_default_commands(self)
 
@@ -236,11 +238,22 @@ class MashRemoteShell:
             self.renderer.info(f"  Accepted: {display}")
 
     def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
-        request_id = self.client.submit_request(
-            ctx.agent_id,
-            message=message,
-            session_id=ctx.session_id,
-        )
+        if ctx.host_id:
+            accepted = self.client.submit_host_request(
+                ctx.host_id,
+                message=message,
+                session_id=ctx.session_id,
+            )
+            request_id = str(accepted.get("request_id") or "")
+            accepted_agent_id = str(accepted.get("agent_id") or "").strip()
+            if accepted_agent_id:
+                ctx.agent_id = accepted_agent_id
+        else:
+            request_id = self.client.submit_request(
+                ctx.agent_id,
+                message=message,
+                session_id=ctx.session_id,
+            )
         final_payload: dict[str, Any] | None = None
         streamed_response_text: str | None = None
         try:

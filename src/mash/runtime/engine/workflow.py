@@ -7,9 +7,10 @@ from typing import Any
 
 from dbos import DBOS
 
-from ...logging import bound_request_id
+from ...logging import bound_host_id, bound_request_id
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
+from ..requests import host_id_from_request_metadata
 from .steps import (
     commit_request_step,
     complete_request,
@@ -167,7 +168,9 @@ async def execute_request_workflow(
     if not session_id:
         raise ValueError("session_id is required")
     trace_id: str | None = None
-    with bound_request_id(request_id):
+    with bound_request_id(request_id), bound_host_id(
+        host_id_from_request_metadata(request_metadata)
+    ):
         try:
             trace_id = await DBOS.run_step_async(
                 {"name": "request.start"},
@@ -185,6 +188,7 @@ async def execute_request_workflow(
                 session_id,
                 trace_id,
                 message,
+                request_metadata,
             )
             while True:
                 loop_index = int(workflow_state.get("loop_index") or 0)

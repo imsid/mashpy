@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
+from ..logging.trace_context import bound_host_id, get_host_id
 from .errors import classify_error
 from .events import RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
@@ -21,16 +23,19 @@ async def submit_request(
     message: str,
     session_id: str,
     structured_output: Any = None,
+    host_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_structured_output = serialize_structured_output(structured_output)
-    request_metadata = None
+    request_metadata: dict[str, Any] = {}
     if normalized_structured_output is not None:
-        request_metadata = {"structured_output_request": normalized_structured_output}
+        request_metadata["structured_output_request"] = normalized_structured_output
+    if host_snapshot is not None:
+        request_metadata["host"] = dict(host_snapshot)
     return await _submit_request(
         self,
         message=message,
         session_id=session_id,
-        request_metadata=request_metadata,
+        request_metadata=request_metadata or None,
     )
 
 
@@ -71,6 +76,33 @@ async def _submit_request(
     if not target_session_id:
         raise ValueError("session_id is required")
 
+    with bound_host_id(host_id_from_request_metadata(request_metadata)):
+        return await _submit_request_inner(
+            self,
+            message=message,
+            session_id=target_session_id,
+            request_metadata=request_metadata,
+        )
+
+
+def host_id_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[str]:
+    host = dict(request_metadata or {}).get("host")
+    if not isinstance(host, dict):
+        return None
+    host_id = str(host.get("host_id") or "").strip()
+    return host_id or None
+
+
+async def _submit_request_inner(
+    self: "AgentRuntime",
+    *,
+    message: str,
+    session_id: str,
+    request_metadata: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    target_session_id = session_id
     request_id = str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
     accepted_event = await append_runtime_event(
@@ -166,6 +198,10 @@ async def append_runtime_event(
     self: "AgentRuntime",
     event: RuntimeEvent,
 ) -> RuntimeEvent:
+    if event.host_id is None:
+        bound = get_host_id()
+        if bound is not None:
+            event = replace(event, host_id=bound)
     return await self.runtime_store.append_event(event)
 
 

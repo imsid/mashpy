@@ -42,28 +42,26 @@ def build_agent_router() -> APIRouter:
     @router.get("/health")
     async def health(request: Request) -> dict[str, Any]:
         state = state_from_request(request)
-        primary_client = state.host.get_client(state.host.get_primary_agent_id())
-        primary_agent = state.host.get_agent(state.host.get_primary_agent_id())
-        health_payload = await primary_client.health()
-        primary_info = (
-            health_payload.get("session") if isinstance(health_payload, dict) else {}
-        )
+        agent_ids = state.pool.list_agents()
+        search_available = False
+        if agent_ids:
+            search_available = memory_search_available(
+                state.pool.get_agent(agent_ids[0])
+            )
         return success(
             {
                 "status": "ok",
                 "service": "mash-api",
                 "api_version": "v1",
                 "deployment": {
-                    "primary_agent_id": state.host.get_primary_agent_id(),
-                    "agents": state.host.describe_agents(),
+                    "agents": state.pool.describe_agents(),
+                    "hosts": state.pool.describe_hosts(),
                 },
-                "primary_agent": primary_info,
                 "observability": {
                     "enabled": state.observability_enabled,
                     "memory": {
                         "search_available": (
-                            state.observability_enabled
-                            and memory_search_available(primary_agent)
+                            state.observability_enabled and search_available
                         ),
                         "default_limit": state.default_search_limit,
                     },
@@ -76,8 +74,8 @@ def build_agent_router() -> APIRouter:
         state = state_from_request(request)
         return success(
             {
-                "agents": state.host.describe_agents(),
-                "primary_agent_id": state.host.get_primary_agent_id(),
+                "agents": state.pool.describe_agents(),
+                "hosts": state.pool.describe_hosts(),
             }
         )
 
@@ -85,7 +83,7 @@ def build_agent_router() -> APIRouter:
     async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
         state = state_from_request(request)
         client = get_client(request, agent_id)
-        described = {item["agent_id"]: item for item in state.host.describe_agents()}
+        described = {item["agent_id"]: item for item in state.pool.describe_agents()}
         health_payload = await client.health()
         session_payload = (
             health_payload.get("session") if isinstance(health_payload, dict) else {}
@@ -106,7 +104,7 @@ def build_agent_router() -> APIRouter:
         state = state_from_request(request)
         resolved_agent_id = require_agent_id(agent_id)
         try:
-            agent = state.host.get_agent(resolved_agent_id)
+            agent = state.pool.get_agent(resolved_agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
@@ -120,7 +118,7 @@ def build_agent_router() -> APIRouter:
         existing = agent.skills.get(skill.name)
         if existing is None:
             try:
-                state.host.register_agent_skill(resolved_agent_id, skill)
+                state.pool.register_agent_skill(resolved_agent_id, skill)
             except ValueError as exc:
                 raise APIError(
                     code="INVALID_AGENT_SKILL",
@@ -137,7 +135,7 @@ def build_agent_router() -> APIRouter:
     ) -> dict[str, Any]:
         state = state_from_request(request)
         resolved_agent_id = require_agent_id(agent_id)
-        if state.host.get_registered_agent_spec(resolved_agent_id) is None:
+        if state.pool.get_registered_agent_spec(resolved_agent_id) is None:
             raise APIError(
                 code="AGENT_NOT_FOUND",
                 message=f"agent '{resolved_agent_id}' is not registered",
@@ -160,7 +158,7 @@ def build_agent_router() -> APIRouter:
             ),
         )
         try:
-            state.host.register_agent_workflow(resolved_agent_id, workflow)
+            state.pool.register_agent_workflow(resolved_agent_id, workflow)
         except ValueError as exc:
             raise APIError(
                 code="INVALID_AGENT_WORKFLOW",
@@ -386,7 +384,7 @@ def build_agent_router() -> APIRouter:
         resolved_session_id = require_session_id(session_id)
         resolved_trace_id = require_trace_id(trace_id)
         try:
-            agent = state.host.get_agent(resolved_agent_id)
+            agent = state.pool.get_agent(resolved_agent_id)
         except ValueError as exc:
             raise APIError(
                 code="AGENT_NOT_FOUND", message=str(exc), status_code=404

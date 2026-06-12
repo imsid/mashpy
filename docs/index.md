@@ -24,28 +24,29 @@ Compose Agents:
 ```python
 ## my_agent/spec.py
 
-from mash.runtime import HostBuilder
+from mash.runtime import Host, HostBuilder
 
-def build_host():
-  host = (
+def build_pool():
+  pool = (
       HostBuilder()
-      .primary(PrimaryAgent())
-      .subagent(ResearchAgent(), metadata=...)
+      .agent(ConciergeAgent(), metadata=...)
+      .agent(ResearchAgent(), metadata=...)
+      .host(Host(host_id="assistant", primary="concierge", subagents=("research",)))
       .build()
   )
-  return host
+  return pool
 ```
 
 Start the host:
 
 ```bash
-mash host serve --host-app my_agent.spec:build_host --host 127.0.0.1 --port 8000
+mash host serve --host-app my_agent.spec:build_pool --host 127.0.0.1 --port 8000
 ```
 
 Talk to your agent with the Mash CLI:
 
 ```bash
-mash repl --api-base-url http://127.0.0.1:8000 --agent my-agent
+mash repl --api-base-url http://127.0.0.1:8000 --host assistant
 ```
 
 ## Start here
@@ -72,7 +73,8 @@ mash repl --api-base-url http://127.0.0.1:8000 --agent my-agent
 ## Guides
 
 - [**Exploring Mash with Pilot**](posts/exploring-mash-with-pilot.md): ask the Pilot CLI questions about the Mash codebase
-- [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development
+- [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development with dynamic host composition
+- [**Building dynamic hosts over the API**](posts/building-dynamic-hosts-apis.md): compose agent teams at runtime over plain HTTP
 - [**Deploying a Mash Host**](posts/how-to-deploy.md): laptop, Docker, and cloud
 
 ## Applications

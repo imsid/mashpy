@@ -45,6 +45,7 @@ class RuntimeStore(Protocol):
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
+        host_id: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
@@ -193,7 +194,7 @@ class PostgresRuntimeStore(RuntimeStore):
                         await cursor.execute(
                             """
                             SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                                   agent_id, session_id, event_type, loop_index, step_key,
+                                   agent_id, session_id, host_id, event_type, loop_index, step_key,
                                    dedupe_key, payload, created_at
                             FROM runtime_event_log
                             WHERE request_id = %s AND dedupe_key = %s
@@ -227,12 +228,12 @@ class PostgresRuntimeStore(RuntimeStore):
                     await cursor.execute(
                         """
                         INSERT INTO runtime_event_log (
-                            request_id, trace_id, app_id, agent_id, session_id, seq,
+                            request_id, trace_id, app_id, agent_id, session_id, host_id, seq,
                             event_type, loop_index, step_key, dedupe_key, payload, created_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                         RETURNING event_id, request_id, seq AS request_seq, trace_id, app_id,
-                                  agent_id, session_id, event_type, loop_index, step_key,
+                                  agent_id, session_id, host_id, event_type, loop_index, step_key,
                                   dedupe_key, payload, created_at
                         """,
                         (
@@ -241,6 +242,7 @@ class PostgresRuntimeStore(RuntimeStore):
                             event.app_id,
                             event.agent_id,
                             event.session_id,
+                            event.host_id,
                             next_request_seq,
                             event.event_type,
                             event.loop_index,
@@ -271,7 +273,7 @@ class PostgresRuntimeStore(RuntimeStore):
                 await cursor.execute(
                     """
                     SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                           agent_id, session_id, event_type, loop_index, step_key,
+                           agent_id, session_id, host_id, event_type, loop_index, step_key,
                            dedupe_key, payload, created_at
                     FROM runtime_event_log
                     WHERE request_id = %s AND seq > %s
@@ -288,6 +290,7 @@ class PostgresRuntimeStore(RuntimeStore):
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
+        host_id: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
@@ -300,14 +303,17 @@ class PostgresRuntimeStore(RuntimeStore):
         if trace_id is not None:
             clauses.append("trace_id = %s")
             params.append(trace_id)
+        if host_id is not None:
+            clauses.append("host_id = %s")
+            params.append(host_id)
         if limit is not None:
             query = f"""
                 SELECT event_id, request_id, request_seq, trace_id, app_id,
-                       agent_id, session_id, event_type, loop_index, step_key,
+                       agent_id, session_id, host_id, event_type, loop_index, step_key,
                        dedupe_key, payload, created_at
                 FROM (
                     SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                           agent_id, session_id, event_type, loop_index, step_key,
+                           agent_id, session_id, host_id, event_type, loop_index, step_key,
                            dedupe_key, payload, created_at
                     FROM runtime_event_log
                     WHERE {' AND '.join(clauses)}
@@ -320,7 +326,7 @@ class PostgresRuntimeStore(RuntimeStore):
         else:
             query = f"""
                 SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                       agent_id, session_id, event_type, loop_index, step_key,
+                       agent_id, session_id, host_id, event_type, loop_index, step_key,
                        dedupe_key, payload, created_at
                 FROM runtime_event_log
                 WHERE {' AND '.join(clauses)}
@@ -429,6 +435,7 @@ class PostgresRuntimeStore(RuntimeStore):
                             app_id TEXT NOT NULL,
                             agent_id TEXT NOT NULL,
                             session_id TEXT,
+                            host_id TEXT,
                             seq INTEGER,
                             event_type TEXT NOT NULL,
                             loop_index INTEGER,
@@ -443,6 +450,12 @@ class PostgresRuntimeStore(RuntimeStore):
                         """
                         ALTER TABLE runtime_event_log
                         ADD COLUMN IF NOT EXISTS event_id BIGSERIAL
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        ALTER TABLE runtime_event_log
+                        ADD COLUMN IF NOT EXISTS host_id TEXT
                         """
                     )
                     await cursor.execute(
@@ -514,6 +527,13 @@ class PostgresRuntimeStore(RuntimeStore):
                         ON runtime_event_log(event_type)
                         """
                     )
+                    await cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_runtime_event_host_cursor
+                        ON runtime_event_log(app_id, host_id, event_id)
+                        WHERE host_id IS NOT NULL
+                        """
+                    )
 
     @staticmethod
     def _dict_to_event(row: dict[str, Any]) -> RuntimeEvent:
@@ -532,6 +552,7 @@ class PostgresRuntimeStore(RuntimeStore):
             app_id=str(row["app_id"]),
             agent_id=str(row["agent_id"]),
             session_id=row.get("session_id"),
+            host_id=row.get("host_id"),
             event_type=str(row["event_type"]),
             loop_index=(
                 int(row["loop_index"]) if row.get("loop_index") is not None else None

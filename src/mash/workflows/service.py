@@ -16,7 +16,7 @@ from .registry import WorkflowRegistry
 from .spec import WorkflowSpec
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentHost
+    from mash.runtime.host.host import AgentPool
 
 
 @dataclass
@@ -66,15 +66,15 @@ class WorkflowService:
     def __init__(
         self,
         workflow_registry: WorkflowRegistry,
-        host: "AgentHost",
+        pool: "AgentPool",
         *,
-        host_id: str,
+        runner_id: str,
     ) -> None:
         self._workflow_registry = workflow_registry
-        self._host = host
-        self._host_id = str(host_id or "").strip()
-        if not self._host_id:
-            raise ValueError("host_id is required")
+        self._pool = pool
+        self._runner_id = str(runner_id or "").strip()
+        if not self._runner_id:
+            raise ValueError("runner_id is required")
 
     async def list_workflows(self) -> list[dict[str, Any]]:
         return [self._serialize_workflow(item) for item in self._workflow_registry.list()]
@@ -156,14 +156,14 @@ class WorkflowService:
         normalized_dedup_key = _normalize_optional_text(dedup_key)
         normalized_workflow_input = _normalize_workflow_input(workflow_input)
         workflow = self._require_workflow(resolved_workflow_id)
-        database_url = str(getattr(self._host, "runtime_database_url", "") or "").strip()
+        database_url = str(getattr(self._pool, "runtime_database_url", "") or "").strip()
         if not database_url:
             raise RuntimeError("MASH_DATABASE_URL is required")
 
         try:
             run_id = await workflow_dbos.start_workflow_run(
                 database_url=database_url,
-                host_id=self._host_id,
+                runner_id=self._runner_id,
                 workflow=workflow,
                 dedup_key=normalized_dedup_key,
                 workflow_input=normalized_workflow_input,
@@ -365,7 +365,7 @@ class WorkflowService:
         run_id: str,
         after_event_id: int,
     ) -> list[Any]:
-        agent = self._host.get_agent(agent_id)
+        agent = self._pool.get_agent(agent_id)
         return await agent.runtime_store.list_events(
             app_id=agent_id,
             session_id=workflow_task_session_id(
@@ -422,7 +422,7 @@ class WorkflowService:
 
     def _workflow_task_memory_store(self, agent_id: str) -> Any | None:
         try:
-            agent = self._host.get_agent(agent_id)
+            agent = self._pool.get_agent(agent_id)
         except Exception:
             return None
         return getattr(agent, "memory_store", None) or getattr(agent, "store", None)

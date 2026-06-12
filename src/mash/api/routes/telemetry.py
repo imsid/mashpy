@@ -43,6 +43,7 @@ def build_telemetry_router() -> APIRouter:
         agent_id: str,
         session_id: Optional[str] = Query(default=None),
         trace_id: Optional[str] = Query(default=None),
+        host_id: Optional[str] = Query(default=None),
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
@@ -50,7 +51,7 @@ def build_telemetry_router() -> APIRouter:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
         try:
-            agent = state.host.get_agent(agent_id)
+            agent = state.pool.get_agent(agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
@@ -61,6 +62,7 @@ def build_telemetry_router() -> APIRouter:
                 app_id=agent_id,
                 session_id=normalize_optional_text(session_id),
                 trace_id=normalize_optional_text(trace_id),
+                host_id=normalize_optional_text(host_id),
                 limit=resolved_limit,
             )
         ]
@@ -71,6 +73,7 @@ def build_telemetry_router() -> APIRouter:
                 "agent_id": agent_id,
                 "session_id": normalize_optional_text(session_id),
                 "trace_id": normalize_optional_text(trace_id),
+                "host_id": normalize_optional_text(host_id),
                 "limit": resolved_limit,
             }
         )
@@ -87,7 +90,7 @@ def build_telemetry_router() -> APIRouter:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
         try:
-            agent = state.host.get_agent(agent_id)
+            agent = state.pool.get_agent(agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
@@ -279,7 +282,7 @@ def build_telemetry_router() -> APIRouter:
             )
 
         try:
-            agent = state.host.get_agent(app_id_value)
+            agent = state.pool.get_agent(app_id_value)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
@@ -329,7 +332,7 @@ def build_telemetry_router() -> APIRouter:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
         try:
-            agent = state.host.get_agent(agent_id)
+            agent = state.pool.get_agent(agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
@@ -353,7 +356,7 @@ def build_telemetry_router() -> APIRouter:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
         try:
-            agent = state.host.get_agent(agent_id)
+            agent = state.pool.get_agent(agent_id)
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 

@@ -40,6 +40,7 @@ class RuntimeEvent:
     created_at: float = field(default_factory=time.time)
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
+    host_id: Optional[str] = None
     loop_index: Optional[int] = None
     step_key: Optional[str] = None
     dedupe_key: Optional[str] = None

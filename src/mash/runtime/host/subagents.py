@@ -1,15 +1,20 @@
-"""Host-side subagent metadata and prompt helpers."""
+"""Agent metadata and subagent prompt helpers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 from ...core.config import SystemPrompt
 
 
 @dataclass(frozen=True)
-class SubAgentMetadata:
-    """Host metadata used for subagent prompt injection and routing guidance."""
+class AgentMetadata:
+    """Self-description an agent supplies at registration.
+
+    Role-independent: the same metadata describes the agent whether a host
+    composition uses it as a primary or a subagent.
+    """
 
     display_name: str
     description: str
@@ -18,21 +23,29 @@ class SubAgentMetadata:
 
     def __post_init__(self) -> None:
         if not self.display_name.strip():
-            raise ValueError("subagent metadata display_name is required")
+            raise ValueError("agent metadata display_name is required")
         if not self.description.strip():
-            raise ValueError("subagent metadata description is required")
+            raise ValueError("agent metadata description is required")
         if not self.usage_guidance.strip():
-            raise ValueError("subagent metadata usage_guidance is required")
+            raise ValueError("agent metadata usage_guidance is required")
         if not self.capabilities:
-            raise ValueError("subagent metadata capabilities must be non-empty")
+            raise ValueError("agent metadata capabilities must be non-empty")
         for capability in self.capabilities:
             if not str(capability).strip():
-                raise ValueError("subagent metadata capabilities must be non-empty")
+                raise ValueError("agent metadata capabilities must be non-empty")
+
+
+class SubagentPoolAccess(Protocol):
+    """Narrow pool surface a runtime needs to wire subagents per turn."""
+
+    def get_client(self, agent_id: str) -> Any: ...
+
+    def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None: ...
 
 
 def build_subagent_prompt_block(
     base_prompt: SystemPrompt,
-    subagents: dict[str, SubAgentMetadata],
+    subagents: dict[str, AgentMetadata],
 ) -> SystemPrompt:
     """Append subagent routing guidance to a system prompt."""
     if not subagents:

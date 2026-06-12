@@ -99,20 +99,20 @@ A third kind of state from [the previous post](durable-agent-loop.md) belongs on
 
 ## One pool for the whole host
 
-The two stores share their connection infrastructure. In a multi-agent host, `AgentHost` creates one shared `PostgresRuntimeStore` and one shared `PostgresStore` and injects them into every runtime that uses the default `build_memory_store()`:
+The two stores share their connection infrastructure. In a multi-agent pool, `AgentPool` creates one shared `PostgresRuntimeStore` and one shared `PostgresStore` and injects them into every runtime that uses the default `build_memory_store()`:
 
 ```python
-# the host owns the store lifecycle
-host = (
+# the pool owns the store lifecycle
+pool = (
     HostBuilder()
-    .primary(PilotSpec())
-    .subagent(CliCopilot(), metadata=...)
-    .subagent(ApiCopilot(), metadata=...)
+    .agent(PilotSpec(), metadata=...)
+    .agent(CliCopilot(), metadata=...)
+    .agent(ApiCopilot(), metadata=...)
     .build()
 )
 ```
 
-Pilot's host above runs three agents but holds a single connection pool, a single LISTEN connection for event wakeups, and a single memory connection. The count would be the same with one agent or ten. Runtimes never open or close their stores; the host opens the shared stores before any runtime starts and closes them after all runtimes shut down. (A spec that overrides `build_memory_store()` opts out and gets its own instance, which is useful when one agent's memory genuinely must live elsewhere.)
+Pilot's pool above runs three agents but holds a single connection pool, a single LISTEN connection for event wakeups, and a single memory connection. The count would be the same with one agent or ten. Runtimes never open or close their stores; the pool opens the shared stores before any runtime starts and closes them after all runtimes shut down. (A spec that overrides `build_memory_store()` opts out and gets its own instance, which is useful when one agent's memory genuinely must live elsewhere.)
 
 The design rule at the top of the runtime package says it directly: `memory_store` and `runtime_store` stay separate. Replay, compaction, trace analysis, and search each lean on one of the two contracts holding.
 

@@ -20,28 +20,154 @@ def _print_help(parser: argparse.ArgumentParser) -> int:
     return 0
 
 
-def _resolve_connection(args: argparse.Namespace) -> tuple[str, str | None, str | None]:
+def _resolve_connection(
+    args: argparse.Namespace,
+) -> tuple[str, str | None, str | None, str | None]:
     saved = load_config()
     base_url = (getattr(args, "api_base_url", None) or os.environ.get("MASH_API_BASE_URL") or (saved.api_base_url if saved else "")).strip()
     api_key = getattr(args, "api_key", None) or os.environ.get("MASH_API_KEY") or (saved.api_key if saved else None)
     agent_id = getattr(args, "agent", None) or (saved.agent_id if saved else None)
+    host_id = getattr(args, "host_id", None) or (saved.host_id if saved else None)
     if not base_url:
         raise ValueError("API base URL is required. Use --api-base-url or `mash connect`.")
-    return base_url, api_key, agent_id
+    return base_url, api_key, agent_id, host_id
 
 
-def _resolve_agent(
+def _resolve_target(
     client: MashHostClient,
     explicit_agent: str | None,
-) -> str:
+    host_id: str | None,
+) -> tuple[str, str | None]:
+    """Resolve (agent_id, host_id) for a command.
+
+    An explicit agent targets the bare agent; a host targets the host's
+    primary with the host composition wired in.
+    """
     if explicit_agent:
-        return explicit_agent
+        return explicit_agent, None
+    if host_id:
+        described = client.get_host(host_id)
+        primary = described.get("primary") or {}
+        agent_id = str(primary.get("agent_id") or "").strip()
+        if not agent_id:
+            raise ValueError(f"host '{host_id}' has no primary agent")
+        return agent_id, host_id
     health = client.health()
     deployment = health.get("deployment") or {}
-    agent_id = deployment.get("primary_agent_id")
-    if not isinstance(agent_id, str) or not agent_id.strip():
-        raise ValueError("could not resolve default agent id from deployment")
-    return agent_id.strip()
+    hosts = deployment.get("hosts") or []
+    if len(hosts) == 1 and isinstance(hosts[0], dict):
+        primary = str(hosts[0].get("primary") or "").strip()
+        resolved_host_id = str(hosts[0].get("host_id") or "").strip()
+        if primary and resolved_host_id:
+            return primary, resolved_host_id
+    agents = deployment.get("agents") or []
+    if len(agents) == 1 and isinstance(agents[0], dict):
+        agent_id = str(agents[0].get("agent_id") or "").strip()
+        if agent_id:
+            return agent_id, None
+    raise ValueError(
+        "could not resolve a target; specify --agent or --host"
+    )
+
+
+def _split_ids(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _resolve_saved_connection(
+    args: argparse.Namespace,
+    renderer: RichRenderer,
+) -> tuple[str, str | None] | None:
+    saved = load_config()
+    base_url = (
+        args.api_base_url
+        or os.environ.get("MASH_API_BASE_URL")
+        or (saved.api_base_url if saved else "")
+    ).strip()
+    if not base_url:
+        renderer.error("API base URL is required. Use --api-base-url or `mash connect`.")
+        return None
+    api_key = args.api_key or os.environ.get("MASH_API_KEY") or (saved.api_key if saved else None)
+    return base_url, api_key
+
+
+def _render_host_view(renderer: RichRenderer, described: dict) -> None:
+    primary = described.get("primary") or {}
+    members = ", ".join(
+        item.get("agent_id", "") for item in described.get("subagents") or []
+    )
+    renderer.info(
+        f"Host '{described.get('host_id')}': primary {primary.get('agent_id')}"
+        + (f" [{members}]" if members else "")
+    )
+
+
+def _run_connect(args: argparse.Namespace) -> int:
+    renderer = RichRenderer()
+    connection = _resolve_saved_connection(args, renderer)
+    if connection is None:
+        return 1
+    base_url, api_key = connection
+
+    if args.host_id:
+        client = MashHostClient(base_url, api_key=api_key)
+        try:
+            described = client.get_host(args.host_id)
+        except Exception as exc:
+            renderer.error(str(exc))
+            return 1
+        finally:
+            client.close()
+        _render_host_view(renderer, described)
+
+    path = save_config(
+        CLIConfig(
+            api_base_url=base_url,
+            api_key=api_key,
+            agent_id=args.agent,
+            host_id=args.host_id,
+        )
+    )
+    print(f"Saved connection to {path}")
+    return 0
+
+
+def _run_compose(args: argparse.Namespace) -> int:
+    renderer = RichRenderer()
+    connection = _resolve_saved_connection(args, renderer)
+    if connection is None:
+        return 1
+    base_url, api_key = connection
+
+    client = MashHostClient(base_url, api_key=api_key)
+    try:
+        described = client.define_host(
+            args.host_id,
+            primary=args.primary,
+            subagents=_split_ids(args.subagents),
+            workflows=_split_ids(args.workflows),
+        )
+    except Exception as exc:
+        renderer.error(str(exc))
+        return 1
+    finally:
+        client.close()
+    _render_host_view(renderer, described)
+
+    # Pin the composition as the current target. The saved agent_id is
+    # cleared because an explicit agent outranks the host at resolve time.
+    path = save_config(
+        CLIConfig(
+            api_base_url=base_url,
+            api_key=api_key,
+            agent_id=None,
+            host_id=args.host_id,
+        )
+    )
+    print(f"Saved connection to {path}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,18 +179,51 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="store_true", help="Show installed mash version and documentation URL.")
     subparsers = parser.add_subparsers(dest="command")
 
-    connect = subparsers.add_parser("connect", help="Persist a default mash deployment connection")
-    connect.add_argument("--api-base-url", required=True, help="Mash host base URL, e.g. http://127.0.0.1:8000")
+    connect = subparsers.add_parser(
+        "connect",
+        help="Persist a deployment connection and target",
+    )
+    connect.add_argument(
+        "--api-base-url",
+        default=None,
+        help="Mash host base URL, e.g. http://127.0.0.1:8000 (falls back to saved config)",
+    )
     connect.add_argument("--api-key", default=None, help="Optional bearer API key")
-    connect.add_argument("--agent", default=None, help="Optional default agent id")
+    connect.add_argument("--agent", default=None, help="Target a bare agent id (no composition)")
+    connect.add_argument("--host", dest="host_id", default=None, help="Target an existing host id")
+
+    compose = subparsers.add_parser(
+        "compose",
+        help="Define a host composition on the deployment and target it",
+    )
+    compose.add_argument(
+        "--api-base-url",
+        default=None,
+        help="Mash host base URL (falls back to saved config)",
+    )
+    compose.add_argument("--api-key", default=None, help="Optional bearer API key")
+    compose.add_argument("--host", dest="host_id", required=True, help="Host id to define or replace")
+    compose.add_argument("--primary", required=True, help="Primary agent id")
+    compose.add_argument(
+        "--subagents",
+        default=None,
+        help="Comma-separated subagent ids",
+    )
+    compose.add_argument(
+        "--workflows",
+        default=None,
+        help="Comma-separated workflow ids",
+    )
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--api-base-url", default=None, help="Mash host base URL")
     common.add_argument("--api-key", default=None, help="Bearer API key")
-    common.add_argument("--agent", default=None, help="Target agent id")
+    common.add_argument("--agent", default=None, help="Target agent id (bare-agent targeting)")
+    common.add_argument("--host", dest="host_id", default=None, help="Target host id")
 
     subparsers.add_parser("status", parents=[common], help="Show deployment status")
     subparsers.add_parser("agents", parents=[common], help="List deployment agents")
+    subparsers.add_parser("hosts", parents=[common], help="List defined hosts")
 
     subparsers.add_parser("sessions", parents=[common], help="List sessions for an agent")
 
@@ -92,9 +251,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "connect":
-        path = save_config(CLIConfig(api_base_url=args.api_base_url, api_key=args.api_key, agent_id=args.agent))
-        print(f"Saved connection to {path}")
-        return 0
+        return _run_connect(args)
+
+    if args.command == "compose":
+        return _run_compose(args)
 
     handler = getattr(args, "handler", None)
     if callable(handler):
@@ -106,28 +266,63 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     renderer = RichRenderer()
     try:
-        base_url, api_key, configured_agent = _resolve_connection(args)
+        base_url, api_key, configured_agent, configured_host = _resolve_connection(args)
     except ValueError as exc:
         renderer.error(str(exc))
         return 1
 
     client = MashHostClient(base_url, api_key=api_key)
     try:
-        agent_id = _resolve_agent(client, getattr(args, "agent", None) or configured_agent)
-
         if args.command == "status":
             health = client.health()
             deployment = health.get("deployment") or {}
+            hosts = deployment.get("hosts") or []
             renderer.info(f"Deployment: {base_url}")
-            renderer.info(f"Primary agent: {deployment.get('primary_agent_id')}")
             renderer.info(f"Agents: {len(deployment.get('agents') or [])}")
+            renderer.info(f"Hosts: {len(hosts)}")
+            for host in hosts:
+                if not isinstance(host, dict):
+                    continue
+                subagents = ", ".join(host.get("subagents") or [])
+                renderer.info(
+                    f"  {host.get('host_id')} -> {host.get('primary')}"
+                    + (f" [{subagents}]" if subagents else "")
+                )
             return 0
 
         if args.command == "agents":
             agents = client.list_agents()
-            rows = [[str(agent.get("agent_id") or ""), str(agent.get("role") or "")] for agent in agents]
-            renderer.table(["Agent", "Role"], rows)
+            rows = []
+            for agent in agents:
+                metadata = agent.get("metadata") or {}
+                rows.append(
+                    [
+                        str(agent.get("agent_id") or ""),
+                        str(metadata.get("display_name") or ""),
+                    ]
+                )
+            renderer.table(["Agent", "Name"], rows)
             return 0
+
+        if args.command == "hosts":
+            hosts = client.list_hosts()
+            rows = [
+                [
+                    str(host.get("host_id") or ""),
+                    str(host.get("primary") or ""),
+                    ", ".join(host.get("subagents") or []),
+                    ", ".join(host.get("workflows") or []),
+                ]
+                for host in hosts
+            ]
+            renderer.table(["Host", "Primary", "Subagents", "Workflows"], rows)
+            return 0
+
+        agent_id, target_host_id = _resolve_target(
+            client,
+            getattr(args, "agent", None) or configured_agent,
+            getattr(args, "host_id", None) or configured_host,
+        )
 
         if args.command == "sessions":
             sessions_payload = client.list_sessions(agent_id)
@@ -158,6 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 api_base_url=base_url,
                 agent_id=agent_id,
                 session_id=args.session_id or MashRemoteShell.new_session_id(),
+                host_id=target_host_id,
             )
             MashRemoteShell(client, target).run()
             return 0

@@ -58,9 +58,13 @@ export default function App() {
         }
 
         const healthData = apiData(healthPayload) || {};
-        const resolvedAgentId = normalizeText(healthData?.deployment?.primary_agent_id);
+        const deployment = healthData?.deployment || {};
+        const firstHost = Array.isArray(deployment.hosts) ? deployment.hosts[0] : null;
+        const firstAgent = Array.isArray(deployment.agents) ? deployment.agents[0] : null;
+        const resolvedAgentId =
+          normalizeText(firstHost?.primary) || normalizeText(firstAgent?.agent_id);
         if (!resolvedAgentId) {
-          throw new Error('Could not resolve primary agent id from deployment health.');
+          throw new Error('Could not resolve an agent id from deployment health.');
         }
 
         const eventsResponse = await fetch(

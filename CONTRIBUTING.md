@@ -74,7 +74,7 @@ durable request engine, and back out as replayable runtime events:
 sequenceDiagram
     participant User
     participant API as mash.api
-    participant Host as AgentHost
+    participant Pool as AgentPool
     participant Client as AgentClient
     participant Server as AgentServer
     participant Runtime as AgentRuntime
@@ -84,8 +84,8 @@ sequenceDiagram
     participant Memory as Memory Store
 
     User->>API: POST /api/v1/agents/{agent_id}/requests
-    API->>Host: get_client(agent_id)
-    Host-->>API: AgentClient
+    API->>Pool: get_client(agent_id)
+    Pool-->>API: AgentClient
     API->>Client: post_request(...) / stream(...)
     Client->>Server: HTTP request + SSE stream
     Server->>Runtime: submit_request(...) / stream_request_events(...)

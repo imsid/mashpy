@@ -110,16 +110,37 @@ validation).
 - Health and deployment summary.
 - Returns:
   - `status`, `service`, `api_version`
-  - `deployment.primary_agent_id`
   - `deployment.agents`
-  - `primary_agent`
+  - `deployment.hosts`
   - `observability.enabled`
   - `observability.memory.search_available`
   - `observability.memory.default_limit`
 
 `GET /api/v1/agent`
-- Lists hosted agents.
-- Returns `agents` and `primary_agent_id`.
+- Lists pooled agents.
+- Returns `agents` and `hosts`.
+
+### Hosts
+
+`PUT /api/v1/hosts/{host_id}`
+- Defines or replaces a host composition over the pool (idempotent).
+- Body: `DefineHostRequest` (`primary`, `subagents`, `workflows`)
+- Returns the merged host view (members joined with pool metadata).
+- Validation failures return `400 INVALID_HOST`.
+
+`GET /api/v1/hosts`
+- Lists defined hosts.
+
+`GET /api/v1/hosts/{host_id}`
+- Returns the merged host view; unknown ids return `404 HOST_NOT_FOUND`.
+
+`POST /api/v1/hosts/{host_id}/request`
+- Submits a request to the host: it routes to the host's primary agent with
+  the host's composition snapshotted onto the request.
+- Body: `HostSubmitRequest` (`message`, `session_id`, optional
+  `structured_output`)
+- Returns `request_id`, `agent_id` (the primary), and `session_id`. Stream
+  results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
 `GET /api/v1/agent/{agent_id}`
 - Returns agent metadata plus current session info.
@@ -210,7 +231,7 @@ validation).
   - `workflow_id`
 - Upsert semantics: re-registering the same `workflow_id` replaces the live
   definition. Unregistration is only available through the in-process host
-  API (`AgentHost.unregister_agent_workflow`), not HTTP.
+  API (`AgentPool.unregister_agent_workflow`), not HTTP.
 
 ### Sessions
 
@@ -330,11 +351,14 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - Reads recent canonical runtime events for one agent.
 - Query params:
   - `agent_id` required
+  - `session_id`, `trace_id`, `host_id` optional filters — `host_id` selects
+    events from requests routed through that host composition
   - `limit` optional, clamped to `1..20000`
 - Returns:
-  - `events`
+  - `events` (each carries `host_id`, null for bare-agent requests)
   - `source`
   - `agent_id`
+  - `session_id`, `trace_id`, `host_id`
   - `limit`
 
 `GET /api/v1/telemetry/events/stream`

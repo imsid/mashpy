@@ -12,12 +12,51 @@ from mash.tools.mcp import MCPToolAdapter
 from mash.skills.tool import SkillTool
 
 from ..core.agent import Agent
+from ..core.config import SystemPrompt
 from ..memory.signals import build_default_signal_collector
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import InvokeSubagentTool
+from .host.subagents import AgentMetadata, build_subagent_prompt_block
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
+
+
+def resolve_host_subagents(
+    self: "AgentRuntime",
+    host: dict[str, Any] | None,
+) -> dict[str, AgentMetadata]:
+    """Resolve a host snapshot's subagent ids to pool metadata."""
+    if not host:
+        return {}
+    subagent_ids = [str(value) for value in host.get("subagents") or []]
+    if not subagent_ids:
+        return {}
+    pool = self.get_pool()
+    if pool is None:
+        raise RuntimeError(
+            f"agent '{self.app_id}' received a host snapshot but has no pool attached"
+        )
+    resolved: dict[str, AgentMetadata] = {}
+    for agent_id in subagent_ids:
+        metadata = pool.get_agent_metadata(agent_id)
+        if metadata is None:
+            raise RuntimeError(
+                f"host '{host.get('host_id')}' references unknown agent '{agent_id}'"
+            )
+        resolved[agent_id] = metadata
+    return resolved
+
+
+def resolve_host_system_prompt(
+    self: "AgentRuntime",
+    host: dict[str, Any] | None,
+) -> SystemPrompt:
+    """Render the runtime's base prompt with the snapshot's subagent block."""
+    return build_subagent_prompt_block(
+        self.system_prompt,
+        resolve_host_subagents(self, host),
+    )
 
 
 def build_agent_instance(
@@ -25,6 +64,7 @@ def build_agent_instance(
     *,
     session_id: str,
     shared_llm: Any = None,
+    host: dict[str, Any] | None = None,
 ) -> Agent:
     tools = self.definition.build_tools()
     skills = getattr(self, "skills", None) or self.definition.build_skills()
@@ -38,9 +78,16 @@ def build_agent_instance(
             "AgentSpec.get_agent_id() must match build_agent_config().app_id "
             f"(got {self.app_id!r} vs {config.app_id!r})"
         )
-    configured_prompt = getattr(self, "system_prompt", None)
-    if configured_prompt is not None:
-        config.system_prompt = configured_prompt
+    # During AgentRuntime.__init__ the base prompt is not set yet; fall back
+    # to the spec config's own prompt.
+    base_prompt = getattr(self, "system_prompt", None)
+    if base_prompt is not None:
+        config.system_prompt = base_prompt
+    host_subagents = resolve_host_subagents(self, host)
+    if host_subagents:
+        config.system_prompt = build_subagent_prompt_block(
+            config.system_prompt, host_subagents
+        )
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
     if skills.list_skills() and "Skill" not in agent.tools:
@@ -58,8 +105,8 @@ def build_agent_instance(
     mcp_servers = self.get_mcp_servers()
     if mcp_servers:
         configure_remote_tools(self, agent, mcp_servers)
-    if self.has_subagent_clients():
-        configure_subagent_tools(self, agent, session_id=session_id)
+    if host_subagents:
+        configure_subagent_tools(self, agent, session_id=session_id, host=host)
     return agent
 
 
@@ -138,13 +185,28 @@ def configure_subagent_tools(
     agent: Agent,
     *,
     session_id: str,
+    host: dict[str, Any],
 ) -> None:
-    agent.config.system_prompt = self.system_prompt
+    pool = self.get_pool()
+    if pool is None:
+        raise RuntimeError(
+            f"agent '{self.app_id}' received a host snapshot but has no pool attached"
+        )
+    host_id = str(host.get("host_id") or "")
+    allowed = {str(value) for value in host.get("subagents") or []}
+
+    def client_resolver(agent_id: str) -> Any:
+        if agent_id not in allowed:
+            raise ValueError(
+                f"subagent '{agent_id}' is not in host '{host_id}'"
+            )
+        return pool.get_client(agent_id)
+
     if "InvokeSubagent" in agent.tools:
         agent.tools.unregister("InvokeSubagent")
     agent.tools.register(
         InvokeSubagentTool(
-            client_resolver=self.get_subagent_client,
+            client_resolver=client_resolver,
             primary_app_id=self.app_id,
             primary_session_id=session_id,
             event_logger=self.get_event_logger(),

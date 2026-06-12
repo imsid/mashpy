@@ -16,7 +16,7 @@ agent, is the unit of deploy. This post covers what Mash actually ships on
 both sides of that seam: the host and its interfaces above, and the durable
 harness and observability underneath.
 
-- [One Host, Many Agents](#one-host-many-agents)
+- [One Host, Composable Agents](#one-host-composable-agents)
 - [Durable Harness](#durable-harness)
     - [Core Agent Loop: Context, Memory, Tools, Skills, Signals, Structured output](#core-agent-loop-context-memory-tools-skills-signals-structured-output)
     - [Human-in-the-Loop Interactions](#human-in-the-loop-interactions)
@@ -28,22 +28,25 @@ harness and observability underneath.
     - [CLI Trace Inspection](#cli-trace-inspection)
     - [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
 - [Self-Hosted Interfaces](#self-hosted-interfaces)
+    - [Composing from the Outside](#composing-from-the-outside)
     - [REPL](#repl)
-    - [CLI Commands](#cli-commands)
+    - [CLI and REPL Commands](#cli-and-repl-commands)
 
-## One Host, Many Agents
+## One Host, Composable Agents
 
-Mash lets teams define a primary agent, add specialized subagents, and compose
-workflow-only agents behind the same host. General-purpose agents can delegate
-to focused specialists without a separate coordination layer outside the
-runtime.
+Mash deployments are a flat pool of agents plus the host compositions defined
+over them. A host names one agent as primary and a set of subagents; the
+primary delegates to those specialists without a separate coordination layer
+outside the runtime. Hosts can ship with the deploy in code, or be defined at
+runtime over the API, and the same pool can serve several hosts at once.
 
 ```python
-host = (
+pool = (
     HostBuilder()
-    .primary(PrimaryAgent())
-    .subagent(CliCopilot(),  metadata={"handles": "CLI questions"})
-    .subagent(ApiCopilot(),  metadata={"handles": "API questions"})
+    .agent(PilotSpec(),   metadata=AgentMetadata(...))
+    .agent(CliCopilot(),  metadata=AgentMetadata(...))
+    .agent(ApiCopilot(),  metadata=AgentMetadata(...))
+    .host(Host(host_id="pilot", primary="pilot", subagents=("cli-copilot", "api-copilot")))
     .build()
 )
 ```
@@ -268,13 +271,41 @@ product surfaces, and operating the system in a controlled environment. See
 [Pilot Agent](https://github.com/imsid/mash-pilot/blob/main/README.md) for an
 implementation.
 
+The standard session: serve the pool, save the connection, compose a host,
+and converse through it.
+
 ```bash
 mash host serve --host-app <MASH_HOST> --port 8001
 mash connect --api-base-url <MASH_HOST_URL> --api-key secret
+mash compose --host pilot --primary pilot --subagents cli-copilot,api-copilot
+mash repl
 ```
 
+### Composing from the Outside
+
+`mash compose` defines (or replaces) a host composition on the running
+deployment with an idempotent `PUT /v1/hosts/{host_id}` and pins it as the
+CLI's target. The same endpoint is open to any application, so an integration
+can assemble its agent team at runtime without redeploying:
+
+```bash
+curl -X PUT <MASH_HOST_URL>/api/v1/hosts/pilot \
+  -d '{"primary": "pilot", "subagents": ["cli-copilot", "api-copilot"]}'
+
+curl -X POST <MASH_HOST_URL>/api/v1/hosts/pilot/request \
+  -d '{"message": "...", "session_id": "s-1"}'
+```
+
+Each request snapshots the composition it was submitted with, so redefining a
+host never disturbs work in flight. Telemetry events carry the `host_id`, so
+traces filter by composition. The
+[dynamic hosts guide](building-dynamic-hosts-apis.md) covers the full
+API flow.
+
 ### REPL
-The REPL is the interactive interface to a running host:
+The REPL is the interactive interface to a running host. It is pinned to the
+composition (or bare agent) you connected with; to change teams, exit and run
+`mash compose` again.
 
 ```bash
 mash repl
@@ -288,15 +319,31 @@ Example messages inside the REPL:
 > ...
 ```
 
-### CLI Commands
-Default CLI commands exposed by mash
+### CLI and REPL Commands
+
+Top-level commands exposed by `mash`:
+
 ```
-/status     Show deployment status
-/agents     List available agents
+connect     Persist a deployment connection and target
+compose     Define a host composition and target it
+status      Show deployment status
+agents      List pooled agents
+hosts       List defined host compositions
+sessions    List sessions for the target agent
+history     Show session history
+repl        Start the interactive shell
+host serve  Run the host API server
+```
+
+Default slash commands inside the REPL:
+
+```
+/status     Show deployment, current host, agent, and session
+/agents     List pooled agents
+/hosts      List defined host compositions
 /sessions   List remote sessions
 /session    Show current session info
 /history    View conversation history
-/use        Switch to a different agent
 /trace [N]  Show trace analysis for recent traces
 /workflow   List, run, and inspect workflows
 ```

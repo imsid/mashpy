@@ -122,6 +122,58 @@ class MashHostClient:
         response = self._request("GET", f"/api/v1/agent/{quote(agent_id, safe='')}")
         return response.json()["data"]
 
+    def list_hosts(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/hosts")
+        hosts = response.json()["data"].get("hosts")
+        if not isinstance(hosts, list):
+            return []
+        return [host for host in hosts if isinstance(host, dict)]
+
+    def get_host(self, host_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/hosts/{quote(host_id, safe='')}")
+        return response.json()["data"]
+
+    def define_host(
+        self,
+        host_id: str,
+        *,
+        primary: str,
+        subagents: list[str] | None = None,
+        workflows: list[str] | None = None,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "PUT",
+            f"/api/v1/hosts/{quote(host_id, safe='')}",
+            json_body={
+                "primary": primary,
+                "subagents": list(subagents or []),
+                "workflows": list(workflows or []),
+            },
+        )
+        return response.json()["data"]
+
+    def submit_host_request(
+        self,
+        host_id: str,
+        *,
+        message: str,
+        session_id: str,
+        structured_output: Any = None,
+    ) -> dict[str, Any]:
+        json_body: dict[str, Any] = {
+            "message": message,
+            "session_id": session_id,
+        }
+        if structured_output is not None:
+            json_body["structured_output"] = serialize_structured_output(structured_output)
+        response = self._request(
+            "POST",
+            f"/api/v1/hosts/{quote(host_id, safe='')}/request",
+            json_body=json_body,
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     def register_agent_skill(
         self,
         agent_id: str,

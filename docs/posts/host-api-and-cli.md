@@ -52,9 +52,9 @@ The `mash` CLI is built entirely on this client. Nothing in it has a private pat
 
 ## The mash command
 
-`mash connect` persists a default connection (base URL, API key, agent), and later commands resolve their target from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. With a connection in place, four one-shot commands cover quick checks: `mash status`, `mash agents`, `mash sessions`, and `mash history --session-id ...`.
+`mash connect` persists a default connection (base URL, API key, and a target: a bare `--agent` or an existing `--host` composition), and later commands resolve their target from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --primary <agent>` (with optional `--subagents` and `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. With a connection in place, four one-shot commands cover quick checks: `mash status`, `mash agents`, `mash sessions`, and `mash history --session-id ...`.
 
-`mash host serve` is the other side of the boundary: it loads `build_host()` from `--host-app` (or `MASH_HOST_APP`) and runs the API server, with flags for bind host, port, API key, CORS origins, and disabling observability.
+`mash host serve` is the other side of the boundary: it loads `build_pool()` from `--host-app` (or `MASH_HOST_APP`) and runs the API server, with flags for bind host, port, API key, CORS origins, and disabling observability.
 
 ## The REPL
 
@@ -64,7 +64,7 @@ The `mash` CLI is built entirely on this client. Nothing in it has a private pat
 |---|---|
 | `/status` | deployment and connection info |
 | `/agents` | list hosted agents |
-| `/use <agent_id>` | switch agents, deriving the subagent session id when moving off the primary |
+| `/hosts` | list the host compositions defined on the deployment |
 | `/session`, `/sessions` | current session info, session list |
 | `/history [N]` | recent turns |
 | `/trace [N]` | trace analysis for recent traces |

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from mash.api.logging import PostgresAPIEventStore
 from mash.api.middleware import APILoggingMiddleware
 from mash.api.routes.agent import build_agent_router
+from mash.api.routes.host import build_host_router
 from mash.api.routes.common import (
     APIError,
     AppRuntimeState,
@@ -22,30 +23,30 @@ from mash.api.routes.common import (
 )
 from mash.api.routes.telemetry import build_telemetry_router
 from mash.api.routes.workflow import build_workflow_router
-from mash.runtime import AgentClientError, AgentHost
+from mash.runtime import AgentClientError, AgentPool
 from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
 
 from .config import MashHostConfig
 from .telemetry_ui import mount_telemetry_ui
 
 
-def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> FastAPI:
+def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> FastAPI:
     """Build a FastAPI app that exposes one hosted Mash deployment."""
 
     resolved_config = config or MashHostConfig()
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
-        host.configure_runtime_database_url(
+        pool.configure_runtime_database_url(
             resolved_config.resolved_runtime_database_url()
         )
-        await host.start()
+        await pool.start()
         api_event_store = PostgresAPIEventStore(
             resolved_config.resolved_runtime_database_url() or ""
         )
         await api_event_store.open()
         application.state.runtime_state = AppRuntimeState(
-            host=host,
+            pool=pool,
             api_event_store=api_event_store,
             api_key=resolved_config.resolved_api_key(),
             observability_enabled=resolved_config.enable_observability,
@@ -58,7 +59,7 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
             state = getattr(application.state, "runtime_state", None)
             if state is not None:
                 await state.api_event_store.close()
-                await state.host.close()
+                await state.pool.close()
             application.state.runtime_state = None
 
     app = FastAPI(title="Mash Host", version="1.0.0", lifespan=_lifespan)
@@ -141,6 +142,7 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
         prefix=resolved_config.api_prefix, dependencies=[Depends(_authorize)]
     )
     api.include_router(build_agent_router())
+    api.include_router(build_host_router())
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())
     app.include_router(api)
@@ -160,9 +162,9 @@ def create_app(host: AgentHost, *, config: MashHostConfig | None = None) -> Fast
     return app
 
 
-def run_host(host: AgentHost, *, config: MashHostConfig | None = None) -> None:
+def run_host(pool: AgentPool, *, config: MashHostConfig | None = None) -> None:
     """Run the Mash host API service with uvicorn."""
 
     resolved_config = config or MashHostConfig()
-    app = create_app(host, config=resolved_config)
+    app = create_app(pool, config=resolved_config)
     uvicorn.run(app, host=resolved_config.bind_host, port=resolved_config.bind_port)

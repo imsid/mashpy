@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-from mash.tools.subagent import derive_subagent_session_id
-
 from .commands import Command
 
 
@@ -145,7 +143,9 @@ def register_default_commands(shell) -> None:
         health = ctx.client.health()
         deployment = health.get("deployment") or {}
         ctx.renderer.info(f"Deployment: {ctx.api_base_url}")
-        ctx.renderer.info(f"Primary agent: {deployment.get('primary_agent_id')}")
+        ctx.renderer.info(f"Agents: {len(deployment.get('agents') or [])}")
+        ctx.renderer.info(f"Hosts: {len(deployment.get('hosts') or [])}")
+        ctx.renderer.info(f"Current host: {ctx.host_id or '(none)'}")
         ctx.renderer.info(f"Current agent: {ctx.agent_id}")
         ctx.renderer.info(f"Session ID: {ctx.session_id}")
 
@@ -201,46 +201,29 @@ def register_default_commands(shell) -> None:
             return
         rows = []
         for agent in agents:
-            rows.append([str(agent.get("agent_id") or ""), str(agent.get("role") or "")])
-        ctx.renderer.table(["Agent", "Role"], rows)
-
-    def use_command(ctx, args: list[str]) -> None:
-        if not args:
-            ctx.renderer.error("Usage: /use <agent_id>")
-            return
-        target_agent_id = args[0].strip()
-        if not target_agent_id:
-            ctx.renderer.error("Usage: /use <agent_id>")
-            return
-
-        agents = ctx.client.list_agents()
-        roles = {
-            str(agent.get("agent_id") or "").strip(): str(agent.get("role") or "").strip()
-            for agent in agents
-            if str(agent.get("agent_id") or "").strip()
-        }
-        current_agent_id = ctx.agent_id
-        current_role = roles.get(current_agent_id)
-        target_role = roles.get(target_agent_id)
-
-        next_session_id = ctx.session_ids.get(target_agent_id)
-        if (
-            next_session_id is None
-            and current_role == "primary"
-            and target_role == "subagent"
-        ):
-            next_session_id = derive_subagent_session_id(
-                current_agent_id,
-                ctx.session_id,
-                target_agent_id,
+            metadata = agent.get("metadata") or {}
+            rows.append(
+                [
+                    str(agent.get("agent_id") or ""),
+                    str(metadata.get("display_name") or ""),
+                ]
             )
-        if next_session_id is None:
-            next_session_id = ctx.session_id
+        ctx.renderer.table(["Agent", "Name"], rows)
 
-        ctx.agent_id = target_agent_id
-        ctx.session_id = next_session_id
-        ctx.session_ids[target_agent_id] = next_session_id
-        ctx.renderer.info(f"Switched to agent: {ctx.agent_id}")
+    def hosts_command(ctx, _args: list[str]) -> None:
+        hosts = ctx.client.list_hosts()
+        if not hosts:
+            ctx.renderer.warn("No hosts defined.")
+            return
+        rows = [
+            [
+                str(host.get("host_id") or ""),
+                str(host.get("primary") or ""),
+                ", ".join(host.get("subagents") or []),
+            ]
+            for host in hosts
+        ]
+        ctx.renderer.table(["Host", "Primary", "Subagents"], rows)
 
     def workflow_command(ctx, args: list[str]) -> None:
         if not args:
@@ -482,7 +465,11 @@ def register_default_commands(shell) -> None:
         Command(name="history", help="View conversation history", handler=history_command)
     )
     shell.command_registry.register(
-        Command(name="use", help="Switch to a different agent", handler=use_command)
+        Command(
+            name="hosts",
+            help="List defined hosts (retarget with `mash compose` or `mash connect`)",
+            handler=hosts_command,
+        )
     )
     shell.command_registry.register(
         Command(

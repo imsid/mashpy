@@ -20,10 +20,18 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request \
 ```
 
 ```json
-{"data": {"request_id": "7c9e1f0a-…", "agent_id": "pilot", "session_id": "s1", "status": "accepted"}}
+{"data": {"request_id": "7c9e1f0a-…"}}
 ```
 
 The answer arrives as a stream of events on `GET /api/v1/agent/pilot/request/{request_id}/events`, ending in a `request.completed` frame that carries the response text. This post follows one request from submission to completion and walks through the events the runtime emits along the way.
+
+The example above targets one agent directly. Requests routed through a
+[host composition](composing-agents.md) enter at
+`POST /api/v1/hosts/{host_id}/request` instead; the server resolves the
+host's primary, snapshots the composition onto the request, and replies with
+`{"request_id", "agent_id", "session_id"}` so you know which agent to stream
+from. Everything after submission, the stream, the events, the terminal
+frames, is identical for both paths.
 
 ## Submit, then stream
 
@@ -102,6 +110,8 @@ class RuntimeEventType(str, Enum):
 ```
 
 `to_public_event` in `requests.py` maps each internal record to one of a small set of public frames before it reaches your SSE client. Lifecycle events get first-class names (`request.accepted`, `request.started`, `request.completed`, `request.error`, `request.interaction.*`), and everything that happened inside execution arrives as an `agent.trace` frame carrying the internal `event_type` in its data. Keeping two vocabularies lets the internal one grow without breaking client code, which only ever matches on the public names.
+
+Each record also carries identity fields: `app_id`, `agent_id`, `session_id`, the `request_id`, and, for host-routed requests, the `host_id` of the composition the request ran under. Bare-agent requests leave `host_id` null, which is what lets the telemetry API filter one agent's events by the composition they served.
 
 ## Reading one request, frame by frame
 

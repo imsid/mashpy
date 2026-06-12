@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 from mash.core.config import AgentConfig
 from mash.core.context import ToolCall
@@ -14,7 +14,7 @@ from mash.core.llm.types import (
     LLMResponse,
     LLMTokenUsage,
 )
-from mash.runtime import AgentSpec, SubAgentMetadata
+from mash.runtime import AgentSpec, AgentMetadata
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
@@ -117,12 +117,14 @@ class DelegatingLLMProvider(LLMProvider):
         self._subagent_id = subagent_id
         self._subagent_prompt = subagent_prompt
         self.last_session_id: str | None = None
+        self.last_system: Any = None
 
     @property
     def model(self) -> str:
         return "test-model"
 
     async def send(self, request: LLMRequest) -> LLMResponse:
+        self.last_system = request.system
         saw_tool_result = False
         for message in request.messages:
             if message.role != "tool":
@@ -194,6 +196,11 @@ class DelegatingAgentSpec(AgentSpec):
         self.final_text = final_text
         self.subagent_id = subagent_id
         self.subagent_prompt = subagent_prompt
+        self.provider = DelegatingLLMProvider(
+            final_text=self.final_text,
+            subagent_id=self.subagent_id,
+            subagent_prompt=self.subagent_prompt,
+        )
 
     def get_agent_id(self) -> str:
         return self.agent_id
@@ -205,18 +212,14 @@ class DelegatingAgentSpec(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self) -> LLMProvider:
-        return DelegatingLLMProvider(
-            final_text=self.final_text,
-            subagent_id=self.subagent_id,
-            subagent_prompt=self.subagent_prompt,
-        )
+        return self.provider
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(app_id=self.agent_id, system_prompt=f"You are {self.agent_id}.")
 
 
-def metadata() -> SubAgentMetadata:
-    return SubAgentMetadata(
+def metadata() -> AgentMetadata:
+    return AgentMetadata(
         display_name="Research",
         description="Research specialist",
         capabilities=["search", "summarize"],

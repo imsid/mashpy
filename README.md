@@ -65,14 +65,14 @@ the pitch.
 # my_agent/spec.py
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentSpec, HostBuilder
+from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
 
-class PrimaryAgent(AgentSpec):
+class AssistantAgent(AgentSpec):
     def get_agent_id(self) -> str:
-        return "primary"
+        return "assistant"
 
     def build_tools(self) -> ToolRegistry:
         return ToolRegistry()
@@ -81,29 +81,41 @@ class PrimaryAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="primary")
+        return AnthropicProvider(app_id="assistant")
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id="primary",
+            app_id="assistant",
             system_prompt="You are a helpful assistant.",
         )
 
 
-def build_host():
-    return HostBuilder().primary(PrimaryAgent()).build()
+def build_pool():
+    return (
+        HostBuilder()
+        .agent(
+            AssistantAgent(),
+            metadata=AgentMetadata(
+                display_name="Assistant",
+                description="General-purpose assistant.",
+                capabilities=["conversation"],
+                usage_guidance="Default agent for user requests.",
+            ),
+        )
+        .build()
+    )
 ```
 
 ### 2. Serve it
 
 ```bash
-mash host serve --host-app my_agent.spec:build_host --port 8000
+mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
 ### 3. Connect
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent primary
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent assistant
 mash repl
 ```
 
@@ -112,7 +124,9 @@ mash repl
 | Concept | What it is |
 |---|---|
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
-| **HostBuilder** | Fluent builder that composes agents and workflows into an AgentHost |
+| **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into an AgentPool |
+| **AgentPool** | The deployed pool of role-less agents the API server runs |
+| **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
 | **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |

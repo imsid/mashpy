@@ -22,10 +22,11 @@ Import the public API from `mash.runtime`:
 - `AgentSpec`: build contract for one agent
 - `AgentRuntime`: per-agent execution core
 - `AgentServer`: per-agent HTTP/SSE adapter
-- `AgentHost`: multi-agent host
-- `HostBuilder`: host construction API
+- `AgentPool`: deployed pool of role-less agents
+- `Host`: immutable composition over the pool (primary + subagents + workflows)
+- `HostBuilder`: pool construction API
 - `AgentClient`: client for one addressable runtime
-- `SubAgentMetadata`: host-side subagent description type
+- `AgentMetadata`: agent self-description supplied at registration
 
 Everything else under `src/mash/runtime` is internal implementation detail unless a test is explicitly targeting internals.
 
@@ -80,7 +81,7 @@ events:
 sequenceDiagram
     participant User
     participant API as mash.api
-    participant Host as AgentHost
+    participant Pool as AgentPool
     participant Client as AgentClient
     participant Server as AgentServer
     participant Runtime as AgentRuntime
@@ -90,8 +91,8 @@ sequenceDiagram
     participant Memory as Memory Store
 
     User->>API: POST /api/v1/agents/{agent_id}/requests
-    API->>Host: get_client(agent_id)
-    Host-->>API: AgentClient
+    API->>Pool: get_client(agent_id)
+    Pool-->>API: AgentClient
     API->>Client: post_request(...) / stream(...)
     Client->>Server: HTTP request + SSE stream
     Server->>Runtime: submit_request(...) / stream_request_events(...)
@@ -209,7 +210,7 @@ This is the execution/durability boundary. It decides how work starts and resume
 
 Direct runtime usage is explicit:
 
-- hosted paths (`AgentServer`, `AgentHost`) call `open()` during startup
+- hosted paths (`AgentServer`, `AgentPool`) call `open()` during startup
 - direct callers should `await runtime.open()` before submitting or streaming requests
 
 ## Stores
@@ -256,10 +257,10 @@ This is intentionally append-only and request-scoped.
 `AgentRuntime` does not create or close its stores — callers own that
 lifecycle. This design enables connection sharing across agents:
 
-- **`AgentHost`** creates one shared `PostgresRuntimeStore` and one shared
+- **`AgentPool`** creates one shared `PostgresRuntimeStore` and one shared
   `PostgresStore` for all agents that use the default `build_memory_store()`.
   Agents whose spec overrides `build_memory_store()` get their own instance.
-  The host opens the shared stores before creating runtimes and closes them
+  The pool opens the shared stores before creating runtimes and closes them
   after all runtimes shut down.
 
 - **`AgentServer`** creates its own stores in `from_spec()` and closes them
@@ -358,14 +359,14 @@ scaling linearly per agent.
 ### `host/`
 
 - `host/host.py`
-  - `AgentHost`
-  - in-process runtime composition and lifecycle
+  - `AgentPool`
+  - in-process runtime lifecycle and the host (composition) registry
 
 - `host/builder.py`
   - `HostBuilder`
 
 - `host/types.py`
-  - host registration records and bootstrap session ids
+  - pool registration records, the `Host` composition type, and bootstrap session ids
 
 - `host/subagents.py`
   - subagent metadata
@@ -625,7 +626,8 @@ These rules should keep the package understandable over time.
 
 - `AgentRuntime` is the per-agent execution core.
 - `AgentServer` is the per-agent transport wrapper.
-- `AgentHost` is multi-agent composition and lifecycle.
+- `AgentPool` is agent lifecycle; `Host` values are composition. Roles are
+  per-request (from the host snapshot), never runtime state.
 - `RuntimeStore` is the append-only runtime event log boundary.
 - `RequestEngine` is the workflow durability boundary.
 - `memory_store` and `runtime_store` stay separate.

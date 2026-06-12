@@ -29,6 +29,7 @@ from mash.core.agent import Agent
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.runtime import AgentSpec, HostBuilder
+from mash.testing.runtime_fixtures import metadata
 from mash.runtime.events.types import RuntimeEvent
 from mash.testing.runtime_fixtures import build_spec
 
@@ -189,7 +190,7 @@ class MasherTests(unittest.TestCase):
         )
 
     def test_builder_enable_masher_false_leaves_builder_unchanged(self) -> None:
-        host = HostBuilder().primary(self._primary_spec()).enable_masher(False).build()
+        host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).enable_masher(False).build()
         try:
             described = {item["agent_id"]: item for item in host.describe_agents()}
             self.assertEqual(sorted(described.keys()), ["primary"])
@@ -609,7 +610,7 @@ class MasherTests(unittest.TestCase):
     def test_builder_enable_masher_registers_hidden_workflow_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                host = HostBuilder().primary(self._primary_spec()).enable_masher().build()
+                host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).enable_masher().build()
                 try:
                     described = {item["agent_id"]: item for item in host.describe_agents()}
                     self.assertNotIn("masher", described)

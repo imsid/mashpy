@@ -19,6 +19,7 @@ class CLIConfig:
     api_base_url: str
     api_key: Optional[str] = None
     agent_id: Optional[str] = None
+    host_id: Optional[str] = None
 
 
 def load_config() -> Optional[CLIConfig]:
@@ -37,10 +38,12 @@ def load_config() -> Optional[CLIConfig]:
         return None
     api_key_value = payload.get("api_key")
     agent_id_value = payload.get("agent_id")
+    host_id_value = payload.get("host_id")
     return CLIConfig(
         api_base_url=api_base_url,
         api_key=str(api_key_value).strip() if isinstance(api_key_value, str) and api_key_value.strip() else None,
         agent_id=str(agent_id_value).strip() if isinstance(agent_id_value, str) and agent_id_value.strip() else None,
+        host_id=str(host_id_value).strip() if isinstance(host_id_value, str) and host_id_value.strip() else None,
     )
 
 
@@ -52,6 +55,7 @@ def save_config(config: CLIConfig) -> Path:
         "api_base_url": config.api_base_url,
         "api_key": config.api_key,
         "agent_id": config.agent_id,
+        "host_id": config.host_id,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path

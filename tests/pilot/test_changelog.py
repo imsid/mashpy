@@ -32,10 +32,10 @@ class _FakeClient:
         self.workflow_runs: list[dict[str, Any]] = []
 
     def health(self) -> dict[str, Any]:
-        return {"deployment": {"primary_agent_id": "pilot"}}
+        return {"deployment": {"agents": [{"agent_id": "pilot", "metadata": None}], "hosts": []}}
 
     def list_agents(self) -> list[dict[str, str]]:
-        return [{"agent_id": "pilot", "role": "primary"}]
+        return [{"agent_id": "pilot", "metadata": {"display_name": "Pilot"}}]
 
     def register_agent_skill(
         self,
@@ -231,7 +231,7 @@ def test_pilot_cli_repl_registers_changelog_command() -> None:
             self.api_key = api_key
 
         def health(self) -> dict[str, Any]:
-            return {"deployment": {"primary_agent_id": "pilot"}}
+            return {"deployment": {"agents": [{"agent_id": "pilot", "metadata": None}], "hosts": []}}
 
         def close(self) -> None:
             return None

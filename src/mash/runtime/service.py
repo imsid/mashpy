@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
-from typing import Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from mash.core.database import resolve_database_url
 from mash.mcp.manager import MCPManager
@@ -19,6 +18,9 @@ from . import requests as request_helpers
 from .engine import DBOSRequestEngine, RequestEngine
 from .events import RuntimeStore
 from .spec import AgentSpec
+
+if TYPE_CHECKING:
+    from .host.subagents import SubagentPoolAccess
 
 
 def _resolve_runtime_database_url(explicit_value: str | None = None) -> str:
@@ -63,8 +65,7 @@ class AgentRuntime:
         self._shutdown_started = False
         self._shutdown_complete = False
 
-        self._subagent_ids: list[str] = []
-        self._subagent_clients: dict[str, Any] = {}
+        self._pool: SubagentPoolAccess | None = None
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
         self.has_mcp_manager = False
         self.mcp_manager: Optional[MCPManager] = None
@@ -121,38 +122,14 @@ class AgentRuntime:
     def get_max_steps(self) -> int:
         return self.agent.config.max_steps
 
-    def get_subagent_ids(self) -> list[str]:
-        return list(self._subagent_ids)
-
-    def set_subagent_ids(self, subagent_ids: Sequence[str]) -> None:
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for value in subagent_ids:
-            text = str(value).strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            ordered.append(text)
-        self._subagent_ids = ordered
-
     def get_mcp_servers(self) -> Sequence[MCPServerConfig]:
         return self._mcp_servers
 
-    def has_subagent_clients(self) -> bool:
-        return bool(self._subagent_clients)
+    def attach_pool(self, pool: SubagentPoolAccess) -> None:
+        self._pool = pool
 
-    def get_subagent_client(self, agent_id: str) -> Any:
-        client = self._subagent_clients.get(agent_id)
-        if client is None:
-            raise ValueError(f"subagent client '{agent_id}' is not configured")
-        return client
-
-    def set_subagent_clients(self, clients: dict[str, Any]) -> None:
-        self._subagent_clients = dict(clients)
-
-    def set_system_prompt(self, prompt: SystemPrompt) -> None:
-        self.system_prompt = prompt
-        self.agent.config.system_prompt = prompt
+    def get_pool(self) -> SubagentPoolAccess | None:
+        return self._pool
 
     async def get_session_info(
         self,
@@ -208,12 +185,14 @@ class AgentRuntime:
         message: str,
         session_id: str,
         structured_output: Any = None,
+        host_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
             message=message,
             session_id=session_id,
             structured_output=structured_output,
+            host_snapshot=host_snapshot,
         )
 
     async def submit_subagent_request(
@@ -271,9 +250,15 @@ class AgentRuntime:
         agent.llm.set_event_logger(self.event_logger, session_id, self.app_id)
         agent.set_trace_id(trace_id)
 
-    def build_turn_agent(self, *, session_id: str, trace_id: str) -> Any:
+    def build_turn_agent(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+        host: dict[str, Any] | None = None,
+    ) -> Any:
         agent = factory_helpers.build_agent_instance(
-            self, session_id=session_id, shared_llm=self._shared_llm,
+            self, session_id=session_id, shared_llm=self._shared_llm, host=host,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent
@@ -291,14 +276,7 @@ class AgentRuntime:
             return
         self._shutdown_started = True
         try:
-            self._subagent_ids = []
-            for client in self._subagent_clients.values():
-                close = getattr(client, "close", None)
-                if callable(close):
-                    result = close()
-                    if inspect.isawaitable(result):
-                        await result
-            self._subagent_clients.clear()
+            self._pool = None
 
             if self.has_mcp_manager and self.mcp_manager is not None:
                 self.mcp_manager.disconnect_all()

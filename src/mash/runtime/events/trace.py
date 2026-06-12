@@ -69,6 +69,7 @@ def serialize_runtime_event(event: RuntimeEvent) -> dict[str, Any]:
         "app_id": event.app_id,
         "agent_id": event.agent_id,
         "session_id": event.session_id,
+        "host_id": event.host_id,
         "event_type": event.event_type,
         "loop_index": event.loop_index,
         "step_key": event.step_key,
