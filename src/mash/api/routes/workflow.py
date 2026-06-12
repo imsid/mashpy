@@ -16,6 +16,7 @@ from .common import (
     get_workflow_service,
     normalize_optional_text,
     parse_limit,
+    state_from_request,
     success,
 )
 
@@ -24,9 +25,27 @@ def build_workflow_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/workflow")
-    async def list_workflows(request: Request) -> dict[str, Any]:
+    async def list_workflows(
+        request: Request,
+        host: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
         workflow_service = get_workflow_service(request)
-        return success({"workflows": await workflow_service.list_workflows()})
+        workflows = await workflow_service.list_workflows()
+        host_id = str(host or "").strip()
+        if host_id:
+            state = state_from_request(request)
+            try:
+                attached = set(state.pool.get_host(host_id).workflows)
+            except ValueError as exc:
+                raise APIError(
+                    code="HOST_NOT_FOUND", message=str(exc), status_code=404
+                ) from exc
+            workflows = [
+                workflow
+                for workflow in workflows
+                if str(workflow.get("workflow_id") or "") in attached
+            ]
+        return success({"workflows": workflows})
 
     @router.post("/workflow/{workflow_id}/run")
     async def run_workflow(

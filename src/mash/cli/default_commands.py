@@ -7,6 +7,26 @@ import json
 from .commands import Command
 
 
+def _host_members(host: dict) -> list[tuple[dict, str]]:
+    members: list[tuple[dict, str]] = []
+    primary = host.get("primary")
+    if isinstance(primary, dict):
+        members.append((primary, "primary"))
+    subagents = host.get("subagents")
+    if isinstance(subagents, list):
+        for member in subagents:
+            if isinstance(member, dict):
+                members.append((member, "subagent"))
+    return members
+
+
+def _host_workflow_ids(host: dict) -> set[str]:
+    workflows = host.get("workflows")
+    if not isinstance(workflows, list):
+        return set()
+    return {str(workflow_id) for workflow_id in workflows}
+
+
 def _fmt_ms(ms: float) -> str:
     if ms >= 1000:
         return f"{ms / 1000:.2f}s"
@@ -195,6 +215,25 @@ def register_default_commands(shell) -> None:
         ctx.renderer.table(["Session ID", "Turns", "Tokens"], rows)
 
     def agents_command(ctx, _args: list[str]) -> None:
+        if ctx.host_id:
+            host = ctx.client.get_host(ctx.host_id)
+            members = _host_members(host)
+            if not members:
+                ctx.renderer.warn(f"Host '{ctx.host_id}' has no agents.")
+                return
+            rows = []
+            for member, role in members:
+                metadata = member.get("metadata") or {}
+                rows.append(
+                    [
+                        str(member.get("agent_id") or ""),
+                        str(metadata.get("display_name") or ""),
+                        role,
+                    ]
+                )
+            ctx.renderer.table(["Agent", "Name", "Role"], rows)
+            return
+
         agents = ctx.client.list_agents()
         if not agents:
             ctx.renderer.warn("No agents available.")
@@ -231,9 +270,12 @@ def register_default_commands(shell) -> None:
             return
         subcommand = args[0].strip().lower()
         if subcommand == "list":
-            workflows = ctx.client.list_workflows()
+            workflows = ctx.client.list_workflows(host=ctx.host_id)
             if not workflows:
-                ctx.renderer.warn("No workflows registered.")
+                if ctx.host_id:
+                    ctx.renderer.warn(f"No workflows attached to host '{ctx.host_id}'.")
+                else:
+                    ctx.renderer.warn("No workflows registered.")
                 return
             rows = []
             for workflow in workflows:
@@ -297,6 +339,14 @@ def register_default_commands(shell) -> None:
             if not workflow_id:
                 ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
                 return
+            if ctx.host_id:
+                attached = _host_workflow_ids(ctx.client.get_host(ctx.host_id))
+                if workflow_id not in attached:
+                    ctx.renderer.error(
+                        f"Workflow '{workflow_id}' is not attached to host "
+                        f"'{ctx.host_id}'. Use /workflow list to see attached workflows."
+                    )
+                    return
             run = ctx.client.run_workflow(
                 workflow_id,
                 dedup_key=dedup_key,
@@ -387,6 +437,14 @@ def register_default_commands(shell) -> None:
             if not workflow_id or not run_id:
                 ctx.renderer.error("Usage: /workflow status <workflow_id> <run_id>")
                 return
+            if ctx.host_id:
+                attached = _host_workflow_ids(ctx.client.get_host(ctx.host_id))
+                if workflow_id not in attached:
+                    ctx.renderer.error(
+                        f"Workflow '{workflow_id}' is not attached to host "
+                        f"'{ctx.host_id}'. Use /workflow list to see attached workflows."
+                    )
+                    return
             run = ctx.client.get_workflow_run(workflow_id, run_id)
             rows = [
                 ["run_id", str(run.get("run_id") or "")],
@@ -453,7 +511,11 @@ def register_default_commands(shell) -> None:
         Command(name="status", help="Show deployment status", handler=status_command)
     )
     shell.command_registry.register(
-        Command(name="agents", help="List available agents", handler=agents_command)
+        Command(
+            name="agents",
+            help="List available agents (host members only when connected through a host)",
+            handler=agents_command,
+        )
     )
     shell.command_registry.register(
         Command(name="session", help="Show current remote session info", handler=session_command)
@@ -474,7 +536,7 @@ def register_default_commands(shell) -> None:
     shell.command_registry.register(
         Command(
             name="workflow",
-            help="List, run, and inspect workflows",
+            help="List, run, and inspect workflows (host-attached only when connected through a host)",
             handler=workflow_command,
         )
     )

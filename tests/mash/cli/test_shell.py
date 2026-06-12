@@ -17,6 +17,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.workflow_runs: list[dict[str, Any]] = []
         self.workflow_status_requests: list[dict[str, str]] = []
+        self.host_workflows: list[str] = []
 
     def health(self):
         return {
@@ -54,7 +55,7 @@ class _FakeClient:
             "host_id": host_id,
             "primary": {"agent_id": "primary", "metadata": {"display_name": "Primary"}},
             "subagents": [{"agent_id": "research", "metadata": {"display_name": "Research"}}],
-            "workflows": [],
+            "workflows": list(self.host_workflows),
         }
 
     def get_session(self, agent_id: str, session_id: str):
@@ -73,13 +74,17 @@ class _FakeClient:
         del agent_id, session_id, limit
         return [{"user_message": "hello", "agent_response": "hi"}]
 
-    def list_workflows(self):
-        return [
+    def list_workflows(self, *, host: str | None = None):
+        workflows = [
             {
                 "workflow_id": "changelog",
                 "tasks": [{"task_id": "scan", "agent_id": "worker"}],
             }
         ]
+        if host is None:
+            return workflows
+        # Mirrors the server-side `?host=` filter on GET /v1/workflow.
+        return [w for w in workflows if w["workflow_id"] in self.host_workflows]
 
     def run_workflow(
         self,
@@ -280,6 +285,19 @@ class MashRemoteShellTests(unittest.TestCase):
             ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1"),
         )
 
+    def _build_host_shell(self, *, host_workflows: list[str] | None = None) -> MashRemoteShell:
+        client = _FakeClient()
+        client.host_workflows = list(host_workflows or [])
+        return MashRemoteShell(
+            client,
+            ShellTarget(
+                api_base_url="http://localhost:8000",
+                agent_id="primary",
+                session_id="s-1",
+                host_id="assistant",
+            ),
+        )
+
     def test_boots_with_remote_commands(self) -> None:
         shell = self._build_shell()
         command_names = [command.name for command in shell.command_registry.list_commands()]
@@ -307,6 +325,77 @@ class MashRemoteShellTests(unittest.TestCase):
         table.assert_called_once_with(
             ["Host", "Primary", "Subagents"],
             [["assistant", "primary", "research"]],
+        )
+
+    def test_agents_command_lists_pool_agents_without_host(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "table") as table:
+            shell.command_registry.execute(shell.context, "/agents")
+        table.assert_called_once_with(
+            ["Agent", "Name"],
+            [["primary", "Primary"], ["research", "Research"]],
+        )
+
+    def test_agents_command_host_scoped_shows_members_with_roles(self) -> None:
+        shell = self._build_host_shell()
+        with patch.object(shell.context.renderer, "table") as table:
+            shell.command_registry.execute(shell.context, "/agents")
+        table.assert_called_once_with(
+            ["Agent", "Name", "Role"],
+            [["primary", "Primary", "primary"], ["research", "Research", "subagent"]],
+        )
+
+    def test_workflow_list_host_scoped_filters_attached(self) -> None:
+        shell = self._build_host_shell(host_workflows=["changelog"])
+        with patch.object(shell.context.renderer, "table") as table:
+            shell.command_registry.execute(shell.context, "/workflow list")
+        table.assert_called_once_with(
+            ["Workflow ID", "Tasks"],
+            [["changelog", "scan -> worker"]],
+        )
+
+    def test_workflow_list_host_scoped_without_attached_workflows(self) -> None:
+        shell = self._build_host_shell()
+        with patch.object(shell.context.renderer, "warn") as warn:
+            shell.command_registry.execute(shell.context, "/workflow list")
+        warn.assert_called_once_with("No workflows attached to host 'assistant'.")
+
+    def test_workflow_run_host_scoped_refuses_unattached(self) -> None:
+        shell = self._build_host_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        self.assertEqual(shell.client.workflow_runs, [])
+        self.assertIn("not attached to host 'assistant'", error.call_args.args[0])
+        self.assertIn("'changelog'", error.call_args.args[0])
+
+    def test_workflow_run_host_scoped_allows_attached(self) -> None:
+        shell = self._build_host_shell(host_workflows=["changelog"])
+        with patch.object(shell.context.renderer, "info") as info:
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        self.assertEqual(
+            shell.client.workflow_runs,
+            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None}],
+        )
+        lines = [call.args[0] for call in info.call_args_list]
+        self.assertIn("Workflow status: completed", lines)
+
+    def test_workflow_status_host_scoped_refuses_unattached(self) -> None:
+        shell = self._build_host_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(
+                shell.context, "/workflow status changelog mw:host:changelog:abc"
+            )
+        self.assertEqual(shell.client.workflow_status_requests, [])
+        self.assertIn("not attached to host 'assistant'", error.call_args.args[0])
+
+    def test_workflow_status_host_scoped_allows_attached(self) -> None:
+        shell = self._build_host_shell(host_workflows=["changelog"])
+        run_id = "mw:host:changelog:abc"
+        with patch.object(shell.context.renderer, "table"):
+            shell.command_registry.execute(shell.context, f"/workflow status changelog {run_id}")
+        self.assertEqual(
+            shell.client.workflow_status_requests,
+            [{"workflow_id": "changelog", "run_id": run_id}],
         )
 
     def test_workflow_command_lists_workflows(self) -> None:
