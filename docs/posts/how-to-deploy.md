@@ -81,7 +81,7 @@ services:
   mash:
     build: .
     environment:
-      MASH_HOST_APP: pilot.spec:build_host
+      MASH_HOST_APP: pilot.spec:build_pool
       MASH_DATABASE_URL: postgresql://mash:mash@postgres:5432/mash
       MASH_API_KEY: ${MASH_API_KEY:-dev-key}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -101,7 +101,7 @@ docker compose up
 
 The Mash Host is accessible at `http://localhost:8000`. To deploy your own
 agent instead of Pilot, change `MASH_HOST_APP` to point at your module (e.g.
-`my_agent.spec:build_host`) and make sure the Dockerfile copies your agent
+`my_agent.spec:build_pool`) and make sure the Dockerfile copies your agent
 code and installs `mashpy` as a dependency.
 
 ```bash
@@ -136,8 +136,8 @@ same Postgres instance.
                 └──────────────────┘
 ```
 
-Each replica independently runs `build_host()`, creating its own
-`AgentHost` with all agents (primary + subagents) in-process. Every replica
+Each replica independently runs `build_pool()`, creating its own
+`AgentPool` with all agents in-process. Every replica
 is a fully self-contained, identical copy.
 
 **Why this works:**
@@ -153,6 +153,14 @@ is a fully self-contained, identical copy.
   interaction state are all persisted. Any replica can serve any session.
 - **No sticky sessions required.** The load balancer can use simple
   round-robin routing.
+
+**One caveat:** host compositions defined over the API (`PUT /v1/hosts/{id}`)
+are in-memory and per-replica. Code-defined hosts come back on every restart
+because `build_pool()` recreates them, but API-defined ones don't, and a `PUT`
+only lands on the replica that served it. If your application composes hosts
+dynamically, re-`PUT` them on startup (the call is idempotent) or define them
+in code. Requests already in flight are unaffected either way — each request
+carries a snapshot of its composition.
 
 ### docker-compose.yml (Scaled)
 
@@ -174,7 +182,7 @@ services:
   mash:
     build: .
     environment:
-      MASH_HOST_APP: pilot.spec:build_host
+      MASH_HOST_APP: pilot.spec:build_pool
       MASH_DATABASE_URL: postgresql://mash:mash@postgres:5432/mash
       MASH_API_KEY: ${MASH_API_KEY:-dev-key}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -302,7 +310,7 @@ services:
           name: mash-db
           property: connectionString
       - key: MASH_HOST_APP
-        value: my_agent.spec:build_host
+        value: my_agent.spec:build_pool
       - key: ANTHROPIC_API_KEY
         sync: false  # prompted at deploy time
       - key: MASH_API_KEY
@@ -350,7 +358,7 @@ no load balancer setup is needed.
 3. **Configure environment variables.** Set these in your container service's
    configuration (not baked into the image):
    ```
-   MASH_HOST_APP=pilot.spec:build_host
+   MASH_HOST_APP=pilot.spec:build_pool
    MASH_DATABASE_URL=postgresql://user:pass@db-host:5432/mash
    MASH_API_KEY=<strong-random-key>
    ANTHROPIC_API_KEY=<your-key>
@@ -476,7 +484,7 @@ CLI flag (repeatable) or configure `cors_allow_origins` in `MashHostConfig`.
 Mash Hosts are designed to be ephemeral. You can tear down and restart
 replicas at any time without data loss, because all state is in Postgres.
 
-- **Restart a replica:** The new process calls `build_host()`, initializes all
+- **Restart a replica:** The new process calls `build_pool()`, initializes all
   agent runtimes, reconnects to Postgres, and starts serving.
 - **Scale to zero:** Stop all replicas. State is preserved in Postgres. Start
   replicas again when needed.
@@ -487,7 +495,7 @@ replicas at any time without data loss, because all state is in Postgres.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `MASH_HOST_APP` | Yes | — | Python module:attribute for `build_host()` |
+| `MASH_HOST_APP` | Yes | — | Python module:attribute for `build_pool()` |
 | `MASH_DATABASE_URL` | Yes | — | PostgreSQL connection string |
 | `MASH_API_KEY` | No | — | API key for authentication |
 | `MASH_API_HOST` | No | `127.0.0.1` | Bind host (`0.0.0.0` for containers) |

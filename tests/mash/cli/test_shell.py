@@ -11,7 +11,6 @@ from rich.console import Console
 from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, build_runtime_trace
-from mash.tools.subagent import derive_subagent_session_id
 
 
 class _FakeClient:
@@ -20,10 +19,43 @@ class _FakeClient:
         self.workflow_status_requests: list[dict[str, str]] = []
 
     def health(self):
-        return {"deployment": {"primary_agent_id": "primary", "agents": [{"agent_id": "primary", "role": "primary"}]}}
+        return {
+            "deployment": {
+                "agents": [{"agent_id": "primary", "metadata": {"display_name": "Primary"}}],
+                "hosts": [
+                    {
+                        "host_id": "assistant",
+                        "primary": "primary",
+                        "subagents": ["research"],
+                        "workflows": [],
+                    }
+                ],
+            }
+        }
 
     def list_agents(self):
-        return [{"agent_id": "primary", "role": "primary"}, {"agent_id": "research", "role": "subagent"}]
+        return [
+            {"agent_id": "primary", "metadata": {"display_name": "Primary"}},
+            {"agent_id": "research", "metadata": {"display_name": "Research"}},
+        ]
+
+    def list_hosts(self):
+        return [
+            {
+                "host_id": "assistant",
+                "primary": "primary",
+                "subagents": ["research"],
+                "workflows": [],
+            }
+        ]
+
+    def get_host(self, host_id: str):
+        return {
+            "host_id": host_id,
+            "primary": {"agent_id": "primary", "metadata": {"display_name": "Primary"}},
+            "subagents": [{"agent_id": "research", "metadata": {"display_name": "Research"}}],
+            "workflows": [],
+        }
 
     def get_session(self, agent_id: str, session_id: str):
         return {
@@ -254,7 +286,9 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertIn("status", command_names)
         self.assertIn("agents", command_names)
         self.assertIn("sessions", command_names)
-        self.assertIn("use", command_names)
+        self.assertIn("hosts", command_names)
+        self.assertNotIn("use", command_names)
+        self.assertNotIn("host", command_names)
         self.assertIn("workflow", command_names)
         self.assertNotIn("changelog", command_names)
 
@@ -266,21 +300,14 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertIn("Agent: primary", lines)
         self.assertIn("Session ID: s-1", lines)
 
-    def test_use_command_switches_agent(self) -> None:
+    def test_hosts_command_lists_hosts(self) -> None:
         shell = self._build_shell()
-        shell.command_registry.execute(shell.context, "/use research")
-        self.assertEqual(shell.context.agent_id, "research")
-        self.assertEqual(
-            shell.context.session_id,
-            derive_subagent_session_id("primary", "s-1", "research"),
+        with patch.object(shell.context.renderer, "table") as table:
+            shell.command_registry.execute(shell.context, "/hosts")
+        table.assert_called_once_with(
+            ["Host", "Primary", "Subagents"],
+            [["assistant", "primary", "research"]],
         )
-
-    def test_use_command_restores_primary_session_after_switching_back(self) -> None:
-        shell = self._build_shell()
-        shell.command_registry.execute(shell.context, "/use research")
-        shell.command_registry.execute(shell.context, "/use primary")
-        self.assertEqual(shell.context.agent_id, "primary")
-        self.assertEqual(shell.context.session_id, "s-1")
 
     def test_workflow_command_lists_workflows(self) -> None:
         shell = self._build_shell()

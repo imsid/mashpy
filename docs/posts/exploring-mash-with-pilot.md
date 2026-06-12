@@ -24,12 +24,12 @@ pilot repl
 Plain input goes to the agent. Questions about the Mash codebase are what Pilot is tuned for:
 
 ```text
-> Summarize how HostBuilder wires the primary agent, subagents, and workflows.
+> Summarize how HostBuilder composes the agent pool, hosts, and workflows.
 > Trace how an accepted request moves through AgentRuntime, RuntimeStore, and RequestEngine.
 > Compare src/mash/runtime and src/mash/workflows responsibilities.
 ```
 
-Behind the prompt is the [composition](composing-agents.md) from the internals series: a primary agent plus five copilots, each scoped to one package.
+Behind the prompt is the [composition](composing-agents.md) from the internals series: a host whose primary delegates to five copilots, each scoped to one package.
 
 | Agent | Scope |
 |-------|-------|
@@ -40,7 +40,7 @@ Behind the prompt is the [composition](composing-agents.md) from the internals s
 | `runtime-copilot` | `src/mash/runtime`: request lifecycle, event sourcing, durability |
 | `workflow-copilot` | `src/mash/workflows`: DBOS orchestration, task state, run status |
 
-The primary delegates based on the question and synthesizes across copilots when a question spans modules. The routing is visible as it happens, because the shell renders subagent trace frames live: ask about request durability and you can watch the question get handed to `runtime-copilot`. To skip the routing and talk to one specialist directly, switch with `/use cli-copilot`.
+The primary delegates based on the question and synthesizes across copilots when a question spans modules. The routing is visible as it happens, because the shell renders subagent trace frames live: ask about request durability and you can watch the question get handed to `runtime-copilot`. To skip the routing and talk to one specialist directly, exit and reconnect with `mash connect --agent cli-copilot`.
 
 ## Scaffolding your own agent
 
@@ -71,7 +71,7 @@ The host also serves the telemetry UI with the span waterfall, at `/telemetry` o
 | Command | What it does |
 |---------|--------------|
 | `/agents` | list pilot and its copilots |
-| `/use <agent_id>` | talk to one copilot directly |
+| `/hosts` | list the host compositions defined on the deployment |
 | `/history [N]` | recent turns in this session |
 | `/trace [N]` | latency analysis for recent traces |
 | `/workflow list\|run\|status` | inspect or run registered workflows |

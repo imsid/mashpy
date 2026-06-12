@@ -90,7 +90,7 @@ from mash.workflows import TaskSpec, WorkflowSpec
 
 builder = (
     HostBuilder()
-    .primary(primary_spec)
+    .agent(primary_spec, metadata=primary_metadata)
     .workflow(
         WorkflowSpec(
             workflow_id="changelog",

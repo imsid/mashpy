@@ -31,8 +31,6 @@ async def get_session_info(
         "app_id": self.app_id,
         "agent_id": self.app_id,
         "session_id": session_id_value,
-        "primary_agent_id": self.app_id,
-        "subagent_ids": self.get_subagent_ids(),
         "model": self.get_model(),
         "max_steps": self.get_max_steps(),
         "session_total_tokens": await get_session_total_tokens(self, session_id_value),
@@ -125,8 +123,12 @@ async def build_context_with_history(
     self: "AgentRuntime",
     session_id: str,
     message: str,
+    *,
+    system_prompt: Any = None,
 ) -> Context:
-    context = Context(system_prompt=self.system_prompt)
+    context = Context(
+        system_prompt=system_prompt if system_prompt is not None else self.system_prompt
+    )
 
     if self.agent.config.conversation_history_turns > 0:
         turns = await self.store.get_turns(
@@ -191,6 +193,7 @@ async def build_context_payload(
     *,
     session_id: str,
     message: str,
+    system_prompt: Any = None,
 ) -> dict[str, Any]:
     compaction_summary_text: Optional[str] = None
     compaction_summary_turn_id: Optional[str] = None
@@ -202,7 +205,9 @@ async def build_context_payload(
                 reason="auto",
                 session_total_tokens_reset=0,
             )
-    context = await build_context_with_history(self, session_id, message)
+    context = await build_context_with_history(
+        self, session_id, message, system_prompt=system_prompt
+    )
     return {
         "context": serialize_context(context),
         "compaction": {

@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from mash.api import MashHostConfig, create_app
 from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE, get_telemetry_static_dir
-from mash.runtime import HostBuilder
+from mash.runtime import Host, HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import TaskSpec, WorkflowSpec
@@ -41,13 +41,23 @@ def _build_test_client(
     ):
         builder = (
             HostBuilder()
-            .primary(build_spec(agent_id="primary", response_text="primary-ok"))
-            .subagent(
+            .agent(
+                build_spec(agent_id="primary", response_text="primary-ok"),
+                metadata=metadata(),
+            )
+            .agent(
                 build_spec(
                     agent_id="research",
                     response_text="research-ok",
                 ),
                 metadata=metadata(),
+            )
+            .host(
+                Host(
+                    host_id="assistant",
+                    primary="primary",
+                    subagents=("research",),
+                )
             )
         )
         if workflow_enabled:
@@ -98,7 +108,7 @@ def _save_workflow_turn(
     user_message: str = "workflow input",
     agent_response: str = '{"status":"ok"}',
 ) -> str:
-    runtime = client.app.state.runtime_state.host.get_agent("changelog-agent")
+    runtime = client.app.state.runtime_state.pool.get_agent("changelog-agent")
     session_id = workflow_task_session_id(
         workflow_id="changelog",
         task_id="scan-codebase-and-append-changelog",
@@ -131,9 +141,15 @@ def test_health_and_agent_contract() -> None:
             assert health.status_code == 200
             payload = health.json()["data"]
             assert payload["service"] == "mash-api"
-            assert payload["deployment"]["primary_agent_id"] == "primary"
             assert len(payload["deployment"]["agents"]) == 2
-            assert payload["primary_agent"]["agent_id"] == "primary"
+            assert payload["deployment"]["hosts"] == [
+                {
+                    "host_id": "assistant",
+                    "primary": "primary",
+                    "subagents": ["research"],
+                    "workflows": [],
+                }
+            ]
             assert payload["observability"]["memory"]["search_available"] is True
 
             agents = client.get("/api/v1/agent")
@@ -155,6 +171,73 @@ def test_health_and_agent_contract() -> None:
             assert "text/html" in spa.headers["content-type"]
 
 
+def test_host_routes_define_inspect_and_list() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            listed = client.get("/api/v1/hosts")
+            assert listed.status_code == 200
+            assert [host["host_id"] for host in listed.json()["data"]["hosts"]] == [
+                "assistant"
+            ]
+
+            described = client.get("/api/v1/hosts/assistant")
+            assert described.status_code == 200
+            payload = described.json()["data"]
+            assert payload["primary"]["agent_id"] == "primary"
+            assert payload["subagents"][0]["agent_id"] == "research"
+            assert payload["subagents"][0]["metadata"]["display_name"] == "Research"
+
+            missing = client.get("/api/v1/hosts/unknown")
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
+
+            # Idempotent define/replace over the API.
+            defined = client.put(
+                "/api/v1/hosts/solo",
+                json={"primary": "research"},
+            )
+            assert defined.status_code == 200
+            assert defined.json()["data"]["primary"]["agent_id"] == "research"
+            assert [host["host_id"] for host in client.get("/api/v1/hosts").json()["data"]["hosts"]] == [
+                "assistant",
+                "solo",
+            ]
+
+            invalid = client.put(
+                "/api/v1/hosts/bad",
+                json={"primary": "missing-agent"},
+            )
+            assert invalid.status_code == 400
+            assert invalid.json()["error"]["code"] == "INVALID_HOST"
+
+
+def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/hosts/assistant/request",
+                json={"message": "hello", "session_id": "s-host-1"},
+            )
+            assert submitted.status_code == 200
+            accepted = submitted.json()["data"]
+            assert accepted["agent_id"] == "primary"
+            assert accepted["session_id"] == "s-host-1"
+            request_id = accepted["request_id"]
+            assert request_id
+
+            payload = _collect_terminal_response(client, "primary", request_id)
+            assert payload["response"]["text"] == "primary-ok"
+
+            missing = client.post(
+                "/api/v1/hosts/unknown/request",
+                json={"message": "hello", "session_id": "s-host-2"},
+            )
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
+
+
 def test_register_agent_skill_endpoint_registers_dynamic_skill() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -174,7 +257,7 @@ def test_register_agent_skill_endpoint_registers_dynamic_skill() -> None:
                 "agent_id": "primary",
                 "skill_name": "workflow:test:v1",
             }
-            runtime = client.app.state.runtime_state.host.get_agent("primary")
+            runtime = client.app.state.runtime_state.pool.get_agent("primary")
             assert runtime.skills.get("workflow:test:v1") is not None
             assert "Skill" in runtime.agent.tools
 
@@ -229,7 +312,7 @@ def test_register_agent_workflow_endpoint_registers_dynamic_workflow() -> None:
                 "agent_id": "primary",
                 "workflow_id": "pilot-changelog",
             }
-            workflow = client.app.state.runtime_state.host.get_workflow_registry().get(
+            workflow = client.app.state.runtime_state.pool.get_workflow_registry().get(
                 "pilot-changelog"
             )
             assert workflow.tasks[0].agent_id == "primary"
@@ -294,8 +377,9 @@ def test_agent_request_accepts_structured_output_schema_payload() -> None:
                 "MASH_DATABASE_URL": "",
             },
         ):
-            host = HostBuilder().primary(
-                build_spec(agent_id="primary", response_text='{"ok":true}')
+            host = HostBuilder().agent(
+                build_spec(agent_id="primary", response_text='{"ok":true}'),
+                metadata=metadata(),
             ).build()
             app = create_app(
                 host,
@@ -514,12 +598,13 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
         ):
             host = (
                 HostBuilder()
-                .primary(
+                .agent(
                     build_spec(
                         agent_id="primary",
                         response_text="primary-ok",
                         delay_seconds=0.25,
-                    )
+                    ),
+                    metadata=metadata(),
                 )
                 .build()
             )
@@ -662,7 +747,7 @@ def test_api_logging_skips_configured_paths_and_truncates_body() -> None:
                 "MASH_DATABASE_URL": "",
             },
         ):
-            host = HostBuilder().primary(build_spec(agent_id="primary", response_text="ok")).build()
+            host = HostBuilder().agent(build_spec(agent_id="primary", response_text="ok"), metadata=metadata()).build()
             app = create_app(
                 host,
                 config=MashHostConfig(
@@ -890,7 +975,7 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            host_id = client.app.state.runtime_state.host.host_id
+            host_id = client.app.state.runtime_state.pool.runner_id
             run_id = f"mw:{host_id}:changelog:abc"
 
             async def get_workflow_status(_run_id):
@@ -987,8 +1072,8 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            host = client.app.state.runtime_state.host
-            host_id = host.host_id
+            pool = client.app.state.runtime_state.pool
+            host_id = pool.runner_id
             run_id = f"mw:{host_id}:changelog:abc"
             task_id = "scan-codebase-and-append-changelog"
             session_id = workflow_task_session_id(
@@ -996,7 +1081,7 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
                 task_id=task_id,
                 run_id=run_id,
             )
-            runtime = host.get_agent("changelog-agent")
+            runtime = pool.get_agent("changelog-agent")
 
             async def list_events(
                 app_id: str,
@@ -1088,12 +1173,12 @@ def test_workflow_run_events_respects_api_auth() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, api_key="secret", workflow_enabled=True) as client:
-            host = client.app.state.runtime_state.host
-            run_id = f"mw:{host.host_id}:changelog:abc"
+            pool = client.app.state.runtime_state.pool
+            run_id = f"mw:{pool.runner_id}:changelog:abc"
             unauthorized = client.get(f"/api/v1/workflow/changelog/runs/{run_id}/events")
             assert unauthorized.status_code == 401
 
-            runtime = host.get_agent("changelog-agent")
+            runtime = pool.get_agent("changelog-agent")
 
             async def list_events(
                 app_id: str,
@@ -1148,8 +1233,9 @@ def test_missing_telemetry_assets_fail_fast() -> None:
                     "MASH_DATABASE_URL": "",
                 },
             ):
-                host = HostBuilder().primary(
-                    build_spec(agent_id="primary", response_text="primary-ok")
+                host = HostBuilder().agent(
+                    build_spec(agent_id="primary", response_text="primary-ok"),
+                    metadata=metadata(),
                 ).build()
                 try:
                     create_app(

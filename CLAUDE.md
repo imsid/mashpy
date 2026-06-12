@@ -18,9 +18,17 @@ plan to use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`.
 
 - **AgentSpec** — abstract contract that defines one agent (id, tools, skills,
   LLM provider, config). You subclass this.
-- **HostBuilder** — fluent builder that composes a primary agent, optional
-  subagents, and optional workflows into an `AgentHost`.
-- **AgentHost** — the composed multi-agent host that the API server runs.
+- **AgentMetadata** — self-description supplied when an agent is registered
+  (display name, description, capabilities, usage guidance). Role-independent.
+- **HostBuilder** — fluent builder that composes a flat pool of agents,
+  optional workflows, and optional host definitions into an `AgentPool`.
+- **AgentPool** — the deployed pool of role-less agents that the API server
+  runs. The pool is the unit of deploy.
+- **Host** — an immutable composition over the pool (`host_id`, `primary`,
+  `subagents`, `workflows`). The unit of composition: define hosts in code at
+  build time or dynamically over the API, and route requests to one with
+  `POST /v1/hosts/{host_id}/request`. Hosts are in-memory; redefine them after
+  a restart.
 - **ToolRegistry / Tool** — register callable tools the agent can use.
   Tools implement `name`, `description`, `parameters` (JSON schema),
   `requires_approval`, and `async execute(args) -> ToolResult`.
@@ -38,14 +46,14 @@ This is the starting template. Every Mash app follows this structure:
 # my_agent/spec.py
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentSpec, HostBuilder
+from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
 
-class PrimaryAgent(AgentSpec):
+class AssistantAgent(AgentSpec):
     def get_agent_id(self) -> str:
-        return "primary"
+        return "assistant"
 
     def build_tools(self) -> ToolRegistry:
         return ToolRegistry()
@@ -54,29 +62,41 @@ class PrimaryAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="primary")
+        return AnthropicProvider(app_id="assistant")
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id="primary",
+            app_id="assistant",
             system_prompt="You are a helpful assistant.",
         )
 
 
-def build_host():
-    return HostBuilder().primary(PrimaryAgent()).build()
+def build_pool():
+    return (
+        HostBuilder()
+        .agent(
+            AssistantAgent(),
+            metadata=AgentMetadata(
+                display_name="Assistant",
+                description="General-purpose assistant.",
+                capabilities=["conversation"],
+                usage_guidance="Default agent for user requests.",
+            ),
+        )
+        .build()
+    )
 ```
 
 Run it:
 
 ```bash
-mash host serve --host-app my_agent.spec:build_host --port 8000
+mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
 Connect:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent primary
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent assistant
 ```
 
 ## AgentSpec Contract
@@ -219,30 +239,77 @@ class MyAgent(AgentSpec):
 
 ## Multi-Agent Composition
 
-```python
-from mash.runtime import HostBuilder, SubAgentMetadata
+Register all agents into a flat pool, then compose hosts over it. A host
+names one agent as primary and a set of subagents; roles live in the host,
+not on the agents.
 
-host = (
+```python
+from mash.runtime import AgentMetadata, Host, HostBuilder
+
+pool = (
     HostBuilder()
-    .primary(PrimaryAgent())
-    .subagent(
+    .agent(ConciergeAgent(), metadata=AgentMetadata(...))
+    .agent(
         ResearchAgent(),
-        metadata=SubAgentMetadata(
+        metadata=AgentMetadata(
             display_name="Research Agent",
             description="Handles research queries.",
             capabilities=["web search", "document analysis"],
             usage_guidance="Use for research-heavy questions.",
         ),
     )
-    .subagent(CodeAgent(), metadata=SubAgentMetadata(...))
+    .agent(CodeAgent(), metadata=AgentMetadata(...))
+    .host(
+        Host(
+            host_id="assistant",
+            primary="concierge",
+            subagents=("research", "code"),
+        )
+    )
     .build()
 )
 ```
 
-The primary agent gets an `InvokeSubagent` tool automatically and can
-delegate to registered subagents.
+Submitting a request to a host wires the primary with an `InvokeSubagent`
+tool and a prompt block describing that host's subagents — for that request
+only. The same agent can be primary in one host and a subagent in another.
 
-**Connection sharing:** `AgentHost` creates one shared Postgres connection
+Hosts can also be defined dynamically on a running pool, in code or over the
+API:
+
+```python
+pool.define_host(Host(host_id="research-only", primary="research"))
+```
+
+```bash
+curl -X PUT http://127.0.0.1:8000/api/v1/hosts/research-only \
+  -H "Content-Type: application/json" \
+  -d '{"primary": "research", "subagents": [], "workflows": []}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/hosts/research-only/request \
+  -H "Content-Type: application/json" \
+  -d '{"message": "find recent papers", "session_id": "s-1"}'
+```
+
+The submit response includes the primary `agent_id` and `request_id`; stream
+results from the existing `GET /v1/agent/{agent_id}/request/{request_id}/events`.
+Requests snapshot the host composition at submit time, so redefining a host
+never affects in-flight requests.
+
+From the CLI, `mash compose` defines the host on the deployment (idempotent
+PUT) and pins later commands to it:
+
+```bash
+mash connect --api-base-url http://127.0.0.1:8000   # save the connection
+mash agents                                         # see what's in the pool
+mash compose --host assistant --primary concierge --subagents email,calendar
+mash repl                                           # pinned to 'assistant'
+```
+
+The REPL target is fixed for its lifetime; to change composition, exit and
+`mash compose` again (or `mash connect --agent <id>` for a bare agent).
+
+**Connection sharing:** `AgentPool` creates one shared Postgres connection
 pool and one shared memory store for all agents that use the default
 `build_memory_store()`. This keeps the total database connection count
 constant regardless of agent count. Agents that override
@@ -261,7 +328,12 @@ workflow = WorkflowSpec(
     ],
 )
 
-host = HostBuilder().primary(PrimaryAgent()).workflow(workflow).build()
+pool = (
+    HostBuilder()
+    .agent(ConciergeAgent(), metadata=AgentMetadata(...))
+    .workflow(workflow)
+    .build()
+)
 ```
 
 ## Structured Output
@@ -285,14 +357,14 @@ response = await runtime.submit_request(
 
 ```bash
 # Local development
-mash host serve --host-app my_agent.spec:build_host --port 8000
+mash host serve --host-app my_agent.spec:build_pool --port 8000
 
 # Docker (using the Mash base image)
 # Set MASH_HOST_APP, MASH_DATA_DIR, MASH_DATABASE_URL
 
 # Programmatic
 from mash.api import run_host, MashHostConfig
-run_host(host, config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
+run_host(pool, config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
 ```
 
 For full deployment instructions (Docker Compose, horizontal scaling,
@@ -304,7 +376,7 @@ cloud deployment, and external API access), see
 ```
 my_agent/
   __init__.py
-  spec.py          # AgentSpec subclasses + build_host()
+  spec.py          # AgentSpec subclasses + build_pool()
   tools.py         # Custom tool implementations
   prompt.py        # System prompt construction helpers
   skills/          # SKILL.md files for filesystem-backed skills

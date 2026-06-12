@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .events import LogEvent
-from .trace_context import get_request_id, get_trace_id
+from .trace_context import get_host_id, get_request_id, get_trace_id
 from ..runtime.events import RuntimeEvent
 
 class EventLogger:
@@ -47,6 +47,7 @@ class EventLogger:
             agent_id=str(raw["app_id"]),
             event_type=str(raw["event_type"]),
             request_id=get_request_id(),
+            host_id=get_host_id(),
             session_id=raw.get("session_id"),
             trace_id=resolved_trace_id,
             payload=payload,

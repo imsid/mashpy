@@ -19,7 +19,7 @@ from mash.runtime.structured_output import normalize_structured_output_schema
 from .spec import WorkflowSpec, WorkflowTaskMessageSpec
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentHost
+    from mash.runtime.host.host import AgentPool
 
 
 _WORKFLOW_NAME = "mash.workflow.execute"
@@ -40,7 +40,7 @@ _WORKFLOW_TASK_STRUCTURED_OUTPUT = {
 class _DBOSWorkflowState:
     registered_workflow: Any = None
     queue: Any = None
-    host_registry: dict[str, "AgentHost"] = field(default_factory=dict)
+    runner_registry: dict[str, "AgentPool"] = field(default_factory=dict)
 
 
 _STATE = _DBOSWorkflowState()
@@ -75,36 +75,36 @@ def _compact_token(num_bytes: int) -> str:
     return secrets.token_urlsafe(num_bytes).rstrip("=")
 
 
-def make_host_id() -> str:
-    return f"h_{_compact_token(9)}"
+def make_runner_id() -> str:
+    return f"r_{_compact_token(9)}"
 
 
-def workflow_run_id_prefix(host_id: str, workflow_id: str) -> str:
-    return f"{_WORKFLOW_RUN_ID_PREFIX}:{host_id}:{workflow_id}:"
+def workflow_run_id_prefix(runner_id: str, workflow_id: str) -> str:
+    return f"{_WORKFLOW_RUN_ID_PREFIX}:{runner_id}:{workflow_id}:"
 
 
-def make_run_id(host_id: str, workflow_id: str) -> str:
-    return f"{workflow_run_id_prefix(host_id, workflow_id)}{_compact_token(12)}"
+def make_run_id(runner_id: str, workflow_id: str) -> str:
+    return f"{workflow_run_id_prefix(runner_id, workflow_id)}{_compact_token(12)}"
 
 
-def register_host(host_id: str, host: "AgentHost") -> None:
-    resolved = str(host_id or "").strip()
+def register_runner(runner_id: str, pool: "AgentPool") -> None:
+    resolved = str(runner_id or "").strip()
     if not resolved:
-        raise ValueError("host_id is required")
-    _STATE.host_registry[resolved] = host
+        raise ValueError("runner_id is required")
+    _STATE.runner_registry[resolved] = pool
 
 
-def unregister_host(host_id: str, host: "AgentHost") -> None:
-    existing = _STATE.host_registry.get(host_id)
-    if existing is host:
-        _STATE.host_registry.pop(host_id, None)
+def unregister_runner(runner_id: str, pool: "AgentPool") -> None:
+    existing = _STATE.runner_registry.get(runner_id)
+    if existing is pool:
+        _STATE.runner_registry.pop(runner_id, None)
 
 
-def require_host(host_id: str) -> "AgentHost":
-    host = _STATE.host_registry.get(host_id)
-    if host is None:
-        raise RuntimeError(f"workflow host '{host_id}' is not registered")
-    return host
+def require_runner(runner_id: str) -> "AgentPool":
+    pool = _STATE.runner_registry.get(runner_id)
+    if pool is None:
+        raise RuntimeError(f"workflow runner '{runner_id}' is not registered")
+    return pool
 
 
 def register_workflow(dbos_class: Any) -> None:
@@ -114,13 +114,13 @@ def register_workflow(dbos_class: Any) -> None:
     _STATE.queue = queue_class(_QUEUE_NAME, concurrency=8)
 
     async def _workflow(
-        host_id: str,
+        runner_id: str,
         workflow_id: str,
         run_id: str,
         workflow_input: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await execute_registered_workflow(
-            host_id,
+            runner_id,
             workflow_id,
             run_id,
             workflow_input=workflow_input,
@@ -132,7 +132,7 @@ def register_workflow(dbos_class: Any) -> None:
 async def start_workflow_run(
     *,
     database_url: str,
-    host_id: str,
+    runner_id: str,
     workflow: WorkflowSpec,
     dedup_key: str | None,
     workflow_input: dict[str, Any] | None = None,
@@ -146,14 +146,14 @@ async def start_workflow_run(
     if _STATE.registered_workflow is None or _STATE.queue is None:
         raise RuntimeError("DBOS workflow orchestration is not registered")
 
-    run_id = make_run_id(host_id, workflow.workflow_id)
+    run_id = make_run_id(runner_id, workflow.workflow_id)
     normalized_workflow_input = _normalize_workflow_input(workflow_input)
     try:
         with set_workflow_id(run_id):
             if dedup_key is None:
                 handle = await _STATE.queue.enqueue_async(
                     _STATE.registered_workflow,
-                    host_id,
+                    runner_id,
                     workflow.workflow_id,
                     run_id,
                     normalized_workflow_input,
@@ -164,7 +164,7 @@ async def start_workflow_run(
                 ):
                     handle = await _STATE.queue.enqueue_async(
                         _STATE.registered_workflow,
-                        host_id,
+                        runner_id,
                         workflow.workflow_id,
                         run_id,
                         normalized_workflow_input,
@@ -181,22 +181,22 @@ async def get_workflow_status(run_id: str) -> Any | None:
 
 
 async def execute_registered_workflow(
-    host_id: str,
+    runner_id: str,
     workflow_id: str,
     run_id: str,
     *,
     workflow_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     dbos_class, _, _, _, _ = _load_dbos_api()
-    host = require_host(host_id)
-    workflow = host.get_workflow_registry().get(workflow_id)
+    pool = require_runner(runner_id)
+    workflow = pool.get_workflow_registry().get(workflow_id)
     task_requests: dict[str, str] = {}
     task_states: dict[str, dict[str, Any]] = {}
     normalized_workflow_input = _normalize_workflow_input(workflow_input)
 
     for task in workflow.tasks:
         previous_state = await load_previous_task_state(
-            host_id=host_id,
+            runner_id=runner_id,
             workflow_id=workflow.workflow_id,
             task_id=task.task_id,
             current_run_id=run_id,
@@ -205,7 +205,7 @@ async def execute_registered_workflow(
         # enqueue a child DBOS workflow from inside this host workflow. DBOS can
         # reject that, so workflow tasks enter the request workflow body inline.
         request_id = await _post_task_request(
-            host_id,
+            runner_id,
             workflow.workflow_id,
             run_id,
             task.task_id,
@@ -218,7 +218,7 @@ async def execute_registered_workflow(
         payload = await dbos_class.run_step_async(
             {"name": f"{task.task_id}.request.await"},
             _collect_terminal_payload,
-            host_id,
+            runner_id,
             task.agent_id,
             request_id,
         )
@@ -241,7 +241,7 @@ async def execute_registered_workflow(
 
 async def load_previous_task_state(
     *,
-    host_id: str,
+    runner_id: str,
     workflow_id: str,
     task_id: str,
     current_run_id: str,
@@ -249,7 +249,7 @@ async def load_previous_task_state(
     dbos_class, _, _, _, _ = _load_dbos_api()
     statuses = await dbos_class.list_workflows_async(
         name=_WORKFLOW_NAME,
-        workflow_id_prefix=workflow_run_id_prefix(host_id, workflow_id),
+        workflow_id_prefix=workflow_run_id_prefix(runner_id, workflow_id),
         status="SUCCESS",
         sort_desc=True,
         limit=20,
@@ -272,7 +272,7 @@ async def load_previous_task_state(
 
 
 async def _post_task_request(
-    host_id: str,
+    runner_id: str,
     workflow_id: str,
     run_id: str,
     task_id: str,
@@ -282,8 +282,8 @@ async def _post_task_request(
     task_message: WorkflowTaskMessageSpec | None,
     structured_output: dict[str, Any] | None,
 ) -> str:
-    host = require_host(host_id)
-    client = host.get_client(agent_id)
+    pool = require_runner(runner_id)
+    client = pool.get_client(agent_id)
     session_id = _task_session_id(
         workflow_id=workflow_id,
         task_id=task_id,
@@ -297,7 +297,7 @@ async def _post_task_request(
         task_state=task_state,
         task_message=task_message,
     )
-    runtime = _resolve_inline_runtime(host, agent_id)
+    runtime = _resolve_inline_runtime(pool, agent_id)
     task_structured_output = (
         normalize_structured_output_schema(structured_output)
         if isinstance(structured_output, dict)
@@ -318,8 +318,8 @@ async def _post_task_request(
     )
 
 
-def _resolve_inline_runtime(host: "AgentHost", agent_id: str) -> Any | None:
-    get_agent = getattr(host, "get_agent", None)
+def _resolve_inline_runtime(pool: "AgentPool", agent_id: str) -> Any | None:
+    get_agent = getattr(pool, "get_agent", None)
     if not callable(get_agent):
         return None
     try:
@@ -375,12 +375,12 @@ async def _execute_inline_task_request(
 
 
 async def _collect_terminal_payload(
-    host_id: str,
+    runner_id: str,
     agent_id: str,
     request_id: str,
 ) -> dict[str, Any]:
-    host = require_host(host_id)
-    client = host.get_client(agent_id)
+    pool = require_runner(runner_id)
+    client = pool.get_client(agent_id)
     async for event in client.stream_response(request_id):
         event_name = str(event.get("event") or "")
         payload = event.get("data")
@@ -459,12 +459,12 @@ __all__ = [
     "execute_registered_workflow",
     "get_workflow_status",
     "load_previous_task_state",
-    "make_host_id",
+    "make_runner_id",
     "make_run_id",
-    "register_host",
+    "register_runner",
     "register_workflow",
-    "require_host",
+    "require_runner",
     "start_workflow_run",
-    "unregister_host",
+    "unregister_runner",
     "workflow_run_id_prefix",
 ]

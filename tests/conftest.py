@@ -12,8 +12,9 @@ for _path in (_REPO_ROOT / "src", _REPO_ROOT):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from mash.logging import bound_request_id
+from mash.logging import bound_host_id, bound_request_id
 from mash.runtime import context as context_helpers
+from mash.runtime.requests import host_id_from_request_metadata
 from mash.runtime.engine.steps import (
     commit_request_step,
     complete_request,
@@ -64,6 +65,7 @@ class _TestRuntimeStore:
                 app_id=event.app_id,
                 agent_id=event.agent_id,
                 session_id=event.session_id,
+                host_id=event.host_id,
                 event_type=event.event_type,
                 loop_index=event.loop_index,
                 step_key=event.step_key,
@@ -97,6 +99,7 @@ class _TestRuntimeStore:
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
+        host_id: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
@@ -109,6 +112,7 @@ class _TestRuntimeStore:
             and event.event_id > int(after_event_id)
             and (session_id is None or event.session_id == session_id)
             and (trace_id is None or event.trace_id == trace_id)
+            and (host_id is None or event.host_id == host_id)
         ]
         if limit is not None:
             return filtered[-max(1, int(limit)) :]
@@ -216,7 +220,9 @@ async def _execute_request_inline(
     if not session_id:
         raise ValueError("session_id is required")
     trace_id: str | None = None
-    with bound_request_id(request_id):
+    with bound_request_id(request_id), bound_host_id(
+        host_id_from_request_metadata(request_metadata)
+    ):
         try:
             trace_id = await start_request_trace(
                 runtime.app_id,
@@ -230,6 +236,7 @@ async def _execute_request_inline(
                 session_id,
                 trace_id,
                 message,
+                request_metadata,
             )
             while True:
                 loop_index = int(workflow_state.get("loop_index") or 0)

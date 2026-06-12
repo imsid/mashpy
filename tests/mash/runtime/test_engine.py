@@ -931,17 +931,6 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                                 runtime.mcp_manager.add_server = original_add_server  # type: ignore[method-assign]
                             await runtime.shutdown()
 
-    def test_set_subagent_ids_deduplicates_and_ignores_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
-                runtime = AgentRuntime.from_spec(
-                    _BaseDefinition(Path(tmp)),
-                    session_id="host-session",
-                    **_test_stores(),
-                )
-                runtime.set_subagent_ids(["research", "", "analysis", "research", "  "])
-                self.assertEqual(runtime.get_subagent_ids(), ["research", "analysis"])
-
     async def test_completed_request_replays_buffered_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):

@@ -14,6 +14,10 @@ _request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_request_id",
     default=None,
 )
+_host_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_host_id",
+    default=None,
+)
 
 
 def set_trace_id(trace_id: Optional[str]) -> None:
@@ -64,3 +68,18 @@ def bound_request_id(request_id: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _request_id.reset(token)
+
+
+def get_host_id() -> Optional[str]:
+    """Get the host (composition) ID for the current task context."""
+    return _host_id.get()
+
+
+@contextmanager
+def bound_host_id(host_id: Optional[str]) -> Iterator[None]:
+    """Temporarily bind a host (composition) ID for the current task context."""
+    token = _host_id.set(host_id)
+    try:
+        yield
+    finally:
+        _host_id.reset(token)

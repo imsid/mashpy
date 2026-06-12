@@ -110,7 +110,7 @@ directory.
 
 ## Registering Skills Dynamically
 
-`AgentHost` exposes runtime registration. If the agent runtime is already
+`AgentPool` exposes runtime registration. If the agent runtime is already
 started, the live `SkillTool` is refreshed in place (see
 [`_register_runtime_skill`](../runtime/host/host.py) and
 [`_refresh_runtime_skill_tool`](../runtime/host/host.py)). If the runtime has

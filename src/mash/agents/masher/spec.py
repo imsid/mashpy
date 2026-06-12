@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider, GeminiProvider, DEFAULT_GEMINI_MODEL
-from mash.runtime.host.subagents import SubAgentMetadata
+from mash.runtime.host.subagents import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
@@ -84,8 +84,8 @@ Routing rules:
 """
 
 
-def build_masher_metadata() -> SubAgentMetadata:
-    return SubAgentMetadata(
+def build_masher_metadata() -> AgentMetadata:
+    return AgentMetadata(
         display_name="Masher",
         description="Workflow-only Mash trace digest worker.",
         capabilities=[
@@ -215,9 +215,8 @@ def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSp
     ]
 
 
-def create_masher_agent_spec(*, target_app_id: str | None = None) -> MasherAgentSpec:
+def create_masher_agent_spec() -> MasherAgentSpec:
     """Build a spawnable Masher spec for child runtime processes."""
-    del target_app_id
     return MasherAgentSpec()
 
 

@@ -14,7 +14,7 @@ from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE
 from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
-from mash.runtime import AgentHost
+from mash.runtime import AgentPool
 from mash.runtime.client import AgentClientLike
 
 
@@ -38,7 +38,7 @@ class APIError(RuntimeError):
 
 @dataclass
 class AppRuntimeState:
-    host: AgentHost
+    pool: AgentPool
     api_event_store: Any
     api_key: Optional[str]
     observability_enabled: bool
@@ -47,6 +47,18 @@ class AppRuntimeState:
 
 
 class SubmitRequest(BaseModel):
+    message: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    structured_output: Optional[dict[str, Any]] = None
+
+
+class DefineHostRequest(BaseModel):
+    primary: str = Field(min_length=1)
+    subagents: list[str] = Field(default_factory=list)
+    workflows: list[str] = Field(default_factory=list)
+
+
+class HostSubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     structured_output: Optional[dict[str, Any]] = None
@@ -176,7 +188,7 @@ def build_observability_sse_payload(payload: str) -> str:
 def get_client(request: Request, agent_id: str) -> AgentClientLike:
     state = state_from_request(request)
     try:
-        return state.host.get_client(agent_id.strip())
+        return state.pool.get_client(agent_id.strip())
     except ValueError as exc:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
@@ -184,14 +196,14 @@ def get_client(request: Request, agent_id: str) -> AgentClientLike:
 def get_agent(request: Request, agent_id: str):
     state = state_from_request(request)
     try:
-        return state.host.get_agent(agent_id.strip())
+        return state.pool.get_agent(agent_id.strip())
     except ValueError as exc:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
 
 def get_workflow_service(request: Request):
     state = state_from_request(request)
-    return state.host.get_workflow_service()
+    return state.pool.get_workflow_service()
 
 
 def telemetry_event_source() -> str:

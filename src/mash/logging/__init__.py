@@ -11,10 +11,12 @@ from .events import (
 )
 from .logger import EventLogger
 from .trace_context import (
+    bound_host_id,
     bound_request_id,
     bound_trace_id,
     clear_request_id,
     clear_trace_id,
+    get_host_id,
     get_request_id,
     get_trace_id,
     set_request_id,
@@ -30,8 +32,10 @@ __all__ = [
     "MemorySearchEvent",
     "DebugEvent",
     "EventLogger",
+    "bound_host_id",
     "bound_request_id",
     "bound_trace_id",
+    "get_host_id",
     "set_request_id",
     "set_trace_id",
     "get_request_id",

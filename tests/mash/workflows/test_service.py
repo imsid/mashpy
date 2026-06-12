@@ -323,7 +323,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[_task("scan", "worker")],
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
         workflows = await service.list_workflows()
         self.assertEqual(
             workflows,
@@ -344,7 +344,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 metadata={"source": "crew", "version": 1},
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
 
         workflows = await service.list_workflows()
 
@@ -384,7 +384,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 {},
                 agents={"worker": _FakeRuntime(memory_store=memory_store)},
             ),
-            host_id="host-1",
+            runner_id="runner-1",
         )
 
         self.assertFalse(hasattr(workflow_dbos, "list_workflow_statuses"))
@@ -424,7 +424,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[_task("task-1", "worker")],
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
 
         runs = await service.list_runs("wf", status="failed")
 
@@ -449,7 +449,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_runs_unknown_workflow_raises_not_found(self) -> None:
         registry = WorkflowRegistry()
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
 
         with self.assertRaises(WorkflowNotFoundError):
             await service.list_runs("missing")
@@ -463,7 +463,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         host = _FakeHost(registry, {})
-        service = WorkflowService(registry, host, host_id="host-1")
+        service = WorkflowService(registry, host, runner_id="runner-1")
         status = _FakeWorkflowStatus(
             workflow_id="mw:host-1:wf:abc",
             status="ENQUEUED",
@@ -472,7 +472,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def start_workflow_run(**kwargs):
             self.assertEqual(kwargs["database_url"], "postgresql://example")
-            self.assertEqual(kwargs["host_id"], "host-1")
+            self.assertEqual(kwargs["runner_id"], "runner-1")
             self.assertEqual(kwargs["workflow"].workflow_id, "wf")
             self.assertEqual(kwargs["dedup_key"], "manual")
             self.assertEqual(kwargs["workflow_input"], {})
@@ -502,7 +502,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[_task("task-1", "worker")],
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
         workflow_input = {"target_agent_id": "primary"}
 
         async def start_workflow_run(**kwargs):
@@ -530,7 +530,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[_task("task-1", "worker")],
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
 
         with self.assertRaises(ValueError):
             await service.run_workflow("wf", workflow_input=["bad"])  # type: ignore[arg-type]
@@ -543,7 +543,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[_task("task-1", "worker")],
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
 
         async def start_workflow_run(**_kwargs):
             raise workflow_dbos.WorkflowDeduplicatedError("mw:host-1:wf:old")
@@ -561,7 +561,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[_task("task-1", "worker")],
             )
         )
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
 
         async def get_workflow_status(run_id):
             self.assertEqual(run_id, "mw:host-1:wf:abc")
@@ -616,7 +616,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service = WorkflowService(
             registry,
             _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
-            host_id="host-1",
+            runner_id="runner-1",
         )
         async def get_workflow_status(run_id_value):
             self.assertEqual(run_id_value, run_id)
@@ -672,7 +672,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service = WorkflowService(
             registry,
             _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
-            host_id="host-1",
+            runner_id="runner-1",
         )
 
         async def get_workflow_status(run_id_value):
@@ -699,7 +699,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service = WorkflowService(
             registry,
             _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
-            host_id="host-1",
+            runner_id="runner-1",
         )
 
         async def get_workflow_status(run_id_value):
@@ -743,7 +743,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service = WorkflowService(
             registry,
             _FakeHost(registry, {}, agents={"worker": _FakeRuntime(store)}),
-            host_id="host-1",
+            runner_id="runner-1",
         )
 
         async def get_workflow_status(run_id_value):
@@ -763,7 +763,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_workflow_is_rejected(self) -> None:
         registry = WorkflowRegistry()
-        service = WorkflowService(registry, _FakeHost(registry, {}), host_id="host-1")
+        service = WorkflowService(registry, _FakeHost(registry, {}), runner_id="runner-1")
         with self.assertRaises(WorkflowNotFoundError):
             await service.run_workflow("missing")
 
@@ -773,19 +773,19 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         _FakeDBOS.statuses = []
 
     async def asyncTearDown(self) -> None:
-        workflow_dbos.unregister_host("host-1", getattr(self, "host", None))
+        workflow_dbos.unregister_runner("runner-1", getattr(self, "host", None))
 
     async def test_compact_id_helpers_preserve_prefix_semantics(self) -> None:
-        host_id = workflow_dbos.make_host_id()
-        run_id = workflow_dbos.make_run_id(host_id, "wf")
+        runner_id = workflow_dbos.make_runner_id()
+        run_id = workflow_dbos.make_run_id(runner_id, "wf")
 
-        self.assertRegex(host_id, r"^h_[A-Za-z0-9_-]{12}$")
-        self.assertTrue(run_id.startswith(f"mw:{host_id}:wf:"))
-        legacy_run_id_length = 14 + len(host_id) + len(":wf:") + 32
+        self.assertRegex(runner_id, r"^r_[A-Za-z0-9_-]{12}$")
+        self.assertTrue(run_id.startswith(f"mw:{runner_id}:wf:"))
+        legacy_run_id_length = 14 + len(runner_id) + len(":wf:") + 32
         self.assertLess(len(run_id), legacy_run_id_length)
         self.assertEqual(
-            workflow_dbos.workflow_run_id_prefix(host_id, "wf"),
-            f"mw:{host_id}:wf:",
+            workflow_dbos.workflow_run_id_prefix(runner_id, "wf"),
+            f"mw:{runner_id}:wf:",
         )
 
     async def test_execute_workflow_passes_previous_task_state(self) -> None:
@@ -798,7 +798,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         )
         client = _FakeAgentClient(text=json.dumps({"count": 2}))
         self.host = _FakeHost(registry, {"worker": client})
-        workflow_dbos.register_host("host-1", self.host)
+        workflow_dbos.register_runner("runner-1", self.host)
         _FakeDBOS.statuses = [
             _FakeWorkflowStatus(
                 workflow_id="mw:host-1:wf:old",
@@ -813,7 +813,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             return_value=(_FakeDBOS, None, None, None, None),
         ):
             output = await workflow_dbos.execute_registered_workflow(
-                "host-1",
+                "runner-1",
                 "wf",
                 "mw:host-1:wf:new",
                 workflow_input={"target_agent_id": "primary"},
@@ -842,7 +842,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             "worker-2": _FakeAgentClient(text=json.dumps({"two": True})),
         }
         self.host = _FakeHost(registry, clients)
-        workflow_dbos.register_host("host-1", self.host)
+        workflow_dbos.register_runner("runner-1", self.host)
         workflow_input = {"target_agent_id": "primary"}
 
         with patch.object(
@@ -851,7 +851,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             return_value=(_FakeDBOS, None, None, None, None),
         ):
             await workflow_dbos.execute_registered_workflow(
-                "host-1",
+                "runner-1",
                 "wf",
                 "mw:host-1:wf:new",
                 workflow_input=workflow_input,
@@ -879,7 +879,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         )
         client = _FakeAgentClient(text=json.dumps({"ok": True}))
         self.host = _FakeHost(registry, {"worker": client})
-        workflow_dbos.register_host("host-1", self.host)
+        workflow_dbos.register_runner("runner-1", self.host)
 
         with patch.object(
             workflow_dbos,
@@ -887,7 +887,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             return_value=(_FakeDBOS, None, None, None, None),
         ):
             await workflow_dbos.execute_registered_workflow(
-                "host-1",
+                "runner-1",
                 "wf",
                 "mw:host-1:wf:new",
             )
@@ -947,7 +947,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         )
         client = _FakeAgentClient(text='{"result":{"ok":true}}')
         self.host = _FakeHost(registry, {"worker": client})
-        workflow_dbos.register_host("host-1", self.host)
+        workflow_dbos.register_runner("runner-1", self.host)
 
         with patch.object(
             workflow_dbos,
@@ -955,7 +955,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             return_value=(_FakeDBOS, None, None, None, None),
         ):
             await workflow_dbos.execute_registered_workflow(
-                "host-1",
+                "runner-1",
                 "wf",
                 "mw:host-1:wf:new",
             )
@@ -988,7 +988,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.host = _FakeHost(registry, {"worker": _FakeAgentClient(text="not-json")})
-        workflow_dbos.register_host("host-1", self.host)
+        workflow_dbos.register_runner("runner-1", self.host)
 
         with patch.object(
             workflow_dbos,
@@ -997,7 +997,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(RuntimeError):
                 await workflow_dbos.execute_registered_workflow(
-                    "host-1",
+                    "runner-1",
                     "wf",
                     "mw:host-1:wf:new",
                 )
@@ -1011,7 +1011,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.host = _FakeHost(registry, {"worker": _FakeAgentClient(text="[]")})
-        workflow_dbos.register_host("host-1", self.host)
+        workflow_dbos.register_runner("runner-1", self.host)
 
         with patch.object(
             workflow_dbos,
@@ -1020,7 +1020,7 @@ class WorkflowDBOSTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(RuntimeError):
                 await workflow_dbos.execute_registered_workflow(
-                    "host-1",
+                    "runner-1",
                     "wf",
                     "mw:host-1:wf:new",
                 )

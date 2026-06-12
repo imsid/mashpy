@@ -25,7 +25,7 @@ CHANGELOG_WORKFLOW = WorkflowSpec(
     ],
 )
 
-host = HostBuilder().primary(PilotSpec()).workflow(CHANGELOG_WORKFLOW).build()
+pool = HostBuilder().agent(PilotSpec(), metadata=...).workflow(CHANGELOG_WORKFLOW).build()
 ```
 
 A `TaskSpec` carrying an `agent_spec` registers that spec as a [workflow-only agent](composing-agents.md), a full runtime hidden from delegation and public listings. A `TaskSpec` with just an `agent_id` reuses an agent that's already registered. Either way, when the task runs, the target agent receives a normal request and executes it through the [same durable loop](durable-agent-loop.md) as everything else.
@@ -78,16 +78,16 @@ Runs are observable the same way requests are. `POST /api/v1/workflow/{id}/run` 
 
 ## Dynamic publishing
 
-Everything above is code-defined, registered in `build_host()` and versioned with the application. The second mode is for systems that generate workflows at runtime:
+Everything above is code-defined, registered in `build_pool()` and versioned with the application. The second mode is for systems that generate workflows at runtime:
 
 ```python
-host.register_agent_skill("pilot", Skill(
+pool.register_agent_skill("pilot", Skill(
     type="dynamic",
     name="workflow:experiment-readout:v1",
     content=generated_instructions_markdown, ...,
 ))
 
-host.register_agent_workflow("pilot", WorkflowSpec(
+pool.register_agent_workflow("pilot", WorkflowSpec(
     workflow_id="experiment-readout",
     tasks=[TaskSpec(task_id="analyze-experiment", agent_id="pilot")],
     task_message=WorkflowTaskMessageSpec(

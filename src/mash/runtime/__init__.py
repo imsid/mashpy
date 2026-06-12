@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .client import AgentClient, AgentClientError, AgentClientLike
-    from .host import AgentHost, HostBuilder
-    from .host.subagents import SubAgentMetadata
+    from .host import AgentPool, HostBuilder
+    from .host.subagents import AgentMetadata
+    from .host.types import Host
     from .server import AgentServer
     from .service import AgentRuntime
     from .spec import AgentSpec
@@ -20,9 +21,10 @@ __all__ = [
     "AgentClient",
     "AgentClientError",
     "AgentClientLike",
-    "AgentHost",
+    "AgentPool",
+    "Host",
     "HostBuilder",
-    "SubAgentMetadata",
+    "AgentMetadata",
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
@@ -32,9 +34,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AgentClient": (".client", "AgentClient"),
     "AgentClientError": (".client", "AgentClientError"),
     "AgentClientLike": (".client", "AgentClientLike"),
-    "AgentHost": (".host", "AgentHost"),
+    "AgentPool": (".host", "AgentPool"),
+    "Host": (".host.types", "Host"),
     "HostBuilder": (".host", "HostBuilder"),
-    "SubAgentMetadata": (".host.subagents", "SubAgentMetadata"),
+    "AgentMetadata": (".host.subagents", "AgentMetadata"),
 }
 
 
