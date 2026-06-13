@@ -80,3 +80,4 @@ mash repl --api-base-url http://127.0.0.1:8000 --host assistant
 ## Applications
 
 - [**Pilot CLI**](https://github.com/imsid/mash-pilot) - a multi-agent CLI guide to build and deploy Mash agents.
+- [**PA CLI**](https://github.com/imsid/mash-pa) - a self-hosted store of personal agents that help run your day.

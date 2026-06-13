@@ -33,10 +33,11 @@ curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | 
 pilot browse
 ```
 
-(Add `-e GITHUB_MCP_PAT=...` for the GitHub-backed agent; set
-`MASH_DATABASE_URL` to bring your own Postgres instead of the embedded one.)
+(Add `-e GITHUB_MCP_PAT=...` for the `pilot` guide's commit-inspection
+tools; set `MASH_DATABASE_URL` to bring your own Postgres instead of the
+embedded one.)
 
-`pilot browse` renders the catalog: nine pooled agents, each listed through
+`pilot browse` renders the catalog: seven pooled agents, each listed through
 the `AgentMetadata` it registered with — the same metadata that becomes the
 delegation directory when an agent serves as a subagent, as
 [the composition post](composing-agents.md) covered. The store runs wherever
@@ -48,12 +49,12 @@ The pool is flat — the deployment ships no host compositions. Which agents
 work together is your configuration:
 
 ```bash
-pilot compose my-morning --primary morning-brief --subagents finance-watch
-pilot repl --host my-morning
+pilot compose my-guide --primary pilot --subagents cli-copilot,api-copilot
+pilot repl --host my-guide
 ```
 
 Compositions live in the CLI's host config file (`~/.pilot/hosts.json`),
-which ships with the `mash-guide` composition as its default entry and is
+which ships with the `guide` composition as its default entry and is
 what `pilot hosts` lists. The deployment side is [dynamic host
 definition](building-dynamic-hosts-apis.md): a host is a few strings,
 validated synchronously, held in server memory — so the CLI publishes your
@@ -66,33 +67,24 @@ shows exactly the team you composed. To change the team, exit and re-run
 `pilot compose` (define-or-replace), or switch with
 `pilot repl --host <other>`.
 
-## The personal agents
+## A store for Mash
 
-Two catalog agents bracket the integration space the product brief sketches:
+Pilot's catalog is about Mash itself. Personal agents live in
+[mash-pa](https://github.com/imsid/mash-pa), a sibling store with its own
+`pa` CLI: a `morning-brief` over the GitHub MCP server and a `finance-watch`
+over a local ledger, the integration space the product brief sketches. Both
+stores are the same Mash machinery pointed at different catalogs, which is
+the point of a flat pool and host compositions as configuration.
 
-- **`morning-brief`** — your GitHub world (PRs awaiting review, your open
-  PRs, assigned issues, recent activity) over the GitHub MCP server, with a
-  read-only per-agent tool allowlist ([remote tools over
-  MCP](remote-tools-mcp.md)). Unconfigured, it stays in the catalog and
-  explains that it needs `GITHUB_MCP_PAT`.
-- **`finance-watch`** — a transactions ledger on the deployment's own disk,
-  watched for duplicate charges, new merchants, subscription price changes,
-  and outliers. No credentials, no network; a synthetic sample ledger is
-  seeded on first start, anomalies included.
+## The featured app: the guide
 
-One agent reaches out to a cloud service through a guarded connector; the
-other never leaves your server. Both only make sense because the store is
-self-hosted.
-
-## The featured app: mash-guide
-
-`pilot repl --host mash-guide` opens the Mash codebase guide — the
-composition from [the internals series](composing-agents.md), shipped as
-the default entry in the host config file:
+`pilot repl --host guide` opens the Mash codebase guide — the composition
+from [the internals series](composing-agents.md), shipped as the default
+entry in the host config file:
 
 | Agent | Scope |
 |-------|-------|
-| `mash-guide` (primary) | shared and cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
+| `pilot` (primary) | shared and cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
 | `cli-copilot` | `src/mash/cli`: commands, REPL, terminal rendering |
 | `api-copilot` | `src/mash/api`: HTTP routes, FastAPI, telemetry UI |
 | `mcp-copilot` | `src/mash/mcp`: MCP client/server, transport, tool adaptation |
@@ -113,7 +105,9 @@ description.
 
 ## Two commands worth trying
 
-`/changelog [N]` generates a changelog from the last N mashpy commits. The
+`/changelog [N]` generates a changelog from the last N mashpy commits
+(available in sessions targeting the `pilot` primary, which is the agent
+that carries the repo workspace). The
 command registers its skill and workflow definition on the host at the
 moment it runs — the [dynamic publishing](workflows-and-task-state.md) flow
 exercised end to end.
@@ -121,7 +115,7 @@ exercised end to end.
 `/quiz` starts an interactive quiz about Mash internals, executed by the
 pooled `quiz-me` agent through the `pilot-quiz`
 [workflow](workflows-and-task-state.md). Workflows are attached to hosts in
-your config (`mash-guide` attaches `pilot-quiz` by default), and `/quiz`
+your config (`guide` attaches `pilot-quiz` by default), and `/quiz`
 only exists in REPLs of hosts that attach it — compose it onto your own
 host with `--workflows pilot-quiz`.
 

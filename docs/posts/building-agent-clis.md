@@ -489,14 +489,18 @@ real-world example that follows this pattern. Its structure:
 
 ```
 pilot/
-  catalog/      # one package per agent: mash_guide/ (+ copilots),
-                # personal/, workflows/
+  catalog/
+    agents/     # one package per agent: pilot/ (the guide primary) plus a
+                # copilot per mashpy module (cli, api, mcp, runtime, workflow)
+    workflows/  # workflow definitions and their REPL commands (changelog, quiz)
+    __init__.py # CATALOG: the explicit registry build_pool() reads
   spec.py       # build_pool(): registers the catalog as a flat pool
   cli.py        # CLI entrypoint with MashRemoteShell + storefront commands
   store.py      # the host config file (source of truth for compositions)
   tools.py      # Custom tools (UpdateDocsTool)
   prompt.py     # System prompt construction
   skills/
+    build-mash-agent/SKILL.md
     changelog/SKILL.md
     mash-quiz/SKILL.md
 ```
@@ -505,11 +509,15 @@ pilot/
 code. The CLI entrypoint (`pilot/cli.py`):
 
 1. Parse args and resolve the connection
-2. Create `MashHostClient`, publish the configured host compositions
-   (`define_host` is idempotent), and build a `ShellTarget` with the
-   requested `host_id` (or a bare agent id)
-3. Create the `MashRemoteShell` and register custom commands
-   (`/changelog`, `/quiz`, a host-scoped `/agents`)
+2. For `pilot repl --host <id>`, publish the configured host compositions
+   to the deployment (`store.publish_hosts`, idempotent PUTs), fetch the
+   merged view of the requested host with `get_host`, and build a
+   `ShellTarget` from its primary `agent_id` (or a bare agent id for
+   `--agent`)
+3. Create the `MashRemoteShell` and register Pilot's scoped commands:
+   `/changelog` when the target is the `pilot` primary, and `/quiz` when the
+   host attaches the `pilot-quiz` workflow (the stock `/agents` and
+   `/workflow` commands are host-scoped natively)
 4. Call `shell.run()`
 
 The workflow commands (`/changelog`, `/quiz`) demonstrate two patterns:
