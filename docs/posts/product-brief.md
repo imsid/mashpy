@@ -10,27 +10,23 @@ tags:
 
 # Mash Product Brief
 
-Building functional AI agents has become straightforward due to specialized developer harnesses and access to frontier models. 
-However, integrating these agents into a cohesive application layer remains an open challenge. 
-As models get smarter, agents will proliferate 
-the way apps did once the app store gave them a standard place to live. 
-Every person will run a collection of agents that automates their life: 
-one that prepares a morning brief before you're up, one that triages email, 
-one that watches finances and flags the odd charge, one that plans travel. 
-Enterprises are on the same path, automating internal workflows like incident triage 
-and release readiness, and external ones like an onboarding assistant or a reporting analyst.
+Building functional AI agents has become highly accessible due to rise in specialized developer harnesses and access to frontier models, turning individual agents into a commodity. However, integrating these agents into a cohesive application layer remains fragmented.
+
+Once this bridge is established, agents will proliferate much like mobile apps did following the introduction of the app store. On a consumer level, individuals will run collections of agents to automate daily life: preparing a morning brief before waking, triaging email, monitoring finances for anomalies, or planning travel. Enterprises are on a parallel trajectory, deploying agent clusters to automate internal workflows like incident triage and release readiness, as well as customer facing operations like onboarding and integrations assistants.
 
 ## Host-to-Agent Protocol (H2A)
 
-The part that's still missing is how a user application or an enterprise
-platform (the app store of this analogy) talks to agents. Today that's largely built
+The bridge between agents and how a user application or an enterprise
+platform (the app store of this analogy) talks to agents is largely built
 as a bespoke endpoint with ad-hoc streaming or a homegrown approval flow bolted on. The
 [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) standardizes
 that interaction model: how a request is submitted, how its lifecycle streams
 back, how an agent pauses for human approval or input, and how it recovers
 from failure.
 
-When agents are commodities, they get added and swapped constantly. The
+### Host
+
+When agents are commodities, they are composable and get added and swapped constantly. The
 interaction pattern has to be centralized somewhere stable, and the **Host**
 is that place. The host gives every agent behind it a stable address, one
 session model, one event contract, and one human-in-the-loop interaction
@@ -51,33 +47,27 @@ flowchart TD
 
 ## Mash
 
-Mash is a complete SDK that covers the toolchain to build
-a structured agent, and the architecture that decides how those agents are
-deployed, composed, and run inside an application. The same SDK takes an
-agent from local logic to a production application component, on a consumer
-home server or an enterprise platform.
+Mash is a complete Python SDK that implements the H2A protocol. It provides the toolchain to build, deploy and host structured AI agents 
+within an application layer, whether running on a consumer home server or an enterprise platform.
 
-Mash gives you three primitives, all anchored to H2A:
+Mash gives you three primitives, anchored to H2A:
 
-- **Agent development.** You build specialized agents with the SDK. Each one
+- **Agent development.** Durable harness to build structured agents. Each agent
   natively speaks the H2A schema for capabilities, data handling, and state,
   so it knows how to negotiate work with a host without custom integration
   code.
-- **The host.** A self-hosted runtime that aggregates a collection of agents
+- **The host.** A self-hosted runtime that composes a collection of agents
   chosen by the user or administrator. It sets the operational boundaries and
   permissions, and routes requests, manages state, and aggregates output
-  across the agents behind it.
+  across the agents behind it. The host is the unit of deploy and 
+  translates an incoming user instruction into H2A commands.
 - **The execution surface.** A command layer exposed as a CLI and a
-  structured API. It translates an incoming user instruction into H2A
-  commands. Because the surface is CLI plus API, the application tier is
+  structured API that talks to the host. Because the surface is CLI plus API, the application tier is
   language-agnostic: a React frontend, a Go service, a mobile app, a cron
   job, or a terminal can drive a host over plain HTTP + SSE. The agent is
   written once, in Python, behind the host; nothing that consumes it needs to
   share its stack.
 
-Everything below the host (the durable harness, observability, the
-self-hosted interfaces) is the commodity layer Mash ships so you never build
-it yourself.
 
 ## How it runs
 
@@ -125,3 +115,4 @@ workflow ───────► │        ▲                      output    
   self-hosted interfaces
 - [**H2A Protocol RFC**](../rfcs/host-to-agent-protocol.md): the full
   protocol specification
+- [**Building an agent CLI**](building-agent-clis.md): custom CLI development with dynamic host composition

@@ -13,13 +13,13 @@ hide:
 Mash is a Python SDK and a host runtime for composing agents. 
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that standardizes interactions between user applications and agents. Agents are model agnostic and come with powerful built-in tools, skills, memory, observability, and a API/CLI for access.
 
-Install:
+**Install:**
 
 ```bash
 uv add mashpy
 ```
 
-Compose Agents:
+**Build Agent Pool:**
 
 ```python
 ## my_agent/spec.py
@@ -37,16 +37,25 @@ def build_pool():
   return pool
 ```
 
-Start the host:
+**Start the host:**
 
 ```bash
 mash host serve --host-app my_agent.spec:build_pool --host 127.0.0.1 --port 8000
 ```
 
-Talk to your agent with the Mash CLI:
-
+**Browse available agents:**
 ```bash
-mash repl --api-base-url http://127.0.0.1:8000 --host assistant
+mash browse
+```
+
+**Compose an assistant host with agents:**
+```bash
+mash compose assistant --primary concierge --subagents research
+```
+
+**Talk to your agent with the Mash CLI:**
+```bash
+mash repl --host assistant
 ```
 
 ## Start here

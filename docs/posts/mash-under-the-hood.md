@@ -11,8 +11,8 @@ tags:
 # Mash Under the Hood
 
 The [product brief](product-brief.md) makes the pitch: applications should
-integrate with agents through one standardized seam, and the host, not the
-agent, is the unit of deploy. This post covers what Mash actually ships on
+integrate with agents through a central host which is the unit of deploy. 
+This post covers what Mash actually ships on
 both sides of that seam: the host and its interfaces above, and the durable
 harness and observability underneath.
 
