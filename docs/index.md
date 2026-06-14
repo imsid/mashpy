@@ -11,36 +11,128 @@ hide:
 **Build self-hosted, multi-agent applications.**
 
 Mash is a Python SDK and a host runtime for composing agents. 
-It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that standardizes interactions between user applications and agents. Agents are model agnostic and come with powerful built-in tools, skills, memory, observability, and a API/CLI for access.
+It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
+standardizes interactions between user applications and agents. 
+Agents are model agnostic and come with powerful built-in tools, skills, memory, observability, and a API/CLI for access.
 
 **Install:**
 
 ```bash
+# install the library
 uv add mashpy
+
+# install the `mash` CLI on your PATH
+uv tool install mashpy 
 ```
 
-**Build Agent Pool:**
+**Define your agents:**
+
+Each agent is an `AgentSpec` subclass. It names itself, picks an LLM, and
+declares a system prompt, tools, skills and agent config.
 
 ```python
-## my_agent/spec.py
+## my_app/agents.py
 
-from mash.runtime import Host, HostBuilder
+from mash.core.config import AgentConfig
+from mash.core.llm import AnthropicProvider
+from mash.runtime import AgentSpec
+from mash.skills import SkillRegistry
+from mash.tools import ToolRegistry
+
+
+class ConciergeAgent(AgentSpec):
+    def get_agent_id(self):
+        return "concierge"
+
+    def build_tools(self):
+        return ToolRegistry()
+
+    def build_skills(self):
+        return SkillRegistry()
+
+    def build_llm(self):
+        return AnthropicProvider(app_id="concierge")
+
+    def build_agent_config(self):
+        return AgentConfig(
+            app_id="concierge",
+            system_prompt=(
+                "You are the concierge. Answer the user directly, and "
+                "delegate research-heavy questions to the research subagent."
+            ),
+        )
+
+
+class ResearchAgent(AgentSpec):
+    def get_agent_id(self):
+        return "research"
+
+    def build_tools(self):
+        return ToolRegistry()
+
+    def build_skills(self):
+        return SkillRegistry()
+
+    def build_llm(self):
+        return AnthropicProvider(app_id="research")
+
+    def build_agent_config(self):
+        return AgentConfig(
+            app_id="research",
+            system_prompt="You handle research-heavy questions in depth.",
+        )
+```
+
+**Build Mash host with an Agent pool:**
+
+```python
+## my_app/host.py
+
+from mash.runtime import AgentMetadata, Host, HostBuilder
+
+from .agents import ConciergeAgent, ResearchAgent
 
 def build_pool():
   pool = (
       HostBuilder()
-      .agent(ConciergeAgent(), metadata=...)
-      .agent(ResearchAgent(), metadata=...)
-      .host(Host(host_id="assistant", primary="concierge", subagents=("research",)))
+      .agent(
+          ConciergeAgent(),
+          metadata=AgentMetadata(
+              display_name="Concierge",
+              description="Front-door agent that answers users and delegates.",
+              capabilities=["conversation", "delegation"],
+              usage_guidance="Default entry point for user requests.",
+          ),
+      )
+      .agent(
+          ResearchAgent(),
+          metadata=AgentMetadata(
+              display_name="Research",
+              description="Handles research-heavy questions in depth.",
+              capabilities=["research", "analysis"],
+              usage_guidance="Use for questions that need digging.",
+          ),
+      )
       .build()
   )
   return pool
 ```
 
+**Configure the environment:**
+
+The host needs an LLM key and a Postgres URL for its durable runtime. Put
+them in a `.env` file the host loads on start:
+
+```bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-...
+MASH_DATABASE_URL=postgresql://user:pass@localhost:5432/mash
+```
+
 **Start the host:**
 
 ```bash
-mash host serve --host-app my_agent.spec:build_pool --host 127.0.0.1 --port 8000
+mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
 **Browse available agents:**
@@ -48,12 +140,12 @@ mash host serve --host-app my_agent.spec:build_pool --host 127.0.0.1 --port 8000
 mash browse
 ```
 
-**Compose an assistant host with agents:**
+**Compose an assistant host with primary and subagents:**
 ```bash
 mash compose assistant --primary concierge --subagents research
 ```
 
-**Talk to your agent with the Mash CLI:**
+**Talk to the host or execute `/` commands using Mash repl:**
 ```bash
 mash repl --host assistant
 ```

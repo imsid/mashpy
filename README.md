@@ -4,19 +4,10 @@ A Python SDK and host runtime for building self-hosted multi-agent applications.
 
 Mash gives you a Python `AgentSpec` contract for defining agents, a `HostBuilder`
 for composing them into a multi-agent host, a FastAPI server for deployment, and
-a CLI/REPL for interacting with a running host.
+a CLI/API for interacting with a running host.
 
-## Install
-
-```bash
-pip install mashpy
-```
-
-Requires Python >= 3.10. Set your LLM provider key:
-
-```bash
-export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY or GEMINI_API_KEY
-```
+It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
+standardizes interactions between user applications and agents. 
 
 ## What Mash Provides
 
@@ -59,64 +50,139 @@ the pitch.
 
 ## Quick Start
 
-### 1. Define an agent
+**Install:**
+
+```bash
+# install the library
+uv add mashpy
+
+# install the `mash` CLI on your PATH
+uv tool install mashpy 
+```
+
+**Define your agents:**
+
+Each agent is an `AgentSpec` subclass. It names itself, picks an LLM, and
+declares a system prompt, tools, skills and agent config.
 
 ```python
-# my_agent/spec.py
+## my_app/agents.py
+
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
+from mash.runtime import AgentSpec
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
 
-class AssistantAgent(AgentSpec):
-    def get_agent_id(self) -> str:
-        return "assistant"
+class ConciergeAgent(AgentSpec):
+    def get_agent_id(self):
+        return "concierge"
 
-    def build_tools(self) -> ToolRegistry:
+    def build_tools(self):
         return ToolRegistry()
 
-    def build_skills(self) -> SkillRegistry:
+    def build_skills(self):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="assistant")
+        return AnthropicProvider(app_id="concierge")
 
-    def build_agent_config(self) -> AgentConfig:
+    def build_agent_config(self):
         return AgentConfig(
-            app_id="assistant",
-            system_prompt="You are a helpful assistant.",
-        )
-
-
-def build_pool():
-    return (
-        HostBuilder()
-        .agent(
-            AssistantAgent(),
-            metadata=AgentMetadata(
-                display_name="Assistant",
-                description="General-purpose assistant.",
-                capabilities=["conversation"],
-                usage_guidance="Default agent for user requests.",
+            app_id="concierge",
+            system_prompt=(
+                "You are the concierge. Answer the user directly, and "
+                "delegate research-heavy questions to the research subagent."
             ),
         )
-        .build()
-    )
+
+
+class ResearchAgent(AgentSpec):
+    def get_agent_id(self):
+        return "research"
+
+    def build_tools(self):
+        return ToolRegistry()
+
+    def build_skills(self):
+        return SkillRegistry()
+
+    def build_llm(self):
+        return AnthropicProvider(app_id="research")
+
+    def build_agent_config(self):
+        return AgentConfig(
+            app_id="research",
+            system_prompt="You handle research-heavy questions in depth.",
+        )
 ```
 
-### 2. Serve it
+**Build Mash host with an Agent pool:**
 
-```bash
-mash host serve --host-app my_agent.spec:build_pool --port 8000
+```python
+## my_app/host.py
+
+from mash.runtime import AgentMetadata, Host, HostBuilder
+
+from .agents import ConciergeAgent, ResearchAgent
+
+def build_pool():
+  pool = (
+      HostBuilder()
+      .agent(
+          ConciergeAgent(),
+          metadata=AgentMetadata(
+              display_name="Concierge",
+              description="Front-door agent that answers users and delegates.",
+              capabilities=["conversation", "delegation"],
+              usage_guidance="Default entry point for user requests.",
+          ),
+      )
+      .agent(
+          ResearchAgent(),
+          metadata=AgentMetadata(
+              display_name="Research",
+              description="Handles research-heavy questions in depth.",
+              capabilities=["research", "analysis"],
+              usage_guidance="Use for questions that need digging.",
+          ),
+      )
+      .build()
+  )
+  return pool
 ```
 
-### 3. Connect
+**Configure the environment:**
+
+The host needs an LLM key and a Postgres URL for its durable runtime. Put
+them in a `.env` file the host loads on start:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent assistant
-mash repl
+# .env
+ANTHROPIC_API_KEY=sk-ant-...
+MASH_DATABASE_URL=postgresql://user:pass@localhost:5432/mash
+```
+
+**Start the host:**
+
+```bash
+mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
+```
+
+**Browse available agents:**
+```bash
+mash browse
+```
+
+**Compose an assistant host with primary and subagents:**
+```bash
+mash compose assistant --primary concierge --subagents research
+```
+
+**Talk to the host or execute `/` commands using Mash repl:**
+```bash
+mash repl --host assistant
 ```
 
 ## Key Concepts
