@@ -118,6 +118,8 @@ Optional overrides:
 | `build_memory_store()` | Auto (Postgres or SQLite) | Custom memory backend |
 | `build_mcp_servers()` | `[]` | MCP server connections |
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
+| `enable_web_search_tools()` | `False` | Auto-register `web_search`/`web_fetch` |
+| `build_web_search()` | Parallel when enabled | Web search provider |
 | `on_startup(runtime)` | No-op | Hook after runtime init |
 | `on_shutdown(runtime)` | No-op | Hook before cleanup |
 
@@ -125,15 +127,19 @@ Optional overrides:
 
 ```python
 AgentConfig(
-    app_id="my-agent",                    # required, matches agent id
-    system_prompt="You are ...",          # required, str or list of blocks
-    max_steps=30,                         # max tool-use loops per request
-    max_tokens=4096,                      # LLM output token cap
+    app_id="my-agent",                    # required, must match get_agent_id()
+    system_prompt="You are ...",          # required, str or list of content blocks
+    max_steps=30,                         # max think/act loops per request
+    max_tokens=4096,                      # LLM output token cap per response
     temperature=1.0,                      # sampling temperature
-    skills_enabled=False,                 # enable the Skill meta-tool
+    skills_enabled=True,                  # register the Skill meta-tool when skills exist
     prompt_caching_enabled=True,          # provider prompt caching
     streaming_enabled=True,               # stream tokens + emit llm.response.delta events
-    conversation_history_turns=3,         # turns of history in context
+    conversation_history_turns=3,         # prior turns replayed into context
+    compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
+    compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
+    compaction_temperature=0.0,           # sampling temperature for the summary pass
+    extra={},                             # free-form dict for provider/app-specific options
 )
 ```
 
@@ -200,6 +206,37 @@ tools = ToolRegistry()
 tools.register(BashTool(working_dir="/path/to/workspace"))
 tools.register(AskUserTool())  # only works in hosted runtime
 ```
+
+### Web Search
+
+Give an agent `web_search` and `web_fetch` by flipping one method. It's off by
+default because the tools hit the network and the authenticated tier needs a
+key. The default provider is Parallel AI, which has a free no-auth tier.
+
+```python
+class ResearchAgent(AgentSpec):
+    def enable_web_search_tools(self) -> bool:
+        return True
+```
+
+That uses the free tier. To raise the limits, pass a key or an OAuth token. The
+provider reads `PARALLEL_API_KEY` and `PARALLEL_OAUTH_TOKEN` from the
+environment, or you can pass them in directly:
+
+```python
+from mash.tools.web_search import ParallelSearchProvider
+
+class ResearchAgent(AgentSpec):
+    def enable_web_search_tools(self) -> bool:
+        return True
+
+    def build_web_search(self):
+        return ParallelSearchProvider(api_key="...")  # or oauth_token="..."
+```
+
+A token (key or OAuth) is sent as `Authorization: Bearer <token>`; there is no
+interactive OAuth2 flow. The tools register under their plain names —
+`web_search` and `web_fetch` — and ride the same path as remote MCP tools.
 
 ### FunctionTool (quick inline tools)
 

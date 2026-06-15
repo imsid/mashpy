@@ -12,6 +12,7 @@
 - `registry.py`: registration and lookup of enabled tools.
 - `bash.py`: repository and terminal inspection tool.
 - `mcp.py`: MCP-backed tool integration.
+- `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.
 - `ask_user.py`: `AskUser`, lets agents request information from the user mid-execution.
 - `runtime.py`: runtime-facing helpers for tool execution.
@@ -125,6 +126,14 @@ When using AskUser, agents should:
 3. Check the `timed_out` flag in the result metadata.
 4. Handle timeouts gracefully (e.g., use a sensible default, retry, or fail with a clear message).
 5. Use the `interaction_id` in logs or error messages for debugging.
+
+## Web Search
+
+`web_search.py` defines a `WebSearchProvider` contract and a `ParallelSearchProvider` that backs it with Parallel AI. A provider resolves to a single `MCPServerConfig`; the runtime feeds that through the same remote-tools path as any MCP server, so the agent ends up with plain `web_search` and `web_fetch` tools.
+
+Agents opt in with `enable_web_search_tools()` on their spec; it's off by default, since the tools make network calls. The default provider uses Parallel's free no-auth endpoint. Pass `api_key=` / `oauth_token=` (or set `PARALLEL_API_KEY` / `PARALLEL_OAUTH_TOKEN`) to use the authenticated endpoint with higher limits; an explicit argument beats the env var, and an OAuth token beats an API key. Either way the token rides as `Authorization: Bearer <token>`; there is no interactive OAuth2 flow.
+
+To add another backend (Exa, Tavily, Brave), subclass `WebSearchProvider` and return its endpoint. Nothing else in the spec surface changes.
 
 ## Role In The System
 - `core` and `runtime` rely on this package for the model-visible tool surface.

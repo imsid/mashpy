@@ -95,6 +95,11 @@ Mash ships with runtime tools that are available to every agent out of the box:
 - **search_conversations**: search stored conversation turns and return ranked previews
 - **get_full_turn_message**: expand search results into full turn text
 
+Web search sits a step away. Because it makes network calls, it stays off until
+a spec asks for it with `enable_web_search_tools()`, at which point the agent
+gets `web_search` and `web_fetch` backed by Parallel AI, with the free tier by
+default or your own key for higher limits.
+
 ```
                   ┌─────────────────────────────────────────┐
                   │          Durable Request                │

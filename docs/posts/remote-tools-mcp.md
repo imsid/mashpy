@@ -62,6 +62,12 @@ flowchart LR
 
 To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
 
+## Web search
+
+Web search runs on the same machinery. A `WebSearchProvider` resolves to a single `MCPServerConfig`, and the runtime connects it through the same `MCPManager`. The default `ParallelSearchProvider` points at Parallel AI. An agent turns it on with `enable_web_search_tools()` rather than writing a server config by hand.
+
+Naming is the one place it diverges. These tools register under their plain names, `web_search` and `web_fetch`, not the `mcp_*` form. They're a named capability rather than an arbitrary remote server, so the wiring keeps the original names while reusing the connection, auth headers, `allowed_tools` filter, and call routing that every MCP server gets.
+
 ## Failure stays inside the tool result
 
 Remote calls add failure modes like an unreachable server or expired auth, and the integration keeps all of them inside the existing tool contract. A tool call that fails returns an error `ToolResult`, the same shape a local tool produces, and the model reasons about it on the next think phase. A server that fails during startup discovery is logged and skipped, and the agent starts with the tools that did resolve.
