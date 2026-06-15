@@ -283,6 +283,7 @@ scaling linearly per agent.
   - builds/configures the in-process `Agent`
   - runtime tool wiring
   - MCP tool wiring
+  - web search tool wiring (reuses the MCP manager, registers plain tool names)
   - subagent tool wiring
 
 - [`context.py`](./context.py)

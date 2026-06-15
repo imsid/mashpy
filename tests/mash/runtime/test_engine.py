@@ -342,6 +342,67 @@ class _MCPDefinition(_BaseDefinition):
         return self.provider
 
 
+class _FakeWebSearchClient:
+    def list_tools(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "web_search",
+                "description": "Search the web.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "web_fetch",
+                "description": "Fetch a URL.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ]
+
+    def close(self) -> None:
+        return None
+
+
+class _WebSearchAssertingLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_tool_names: list[str] = []
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.last_tool_names = [tool.name for tool in request.tools]
+        self.call_count += 1
+        return LLMResponse(
+            text="ok",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("ok")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _WebSearchDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+        super().__init__(root, app_id=app_id)
+        self.provider = _WebSearchAssertingLLMProvider()
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
+
+    def enable_runtime_tools(self) -> bool:
+        return False
+
+    def enable_web_search_tools(self) -> bool:
+        return True
+
+
 class _MismatchedDefinition(_BaseDefinition):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(app_id="different-app-id", system_prompt="Mismatch")
@@ -930,6 +991,56 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                             if runtime.mcp_manager is not None:
                                 runtime.mcp_manager.add_server = original_add_server  # type: ignore[method-assign]
                             await runtime.shutdown()
+
+    async def test_web_search_tools_registered_with_plain_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                with patch(
+                    "mash.mcp.host.Host.get_client",
+                    return_value=_FakeWebSearchClient(),
+                ):
+                    with patch(
+                        "mash.mcp.manager.MCPManager._emit_event", return_value=None
+                    ):
+                        runtime = AgentRuntime.from_spec(
+                            _WebSearchDefinition(Path(tmp)),
+                            session_id="host-session",
+                            **_test_stores(),
+                        )
+                        try:
+                            await runtime.open()
+                            _, _, result = await self._invoke_request(
+                                runtime, message="hi"
+                            )
+                            self.assertEqual(result["response"]["text"], "ok")
+                            tool_names = runtime.definition.provider.last_tool_names
+                            self.assertIn("web_search", tool_names)
+                            self.assertIn("web_fetch", tool_names)
+                            self.assertNotIn(
+                                "mcp_parallel_web_search_web_search", tool_names
+                            )
+                        finally:
+                            await runtime.shutdown()
+
+    async def test_web_search_tools_absent_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                definition = _WebSearchDefinition(Path(tmp))
+                definition.enable_web_search_tools = lambda: False  # type: ignore[method-assign]
+                runtime = AgentRuntime.from_spec(
+                    definition,
+                    session_id="host-session",
+                    **_test_stores(),
+                )
+                try:
+                    await runtime.open()
+                    _, _, result = await self._invoke_request(runtime, message="hi")
+                    self.assertEqual(result["response"]["text"], "ok")
+                    tool_names = runtime.definition.provider.last_tool_names
+                    self.assertNotIn("web_search", tool_names)
+                    self.assertNotIn("web_fetch", tool_names)
+                finally:
+                    await runtime.shutdown()
 
     async def test_completed_request_replays_buffered_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

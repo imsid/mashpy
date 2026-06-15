@@ -40,7 +40,7 @@ if self.config.skills_enabled and self.skills.list_skills():
         self.tools.register(SkillTool(self.skills))
 ```
 
-`skills_enabled` defaults to `False`; an agent with no skills never carries the meta-tool at all.
+`skills_enabled` defaults to `True`, so an agent that registers skills gets the meta-tool automatically. Set it to `False` to opt out. An agent with no skills never carries the meta-tool either way.
 
 ## The skill itself
 

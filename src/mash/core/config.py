@@ -21,7 +21,7 @@ class AgentConfig:
     max_steps: int = 30
     max_tokens: int = 4096
     temperature: float = 1.0
-    skills_enabled: bool = False
+    skills_enabled: bool = True
     prompt_caching_enabled: bool = True
     streaming_enabled: bool = True
     conversation_history_turns: int = 3
