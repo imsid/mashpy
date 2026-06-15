@@ -153,7 +153,7 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
                 text="Partial response.",
                 tool_calls=[],
                 content_blocks=[LLMContentBlock.text("Partial response.")],
-                stop_reason="max_tokens",
+                stop_reason="pause_turn",
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
@@ -182,7 +182,7 @@ class _AlwaysRespondLLMProvider(LLMProvider):
             text="Still responding.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Still responding.")],
-            stop_reason="max_tokens",
+            stop_reason="pause_turn",
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 

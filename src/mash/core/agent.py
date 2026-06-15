@@ -55,6 +55,13 @@ class StepCommitResult:
 class Agent:
     """Agent that executes the think-act-observe loop."""
 
+    # Stop reasons after which a text-only response may continue the loop into a
+    # follow-up request that ends with an assistant message. Providers that pause
+    # mid-turn (e.g. server-side tool use) expect the partial assistant turn to be
+    # sent back to resume. Any other stop reason must finish, so the loop never
+    # emits an assistant-terminated (prefill) request that providers reject.
+    _CONTINUABLE_STOP_REASONS = frozenset({"pause_turn"})
+
     def __init__(
         self,
         llm: LLMProvider,
@@ -476,6 +483,27 @@ class Agent:
         """Execute one tool call as a durable sub-boundary within a step."""
         return await self.execute_tool_call(tool_call)
 
+    async def _emit_tool_call_invalid(
+        self, tool_call: Any, missing: List[str]
+    ) -> None:
+        """Record that a tool call failed validation and was not executed."""
+        if not self._event_logger:
+            return
+        await self._event_logger.emit(
+            AgentTraceEvent(
+                event_type="agent.tool.invalid",
+                app_id=self.config.app_id,
+                session_id=self._session_id,
+                trace_id=self._trace_id,
+                payload={
+                    "tool_name": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                    "missing_arguments": list(missing),
+                    "tool_arguments": getattr(tool_call, "arguments", None),
+                },
+            )
+        )
+
     async def execute_tool_call(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call with error handling.
 
@@ -491,6 +519,24 @@ class Agent:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     content=f"Error: Tool '{tool_call.name}' not found",
+                    is_error=True,
+                )
+
+            # Validate required arguments before executing. A call missing a
+            # required field is not silently dropped — that loses the action and
+            # can leave the conversation ending on an assistant message. Instead
+            # the failure is surfaced to the model as a tool error so it can
+            # retry, and logged so a skipped side effect is diagnosable.
+            missing = self._missing_required_args(tool, tool_call)
+            if missing:
+                await self._emit_tool_call_invalid(tool_call, missing)
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    content=(
+                        f"Error: tool '{tool_call.name}' called without required "
+                        f"argument(s): {', '.join(missing)}. The call was not "
+                        "executed; supply the missing argument(s) and try again."
+                    ),
                     is_error=True,
                 )
 
@@ -600,6 +646,15 @@ class Agent:
         blocks = [block.to_dict() for block in response.content_blocks]
         stop_reason = response.stop_reason
 
+        # A max_tokens stop can truncate the model mid-tool-call, leaving the
+        # arguments incomplete. _sanitize_tool_calls drops those below, so note
+        # here whether the original response carried a tool call that the
+        # truncation is about to discard.
+        dropped_tool_call = stop_reason == "max_tokens" and (
+            bool(tool_calls)
+            or any(block.get("type") == "tool_call" for block in blocks)
+        )
+
         tool_calls, blocks = self._sanitize_tool_calls(
             tool_calls=tool_calls,
             blocks=blocks,
@@ -623,14 +678,34 @@ class Agent:
         # Determine action type
         if tool_calls:
             return Action.from_tool_calls(tool_calls, metadata=action_metadata)
-        else:
-            # Check stop_reason to determine if we should finish
-            # When Claude sends "end_turn", it means it's done and we should finish
-            if stop_reason == "end_turn" or not text:
-                return Action.finish(metadata=action_metadata)
-            else:
-                # For other stop reasons (like max_tokens), treat as response
-                return Action.from_response(text, metadata=action_metadata)
+
+        # A max_tokens stop on a text response is terminal. The truncated
+        # assistant message has already been appended to context above, so
+        # continuing the loop would build a follow-up request that ends with an
+        # assistant message — an assistant prefill that providers like
+        # Anthropic reject with a 400. Return the partial answer and record the
+        # truncation so callers can detect it.
+        if stop_reason == "max_tokens":
+            action_metadata["truncated"] = True
+            context.metadata["truncated"] = True
+            context.metadata["stop_reason"] = stop_reason
+            # Distinguish "the answer text was cut off" from "an in-progress
+            # tool call was discarded" so callers can tell that an action was
+            # dropped rather than just a reply trimmed.
+            if dropped_tool_call:
+                action_metadata["truncated_tool_call"] = True
+                context.metadata["truncated_tool_call"] = True
+            return Action.finish(metadata=action_metadata)
+
+        # Only known continuation signals may loop into an assistant-terminated
+        # follow-up request. Everything else — end_turn, no text, a tool_use
+        # response whose calls were all surfaced as errors and consumed above,
+        # or any unrecognized stop reason — finishes and returns the text we
+        # have, so the loop never builds an invalid prefill request.
+        if text and stop_reason in self._CONTINUABLE_STOP_REASONS:
+            return Action.from_response(text, metadata=action_metadata)
+
+        return Action.finish(metadata=action_metadata)
 
     def _truncate_assistant_text(self, text: str, max_len: int = 240) -> str:
         """Limit assistant text previews for renderer payloads."""
@@ -645,54 +720,40 @@ class Agent:
         blocks: List[Dict[str, Any]],
         stop_reason: Optional[str],
     ) -> tuple[List[ToolCall], List[Dict[str, Any]]]:
-        """Filter or drop tool calls that are invalid or unsafe to execute."""
+        """Drop tool calls that are unsafe to execute or pair with a result.
+
+        A max_tokens stop can truncate the model mid-tool-call, leaving the
+        tool_use block and its arguments incomplete. Such a block can neither be
+        executed nor cleanly paired with a tool_result, so it is dropped and the
+        turn finishes. Tool calls that are merely *invalid* (e.g. missing a
+        required argument) are kept here and surfaced to the model as a tool
+        error at execution time, so it can retry rather than lose the action.
+        """
         if stop_reason == "max_tokens":
             filtered_blocks = [
                 block for block in blocks if block.get("type") != "tool_call"
             ]
             return [], filtered_blocks
 
-        if not tool_calls:
-            return tool_calls, blocks
+        return tool_calls, blocks
 
-        valid_calls: List[ToolCall] = []
-        invalid_ids: set[str] = set()
-        for tool_call in tool_calls:
-            if not self._is_tool_call_valid(tool_call):
-                invalid_ids.add(tool_call.id)
-                continue
-            valid_calls.append(tool_call)
+    def _missing_required_args(self, tool: Any, tool_call: ToolCall) -> List[str]:
+        """Return required argument names the call omits.
 
-        if not invalid_ids:
-            return valid_calls, blocks
-
-        filtered_blocks = [
-            block
-            for block in blocks
-            if not (block.get("type") == "tool_call" and block.get("id") in invalid_ids)
-        ]
-        return valid_calls, filtered_blocks
-
-    def _is_tool_call_valid(self, tool_call: ToolCall) -> bool:
-        """Check if a tool call satisfies required arguments."""
-        tool = self.tools.get(tool_call.name)
-        if tool is None:
-            return True
-
+        Only truly absent or null required fields count as missing. A present
+        but empty value (e.g. an empty string) is a legitimate argument and is
+        left for the tool to handle, not treated as a validation failure.
+        """
         required = tool.parameters.get("required", [])
         if not required:
-            return True
+            return []
 
         args = tool_call.arguments or {}
+        missing: List[str] = []
         for field_name in required:
-            if field_name not in args:
-                return False
-            value = args.get(field_name)
-            if value is None:
-                return False
-            if isinstance(value, str) and not value.strip():
-                return False
-        return True
+            if field_name not in args or args.get(field_name) is None:
+                missing.append(field_name)
+        return missing
 
     def collect_signals(
         self,
