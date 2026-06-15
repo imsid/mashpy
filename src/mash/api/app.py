@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from mash.api.logging import PostgresAPIEventStore
 from mash.api.middleware import APILoggingMiddleware
 from mash.api.routes.agent import build_agent_router
+from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.common import (
     APIError,
@@ -145,6 +146,7 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
     api.include_router(build_host_router())
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())
+    api.include_router(build_feedback_router())
     app.include_router(api)
 
     @app.get("/")

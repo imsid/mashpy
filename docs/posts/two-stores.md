@@ -40,6 +40,8 @@ list_recent_traces(...)
 
 The contract is append and read. Everything that consumes the log later, whether that's SSE replay or trace analysis, is a read over an immutable sequence, and reconstructing a request's status works the same way.
 
+The same store keeps one more thing that people write by hand. When someone runs `/feedback` in the REPL, the message is appended to a `runtime_feedback` table with the host, agent, session, and last request id that were active in that shell. It is append and read like the event log, except the writer is a person instead of the engine, and nothing summarizes or rewrites it once it lands. The runtime store exposes `append_feedback` and `list_feedback` for it, and app developers read it back over `GET /api/v1/feedback`. It rides in the runtime store because it is the same shape of data: a timestamped record of something that happened during a request, kept verbatim.
+
 **`memory_store` holds what the conversation has established.** It owns turns, per-turn signals, compaction summaries, and the search index over past conversations. This is the store the next request reads when it loads context. When the agent remembers something you discussed last week, the memory came from here.
 
 ```mermaid

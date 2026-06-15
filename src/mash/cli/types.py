@@ -20,3 +20,4 @@ class CLIContext:
     renderer: RichRenderer
     session_ids: Dict[str, str] = field(default_factory=dict)
     host_id: str | None = None
+    last_request_id: str | None = None

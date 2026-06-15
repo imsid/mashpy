@@ -7,7 +7,7 @@ import json
 from collections import defaultdict
 from typing import Any, Protocol, cast
 
-from .types import RuntimeEvent, RuntimeEventType
+from .types import FeedbackRecord, RuntimeEvent, RuntimeEventType
 
 try:
     import psycopg
@@ -55,6 +55,22 @@ class RuntimeStore(Protocol):
         ...
 
     async def is_request_terminal(self, request_id: str) -> bool:
+        ...
+
+    async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
+        ...
+
+    async def list_feedback(
+        self,
+        app_id: str,
+        *,
+        after: float,
+        before: float | None = None,
+        feedback_type: str | None = None,
+        session_id: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackRecord]:
         ...
 
     async def get_latest_trace(
@@ -376,6 +392,93 @@ class PostgresRuntimeStore(RuntimeStore):
             RuntimeEventType.REQUEST_FAILED.value,
         }
 
+    async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO runtime_feedback (
+                        feedback_type, message, app_id, host_id, session_id,
+                        request_id, trace_id, context, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                    RETURNING feedback_id, feedback_type, message, app_id, host_id,
+                              session_id, request_id, trace_id, context, created_at
+                    """,
+                    (
+                        feedback.feedback_type,
+                        feedback.message,
+                        feedback.app_id,
+                        feedback.host_id,
+                        feedback.session_id,
+                        feedback.request_id,
+                        feedback.trace_id,
+                        json.dumps(feedback.context or {}, ensure_ascii=True, default=str),
+                        float(feedback.created_at),
+                    ),
+                )
+                stored = await cursor.fetchone()
+        if stored is None:
+            raise RuntimeError("failed to persist feedback")
+        return self._dict_to_feedback(stored)
+
+    async def list_feedback(
+        self,
+        app_id: str,
+        *,
+        after: float,
+        before: float | None = None,
+        feedback_type: str | None = None,
+        session_id: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackRecord]:
+        await self.open()
+        clauses = ["app_id = %s", "created_at > %s"]
+        params: list[Any] = [app_id, float(after)]
+        if before is not None:
+            clauses.append("created_at < %s")
+            params.append(float(before))
+        if feedback_type is not None:
+            clauses.append("feedback_type = %s")
+            params.append(feedback_type)
+        if session_id is not None:
+            clauses.append("session_id = %s")
+            params.append(session_id)
+
+        query_term = (q or "").strip()
+        if query_term:
+            clauses.append(
+                "to_tsvector('simple', COALESCE(message, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(query_term)
+            order_by = (
+                "ts_rank_cd(to_tsvector('simple', COALESCE(message, '')), "
+                "plainto_tsquery('simple', %s)) DESC, created_at DESC, feedback_id DESC"
+            )
+            params.append(query_term)
+        else:
+            order_by = "created_at DESC, feedback_id DESC"
+
+        query = f"""
+            SELECT feedback_id, feedback_type, message, app_id, host_id,
+                   session_id, request_id, trace_id, context, created_at
+            FROM runtime_feedback
+            WHERE {' AND '.join(clauses)}
+            ORDER BY {order_by}
+        """
+        if limit is not None:
+            query += "\nLIMIT %s"
+            params.append(max(1, int(limit)))
+
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(query, tuple(params))
+                rows = await cursor.fetchall()
+        return [self._dict_to_feedback(row) for row in rows]
+
     async def get_latest_trace(
         self,
         app_id: str,
@@ -534,6 +637,35 @@ class PostgresRuntimeStore(RuntimeStore):
                         WHERE host_id IS NOT NULL
                         """
                     )
+                    await cursor.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS runtime_feedback (
+                            feedback_id BIGSERIAL PRIMARY KEY,
+                            feedback_type TEXT NOT NULL,
+                            message TEXT NOT NULL,
+                            app_id TEXT NOT NULL,
+                            host_id TEXT,
+                            session_id TEXT,
+                            request_id TEXT,
+                            trace_id TEXT,
+                            context JSONB NOT NULL,
+                            created_at DOUBLE PRECISION NOT NULL
+                        )
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_runtime_feedback_app_created
+                        ON runtime_feedback(app_id, created_at)
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_runtime_feedback_message_fts
+                        ON runtime_feedback
+                        USING GIN (to_tsvector('simple', COALESCE(message, '')))
+                        """
+                    )
 
     @staticmethod
     def _dict_to_event(row: dict[str, Any]) -> RuntimeEvent:
@@ -560,6 +692,23 @@ class PostgresRuntimeStore(RuntimeStore):
             step_key=row.get("step_key"),
             dedupe_key=row.get("dedupe_key"),
             payload=decoded,
+            created_at=float(row["created_at"]),
+        )
+
+    @staticmethod
+    def _dict_to_feedback(row: dict[str, Any]) -> FeedbackRecord:
+        context = row.get("context")
+        decoded = context if isinstance(context, dict) else {}
+        return FeedbackRecord(
+            feedback_id=int(row["feedback_id"]),
+            feedback_type=str(row["feedback_type"]),
+            message=str(row["message"]),
+            app_id=str(row["app_id"]),
+            host_id=row.get("host_id"),
+            session_id=row.get("session_id"),
+            request_id=row.get("request_id"),
+            trace_id=row.get("trace_id"),
+            context=decoded,
             created_at=float(row["created_at"]),
         )
 

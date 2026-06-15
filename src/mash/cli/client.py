@@ -321,6 +321,65 @@ class MashHostClient:
         )
         return response.json()["data"]
 
+    def submit_feedback(
+        self,
+        agent_id: str,
+        *,
+        message: str,
+        feedback_type: str = "text",
+        host_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "agent_id": agent_id,
+            "message": message,
+            "feedback_type": feedback_type,
+        }
+        if host_id is not None:
+            body["host_id"] = host_id
+        if session_id is not None:
+            body["session_id"] = session_id
+        if request_id is not None:
+            body["request_id"] = request_id
+        if trace_id is not None:
+            body["trace_id"] = trace_id
+        if context is not None:
+            body["context"] = context
+        response = self._request("POST", "/api/v1/feedback", json_body=body)
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def list_feedback(
+        self,
+        agent_id: str,
+        *,
+        after: float,
+        before: float | None = None,
+        session_id: str | None = None,
+        feedback_type: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"agent_id": agent_id, "after": after}
+        if before is not None:
+            query["before"] = before
+        if session_id is not None:
+            query["session_id"] = session_id
+        if feedback_type is not None:
+            query["feedback_type"] = feedback_type
+        if q is not None:
+            query["q"] = q
+        if limit is not None:
+            query["limit"] = limit
+        response = self._request("GET", "/api/v1/feedback", query=query)
+        feedback = response.json()["data"].get("feedback")
+        if not isinstance(feedback, list):
+            return []
+        return [item for item in feedback if isinstance(item, dict)]
+
     def list_workflows(self, *, host: str | None = None) -> list[dict[str, Any]]:
         query = {"host": host} if host else None
         response = self._request("GET", "/api/v1/workflow", query=query)

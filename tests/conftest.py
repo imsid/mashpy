@@ -26,7 +26,7 @@ from mash.runtime.engine.steps import (
     run_step_tool_call,
     start_request_trace,
 )
-from mash.runtime.events.types import RuntimeEvent, RuntimeEventType
+from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
 
 
 class _TestRuntimeStore:
@@ -36,6 +36,7 @@ class _TestRuntimeStore:
         self._lock = asyncio.Lock()
         self._request_waiters: dict[str, set[asyncio.Event]] = {}
         self._global_waiters: set[asyncio.Event] = set()
+        self._feedback: list[FeedbackRecord] = []
 
     async def open(self) -> None:
         return None
@@ -132,6 +133,52 @@ class _TestRuntimeStore:
             RuntimeEventType.REQUEST_COMPLETED.value,
             RuntimeEventType.REQUEST_FAILED.value,
         }
+
+    async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
+        async with self._lock:
+            stored = FeedbackRecord(
+                feedback_id=len(self._feedback) + 1,
+                feedback_type=feedback.feedback_type,
+                message=feedback.message,
+                app_id=feedback.app_id,
+                host_id=feedback.host_id,
+                session_id=feedback.session_id,
+                request_id=feedback.request_id,
+                trace_id=feedback.trace_id,
+                context=dict(feedback.context or {}),
+                created_at=float(feedback.created_at),
+            )
+            self._feedback.append(stored)
+        return stored
+
+    async def list_feedback(
+        self,
+        app_id: str,
+        *,
+        after: float,
+        before: float | None = None,
+        feedback_type: str | None = None,
+        session_id: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackRecord]:
+        async with self._lock:
+            records = list(self._feedback)
+        query_term = (q or "").strip().lower()
+        filtered = [
+            record
+            for record in records
+            if record.app_id == app_id
+            and record.created_at > float(after)
+            and (before is None or record.created_at < float(before))
+            and (feedback_type is None or record.feedback_type == feedback_type)
+            and (session_id is None or record.session_id == session_id)
+            and (not query_term or query_term in record.message.lower())
+        ]
+        filtered.sort(key=lambda item: (item.created_at, item.feedback_id), reverse=True)
+        if limit is not None:
+            return filtered[: max(1, int(limit))]
+        return filtered
 
     async def get_latest_trace(
         self,

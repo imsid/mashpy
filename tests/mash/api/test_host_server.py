@@ -720,6 +720,47 @@ def test_telemetry_events_filter_by_agent() -> None:
             assert payload["source"] == "runtime_event_log"
 
 
+def test_feedback_submit_and_list_round_trip() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/feedback",
+                json={
+                    "agent_id": "primary",
+                    "message": "the trace output is hard to read",
+                    "session_id": "s-1",
+                    "request_id": "r-9",
+                },
+            )
+            assert submitted.status_code == 200
+            stored = submitted.json()["data"]["feedback"]
+            assert stored["feedback_id"] > 0
+            assert stored["feedback_type"] == "text"
+
+            listed = client.get("/api/v1/feedback?agent_id=primary&after=0")
+            assert listed.status_code == 200
+            payload = listed.json()["data"]
+            assert payload["after"] == 0
+            messages = [item["message"] for item in payload["feedback"]]
+            assert "the trace output is hard to read" in messages
+
+            matched = client.get("/api/v1/feedback?agent_id=primary&after=0&q=trace")
+            assert matched.status_code == 200
+            assert len(matched.json()["data"]["feedback"]) == 1
+
+            missing = client.get("/api/v1/feedback?agent_id=primary&q=trace")
+            assert missing.status_code == 422
+
+
+def test_feedback_list_returns_not_found_for_unknown_agent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.get("/api/v1/feedback?agent_id=ghost&after=0")
+            assert response.status_code == 404
+
+
 def test_api_event_logging_captures_api_request_metadata_and_body() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

@@ -464,6 +464,25 @@ def register_default_commands(shell) -> None:
 
         ctx.renderer.error("Usage: /workflow [list|run|status] ...")
 
+    def feedback_command(ctx, args: list[str]) -> None:
+        message = " ".join(args).strip()
+        if not message:
+            ctx.renderer.error("Usage: /feedback <message>")
+            return
+        try:
+            ctx.client.submit_feedback(
+                ctx.agent_id,
+                message=message,
+                host_id=ctx.host_id,
+                session_id=ctx.session_id,
+                request_id=ctx.last_request_id,
+            )
+        except Exception as exc:
+            ctx.renderer.error(f"Failed to record feedback: {exc}")
+            return
+        request_note = f", request {ctx.last_request_id}" if ctx.last_request_id else ""
+        ctx.renderer.info(f"✓ Feedback recorded (session {ctx.session_id}{request_note})")
+
     def trace_command(ctx, args: list[str]) -> None:
         count = 1
         if args:
@@ -545,5 +564,12 @@ def register_default_commands(shell) -> None:
             name="trace",
             help="Show trace analysis for recent traces (/trace [N])",
             handler=trace_command,
+        )
+    )
+    shell.command_registry.register(
+        Command(
+            name="feedback",
+            help="Send feedback or a bug report about this session (/feedback <message>)",
+            handler=feedback_command,
         )
     )

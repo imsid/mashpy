@@ -341,6 +341,35 @@ validation).
   - `workflow_id`
   - `run_id`
 
+### Feedback
+
+These endpoints are always available; they do not depend on `enable_observability`. Feedback is stored in the `runtime_feedback` table next to the runtime event log.
+
+`POST /api/v1/feedback`
+- Records one piece of user feedback with its session context.
+- Body fields:
+  - `agent_id` required
+  - `message` required
+  - `feedback_type` optional, default `text`
+  - `host_id`, `session_id`, `request_id`, `trace_id` optional context
+  - `context` optional JSON object for anything else worth keeping
+- Returns:
+  - `feedback`: the stored record, including the assigned `feedback_id` and `created_at`
+
+`GET /api/v1/feedback`
+- Lists feedback for one agent, most recent first.
+- Query params:
+  - `agent_id` required
+  - `after` required unix timestamp; only records created after it are returned (pass `0` to read from the beginning)
+  - `before` optional unix timestamp upper bound
+  - `session_id` optional
+  - `feedback_type` optional
+  - `q` optional full-text query over the message, ranked the same way as memory keyword search
+  - `limit` optional, server default, clamped to `1..1000`
+- Returns:
+  - `feedback`: list of stored records
+  - `agent_id`, `after`, `before`, `limit`
+
 ### Observability
 
 These endpoints require `enable_observability = True`. Memory search uses the target agent's `memory_store`.

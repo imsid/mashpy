@@ -42,6 +42,8 @@ Each group of endpoints projects one subsystem from earlier in the series.
 
 **Workflows.** `GET /workflow` lists definitions, `POST /workflow/{workflow_id}/run` starts a run with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its output, and `GET .../runs/{run_id}/events` streams a run's task events over SSE.
 
+**Feedback.** Two routes that stay open whether or not observability is enabled. `POST /feedback` records a free-form note with its session context, and `GET /feedback` lists notes for an agent, narrowed by a required `after` timestamp and an optional full-text `q` over the message. The runtime store keeps them in a `runtime_feedback` table beside the event log.
+
 **Telemetry.** Gated by `enable_observability`, with disabled routes returning `503 OBSERVABILITY_DISABLED`: recent runtime events and a live SSE tail, recent traces, the [trace analysis](reading-a-trace.md) with its span tree, memory search, and, when API logging is enabled, the backend's own request log.
 
 ## One client underneath
@@ -68,6 +70,7 @@ The `mash` CLI is built entirely on this client. Nothing in it has a private pat
 | `/session`, `/sessions` | current session info, session list |
 | `/history [N]` | recent turns |
 | `/trace [N]` | trace analysis for recent traces |
+| `/feedback <message>` | record a note or bug report for the session |
 | `/workflow list|run|status` | workflow operations |
 | `/help`, `/clear`, `/exit` | shell basics |
 
