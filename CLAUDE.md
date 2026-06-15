@@ -5,14 +5,21 @@ applications. This file gives coding agents (Claude Code, Codex, Cursor, etc.)
 everything they need to scaffold and build a Mash-powered agent from a user
 prompt.
 
-## Install
+**Install:**
 
 ```bash
-pip install mashpy
+# install the library
+uv add mashpy
+
+# install the `mash` CLI on your PATH
+uv tool install mashpy 
 ```
 
+**Configure the environment:**
+
 Requires Python >= 3.10. Set environment variables for the LLM provider you
-plan to use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`.
+plan to use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` 
+and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
 
 ## Core Concepts
 

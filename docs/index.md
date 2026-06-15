@@ -10,10 +10,12 @@ hide:
 
 **Build self-hosted, multi-agent applications.**
 
-Mash is a Python SDK and a host runtime for composing agents. 
+[Mash](posts/product-brief.md) is a Python SDK and a host runtime for composing agents.
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
 standardizes interactions between user applications and agents. 
-Agents are model agnostic and come with powerful built-in tools including web search, plus skills, memory, observability, and a API/CLI for access.
+
+Mash Agents are model agnostic and come with powerful built-in tools 
+including web search, plus skills, memory, observability, pre-built commands and a API/CLI for access.
 
 **Install:**
 
