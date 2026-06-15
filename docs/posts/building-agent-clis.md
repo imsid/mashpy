@@ -177,6 +177,7 @@ chain-of-thought rendering, and the shell ships these built-in commands:
 | `/history [N]` | View conversation history |
 | `/workflow list\|run\|status` | List, run, and inspect workflows |
 | `/trace [N]` | Show timing analysis for recent traces |
+| `/feedback <message>` | Record a note or bug report for the current session |
 | `/clear` | Clear the screen |
 | `/exit` | Exit the REPL |
 
@@ -357,6 +358,7 @@ Every command handler receives `ctx: CLIContext` with these attributes:
 | `ctx.agent_id` | `str` | The target agent (the host's primary when a host is set) |
 | `ctx.host_id` | `str \| None` | The host composition the shell is pinned to, if any |
 | `ctx.session_id` | `str` | Current session id |
+| `ctx.last_request_id` | `str \| None` | The id of the most recent request submitted in this shell |
 | `ctx.api_base_url` | `str` | Host base URL |
 | `ctx.session_ids` | `dict` | Map of agent id to session id |
 

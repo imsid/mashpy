@@ -390,6 +390,25 @@ response = await runtime.submit_request(
 # response.structured_output -> {"summary": "...", "score": 0.95}
 ```
 
+## Feedback
+
+The REPL ships a `/feedback` command. A user types `/feedback <message>` and the
+note is stored with the host, agent, session, and last request id from the
+current shell. There is no LLM step; the message is captured as written.
+
+```bash
+mash repl
+› /feedback the trace output is hard to read
+✓ Feedback recorded (session s-1, request r-9)
+```
+
+Feedback lands in a `runtime_feedback` table in the runtime store, alongside the
+event log. App developers read it back over the API. `GET /api/v1/feedback`
+takes a required `agent_id` and a required `after` unix timestamp, with optional
+`before`, `session_id`, `feedback_type`, `q` (full-text over the message), and
+`limit`. Submission also has its own route, `POST /api/v1/feedback`. Neither
+endpoint depends on observability being enabled.
+
 ## Serving and Deployment
 
 ```bash

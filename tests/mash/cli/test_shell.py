@@ -18,6 +18,7 @@ class _FakeClient:
         self.workflow_runs: list[dict[str, Any]] = []
         self.workflow_status_requests: list[dict[str, str]] = []
         self.host_workflows: list[str] = []
+        self.feedback: list[dict[str, Any]] = []
 
     def health(self):
         return {
@@ -123,6 +124,10 @@ class _FakeClient:
     def submit_request(self, agent_id: str, *, message: str, session_id: str | None = None):
         del agent_id, message, session_id
         return "req-1"
+
+    def submit_feedback(self, agent_id: str, **kwargs: Any):
+        self.feedback.append({"agent_id": agent_id, **kwargs})
+        return {"feedback": {"feedback_id": len(self.feedback)}}
 
     def stream_request(self, agent_id: str, request_id: str):
         del agent_id, request_id
@@ -309,6 +314,35 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertNotIn("host", command_names)
         self.assertIn("workflow", command_names)
         self.assertNotIn("changelog", command_names)
+
+    def test_feedback_command_records_session_context(self) -> None:
+        shell = self._build_host_shell()
+        shell.context.last_request_id = "req-1"
+        with patch.object(shell.context.renderer, "info") as info:
+            shell.command_registry.execute(
+                shell.context, "/feedback the trace output is hard to read"
+            )
+        self.assertEqual(len(shell.client.feedback), 1)
+        recorded = shell.client.feedback[0]
+        self.assertEqual(recorded["agent_id"], "primary")
+        self.assertEqual(recorded["message"], "the trace output is hard to read")
+        self.assertEqual(recorded["host_id"], "assistant")
+        self.assertEqual(recorded["session_id"], "s-1")
+        self.assertEqual(recorded["request_id"], "req-1")
+        self.assertIn("Feedback recorded", info.call_args.args[0])
+
+    def test_feedback_command_requires_message(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "error") as error:
+            shell.command_registry.execute(shell.context, "/feedback")
+        self.assertEqual(shell.client.feedback, [])
+        error.assert_called_once_with("Usage: /feedback <message>")
+
+    def test_handle_repl_message_tracks_last_request_id(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "markdown"):
+            shell.handle_repl_message(shell.context, "hello")
+        self.assertEqual(shell.context.last_request_id, "req-1")
 
     def test_session_command_reads_remote_session(self) -> None:
         shell = self._build_shell()

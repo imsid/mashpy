@@ -254,6 +254,7 @@ class MashRemoteShell:
                 message=message,
                 session_id=ctx.session_id,
             )
+        ctx.last_request_id = request_id or None
         final_payload: dict[str, Any] | None = None
         streamed_response_text: str | None = None
         try:

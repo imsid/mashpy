@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from mash.runtime import HostBuilder
 from mash.runtime.events.store import PostgresRuntimeStore
-from mash.runtime.events.types import RuntimeEvent, RuntimeEventType
+from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec
 
 try:  # pragma: no cover - environment dependent
@@ -258,3 +258,81 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
                     finally:
                         await host.close()
                         _delete_request_rows(database_url, request_id)
+
+
+def _delete_feedback_rows(database_url: str, app_id: str) -> None:
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM runtime_feedback WHERE app_id = %s", (app_id,))
+
+
+class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.app_id = f"feedback-{uuid.uuid4()}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+        _delete_feedback_rows(self.database_url, self.app_id)
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_feedback_rows(self.database_url, self.app_id)
+
+    async def test_append_and_list_feedback_round_trip(self) -> None:
+        stored = await self.store.append_feedback(
+            FeedbackRecord(
+                app_id=self.app_id,
+                message="the trace output is hard to read",
+                host_id="assistant",
+                session_id="s-1",
+                request_id="r-9",
+                context={"ts": 1.0},
+            )
+        )
+        self.assertGreater(stored.feedback_id, 0)
+        self.assertEqual(stored.feedback_type, "text")
+
+        listed = await self.store.list_feedback(self.app_id, after=0.0, limit=10)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0].message, "the trace output is hard to read")
+        self.assertEqual(listed[0].session_id, "s-1")
+        self.assertEqual(listed[0].context, {"ts": 1.0})
+
+    async def test_list_feedback_filters_and_orders(self) -> None:
+        await self.store.append_feedback(
+            FeedbackRecord(
+                app_id=self.app_id,
+                message="streaming hangs on long replies",
+                session_id="s-1",
+                created_at=100.0,
+            )
+        )
+        await self.store.append_feedback(
+            FeedbackRecord(
+                app_id=self.app_id,
+                message="trace rendering needs colors",
+                session_id="s-2",
+                created_at=200.0,
+            )
+        )
+
+        # Default sort is created_at DESC.
+        listed = await self.store.list_feedback(self.app_id, after=0.0)
+        self.assertEqual([f.created_at for f in listed], [200.0, 100.0])
+
+        # after is an exclusive created_at lower bound.
+        after_first = await self.store.list_feedback(self.app_id, after=150.0)
+        self.assertEqual([f.session_id for f in after_first], ["s-2"])
+
+        # before is an exclusive upper bound.
+        before_second = await self.store.list_feedback(self.app_id, after=0.0, before=150.0)
+        self.assertEqual([f.session_id for f in before_second], ["s-1"])
+
+        # session filter.
+        only_s1 = await self.store.list_feedback(self.app_id, after=0.0, session_id="s-1")
+        self.assertEqual([f.session_id for f in only_s1], ["s-1"])
+
+        # full-text q matches on message terms.
+        matched = await self.store.list_feedback(self.app_id, after=0.0, q="streaming")
+        self.assertEqual([f.session_id for f in matched], ["s-1"])

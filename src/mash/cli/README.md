@@ -56,6 +56,7 @@ Notes
 - `/history [limit]`: show conversation history for the current session.
 - `/hosts`: list the host compositions defined on the deployment. The shell's own target is fixed at connect time.
 - `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
+- `/feedback <message>`: record a free-form note or bug report about the current session. The message is stored with the host, agent, session, and last request id so app developers can read it back later through the feedback API.
 - `/workflow list`: list registered workflows.
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.

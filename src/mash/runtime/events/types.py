@@ -26,6 +26,28 @@ class RuntimeEventType(str, Enum):
     STEP_FAILED = "runtime.step.failed"
 
 
+class FeedbackType(str, Enum):
+    """Kind of user feedback. Free-form text today; room for future kinds."""
+
+    TEXT = "text"
+
+
+@dataclass(frozen=True)
+class FeedbackRecord:
+    """One piece of user feedback captured with its session context."""
+
+    app_id: str
+    message: str
+    feedback_type: str = FeedbackType.TEXT.value
+    feedback_id: int = 0
+    host_id: Optional[str] = None
+    session_id: Optional[str] = None
+    request_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    context: Dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+
+
 @dataclass(frozen=True)
 class RuntimeEvent:
     """One durable runtime event in append-only storage."""

@@ -155,8 +155,10 @@ The `RuntimeStore` boundary is intentionally small:
 - `is_request_terminal(...)`
 - `get_latest_trace(...)`
 - `list_recent_traces(...)`
+- `append_feedback(...)`
+- `list_feedback(...)`
 
-This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened.
+This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
 
 ### Runtime Durability
 
