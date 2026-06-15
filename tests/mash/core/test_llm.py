@@ -411,6 +411,49 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._parse_anthropic_response.assert_called_once_with(final_message)
         provider._emit_request_complete.assert_awaited_once()
 
+    async def test_anthropic_streamed_send_preserves_stop_reason(self) -> None:
+        # The streamed path accumulates a final message and parses it with the
+        # real parser, so non-end_turn stop reasons (max_tokens, pause_turn) the
+        # agent loop relies on must survive streaming exactly as they do on the
+        # blocking create() path.
+        for stop_reason in ("max_tokens", "pause_turn"):
+            with self.subTest(stop_reason=stop_reason):
+                provider = object.__new__(AnthropicProvider)
+                provider._model = "claude-sonnet-4-5"
+                provider._app_id = "test"
+
+                final_message = SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="partial answer")],
+                    stop_reason=stop_reason,
+                    usage=None,
+                )
+                stream_obj = _FakeAnthropicStream(["partial ", "answer"], final_message)
+                provider._client = SimpleNamespace(
+                    messages=SimpleNamespace(
+                        create=AsyncMock(),
+                        stream=Mock(return_value=stream_obj),
+                    )
+                )
+                provider._emit_request_start = AsyncMock()
+                provider._emit_request_complete = AsyncMock()
+                provider._emit_request_error = AsyncMock()
+                provider._emit_response_delta = AsyncMock()
+                request = LLMRequest(
+                    model="claude-sonnet-4-5",
+                    system="You are helpful.",
+                    messages=[],
+                    tools=[],
+                    max_tokens=100,
+                    streaming=True,
+                )
+
+                response = await provider.send(request)
+
+                provider._client.messages.stream.assert_called_once()
+                provider._client.messages.create.assert_not_called()
+                self.assertEqual(response.stop_reason, stop_reason)
+                self.assertEqual(response.text, "partial answer")
+
     async def test_delta_stream_coalesces_by_size_and_flushes_remainder(self) -> None:
         provider = SimpleNamespace(_emit_response_delta=AsyncMock())
         request = LLMRequest(

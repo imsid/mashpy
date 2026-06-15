@@ -141,13 +141,135 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
                 text="Partial response.",
                 tool_calls=[],
                 content_blocks=[LLMContentBlock.text("Partial response.")],
-                stop_reason="max_tokens",
+                stop_reason="pause_turn",
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
             text="Final answer.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Final answer.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _MaxTokensLLMProvider(LLMProvider):
+    """Always truncates a text response on max_tokens.
+
+    Records the role of the last message in every request so tests can assert
+    the loop never builds an assistant-terminated (prefill) follow-up request.
+    """
+
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_message_roles: list[str] = []
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.call_count += 1
+        if request.messages:
+            self.last_message_roles.append(request.messages[-1].role)
+        return LLMResponse(
+            text="A very long truncated answer",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("A very long truncated answer")],
+            stop_reason="max_tokens",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _MaxTokensToolCallLLMProvider(LLMProvider):
+    """Truncates on max_tokens while emitting a tool call.
+
+    Mirrors a model that ran out of budget mid-tool-call: the call's arguments
+    are incomplete and must be dropped rather than executed.
+    """
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        del request
+        self.call_count += 1
+        return LLMResponse(
+            text="Let me look that up",
+            tool_calls=[ToolCall(id="call-1", name="search", arguments={})],
+            content_blocks=[
+                LLMContentBlock.text("Let me look that up"),
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-1",
+                    name="search",
+                    arguments={},
+                ),
+            ],
+            stop_reason="max_tokens",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
+    """Emits a stop_reason="tool_use" response whose tool call fails validation.
+
+    The call omits a required argument, so it is surfaced to the model as a tool
+    error rather than executed. On the follow-up turn the model finishes.
+    """
+
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_message_roles: list[str] = []
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.call_count += 1
+        if request.messages:
+            self.last_message_roles.append(request.messages[-1].role)
+        if self.call_count == 1:
+            return LLMResponse(
+                text="Saving that now.",
+                tool_calls=[ToolCall(id="call-1", name="save", arguments={})],
+                content_blocks=[
+                    LLMContentBlock.text("Saving that now."),
+                    LLMContentBlock.tool_call(
+                        tool_call_id="call-1",
+                        name="save",
+                        arguments={},
+                    ),
+                ],
+                stop_reason="tool_use",
+                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+            )
+        return LLMResponse(
+            text="All done.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("All done.")],
             stop_reason="end_turn",
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
@@ -374,6 +496,149 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             msg for msg in response.context.messages if msg.role.value == "assistant"
         ]
         self.assertEqual(len(assistant_messages), 2)
+
+    async def test_run_terminates_on_max_tokens_without_assistant_prefill(
+        self,
+    ) -> None:
+        # A max_tokens stop on a text response must end the turn, not loop into
+        # a follow-up request that ends with an assistant message (a prefill the
+        # provider would reject with a 400).
+        llm = _MaxTokensLLMProvider()
+        agent = Agent(
+            llm=llm,
+            tools=ToolRegistry(),
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id="test",
+                system_prompt="You are a test agent.",
+                max_steps=5,
+            ),
+        )
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("write a long report")
+
+        response = await agent.run(context)
+
+        # The loop stopped after a single generation.
+        self.assertEqual(llm.call_count, 1)
+        # No request was ever built with a trailing assistant (prefill) message.
+        self.assertTrue(llm.last_message_roles)
+        self.assertNotIn("assistant", llm.last_message_roles)
+        # The partial answer is returned and the truncation is observable.
+        self.assertEqual(response.text, "A very long truncated answer")
+        self.assertTrue(response.metadata.get("truncated"))
+        self.assertEqual(response.metadata.get("stop_reason"), "max_tokens")
+        # A plain text truncation is not a dropped tool call.
+        self.assertIsNone(response.metadata.get("truncated_tool_call"))
+
+    async def test_run_flags_truncated_tool_call_on_max_tokens(self) -> None:
+        # A max_tokens stop mid-tool-call must not execute the incomplete call;
+        # it ends the turn and flags that an action was dropped.
+        async def search(_args) -> ToolResult:
+            raise AssertionError("truncated tool call must not execute")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="search",
+                description="Search tool",
+                parameters={"type": "object", "properties": {}},
+                _executor=search,
+            )
+        )
+        llm = _MaxTokensToolCallLLMProvider()
+        agent = Agent(
+            llm=llm,
+            tools=tools,
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id="test",
+                system_prompt="You are a test agent.",
+                max_steps=5,
+            ),
+        )
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("look something up")
+
+        response = await agent.run(context)
+
+        # The loop stopped after one generation; the tool was never called.
+        self.assertEqual(llm.call_count, 1)
+        self.assertTrue(response.metadata.get("truncated"))
+        self.assertTrue(response.metadata.get("truncated_tool_call"))
+        self.assertEqual(response.metadata.get("stop_reason"), "max_tokens")
+        # The truncated tool_call block is stripped from the *stored* assistant
+        # message too, so a later turn in the same session never replays an
+        # orphan tool_use with no matching tool_result.
+        assistant_messages = [
+            msg for msg in response.context.messages if msg.role.value == "assistant"
+        ]
+        self.assertEqual(len(assistant_messages), 1)
+        stored_block_types = {
+            block.get("type")
+            for block in assistant_messages[0].content
+            if isinstance(block, dict)
+        }
+        self.assertNotIn("tool_call", stored_block_types)
+
+    async def test_run_surfaces_invalid_tool_call_without_assistant_prefill(
+        self,
+    ) -> None:
+        # A stop_reason="tool_use" response whose only tool call fails validation
+        # must not drop the call and continue into an assistant-terminated
+        # (prefill) request. The failure is surfaced to the model as a tool error
+        # and logged; the model then finishes.
+        async def save(_args) -> ToolResult:
+            raise AssertionError("invalid tool call must not execute")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="save",
+                description="Persist data",
+                parameters={
+                    "type": "object",
+                    "properties": {"data": {"type": "string"}},
+                    "required": ["data"],
+                },
+                _executor=save,
+            )
+        )
+        llm = _ToolUseInvalidThenFinishLLMProvider()
+        logger = _RecordingEventLogger()
+        agent = Agent(
+            llm=llm,
+            tools=tools,
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id="test",
+                system_prompt="You are a test agent.",
+                max_steps=5,
+            ),
+        )
+        agent.set_event_logger(logger, "s-1")
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("save the record")
+
+        response = await agent.run(context)
+
+        # The invalid call was fed back as an error and the model corrected,
+        # finishing the turn.
+        self.assertEqual(llm.call_count, 2)
+        self.assertEqual(response.text, "All done.")
+        # No request was ever built ending with an assistant (prefill) message.
+        self.assertTrue(llm.last_message_roles)
+        self.assertNotIn("assistant", llm.last_message_roles)
+        # The follow-up request ended with the tool-result message.
+        self.assertEqual(llm.last_message_roles[-1], "tool")
+        # The invalidation was logged, naming the missing argument.
+        invalid_events = [
+            event
+            for event in logger.events
+            if getattr(event, "event_type", None) == "agent.tool.invalid"
+        ]
+        self.assertEqual(len(invalid_events), 1)
+        self.assertEqual(invalid_events[0].payload["missing_arguments"], ["data"])
 
     async def test_run_emits_llm_and_agent_trace_events_without_removed_debug_events(
         self,
