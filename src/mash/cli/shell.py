@@ -176,7 +176,11 @@ class MashRemoteShell:
             self.renderer.error(f"    Subagent {agent_id} error: {error or 'request failed'}")
 
     def _handle_interaction(
-        self, ctx: CLIContext, request_id: str, payload: dict[str, Any]
+        self,
+        ctx: CLIContext,
+        request_id: str,
+        payload: dict[str, Any],
+        agent_id: str | None = None,
     ) -> None:
         self.chain_renderer.finish_trace()
 
@@ -218,7 +222,7 @@ class MashRemoteShell:
             response = input("  > ").strip()
 
         self.client.post_interaction(
-            ctx.agent_id,
+            agent_id or ctx.agent_id,
             request_id,
             interaction_id=interaction_id,
             response=response,

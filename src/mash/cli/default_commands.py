@@ -371,6 +371,19 @@ def register_default_commands(shell) -> None:
                     task_agent_id = str(payload.get("task_agent_id") or "")
                     task_label = f"Workflow task {task_id}" if task_id else "Workflow task"
 
+                    if event_name == "request.interaction.create":
+                        shell._handle_interaction(
+                            ctx,
+                            str(payload.get("request_id") or ""),
+                            payload,
+                            agent_id=task_agent_id or ctx.agent_id,
+                        )
+                        continue
+
+                    if event_name == "request.interaction.ack":
+                        shell._render_interaction_ack(payload)
+                        continue
+
                     if event_name == "workflow.status":
                         status = str(payload.get("status") or "")
                         if status:

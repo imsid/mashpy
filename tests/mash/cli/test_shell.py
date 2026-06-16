@@ -19,6 +19,8 @@ class _FakeClient:
         self.workflow_status_requests: list[dict[str, str]] = []
         self.host_workflows: list[str] = []
         self.feedback: list[dict[str, Any]] = []
+        self.interactions: list[dict[str, Any]] = []
+        self.emit_workflow_interaction = False
 
     def health(self):
         return {
@@ -211,6 +213,16 @@ class _FakeClient:
             "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
         }
 
+    def post_interaction(self, agent_id, request_id, *, interaction_id, response):
+        self.interactions.append(
+            {
+                "agent_id": agent_id,
+                "request_id": request_id,
+                "interaction_id": interaction_id,
+                "response": response,
+            }
+        )
+
     def stream_workflow_run(self, workflow_id: str, run_id: str):
         del run_id
         task_id = "scan"
@@ -233,6 +245,31 @@ class _FakeClient:
                 "task_agent_id": task_agent_id,
             },
         }
+        if self.emit_workflow_interaction:
+            yield {
+                "event": "request.interaction.create",
+                "data": {
+                    "workflow_id": workflow_id,
+                    "run_id": "mw:host:changelog:abc",
+                    "task_id": task_id,
+                    "task_agent_id": task_agent_id,
+                    "request_id": "task-req-1",
+                    "interaction_id": "int-1",
+                    "type": "info",
+                    "prompt": "What is your name?",
+                },
+            }
+            yield {
+                "event": "request.interaction.ack",
+                "data": {
+                    "workflow_id": workflow_id,
+                    "run_id": "mw:host:changelog:abc",
+                    "task_id": task_id,
+                    "task_agent_id": task_agent_id,
+                    "interaction_id": "int-1",
+                    "response": "Ada",
+                },
+            }
         yield {
             "event": "agent.trace",
             "data": {
@@ -412,6 +449,24 @@ class MashRemoteShellTests(unittest.TestCase):
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow status: completed", lines)
+
+    def test_workflow_run_handles_ask_user_interaction(self) -> None:
+        shell = self._build_host_shell(host_workflows=["changelog"])
+        shell.client.emit_workflow_interaction = True
+        with patch("builtins.input", return_value="Ada"):
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        # The response is posted to the TASK's agent and request, not ctx.agent_id.
+        self.assertEqual(
+            shell.client.interactions,
+            [
+                {
+                    "agent_id": "worker",
+                    "request_id": "task-req-1",
+                    "interaction_id": "int-1",
+                    "response": "Ada",
+                }
+            ],
+        )
 
     def test_workflow_status_host_scoped_refuses_unattached(self) -> None:
         shell = self._build_host_shell()
