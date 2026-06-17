@@ -129,9 +129,9 @@ When using AskUser, agents should:
 
 ## Web Search
 
-`web_search.py` defines a `WebSearchProvider` contract and a `ParallelSearchProvider` that backs it with Parallel AI. A provider resolves to a single `MCPServerConfig`; the runtime feeds that through the same remote-tools path as any MCP server, so the agent ends up with plain `web_search` and `web_fetch` tools.
+`web_search.py` defines a `WebSearchProvider` contract. A provider resolves to a single `MCPServerConfig`; the runtime feeds that through the same remote-tools path as any MCP server, so the agent ends up with plain `web_search` and `web_fetch` tools.
 
-Agents opt in with `enable_web_search_tools()` on their spec; it's off by default, since the tools make network calls. The default provider uses Parallel's free no-auth endpoint. Pass `api_key=` / `oauth_token=` (or set `PARALLEL_API_KEY` / `PARALLEL_OAUTH_TOKEN`) to use the authenticated endpoint with higher limits; an explicit argument beats the env var, and an OAuth token beats an API key. Either way the token rides as `Authorization: Bearer <token>`; there is no interactive OAuth2 flow.
+To enable web search you must explicitly specify a provider by returning one from `build_web_search()` on their spec; it returns `None` by default, so web search is off. There's no default, so you always know who is handling your search data. Mash ships one `WebSearchProvider`, `ParallelSearchProvider`, which offers `web_search` and `web_fetch` and requires an API key.
 
 To add another backend (Exa, Tavily, Brave), subclass `WebSearchProvider` and return its endpoint. Nothing else in the spec surface changes.
 

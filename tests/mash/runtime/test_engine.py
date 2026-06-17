@@ -25,6 +25,7 @@ from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import build_spec
 from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
+from mash.tools.web_search import ParallelSearchProvider
 
 
 def _test_stores() -> dict:
@@ -399,8 +400,8 @@ class _WebSearchDefinition(_BaseDefinition):
     def enable_runtime_tools(self) -> bool:
         return False
 
-    def enable_web_search_tools(self) -> bool:
-        return True
+    def build_web_search(self):
+        return ParallelSearchProvider(api_key="test")
 
 
 class _MismatchedDefinition(_BaseDefinition):
@@ -1026,7 +1027,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _WebSearchDefinition(Path(tmp))
-                definition.enable_web_search_tools = lambda: False  # type: ignore[method-assign]
+                definition.build_web_search = lambda: None  # type: ignore[method-assign]
                 runtime = AgentRuntime.from_spec(
                     definition,
                     session_id="host-session",

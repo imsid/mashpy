@@ -19,17 +19,16 @@ class ParallelSearchProviderTests(unittest.TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
 
-    def test_anonymous_uses_free_endpoint_without_auth(self) -> None:
-        config = ParallelSearchProvider().mcp_server_config()
-        self.assertEqual(config.url, ParallelSearchProvider.FREE_URL)
-        self.assertEqual(config.headers, {})
-        self.assertEqual(config.allowed_tools, ["web_search", "web_fetch"])
-        self.assertEqual(config.name, "parallel_web_search")
+    def test_missing_credential_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            ParallelSearchProvider()
 
     def test_api_key_arg_uses_oauth_endpoint_with_bearer(self) -> None:
         config = ParallelSearchProvider(api_key="k").mcp_server_config()
         self.assertEqual(config.url, ParallelSearchProvider.OAUTH_URL)
         self.assertEqual(config.headers, {"Authorization": "Bearer k"})
+        self.assertEqual(config.allowed_tools, ["web_search", "web_fetch"])
+        self.assertEqual(config.name, "parallel_web_search")
 
     def test_oauth_token_takes_precedence_over_api_key(self) -> None:
         config = ParallelSearchProvider(
@@ -57,13 +56,13 @@ class ParallelSearchProviderTests(unittest.TestCase):
 
     def test_base_url_override_is_respected(self) -> None:
         config = ParallelSearchProvider(
-            base_url="https://example.test/mcp"
+            api_key="k", base_url="https://example.test/mcp"
         ).mcp_server_config()
         self.assertEqual(config.url, "https://example.test/mcp")
 
     def test_allowed_tools_override_is_respected(self) -> None:
         config = ParallelSearchProvider(
-            allowed_tools=["web_search"]
+            api_key="k", allowed_tools=["web_search"]
         ).mcp_server_config()
         self.assertEqual(config.allowed_tools, ["web_search"])
 

@@ -64,7 +64,7 @@ To the model, a remote tool is indistinguishable from a local one; the same `{na
 
 ## Web search
 
-Web search runs on the same machinery. A `WebSearchProvider` resolves to a single `MCPServerConfig`, and the runtime connects it through the same `MCPManager`. The default `ParallelSearchProvider` points at Parallel AI. An agent turns it on with `enable_web_search_tools()` rather than writing a server config by hand.
+Web search runs on the same machinery. A `WebSearchProvider` resolves to a single `MCPServerConfig`, and the runtime connects it through the same `MCPManager`. To enable it you must explicitly specify a provider by returning one from `build_web_search()` rather than writing a server config by hand — there's no default, so you always know who is handling your search data. Mash ships one `WebSearchProvider`, `ParallelSearchProvider`, which offers `web_search` and `web_fetch` and requires an API key.
 
 Naming is the one place it diverges. These tools register under their plain names, `web_search` and `web_fetch`, not the `mcp_*` form. They're a named capability rather than an arbitrary remote server, so the wiring keeps the original names while reusing the connection, auth headers, `allowed_tools` filter, and call routing that every MCP server gets.
 
