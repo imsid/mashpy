@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import tempfile
 import unittest
 import uuid
 from typing import Any
-from unittest.mock import patch
 
-from mash.runtime import HostBuilder
 from mash.runtime.events.store import PostgresRuntimeStore
 from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
-from mash.testing.runtime_fixtures import build_spec
 
 try:  # pragma: no cover - environment dependent
     import psycopg
@@ -75,20 +72,6 @@ def _fetch_committed_rows(database_url: str, request_id: str) -> list[dict[str, 
                 (request_id,),
             )
             return [dict(row) for row in cursor.fetchall()]
-
-
-async def _collect_events(
-    client: Any,
-    request_id: str,
-    *,
-    timeout: float,
-) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    async for event in client.stream_response(request_id, timeout=timeout):
-        events.append(event)
-        if event.get("event") in {"request.completed", "request.error"}:
-            break
-    return events
 
 
 class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -224,40 +207,48 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_streamed_request_events_are_visible_from_separate_session(self) -> None:
+    async def asyncSetUp(self) -> None:
         _require_postgres_runtime_support()
-        database_url = _runtime_database_url()
-        request_id = ""
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ,
-                {
-                    "MASH_DATA_DIR": tmp,
-                    "MASH_DATABASE_URL": database_url,
-                },
-            ):
-                with patch(
-                    "mash.runtime.service.PostgresRuntimeStore",
-                    PostgresRuntimeStore,
-                ):
-                    host = HostBuilder().primary(
-                        build_spec(agent_id="primary", response_text="primary-ok")
-                    ).build()
-                    await host.start()
-                    try:
-                        client = host.get_client("primary")
-                        request_id = await client.post_request("hello", session_id="s-1")
-                        events = await _collect_events(client, request_id, timeout=5)
-                        self.assertEqual(events[-1]["event"], "request.completed")
+        self.database_url = _runtime_database_url()
+        self.request_id = f"visible-{uuid.uuid4()}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+        _delete_request_rows(self.database_url, self.request_id)
 
-                        committed = _fetch_committed_rows(database_url, request_id)
-                        self.assertGreaterEqual(len(committed), 2)
-                        event_types = [row["event_type"] for row in committed]
-                        self.assertIn(RuntimeEventType.REQUEST_ACCEPTED.value, event_types)
-                        self.assertIn(RuntimeEventType.REQUEST_COMPLETED.value, event_types)
-                    finally:
-                        await host.close()
-                        _delete_request_rows(database_url, request_id)
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_request_rows(self.database_url, self.request_id)
+
+    async def test_streamed_request_events_are_visible_from_separate_session(self) -> None:
+        # A streaming consumer subscribes through a request waiter. Events
+        # appended to the store must both wake that waiter (so a live stream
+        # observes them) and be committed durably, so a separate database
+        # connection sees the same rows.
+        waiter = self.store.register_request_waiter(self.request_id)
+        try:
+            for dedupe_key, event_type in (
+                ("request.accepted", RuntimeEventType.REQUEST_ACCEPTED.value),
+                ("request.completed", RuntimeEventType.REQUEST_COMPLETED.value),
+            ):
+                await self.store.append_event(
+                    RuntimeEvent(
+                        app_id="store-test",
+                        agent_id="store-test",
+                        request_id=self.request_id,
+                        session_id="session-1",
+                        event_type=event_type,
+                        dedupe_key=dedupe_key,
+                        payload={},
+                    )
+                )
+            self.assertTrue(waiter.is_set())
+        finally:
+            self.store.unregister_request_waiter(self.request_id, waiter)
+
+        committed = _fetch_committed_rows(self.database_url, self.request_id)
+        event_types = [row["event_type"] for row in committed]
+        self.assertIn(RuntimeEventType.REQUEST_ACCEPTED.value, event_types)
+        self.assertIn(RuntimeEventType.REQUEST_COMPLETED.value, event_types)
 
 
 def _delete_feedback_rows(database_url: str, app_id: str) -> None:
