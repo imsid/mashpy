@@ -140,12 +140,23 @@ class LLMResponse:
 
 @dataclass
 class LLMCapabilities:
-    """Optional provider capabilities beyond the core contract."""
+    """Optional provider capabilities beyond the core contract.
+
+    The ``native_tool_calling``/``structured_output``/``prompt_caching``/
+    ``reasoning_content`` flags describe how much of the harness a model can
+    support natively. They exist primarily for open-source models served over
+    the Chat Completions wire (:class:`OSSCompatibleProvider`), which branches
+    on them; the frontier adapters leave them at their defaults.
+    """
 
     beta_flags: bool = False
     reasoning_controls: bool = False
     server_tools: bool = False
     streaming: bool = False
+    native_tool_calling: bool = True
+    structured_output: bool = False
+    prompt_caching: bool = False
+    reasoning_content: bool = False
 
 
 def coerce_content_blocks(content: str | List[Dict[str, Any]]) -> List[LLMContentBlock]:

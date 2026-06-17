@@ -75,6 +75,6 @@ First, the durable loop serializes context between checkpoints, which is possibl
 
 Second, observability gets provider-uniform events for free. Every adapter inherits `llm.request.start` / `llm.request.complete` / `llm.request.error` emission from `BaseLLMProvider`, with model, duration, and token fields in the same places, so the trace analysis at the end of this series sees uniform fields across vendors.
 
-One more thing rides on every one of these requests: the `tools` list, serialized in full each time. For a host with many instruction-heavy capabilities that payload gets expensive, which is the problem skills exist to solve.
+The same two types absorb more than three vendors. An open-source model served over a Chat Completions endpoint plugs into the identical `LLMRequest`/`LLMResponse` contract through a fourth adapter, so an agent can run on Qwen or Llama with the same one-line change in `build_llm()`.
 
-*Next: [Skills: Instructions on Demand](skills-on-demand.md).*
+*Next: [Open-Source Models over Chat Completions](oss-models.md).*

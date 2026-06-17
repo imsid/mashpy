@@ -85,6 +85,64 @@ Behavior:
   - `reasoning_controls=True`
   - `streaming=True`
 
+### `OSSCompatibleProvider`
+- Provider name: `oss` (`gemma`/`qwen`/`deepseek`/`llama` for the presets)
+- Default model: empty on the base class; presets set
+  `DEFAULT_GEMMA_MODEL`/`DEFAULT_QWEN_MODEL`/`DEFAULT_DEEPSEEK_MODEL`/`DEFAULT_LLAMA_MODEL`
+- Default env source: `GEMMA_MODEL`/`QWEN_MODEL`/`DEEPSEEK_MODEL`/`LLAMA_MODEL` for the presets
+- Base URL source:
+  - explicit `base_url`
+  - otherwise `OSS_BASE_URL`, fallback `http://localhost:11434/v1`
+- API key source:
+  - explicit `api_key`
+  - otherwise `OSS_API_KEY`, fallback `"not-needed"` (self-hosted engines that
+    require no auth still need a non-empty value for the client)
+
+Adapter for open-source models served over any OpenAI **Chat Completions**
+endpoint: self-hosted engines (vLLM, Ollama, llama.cpp's `llama-server`, SGLang,
+TGI) and hosted gateways (Together, Fireworks, Groq, OpenRouter). Mash never runs
+inference; this is a client pointed at a `base_url`. Reuses the `openai`
+`AsyncOpenAI` client against the custom base URL — it does **not** use the
+Responses API that `OpenAIProvider` targets.
+
+Behavior:
+- Uses `chat.completions.create`. No model-name validation (endpoint model names
+  are arbitrary, e.g. `Qwen/Qwen3-32B`).
+- Translates the normalized transcript into Chat Completions `messages`: system
+  prompt, assistant `tool_calls`, and `{"role": "tool", ...}` results.
+- Native tool calling: when `capabilities().native_tool_calling` is set and the
+  request has tools, passes them as `tools=[{"type": "function", ...}]` and
+  parses `message.tool_calls` back into normalized `ToolCall`s. Tool argument
+  JSON is parsed tolerantly (malformed args degrade to `{}`).
+- When `request.streaming` is set, streams via `chat.completions.create(
+  stream=True, stream_options={"include_usage": True})`, emits coalesced
+  `llm.response.delta` events from content deltas, reassembles fragmented
+  tool-call deltas by index, and returns a response-shaped object so the parse
+  path is identical to the non-streamed call.
+
+Capability flags drive behavior; the adapter branches on `capabilities()`:
+- `native_tool_calling` — required for tool use: pass `tools=` and parse
+  `message.tool_calls`. The adapter supports only models served with native tool
+  calling; a request carrying tools against a provider that declares
+  `native_tool_calling=False` raises rather than silently dropping the tools.
+- `structured_output` — when set and `provider_options["structured_output"]` is
+  a schema, constrain decoding with the standard Chat Completions
+  `response_format` json_schema (honors `structured_output_strict`, default
+  `True`). When unset, the schema is described in the system prompt instead and
+  the result is parsed as plain text.
+- `reasoning_content` — when set, `_parse` splits model thinking out of the
+  visible answer (a dedicated `reasoning_content` field, else an inline
+  `<think>...</think>` block) and stores it under
+  `provider_metadata["reasoning"]`.
+- `prompt_caching` — the `use_prompt_caching` hint is intentionally ignored:
+  OSS engines such as vLLM prefix-cache server-side with no request annotation.
+
+Presets `GemmaProvider`, `QwenProvider`, `DeepSeekProvider`, and `LlamaProvider` subclass it to pin a
+default model and capability profile (all enable `streaming`,
+`native_tool_calling`, and `structured_output`); the generic
+`OSSCompatibleProvider` takes an explicit `base_url`/`model` for any other
+endpoint.
+
 ## `LLMProvider` Protocol
 
 The runtime interacts with providers through the abstract interface in [base.py](/Users/sid/Projects/mashpy/src/mash/core/llm/base.py).

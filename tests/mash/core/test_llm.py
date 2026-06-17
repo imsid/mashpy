@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from types import SimpleNamespace
 
 from mash.core.context import ToolCall
-from mash.core.llm import AnthropicProvider, OpenAIProvider, GeminiProvider
+from mash.core.llm import (
+    AnthropicProvider,
+    GeminiProvider,
+    OpenAIProvider,
+    OSSCompatibleProvider,
+)
 from mash.core.llm.base import _DeltaStream
 from mash.core.llm.types import (
+    LLMCapabilities,
     LLMContentBlock,
     LLMMessage,
     LLMRequest,
@@ -782,6 +789,471 @@ class GeminiCachingTests(unittest.IsolatedAsyncioTestCase):
         self._mock_caches.create.assert_not_called()
         config_call = self._mock_models.generate_content.call_args.kwargs["config"]
         self.assertEqual(config_call.system_instruction, "You are helpful.")
+
+
+class _FakeOSSStream:
+    """Async-iterable stub for chat.completions.create(stream=True)."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __aiter__(self):
+        return _aiter(self._chunks)
+
+
+class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    def _make_provider(self, **client):
+        provider = object.__new__(OSSCompatibleProvider)
+        provider._model = "qwen3"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(**client))
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._emit_response_delta = AsyncMock()
+        return provider
+
+    def test_to_chat_messages_translates_transcript(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[
+                LLMMessage(role="user", content=[LLMContentBlock.text("hi")]),
+                LLMMessage(
+                    role="assistant",
+                    content=[
+                        LLMContentBlock.text("calling"),
+                        LLMContentBlock.tool_call(
+                            tool_call_id="call-1",
+                            name="lookup",
+                            arguments={"q": "x"},
+                        ),
+                    ],
+                ),
+                LLMMessage(
+                    role="tool",
+                    content=[
+                        LLMContentBlock.tool_result(
+                            tool_call_id="call-1", content="result"
+                        )
+                    ],
+                ),
+            ],
+            tools=[],
+            max_tokens=100,
+        )
+
+        messages = provider._to_chat_messages(request, provider.capabilities())
+
+        self.assertEqual(messages[0], {"role": "system", "content": "You are helpful."})
+        self.assertEqual(messages[1], {"role": "user", "content": "hi"})
+        assistant = messages[2]
+        self.assertEqual(assistant["role"], "assistant")
+        self.assertEqual(assistant["content"], "calling")
+        self.assertEqual(assistant["tool_calls"][0]["id"], "call-1")
+        self.assertEqual(assistant["tool_calls"][0]["function"]["name"], "lookup")
+        self.assertEqual(
+            json.loads(assistant["tool_calls"][0]["function"]["arguments"]),
+            {"q": "x"},
+        )
+        self.assertEqual(
+            messages[3],
+            {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+        )
+
+    def test_to_chat_tools_uses_function_envelope(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        tools = [
+            LLMToolDefinition(
+                name="lookup",
+                description="Look things up.",
+                parameters_json_schema={"type": "object", "properties": {}},
+            )
+        ]
+
+        result = provider._to_chat_tools(tools)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "description": "Look things up.",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+
+    def test_parse_maps_tool_calls_and_usage(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="hello",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call-1",
+                                function=SimpleNamespace(
+                                    name="lookup", arguments='{"query":"test"}'
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=2),
+            ),
+        )
+
+        parsed = provider._parse(raw, provider.capabilities())
+
+        self.assertEqual(parsed.text, "hello")
+        self.assertEqual(parsed.stop_reason, "tool_call")
+        self.assertEqual(
+            parsed.tool_calls,
+            [ToolCall(id="call-1", name="lookup", arguments={"query": "test"})],
+        )
+        self.assertEqual(parsed.content_blocks[0].to_dict(), {"type": "text", "text": "hello"})
+        self.assertEqual(parsed.content_blocks[1].to_dict()["type"], "tool_call")
+        assert parsed.usage is not None
+        self.assertEqual(parsed.usage.input_tokens, 10)
+        self.assertEqual(parsed.usage.cache_read_tokens, 2)
+
+    def test_parse_maps_length_finish_reason_to_max_tokens(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="partial", tool_calls=None),
+                    finish_reason="length",
+                )
+            ],
+            usage=None,
+        )
+
+        parsed = provider._parse(raw, provider.capabilities())
+
+        self.assertEqual(parsed.stop_reason, "max_tokens")
+        self.assertEqual(parsed.text, "partial")
+
+    def test_parse_arguments_is_tolerant_of_malformed_json(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        self.assertEqual(provider._parse_arguments('{"a": 1}'), {"a": 1})
+        self.assertEqual(provider._parse_arguments("not json"), {})
+        self.assertEqual(provider._parse_arguments(None), {})
+        self.assertEqual(provider._parse_arguments({"a": 1}), {"a": 1})
+
+    async def test_send_passes_tools_on_native_path(self) -> None:
+        provider = self._make_provider(create=AsyncMock(return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )))
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[LLMMessage(role="user", content=[LLMContentBlock.text("hi")])],
+            tools=[
+                LLMToolDefinition(
+                    name="lookup",
+                    description="Look things up.",
+                    parameters_json_schema={"type": "object"},
+                )
+            ],
+            max_tokens=100,
+        )
+
+        response = await provider.send(request)
+
+        call_kwargs = provider._client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call_kwargs["model"], "qwen3")
+        self.assertEqual(call_kwargs["tools"][0]["function"]["name"], "lookup")
+        self.assertNotIn("stream", call_kwargs)
+        self.assertEqual(response.stop_reason, "end_turn")
+
+    async def test_streamed_send_accumulates_content_and_tool_calls(self) -> None:
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="hello ", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="world", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="call-1",
+                                    function=SimpleNamespace(name="lookup", arguments='{"q":'),
+                                )
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id=None,
+                                    function=SimpleNamespace(name=None, arguments='"x"}'),
+                                )
+                            ],
+                        ),
+                        finish_reason="tool_calls",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=3, completion_tokens=4, total_tokens=7,
+                    prompt_tokens_details=None,
+                ),
+            ),
+        ]
+        provider = self._make_provider(
+            create=AsyncMock(return_value=_FakeOSSStream(chunks))
+        )
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            streaming=True,
+        )
+
+        response = await provider.send(request)
+
+        call_kwargs = provider._client.chat.completions.create.call_args.kwargs
+        self.assertTrue(call_kwargs["stream"])
+        self.assertEqual(response.text, "hello world")
+        self.assertEqual(
+            response.tool_calls,
+            [ToolCall(id="call-1", name="lookup", arguments={"q": "x"})],
+        )
+        self.assertEqual(response.stop_reason, "tool_call")
+        assert response.usage is not None
+        self.assertEqual(response.usage.total_tokens, 7)
+        provider._emit_response_delta.assert_awaited()
+
+    # -- Milestone 2: capability branches ------------------------------------
+
+    @staticmethod
+    def _ok_response():
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="{}", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+    async def test_send_sets_response_format_when_structured_output_supported(self) -> None:
+        provider = self._make_provider(create=AsyncMock(return_value=self._ok_response()))
+        provider.capabilities = lambda: LLMCapabilities(
+            streaming=True, native_tool_calling=True, structured_output=True
+        )
+        schema = {
+            "type": "object",
+            "title": "Result",
+            "properties": {"ok": {"type": "boolean"}},
+        }
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            provider_options={"structured_output": schema},
+        )
+
+        await provider.send(request)
+
+        call_kwargs = provider._client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["response_format"],
+            {
+                "type": "json_schema",
+                "json_schema": {"name": "Result", "schema": schema, "strict": True},
+            },
+        )
+        # Schema is constrained server-side, not injected into the prompt.
+        self.assertEqual(
+            call_kwargs["messages"][0], {"role": "system", "content": "You are helpful."}
+        )
+
+    async def test_send_injects_schema_prompt_when_structured_output_unsupported(self) -> None:
+        provider = self._make_provider(create=AsyncMock(return_value=self._ok_response()))
+        provider.capabilities = lambda: LLMCapabilities(
+            streaming=True, native_tool_calling=True, structured_output=False
+        )
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+        }
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            provider_options={"structured_output": schema},
+        )
+
+        await provider.send(request)
+
+        call_kwargs = provider._client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("response_format", call_kwargs)
+        system_content = call_kwargs["messages"][0]["content"]
+        self.assertIn("You are helpful.", system_content)
+        self.assertIn("JSON Schema", system_content)
+        self.assertIn('"ok"', system_content)
+
+    def test_parse_splits_reasoning_content_field(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="final answer",
+                        reasoning_content="step by step",
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        parsed = provider._parse(raw, LLMCapabilities(reasoning_content=True))
+
+        self.assertEqual(parsed.text, "final answer")
+        self.assertEqual(parsed.provider_metadata["reasoning"], "step by step")
+
+    def test_parse_strips_inline_think_block(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="<think>secret</think>visible", tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        parsed = provider._parse(raw, LLMCapabilities(reasoning_content=True))
+
+        self.assertEqual(parsed.text, "visible")
+        self.assertEqual(parsed.provider_metadata["reasoning"], "secret")
+
+    def test_parse_keeps_reasoning_inline_when_capability_off(self) -> None:
+        provider = object.__new__(OSSCompatibleProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="<think>x</think>hello", tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        parsed = provider._parse(raw, LLMCapabilities(reasoning_content=False))
+
+        self.assertEqual(parsed.text, "<think>x</think>hello")
+        self.assertNotIn("reasoning", parsed.provider_metadata)
+
+    async def test_streamed_send_accumulates_reasoning_content(self) -> None:
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None, reasoning_content="think ", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None, reasoning_content="more", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="answer", reasoning_content=None, tool_calls=None), finish_reason="stop")],
+                usage=None,
+            ),
+        ]
+        provider = self._make_provider(
+            create=AsyncMock(return_value=_FakeOSSStream(chunks))
+        )
+        provider.capabilities = lambda: LLMCapabilities(
+            streaming=True, native_tool_calling=True, reasoning_content=True
+        )
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            streaming=True,
+        )
+
+        response = await provider.send(request)
+
+        self.assertEqual(response.text, "answer")
+        self.assertEqual(response.provider_metadata["reasoning"], "think more")
+
+    async def test_send_rejects_tools_without_native_tool_calling(self) -> None:
+        provider = self._make_provider(create=AsyncMock(return_value=self._ok_response()))
+        provider.capabilities = lambda: LLMCapabilities(
+            streaming=True, native_tool_calling=False
+        )
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[
+                LLMToolDefinition(
+                    name="lookup",
+                    description="Look things up.",
+                    parameters_json_schema={"type": "object"},
+                )
+            ],
+            max_tokens=50,
+        )
+
+        with self.assertRaises(ValueError):
+            await provider.send(request)
+        provider._client.chat.completions.create.assert_not_called()
 
 
 if __name__ == "__main__":

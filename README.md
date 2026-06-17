@@ -14,6 +14,10 @@ standardizes interactions between user applications and agents.
 - **Multi-agent composition** — define a primary agent, add specialized subagents,
   and compose workflows behind a single host. Agents delegate to each other
   without a separate coordination layer.
+- **Frontier and open-source models** — built-in adapters for Anthropic, OpenAI,
+  and Gemini, and any open-source model served over a Chat Completions endpoint,
+  self-hosted with vLLM or Ollama or hosted on OpenRouter. Each agent picks its
+  model in one line of `build_llm()`.
 - **Durable harness** — requests execute through a durable engine and are recorded
   as replayable runtime events. Retries, restarts, and long-running work just
   work.
@@ -196,6 +200,7 @@ mash repl --host assistant
 | **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
+| **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
 | **WorkflowSpec** | Ordered task chains with structured output, orchestrated by DBOS |
 
 ## Example: Mash Pilot

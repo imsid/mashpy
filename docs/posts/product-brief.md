@@ -1,6 +1,6 @@
 ---
 title: Mash Product Brief
-description: Build and manage agents with the Mash SDK governed by the H2A protocol.
+description: Build and manage hosted agentic applications with the Mash SDK governed by the H2A protocol.
 date: 2026-05-27
 author: imsid
 tags:
@@ -94,6 +94,26 @@ workflow ───────► │        ▲                      output    
                   │       resumable · replayable            │
                   └─────────────────────────────────────────┘
 ```
+
+## Frontier and open-source models
+
+Open-source models like Gemma, Qwen, and DeepSeek now sit near the top of public
+benchmarks for reasoning, coding, and tool use, within range of the frontier
+models on many tasks. Running them is cheap: a hosted gateway charges a fraction
+of frontier API pricing, and self-hosting on your own hardware removes per-token
+cost entirely.
+
+Mash runs these models on the same durable harness as the frontier providers. An
+agent that uses Anthropic, OpenAI, or Gemini moves to an open-source model served
+by vLLM, Ollama, or OpenRouter with a one-line change in `build_llm()`. The tool
+loop, human-in-the-loop pauses, workflows, observability, and durability stay the
+same across every model.
+
+Because each agent in a host picks its own model, one deployment can mix them. A
+high-volume triage or extraction agent runs on a local open-source model while
+the agent that handles the hard reasoning runs on a frontier model, in the same
+process, behind the same host. You match the model to the task and the budget,
+and the harness underneath is identical.
 
 ## Where to go next
 

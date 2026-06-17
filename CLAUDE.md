@@ -42,7 +42,10 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
 - **SkillRegistry / Skill** — optional markdown instruction bundles loaded
   on demand via a meta-`Skill` tool.
 - **LLMProvider** — abstract LLM contract. Shipped adapters:
-  `AnthropicProvider`, `OpenAIProvider`, `GeminiProvider`.
+  `AnthropicProvider`, `OpenAIProvider`, `GeminiProvider`, and
+  `OSSCompatibleProvider` (open-source models over any Chat Completions
+  endpoint, with `GemmaProvider`/`QwenProvider`/`DeepSeekProvider`/`LlamaProvider`
+  presets).
 - **WorkflowSpec / TaskSpec** — ordered task chains orchestrated by DBOS.
 
 ## Minimal Agent Scaffold
@@ -166,6 +169,38 @@ llm = OpenAIProvider(app_id="my-agent", model="gpt-5")
 # Gemini (default from GEMINI_MODEL env, fallback gemini-3.5-flash)
 llm = GeminiProvider(app_id="my-agent")
 llm = GeminiProvider(app_id="my-agent", model="gemini-2.5-pro")
+```
+
+### Open-source models
+
+`OSSCompatibleProvider` runs open-source models through the same harness over any
+OpenAI Chat Completions endpoint — self-hosted vLLM/Ollama/llama.cpp or a hosted
+gateway (Together, Groq, OpenRouter). Mash is the client; you run or pay for the
+endpoint. Swapping the provider in `build_llm()` is the only change.
+
+The model must be served with native tool calling so the runtime can pass
+`tools=` and read back `message.tool_calls`; the latest Gemma, Qwen, and DeepSeek
+releases qualify. On a hosted gateway, pick a model whose route supports tool use.
+
+```python
+from mash.core.llm import (
+    OSSCompatibleProvider, GemmaProvider, QwenProvider, DeepSeekProvider, LlamaProvider,
+)
+
+# Family presets (model from GEMMA_MODEL/QWEN_MODEL/DEEPSEEK_MODEL/LLAMA_MODEL env).
+# base_url from OSS_BASE_URL env, fallback http://localhost:11434/v1 (Ollama).
+llm = GemmaProvider(app_id="my-agent", base_url="http://localhost:11434/v1")
+llm = QwenProvider(app_id="my-agent", model="Qwen/Qwen3-32B",
+                   base_url="http://gpu-box:8000/v1")  # vLLM
+
+# Generic endpoint (e.g. a hosted gateway with a key).
+import os
+llm = OSSCompatibleProvider(
+    app_id="my-agent",
+    model="deepseek-ai/DeepSeek-V3",
+    base_url="https://api.together.xyz/v1",
+    api_key=os.environ["TOGETHER_API_KEY"],
+)
 ```
 
 ## Custom Tools
