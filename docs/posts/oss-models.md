@@ -54,6 +54,29 @@ Tool support is a property of the model and the runtime serving it, so it holds 
 
 The model's capabilities are declared in `capabilities()`, and the adapter reads them. `structured_output` routes a JSON schema to the standard `response_format` json_schema field, which vLLM, SGLang, llama.cpp, and recent Ollama honor by constraining decoding. `reasoning_content` splits model thinking out of the visible answer, either a dedicated `reasoning_content` field or an inline `<think>` block, and keeps it in `provider_metadata`. Prompt caching is left to the server, since engines such as vLLM prefix-cache without a request annotation.
 
+## When the backend has no tool-call parser
+
+Native tool calling depends on the server parsing the model's output into structured `tool_calls`. Not every backend does. On a gateway that routes one model across several providers, you can land on a backend that lacks a tool-call parser, and then the model writes its tool call as plain text in the content, something like `<|tool_call>call:AskUser{...}<tool_call|>`, and returns no `tool_calls` at all. The call the agent was supposed to make never happens, the turn ends as if the model just answered, and nothing says why. It's a miserable thing to debug, and it bit a real workflow.
+
+The adapter watches for this. When a request carries tools but the response comes back with no `tool_calls` and the text looks like a leaked call, it flags `tool_call_leak` on the response and, by default, logs a warning that names the model and says the backend likely has no tool-call parser. `on_tool_call_leak` sets how strict that is: `warn` is the default, `raise` turns it into an error, and `ignore` keeps quiet. The detection is best-effort, matching the common leak markers, and it never tries to recover the call, only to tell you the backend dropped it.
+
+The cleaner fix is to not land on that backend in the first place. `default_provider_options` merges request options into every call without a subclass, so you can pin a gateway setting once at construction. On OpenRouter, requiring the route to honor your tool schema keeps the parser-less backends out:
+
+```python
+def build_llm(self):
+    return GemmaProvider(
+        app_id="assistant",
+        model="google/gemma-4-27b-it",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        default_provider_options={
+            "extra_body": {"provider": {"require_parameters": True}},
+        },
+    )
+```
+
+Per-request `provider_options` still win over the defaults, and the adapter forwards these keys without reading them, so nothing about OpenRouter leaks into the base provider.
+
 ## Self-hosted and hosted
 
 Self-hosting with Ollama means running the server and pointing a preset at it:

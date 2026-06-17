@@ -807,6 +807,8 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = object.__new__(OSSCompatibleProvider)
         provider._model = "qwen3"
         provider._app_id = "test"
+        provider._default_provider_options = {}
+        provider._on_tool_call_leak = "warn"
         provider._client = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(**client))
         )
@@ -1330,6 +1332,157 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.text, "answer")
         self.assertEqual(response.provider_metadata["reasoning"], "think more")
+
+    async def test_send_merges_default_provider_options_request_wins(self) -> None:
+        # Construction-time defaults pass through, but a per-request option of
+        # the same name overrides the default.
+        provider = self._make_provider(
+            create=AsyncMock(return_value=self._ok_response())
+        )
+        provider._default_provider_options = {
+            "extra_body": {"provider": {"require_parameters": True}},
+            "top_p": 0.5,
+        }
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            provider_options={"top_p": 0.9},
+        )
+
+        await provider.send(request)
+
+        kwargs = provider._client.chat.completions.create.call_args.kwargs
+        self.assertEqual(kwargs["top_p"], 0.9)  # request wins
+        self.assertEqual(
+            kwargs["extra_body"], {"provider": {"require_parameters": True}}
+        )  # default passes through untouched
+
+    def _leaked_response(self):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='<|tool_call>call:AskUser{"q": 1}<tool_call|>',
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+    def _tools_request(self):
+        return LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[
+                LLMToolDefinition(
+                    name="AskUser",
+                    description="Ask the user.",
+                    parameters_json_schema={"type": "object"},
+                )
+            ],
+            max_tokens=50,
+        )
+
+    def test_parse_warns_on_leaked_tool_call(self) -> None:
+        provider = self._make_provider()
+        provider._on_tool_call_leak = "warn"
+        caps = LLMCapabilities(native_tool_calling=True)
+
+        with self.assertLogs("mash.core.llm.oss", level="WARNING") as cm:
+            parsed = provider._parse(
+                self._leaked_response(), caps, self._tools_request()
+            )
+
+        self.assertTrue(parsed.provider_metadata["tool_call_leak"])
+        self.assertEqual(parsed.tool_calls, [])
+        self.assertEqual(parsed.stop_reason, "end_turn")
+        self.assertTrue(any("tool-call parser" in line for line in cm.output))
+
+    def test_parse_raises_on_leaked_tool_call_when_strict(self) -> None:
+        provider = self._make_provider()
+        provider._on_tool_call_leak = "raise"
+        caps = LLMCapabilities(native_tool_calling=True)
+
+        with self.assertRaises(ValueError):
+            provider._parse(self._leaked_response(), caps, self._tools_request())
+
+    def test_parse_ignore_suppresses_leak_warning(self) -> None:
+        provider = self._make_provider()
+        provider._on_tool_call_leak = "ignore"
+        caps = LLMCapabilities(native_tool_calling=True)
+
+        with self.assertNoLogs("mash.core.llm.oss", level="WARNING"):
+            parsed = provider._parse(
+                self._leaked_response(), caps, self._tools_request()
+            )
+
+        # Detection still recorded for traces; just neither logged nor raised.
+        self.assertTrue(parsed.provider_metadata["tool_call_leak"])
+
+    def test_parse_no_leak_when_tool_calls_present(self) -> None:
+        # Happy path: structured tool_calls returned, so nothing is flagged.
+        provider = self._make_provider()
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="c1",
+                                type="function",
+                                function=SimpleNamespace(
+                                    name="AskUser", arguments="{}"
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+        caps = LLMCapabilities(native_tool_calling=True)
+
+        with self.assertNoLogs("mash.core.llm.oss", level="WARNING"):
+            parsed = provider._parse(raw, caps, self._tools_request())
+
+        self.assertNotIn("tool_call_leak", parsed.provider_metadata)
+        self.assertEqual(parsed.stop_reason, "tool_call")
+
+    def test_parse_no_leak_for_plain_text_answer(self) -> None:
+        # Tools sent, no tool_calls, but ordinary prose must not false-positive.
+        provider = self._make_provider()
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Here is your answer.", tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        caps = LLMCapabilities(native_tool_calling=True)
+
+        with self.assertNoLogs("mash.core.llm.oss", level="WARNING"):
+            parsed = provider._parse(raw, caps, self._tools_request())
+
+        self.assertNotIn("tool_call_leak", parsed.provider_metadata)
+        self.assertEqual(parsed.stop_reason, "end_turn")
+
+    def test_constructor_rejects_invalid_leak_action(self) -> None:
+        with self.assertRaises(ValueError):
+            OSSCompatibleProvider(
+                app_id="t", model="qwen3", on_tool_call_leak="bogus"
+            )
 
     async def test_send_rejects_tools_without_native_tool_calling(self) -> None:
         provider = self._make_provider(create=AsyncMock(return_value=self._ok_response()))

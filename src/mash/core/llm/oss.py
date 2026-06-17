@@ -16,6 +16,7 @@ in ``AgentSpec.build_llm()`` is the only change a developer makes.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from types import SimpleNamespace
@@ -34,6 +35,24 @@ from .types import (
     LLMToolDefinition,
 )
 from .utils import block_value
+
+LOGGER = logging.getLogger("mash.core.llm.oss")
+
+# Best-effort detector for a model's native tool-call syntax leaking into the
+# text channel. Backends without a tool-call parser emit these markers as plain
+# content instead of structured ``tool_calls`` (seen with some OpenRouter
+# backends for Gemma). Covers the ``<|tool_call>`` / ``<tool_call|>`` /
+# ``<tool_call>`` / ``</tool_call>`` markers, Mistral's ``[TOOL_CALLS]``, and the
+# pythonic ``call:Name{...}`` form. Detection only, no recovery.
+_TOOL_CALL_LEAK = re.compile(
+    r"<\/?\|?tool_call\|?>"
+    r"|\[TOOL_CALLS\]"
+    r"|\bcall:\s*[A-Za-z_]\w*\s*\{",
+    re.IGNORECASE,
+)
+
+# Allowed values for the ``on_tool_call_leak`` strictness control.
+_LEAK_ACTIONS = frozenset({"warn", "raise", "ignore"})
 
 DEFAULT_OSS_BASE_URL = os.getenv("OSS_BASE_URL", "http://localhost:11434/v1")
 DEFAULT_GEMMA_MODEL = os.getenv("GEMMA_MODEL", "gemma3")
@@ -66,6 +85,8 @@ class OSSCompatibleProvider(BaseLLMProvider):
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
         session_id: Optional[str] = None,
+        default_provider_options: Optional[Dict[str, Any]] = None,
+        on_tool_call_leak: str = "warn",
     ) -> None:
         super().__init__(
             app_id=app_id,
@@ -73,6 +94,20 @@ class OSSCompatibleProvider(BaseLLMProvider):
             event_logger=event_logger,
             session_id=session_id,
         )
+        # Request options merged into every request's ``provider_options``, with
+        # request-level values winning. Lets callers pin gateway settings (e.g.
+        # OpenRouter's ``{"extra_body": {"provider": {"require_parameters": true}}}``)
+        # once at construction without subclassing. Kept gateway-neutral: no
+        # provider-specific keys are interpreted here.
+        self._default_provider_options: Dict[str, Any] = dict(
+            default_provider_options or {}
+        )
+        if on_tool_call_leak not in _LEAK_ACTIONS:
+            raise ValueError(
+                f"on_tool_call_leak must be one of {sorted(_LEAK_ACTIONS)}, "
+                f"got {on_tool_call_leak!r}."
+            )
+        self._on_tool_call_leak = on_tool_call_leak
         if AsyncOpenAI is None:
             raise RuntimeError(
                 "OpenAI client is not installed. Install `openai` to use this provider."
@@ -98,6 +133,13 @@ class OSSCompatibleProvider(BaseLLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         request_start = time.time()
         caps = self.capabilities()
+
+        # Construction-time defaults merge under request-level options, so a
+        # per-request value always wins over a pinned default.
+        provider_options = {
+            **self._default_provider_options,
+            **request.provider_options,
+        }
 
         messages = self._to_chat_messages(request, caps)
         params: Dict[str, Any] = {
@@ -126,11 +168,11 @@ class OSSCompatibleProvider(BaseLLMProvider):
         # by vLLM/SGLang/llama.cpp and recent Ollama). Otherwise the schema was
         # injected into the system prompt by ``_to_chat_messages`` and we just
         # parse the resulting text.
-        schema = request.provider_options.get("structured_output")
+        schema = provider_options.get("structured_output")
         if (
             isinstance(schema, dict)
             and caps.structured_output
-            and "response_format" not in request.provider_options
+            and "response_format" not in provider_options
         ):
             params["response_format"] = self._response_format(request, schema)
 
@@ -139,7 +181,7 @@ class OSSCompatibleProvider(BaseLLMProvider):
         # ``use_prompt_caching`` hint has no Chat Completions equivalent to set.
 
         # Pass through unknown provider_options (e.g. top_p, extra_body).
-        for key, value in request.provider_options.items():
+        for key, value in provider_options.items():
             if key in {
                 "betas",
                 "structured_output",
@@ -157,7 +199,7 @@ class OSSCompatibleProvider(BaseLLMProvider):
                 raw_response = await self._stream(request, params)
             else:
                 raw_response = await self._client.chat.completions.create(**params)
-            response = self._parse(raw_response, caps)
+            response = self._parse(raw_response, caps, request)
             await self._emit_request_complete(
                 request, started_at=request_start, response=response
             )
@@ -292,7 +334,12 @@ class OSSCompatibleProvider(BaseLLMProvider):
 
     # -- response parsing ----------------------------------------------------
 
-    def _parse(self, raw: Any, caps: LLMCapabilities) -> LLMResponse:
+    def _parse(
+        self,
+        raw: Any,
+        caps: LLMCapabilities,
+        request: Optional[LLMRequest] = None,
+    ) -> LLMResponse:
         # Local import: ``context`` imports ``llm.types``, so a top-level import
         # here is a circular import when ``context`` is loaded first. Matches the
         # other providers (e.g. ``OpenAIProvider._parse_openai_response``).
@@ -335,6 +382,20 @@ class OSSCompatibleProvider(BaseLLMProvider):
             provider_metadata["finish_reason"] = finish_reason
         if reasoning:
             provider_metadata["reasoning"] = reasoning
+
+        # Tools were sent but came back as text instead of structured tool_calls:
+        # the serving backend likely lacks a tool-call parser, so the intended
+        # call would otherwise be silently dropped as an ``end_turn`` turn.
+        if (
+            request is not None
+            and request.tools
+            and caps.native_tool_calling
+            and not tool_calls
+            and self._looks_like_tool_call_leak(text)
+        ):
+            provider_metadata["tool_call_leak"] = True
+            self._handle_tool_call_leak(text)
+
         return LLMResponse(
             text=text.strip(),
             tool_calls=tool_calls,
@@ -346,6 +407,30 @@ class OSSCompatibleProvider(BaseLLMProvider):
             provider_response=raw,
             provider_metadata=provider_metadata,
         )
+
+    def _looks_like_tool_call_leak(self, text: str) -> bool:
+        """Best-effort check for native tool-call syntax leaked into the text."""
+        return bool(text) and bool(_TOOL_CALL_LEAK.search(text))
+
+    def _handle_tool_call_leak(self, text: str) -> None:
+        """Surface a leaked tool call per the configured strictness.
+
+        ``warn`` (default) logs a clear diagnostic, ``raise`` turns it into an
+        error, ``ignore`` suppresses both. ``provider_metadata['tool_call_leak']``
+        is set by the caller regardless so traces record the detection.
+        """
+        if self._on_tool_call_leak == "ignore":
+            return
+        snippet = text[:200]
+        message = (
+            f"{type(self).__name__} sent tools to model {self.model!r} but the "
+            "response carried no structured tool_calls and the text looks like a "
+            "leaked tool call. The serving backend likely lacks a tool-call "
+            f"parser. Leaked content (truncated): {snippet!r}"
+        )
+        if self._on_tool_call_leak == "raise":
+            raise ValueError(message)
+        LOGGER.warning(message)
 
     def _split_reasoning(self, message: Any, text: str) -> tuple[str, Optional[str]]:
         """Separate model thinking from the visible answer.

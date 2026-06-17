@@ -143,6 +143,45 @@ default model and capability profile (all enable `streaming`,
 `OSSCompatibleProvider` takes an explicit `base_url`/`model` for any other
 endpoint.
 
+Constructor options (also on every preset):
+- `default_provider_options: dict | None` — request options merged into every
+  request's `provider_options`, with **request-level values winning**. Lets you
+  pin gateway settings once at construction without subclassing. The adapter
+  stays gateway-neutral: it interprets no provider-specific keys, it just
+  forwards them. For example, to make an OpenRouter route reject backends that
+  drop your tool schema (so you don't silently fall back to a parser-less
+  backend):
+
+  ```python
+  OSSCompatibleProvider(
+      app_id="my-agent",
+      model="google/gemma-3-27b-it",
+      base_url="https://openrouter.ai/api/v1",
+      api_key=os.environ["OPENROUTER_API_KEY"],
+      default_provider_options={
+          "extra_body": {"provider": {"require_parameters": True}},
+      },
+  )
+  ```
+
+- `on_tool_call_leak: "warn" | "raise" | "ignore"` (default `"warn"`) — controls
+  the leaked-tool-call check below.
+
+**Leaked tool calls.** A backend without a tool-call parser may emit the model's
+native tool-call syntax as plain text in `message.content` (e.g.
+`<|tool_call>call:AskUser{...}<tool_call|>`) and return no structured
+`tool_calls`. Without detection this looks like an ordinary `end_turn` and the
+intended call is silently dropped. When a request carries tools,
+`native_tool_calling` is set, and the response has no `tool_calls` but the text
+looks like a leaked call (best-effort detection of the `<|tool_call>` /
+`<tool_call|>` / `<tool_call>` / `</tool_call>` markers, Mistral's
+`[TOOL_CALLS]`, and the pythonic `call:Name{...}` form), the adapter sets
+`provider_metadata["tool_call_leak"] = True` and applies `on_tool_call_leak`:
+`warn` logs a diagnostic naming the model/endpoint (logger `mash.core.llm.oss`),
+`raise` turns it into an error, `ignore` suppresses both (the metadata flag is
+still set). Detection only — the adapter never tries to parse or recover the
+leaked call.
+
 ## `LLMProvider` Protocol
 
 The runtime interacts with providers through the abstract interface in [base.py](/Users/sid/Projects/mashpy/src/mash/core/llm/base.py).
