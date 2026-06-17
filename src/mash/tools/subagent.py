@@ -63,6 +63,8 @@ class InvokeSubagentTool:
 
     name = "InvokeSubagent"
     requires_approval = False
+    # Spawns a child workflow at workflow scope; never run concurrently.
+    parallel_safe = False
     description = (
         "Invoke a subagent by id with a focused prompt. "
         "Use this when a specialized subagent can help with the task."

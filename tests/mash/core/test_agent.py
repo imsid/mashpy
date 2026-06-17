@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import unittest
@@ -668,6 +669,144 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("agent.prompt.token_breakdown", event_types)
         self.assertNotIn("agent.tools.token_breakdown", event_types)
         self.assertNotIn("agent.llm.response", event_types)
+
+
+def _build_agent(tools: ToolRegistry, **config_kwargs) -> Agent:
+    return Agent(
+        llm=_FinishImmediatelyLLMProvider(),
+        tools=tools,
+        skills=SkillRegistry(),
+        config=AgentConfig(
+            app_id="test",
+            system_prompt="You are a test agent.",
+            **config_kwargs,
+        ),
+    )
+
+
+def _tool_call(name: str, call_id: str, **arguments) -> ToolCall:
+    return ToolCall(id=call_id, name=name, arguments=arguments)
+
+
+class ParallelToolExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_parallel_safe_calls_run_concurrently(self) -> None:
+        order: list[str] = []
+
+        def make_tool(name: str, delay: float) -> FunctionTool:
+            async def run(_args) -> ToolResult:
+                order.append(f"start:{name}")
+                await asyncio.sleep(delay)
+                order.append(f"end:{name}")
+                return ToolResult.success(name)
+
+            return FunctionTool(
+                name=name,
+                description=name,
+                parameters={"type": "object", "properties": {}},
+                _executor=run,
+            )
+
+        tools = ToolRegistry()
+        tools.register(make_tool("slow", 0.05))
+        tools.register(make_tool("fast", 0.0))
+        agent = _build_agent(tools)
+
+        start = time.monotonic()
+        results = await agent._execute_tool_calls(
+            [_tool_call("slow", "c1"), _tool_call("fast", "c2")]
+        )
+        elapsed = time.monotonic() - start
+
+        # fast finishes before slow despite being scheduled second -> concurrent.
+        self.assertEqual(order[0], "start:slow")
+        self.assertEqual(order[1], "start:fast")
+        self.assertIn("end:fast", order[: order.index("end:slow")])
+        self.assertLess(elapsed, 0.05 * 1.8)
+        # Results stay in call order, mapped to their tool_call_ids.
+        self.assertEqual([r.tool_call_id for r in results], ["c1", "c2"])
+
+    async def test_one_failure_does_not_abort_the_batch(self) -> None:
+        async def boom(_args) -> ToolResult:
+            raise RuntimeError("kaboom")
+
+        async def ok(_args) -> ToolResult:
+            return ToolResult.success("fine")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="boom",
+                description="raises",
+                parameters={"type": "object", "properties": {}},
+                _executor=boom,
+            )
+        )
+        tools.register(
+            FunctionTool(
+                name="ok",
+                description="succeeds",
+                parameters={"type": "object", "properties": {}},
+                _executor=ok,
+            )
+        )
+        agent = _build_agent(tools)
+
+        results = await agent._execute_tool_calls(
+            [_tool_call("boom", "c1"), _tool_call("ok", "c2")]
+        )
+
+        by_id = {r.tool_call_id: r for r in results}
+        self.assertTrue(by_id["c1"].is_error)
+        self.assertIn("kaboom", by_id["c1"].content)
+        self.assertFalse(by_id["c2"].is_error)
+        self.assertEqual(by_id["c2"].content, "fine")
+
+    async def test_unsafe_tool_acts_as_serial_barrier(self) -> None:
+        order: list[str] = []
+
+        def make_tool(name: str, *, parallel_safe: bool) -> FunctionTool:
+            async def run(_args) -> ToolResult:
+                order.append(f"start:{name}")
+                await asyncio.sleep(0.01)
+                order.append(f"end:{name}")
+                return ToolResult.success(name)
+
+            return FunctionTool(
+                name=name,
+                description=name,
+                parameters={"type": "object", "properties": {}},
+                _executor=run,
+                parallel_safe=parallel_safe,
+            )
+
+        tools = ToolRegistry()
+        tools.register(make_tool("a", parallel_safe=True))
+        tools.register(make_tool("serial", parallel_safe=False))
+        tools.register(make_tool("b", parallel_safe=True))
+        agent = _build_agent(tools)
+
+        results = await agent._execute_tool_calls(
+            [
+                _tool_call("a", "c1"),
+                _tool_call("serial", "c2"),
+                _tool_call("b", "c3"),
+            ]
+        )
+
+        # Nothing crosses the serial barrier: a completes, then serial runs
+        # alone, then b runs.
+        self.assertEqual(
+            order,
+            [
+                "start:a",
+                "end:a",
+                "start:serial",
+                "end:serial",
+                "start:b",
+                "end:b",
+            ],
+        )
+        self.assertEqual([r.tool_call_id for r in results], ["c1", "c2", "c3"])
 
 
 if __name__ == "__main__":

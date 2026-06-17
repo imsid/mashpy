@@ -33,6 +33,11 @@ class Tool(Protocol):
     description: str
     parameters: Dict[str, Any]  # JSON schema
     requires_approval: bool
+    # Whether this tool is safe to run concurrently with other tool calls in
+    # the same turn. Defaults to True (opt-out): tools with side effects that
+    # must not interleave should set this False. Tools that omit the attribute
+    # are treated as parallel-safe.
+    parallel_safe: bool
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given arguments.
@@ -63,6 +68,7 @@ class FunctionTool:
     parameters: Dict[str, Any]
     _executor: Callable[[Dict[str, Any]], Awaitable[ToolResult]]
     requires_approval: bool = False
+    parallel_safe: bool = True
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given arguments."""

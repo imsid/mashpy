@@ -25,6 +25,7 @@ class AgentConfig:
     prompt_caching_enabled: bool = True
     streaming_enabled: bool = True
     conversation_history_turns: int = 3
+    max_parallel_tools: int = 8
     compaction_token_threshold: int = 0
     compaction_turn_limit: int = 50
     compaction_temperature: float = 0.0
@@ -45,6 +46,8 @@ class AgentConfig:
             raise ValueError("max_tokens must be positive")
         if self.conversation_history_turns < 0:
             raise ValueError("conversation_history_turns must be >= 0")
+        if self.max_parallel_tools < 1:
+            raise ValueError("max_parallel_tools must be >= 1")
         if self.compaction_token_threshold < 0:
             raise ValueError("compaction_token_threshold must be >= 0")
         if self.compaction_turn_limit <= 0:

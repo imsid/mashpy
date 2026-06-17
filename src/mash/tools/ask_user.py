@@ -19,6 +19,8 @@ class AskUserTool:
 
     name = "AskUser"
     requires_approval = False
+    # Suspends the turn waiting on a user reply; never run concurrently.
+    parallel_safe = False
     description = (
         "Ask the user a question and wait for their response. "
         "Use when you need clarification, a decision, or information "

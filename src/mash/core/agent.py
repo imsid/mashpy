@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 import json
 import time
 import uuid
@@ -440,10 +441,7 @@ class Agent:
             return []
 
         act_start = time.time()
-        results: List[ToolResult] = []
-        for tool_call in action.tool_calls:
-            result = await self.execute_tool_call(tool_call)
-            results.append(result)
+        results = await self._execute_tool_calls(list(action.tool_calls))
 
         # Log act completion
         if self._event_logger:
@@ -478,6 +476,78 @@ class Agent:
                 )
 
         return results
+
+    def _is_parallel_safe(self, tool_call: Any) -> bool:
+        """Whether a tool call may run concurrently with its siblings.
+
+        A call is parallel-safe only when the resolved tool opts in (the
+        ``parallel_safe`` attribute defaults to True when absent) and does not
+        require approval. Unknown tools resolve to parallel-safe; the error is
+        produced cheaply inside ``execute_tool_call`` either way.
+        """
+        tool = self.tools.get(tool_call.name)
+        if tool is None:
+            return True
+        if getattr(tool, "requires_approval", False):
+            return False
+        return bool(getattr(tool, "parallel_safe", True))
+
+    async def _execute_tool_calls(
+        self, tool_calls: List[Any]
+    ) -> List[ToolResult]:
+        """Execute a turn's tool calls, parallelizing the safe ones.
+
+        Calls run in their original order, but a maximal run of consecutive
+        parallel-safe calls is executed concurrently as one group, bounded by
+        ``config.max_parallel_tools``. A serial call (approval-gated, AskUser,
+        ``parallel_safe=False``) acts as a barrier: it runs alone and nothing
+        crosses it, so side-effect ordering relative to position is preserved.
+
+        Results are returned in call order so they map back to their
+        ``tool_call_id``. A failure in any single call is captured as an error
+        ``ToolResult`` (never raised), so one failing tool cannot abort the
+        rest of the batch.
+        """
+        results: List[Optional[ToolResult]] = [None] * len(tool_calls)
+        semaphore = asyncio.Semaphore(max(1, self.config.max_parallel_tools))
+
+        async def _run(idx: int) -> None:
+            async with semaphore:
+                results[idx] = await self._safe_execute_tool_call(tool_calls[idx])
+
+        i = 0
+        n = len(tool_calls)
+        while i < n:
+            if not self._is_parallel_safe(tool_calls[i]):
+                # Barrier: run this one alone, in place.
+                results[i] = await self._safe_execute_tool_call(tool_calls[i])
+                i += 1
+                continue
+            # Gather the maximal run of consecutive parallel-safe calls.
+            j = i
+            while j < n and self._is_parallel_safe(tool_calls[j]):
+                j += 1
+            await asyncio.gather(*(_run(k) for k in range(i, j)))
+            i = j
+
+        # Every slot is filled by construction; cast away the Optional.
+        return [r for r in results if r is not None]
+
+    async def _safe_execute_tool_call(self, tool_call: Any) -> ToolResult:
+        """Run one tool call, converting any escaped exception into an error.
+
+        ``execute_tool_call`` already traps tool exceptions, but this guards the
+        surrounding machinery (logging, argument validation) so a single bad
+        call can never propagate out of a gathered batch and cancel siblings.
+        """
+        try:
+            return await self.execute_tool_call(tool_call)
+        except Exception as e:  # pragma: no cover - defensive backstop
+            return ToolResult(
+                tool_call_id=getattr(tool_call, "id", ""),
+                content=f"Unexpected error executing tool: {str(e)}",
+                is_error=True,
+            )
 
     async def execute_step_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """Execute one tool call as a durable sub-boundary within a step."""

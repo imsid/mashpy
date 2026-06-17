@@ -21,6 +21,7 @@ from .steps import (
     load_request_context,
     persist_completed_turn,
     plan_request_step,
+    run_step_tool_batch,
     run_step_tool_call,
     start_request_trace,
 )
@@ -152,6 +153,52 @@ async def _run_tool_call_for_workflow(
     )
 
 
+def _raw_tool_call_is_parallel_safe(
+    raw_tool_calls: list[Any], idx: int
+) -> bool:
+    """Read the parallel-safe flag the plan step stamped onto a tool call.
+
+    Defaults to False (serial) when the flag is absent so older recorded
+    actions keep today's one-step-per-call behavior.
+    """
+    raw = raw_tool_calls[idx] if 0 <= idx < len(raw_tool_calls) else None
+    return bool(raw.get("parallel_safe")) if isinstance(raw, dict) else False
+
+
+def _tool_call_exec_payload(tool_call: Any) -> dict[str, Any]:
+    return {
+        "id": tool_call.id,
+        "name": tool_call.name,
+        "arguments": dict(tool_call.arguments or {}),
+    }
+
+
+async def _run_tool_batch_for_workflow(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    workflow_state: dict[str, Any],
+    *,
+    loop_index: int,
+    start_index: int,
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Run a contiguous run of parallel-safe calls as one atomic DBOS step."""
+    return await retry_transient(
+        lambda: DBOS.run_step_async(
+            {"name": f"tool.batch.{loop_index}.{start_index}"},
+            run_step_tool_batch,
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            workflow_state,
+            tool_calls,
+        )
+    )
+
+
 async def execute_request_workflow(
     agent_id: str,
     request_id: str,
@@ -260,6 +307,7 @@ async def execute_request_workflow(
                 tool_calls = context_helpers.tool_calls_from_action_payload(
                     action_payload
                 )
+                raw_tool_calls = list(action_payload.get("tool_calls") or [])
 
                 approval_denied = (
                     isinstance(interaction, dict)
@@ -267,10 +315,20 @@ async def execute_request_workflow(
                     and workflow_state.get("interaction_response") in ("deny", "skip")
                 )
 
-                for call_index, tool_call in enumerate(tool_calls):
+                # Calls run in order. A maximal run of consecutive parallel-safe
+                # calls executes concurrently as one atomic DBOS batch step; a
+                # serial call (approval-gated, AskUser, InvokeSubagent,
+                # parallel_safe=False) is a barrier that runs alone, so nothing
+                # crosses it. `existing_results` lets a recovered workflow skip
+                # calls whose results are already recorded.
+                call_index = 0
+                total_calls = len(tool_calls)
+                while call_index < total_calls:
                     existing_results = list(workflow_state.get("result_payloads") or [])
                     if call_index < len(existing_results):
+                        call_index += 1
                         continue
+                    tool_call = tool_calls[call_index]
                     if approval_denied:
                         denied_result = {
                             "tool_call_id": tool_call.id,
@@ -284,26 +342,59 @@ async def execute_request_workflow(
                         }
                         workflow_state = {
                             **workflow_state,
-                            "result_payloads": list(
-                                workflow_state.get("result_payloads") or []
-                            )
-                            + [denied_result],
+                            "result_payloads": existing_results + [denied_result],
                         }
+                        call_index += 1
                         continue
-                    workflow_state = await _run_tool_call_for_workflow(
-                        agent_id,
-                        request_id,
-                        session_id,
-                        trace_id,
-                        workflow_state,
-                        loop_index=loop_index,
-                        call_index=call_index,
-                        tool_call={
-                            "id": tool_call.id,
-                            "name": tool_call.name,
-                            "arguments": dict(tool_call.arguments or {}),
-                        },
-                    )
+                    if not _raw_tool_call_is_parallel_safe(
+                        raw_tool_calls, call_index
+                    ):
+                        workflow_state = await _run_tool_call_for_workflow(
+                            agent_id,
+                            request_id,
+                            session_id,
+                            trace_id,
+                            workflow_state,
+                            loop_index=loop_index,
+                            call_index=call_index,
+                            tool_call=_tool_call_exec_payload(tool_call),
+                        )
+                        call_index += 1
+                        continue
+                    # Gather the maximal run of consecutive parallel-safe calls.
+                    batch_end = call_index
+                    while batch_end < total_calls and _raw_tool_call_is_parallel_safe(
+                        raw_tool_calls, batch_end
+                    ):
+                        batch_end += 1
+                    if batch_end - call_index == 1:
+                        # A lone parallel-safe call: keep the single-step path so
+                        # its event/step keys are unchanged.
+                        workflow_state = await _run_tool_call_for_workflow(
+                            agent_id,
+                            request_id,
+                            session_id,
+                            trace_id,
+                            workflow_state,
+                            loop_index=loop_index,
+                            call_index=call_index,
+                            tool_call=_tool_call_exec_payload(tool_call),
+                        )
+                    else:
+                        workflow_state = await _run_tool_batch_for_workflow(
+                            agent_id,
+                            request_id,
+                            session_id,
+                            trace_id,
+                            workflow_state,
+                            loop_index=loop_index,
+                            start_index=call_index,
+                            tool_calls=[
+                                _tool_call_exec_payload(tool_calls[k])
+                                for k in range(call_index, batch_end)
+                            ],
+                        )
+                    call_index = batch_end
 
                 workflow_state = await DBOS.run_step_async(
                     {"name": f"step.commit.{loop_index}"},
