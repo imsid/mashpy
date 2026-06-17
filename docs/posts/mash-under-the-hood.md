@@ -95,10 +95,11 @@ Mash ships with runtime tools that are available to every agent out of the box:
 - **search_conversations**: search stored conversation turns and return ranked previews
 - **get_full_turn_message**: expand search results into full turn text
 
-Web search sits a step away. Because it makes network calls, it stays off until
-a spec asks for it with `enable_web_search_tools()`, at which point the agent
-gets `web_search` and `web_fetch` backed by Parallel AI, with the free tier by
-default or your own key for higher limits.
+Web search is off by default. To turn it on, you must explicitly specify a
+provider by returning one from `build_web_search()`. There's no default, so you
+always know who is handling your search data. Mash ships one `WebSearchProvider`,
+`ParallelSearchProvider`, which offers `web_search` and `web_fetch` and requires
+an API key.
 
 ```
                   ┌─────────────────────────────────────────┐

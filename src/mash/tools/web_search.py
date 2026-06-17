@@ -30,18 +30,18 @@ class WebSearchProvider(ABC):
 class ParallelSearchProvider(WebSearchProvider):
     """Parallel AI web search and fetch.
 
-    Three auth modes, resolved at config time:
+    Requires an explicit credential, so the decision to send search queries to
+    Parallel is visible in code rather than implied by a default. Supply one of:
 
-    - anonymous: no key, free endpoint, lower rate limits
     - api key: ``api_key`` arg or ``PARALLEL_API_KEY`` env
     - oauth token: ``oauth_token`` arg or ``PARALLEL_OAUTH_TOKEN`` env
 
-    Any token sends ``Authorization: Bearer <token>`` and targets the
-    OAuth-capable endpoint. An explicit arg beats the matching env var, and an
-    oauth token beats an api key. Pass ``base_url`` to pin a different endpoint.
+    The token rides as ``Authorization: Bearer <token>``; there is no
+    interactive OAuth2 flow. An explicit arg beats the matching env var, and an
+    oauth token beats an api key. Construction raises ``ValueError`` when no
+    credential is found. Pass ``base_url`` to pin a different endpoint.
     """
 
-    FREE_URL = "https://search.parallel.ai/mcp"
     OAUTH_URL = "https://search.parallel.ai/mcp-oauth"
     TOOLS = ["web_search", "web_fetch"]
     SERVER_NAME = "parallel_web_search"
@@ -58,18 +58,24 @@ class ParallelSearchProvider(WebSearchProvider):
         self._oauth_token = (
             oauth_token or os.getenv("PARALLEL_OAUTH_TOKEN", "").strip() or None
         )
+        if not (self._api_key or self._oauth_token):
+            raise ValueError(
+                "ParallelSearchProvider requires a credential. Pass api_key= or "
+                "oauth_token= (or set PARALLEL_API_KEY / PARALLEL_OAUTH_TOKEN). "
+                "Web search is an explicit action: the provider handling your "
+                "search data should be named, not assumed."
+            )
         self._base_url = base_url
         self._allowed_tools = list(allowed_tools) if allowed_tools else list(self.TOOLS)
 
     def mcp_server_config(self) -> MCPServerConfig:
         token = self._oauth_token or self._api_key
-        url = self._base_url or (self.OAUTH_URL if token else self.FREE_URL)
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        url = self._base_url or self.OAUTH_URL
         return MCPServerConfig(
             name=self.SERVER_NAME,
             url=url,
             description="Parallel AI web search and fetch.",
-            headers=headers,
+            headers={"Authorization": f"Bearer {token}"},
             allowed_tools=list(self._allowed_tools),
         )
 

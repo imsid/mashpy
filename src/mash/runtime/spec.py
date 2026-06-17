@@ -15,7 +15,7 @@ from ..core.llm import LLMProvider
 from ..memory.store import MemoryStore, PostgresStore, SQLiteStore
 from ..skills.registry import SkillRegistry
 from ..tools.registry import ToolRegistry
-from ..tools.web_search import ParallelSearchProvider, WebSearchProvider
+from ..tools.web_search import WebSearchProvider
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -86,24 +86,15 @@ class AgentSpec(ABC):
         """Whether Mash runtime tools should be auto-registered."""
         return True
 
-    def enable_web_search_tools(self) -> bool:
-        """Whether web search/fetch tools should be auto-registered.
-
-        Off by default: the tools make network calls and the authenticated
-        tier needs a key. Return True to enable the free tier, or override
-        `build_web_search` to supply a key/token or a different provider.
-        """
-        return False
-
     def build_web_search(self) -> WebSearchProvider | None:
         """Web search provider backing `web_search`/`web_fetch`.
 
-        Defaults to Parallel AI when web search is enabled. Override to pass an
-        API key/OAuth token or to swap in a different provider.
+        Returns None by default — web search stays off until a spec returns a
+        provider here. There is no default provider: naming one is an explicit
+        choice about which third party receives your search data. For Parallel
+        AI, return `ParallelSearchProvider(api_key=...)`.
         """
-        if not self.enable_web_search_tools():
-            return None
-        return ParallelSearchProvider()
+        return None
 
     def on_startup(self, runtime: "AgentRuntime") -> None:
         """Hook called after runtime initialization."""
