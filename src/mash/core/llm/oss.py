@@ -496,9 +496,10 @@ class OSSCompatibleProvider(BaseLLMProvider):
 
 # Presets enable ``structured_output`` because the engines that serve these
 # models (vLLM/SGLang/llama.cpp, recent Ollama) support ``response_format``
-# json_schema. ``reasoning_content`` is left off: whether a server emits a
-# reasoning channel depends on the model and serving flags, so it is opt-in via
-# a subclass rather than assumed.
+# json_schema. ``reasoning_content`` is opt-in per preset: a model only gets it
+# when its reasoning output would otherwise leak into the transcript (see
+# ``GemmaProvider``), since whether a server emits a reasoning channel depends on
+# the model and serving flags.
 class QwenProvider(OSSCompatibleProvider):
     """Qwen served over a Chat Completions endpoint."""
 
@@ -512,14 +513,24 @@ class QwenProvider(OSSCompatibleProvider):
 
 
 class GemmaProvider(OSSCompatibleProvider):
-    """Gemma served over a Chat Completions endpoint."""
+    """Gemma served over a Chat Completions endpoint.
+
+    ``reasoning_content`` is enabled because Gemma's reasoning mode emits a
+    ``<think>...</think>`` block inline in ``content``; without the flag that
+    block leaks into the transcript instead of being split into
+    ``provider_metadata``. The split is safe when reasoning is off: the field is
+    absent and the regex simply doesn't match, leaving the text unchanged.
+    """
 
     provider_name = "gemma"
     DEFAULT_MODEL = DEFAULT_GEMMA_MODEL
 
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(
-            streaming=True, native_tool_calling=True, structured_output=True
+            streaming=True,
+            native_tool_calling=True,
+            structured_output=True,
+            reasoning_content=True,
         )
 
 
