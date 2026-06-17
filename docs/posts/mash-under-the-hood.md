@@ -18,8 +18,8 @@ harness and observability underneath.
 
 - [One Host, Composable Agents](#one-host-composable-agents)
 - [Durable Harness](#durable-harness)
-    - [Core Agent Loop: Context, Memory, Tools, Skills, Signals, Structured output](#core-agent-loop-context-memory-tools-skills-signals-structured-output)
-    - [Human-in-the-Loop Interactions](#human-in-the-loop-interactions)
+    - [Core Agent Loop](#core-agent-loop-context-memory-tools-skills-signals-structured-output)
+    - [Human-in-the-Loop Interactions (HITL)](#human-in-the-loop-interactions)
     - [Workflows](#workflows)
 - [Observability](#observability)
     - [Spans and Trace Analysis](#spans-and-trace-analysis)
@@ -34,11 +34,12 @@ harness and observability underneath.
 
 ## One Host, Composable Agents
 
-Mash deployments are a flat pool of agents plus the host compositions defined
+Mash deployments are a pool of agents plus the host compositions defined
 over them. A host names one agent as primary and a set of subagents; the
 primary delegates to those specialists without a separate coordination layer
-outside the runtime. Hosts can ship with the deploy in code, or be defined at
-runtime over the API, and the same pool can serve several hosts at once.
+outside the runtime. A host can be composed from those agents in code at build
+time, or at runtime over the API/CLI. This allows hosts to be [dynamic in their
+composition](building-dynamic-hosts-apis.md) without requiring a deploy.
 
 ```python
 pool = (
@@ -58,57 +59,23 @@ executed through a durable request engine, and recorded as replayable runtime
 events. That is a stronger operational model than a single in-memory agent
 loop, and it makes retries, restarts, and long-running work easier to manage.
 
-### Core Agent Loop: context, memory, tools, skills, signals, structured output
+### Core Agent Loop
 
-Each request runs a think → act → observe loop with context loaded from
-memory, tools and skills available to it, and signals plus optional structured
-output produced when it completes. Structured output gives integrations a
-typed payload to consume instead of prose, which is what makes machine-readable
-agent responses and predictable downstream automation practical.
-
-Each agent brings its own `LLMProvider`, so different agents in the same host
-can run on different models, a cheap model for triage and a capable one for
-complex reasoning. Mash ships providers for Anthropic, Google Gemini, and OpenAI
-out of the box. Each provider handles prompt caching differently: Anthropic uses
-`cache_control` breakpoints on system and tool blocks, OpenAI uses explicit cache
-keys with configurable retention, and Gemini creates server-side cached content
-objects with a TTL. Mash abstracts all of this behind a single
-`prompt_caching_enabled` flag in `AgentConfig` (on by default). The runtime
-applies the right caching strategy for whichever provider the agent uses, so
-repeated requests within a session avoid re-processing static context without
-any provider-specific code from the developer.
-
-Long-running sessions accumulate token cost as conversation history grows. Mash
-handles this with automatic conversation compaction: when a session's total token
-count crosses a configurable threshold, the runtime summarizes earlier turns into
-a compact summary checkpoint using the agent's own LLM. Future requests load the
-summary instead of the full history, keeping context size bounded without losing
-key decisions, constraints, or user preferences. Compaction is configurable per
-agent via `compaction_token_threshold` and `compaction_turn_limit` in
-`AgentConfig`, and is disabled by default (threshold of 0).
-
-Mash ships with runtime tools that are available to every agent out of the box:
-
-- **BashTool**: execute shell commands in the host environment
-- **AskUserTool**: pause execution to ask the user a question
-- **InvokeSubagent**: delegate work to a registered subagent and stream its response back
-- **search_conversations**: search stored conversation turns and return ranked previews
-- **get_full_turn_message**: expand search results into full turn text
-
-Web search is off by default. To turn it on, you must explicitly specify a
-provider by returning one from `build_web_search()`. There's no default, so you
-always know who is handling your search data. Mash ships one `WebSearchProvider`,
-`ParallelSearchProvider`, which offers `web_search` and `web_fetch` and requires
-an API key.
+Every request executes inside a durable request: a think → act → observe loop
+with context loaded from memory and tools and skills available to it, accepting
+input from the CLI, the API, or a scheduled workflow, and producing signals and
+optional structured output when it completes. The whole thing is resumable and
+replayable across restarts. The diagram below maps that shape, and the rest of
+this section walks through its parts.
 
 ```
                   ┌─────────────────────────────────────────┐
-                  │          Durable Request                │
-                  │                                         │
-                  │   ┌─ context ─── memory ──┐             │
-                  │   │                       │             │
-request ────────► │   │     Agent Loop        │ ──► signals │
-(cli/api)         │   │ think → act → observe │      │      │
+                  │          Durable Request                │  ◄── one request,
+                  │                                         │      resumable and
+                  │   ┌─ context ─── memory ──┐             │      replayable
+request ────────► │   │                       │             │
+(cli/api)         │   │     Agent Loop        │ ──► signals │
+                  │   │ think → act → observe │      │      │
                   │   │                       │      ▼      │
                   │   └─ tools ───── skills ──┘  structured │
 workflow ───────► │        ▲                      output    │
@@ -119,7 +86,89 @@ workflow ───────► │        ▲                      output    
                   └─────────────────────────────────────────┘
 ```
 
-### Human-in-the-Loop Interactions
+**Frontier and OSS models**
+
+Each agent brings its own `LLMProvider` configured via `build_llm()`. This allows different agents in the same host
+to run on different models, a cheap model for triage and a capable one for
+complex reasoning, an OSS model for privacy. Mash ships providers for frontier models from Anthropic, Google Gemini, and OpenAI
+out of the box. 
+
+Open-source models (OSS) run through the same harness with
+`OSSCompatibleProvider`, which talks to any inference provider that expose a Chat-Completions compatible endpoint
+That can be self-hosted vLLM, Ollama, or llama.cpp, or a hosted gateway like
+Together, Groq, or OpenRouter. 
+
+Mash ships providers for `GemmaProvider`, `QwenProvider`,
+`DeepSeekProvider`, and `LlamaProvider` for the common families. The
+model needs native tool calling so the runtime can pass tools and read back tool
+calls, and swapping `build_llm()` is the only code change.
+
+**Prompt cache**
+
+Each provider handles prompt caching differently: Anthropic uses
+`cache_control` breakpoints on system and tool blocks, OpenAI uses explicit cache
+keys with configurable retention, and Gemini creates server-side cached content
+objects with a TTL. Mash abstracts all of this behind a single
+`prompt_caching_enabled` flag in `AgentConfig` (on by default). The runtime
+applies the right caching strategy for whichever provider the agent uses, so
+repeated requests within a session avoid re-processing static context without
+any provider-specific code from the developer.
+
+**Compaction**
+
+Long-running sessions accumulate token cost as conversation history grows. Mash
+handles this with automatic conversation compaction: when a session's total token
+count crosses a configurable threshold, the runtime summarizes earlier turns into
+a compact summary checkpoint using the agent's own LLM. Future requests load the
+summary instead of the full history, keeping context size bounded without losing
+key decisions, constraints, or user preferences. Compaction is configurable per
+agent via `compaction_token_threshold` and `compaction_turn_limit` in
+`AgentConfig`, and is disabled by default (threshold of 0).
+
+**Tools**
+
+Mash ships with runtime tools that are available to every agent out of the box:
+
+- **BashTool**: execute shell commands in the host environment
+- **AskUserTool**: pause execution to ask the user a question
+- **InvokeSubagent**: delegate work to a registered subagent and stream its response back
+- **search_conversations**: search stored conversation turns and return ranked previews
+- **get_full_turn_message**: expand search results into full turn text
+
+**Web search**
+
+Web search gives your agents the ability to extract data from the web. To turn it on, you must explicitly specify a
+provider by returning a `WebSearchProvider` via `build_web_search()`. There's no default provider intentionally, so you
+always know who is handling your search data. Mash ships one provider,
+`ParallelSearchProvider` from ParallelAI, which offers `web_search` and `web_fetch` tools and requires
+an API key.
+
+**Feedback**
+
+The REPL ships a `/feedback` command. A user types `/feedback <message>` and the
+note is captured as written, with no LLM step, stored alongside the host, agent,
+session, and last request id from the current shell. It lands in a
+`runtime_feedback` table in the runtime store, next to the event log. App
+developers read it back over the API with `GET /api/v1/feedback`, which takes a
+required `agent_id` and `after` timestamp plus optional `before`, `session_id`,
+`feedback_type`, and `q` full-text filters. Submission has its own route,
+`POST /api/v1/feedback`. Neither endpoint depends on observability being enabled.
+
+**Persistence**
+
+Mash persists to Postgres, and three areas write their own tables: the runtime
+store behind the loop's resumability and observability, the per-agent memory
+store behind context loading, and the backend API request log. The main tables:
+
+| Table | Store | Purpose |
+|---|---|---|
+| `runtime_event_log` | runtime | Append-only, ordered event stream for every request. The runtime replays from it across restarts, and trace analysis and the telemetry views are computed from it. |
+| `runtime_feedback` | runtime | Notes submitted through `/feedback`, read back through the feedback API. |
+| `memory_turns` | memory | One row per conversation turn (user message, agent response, running token total). The history that context loading replays into a request. |
+| `memory_signals` | memory | Named signals emitted on a turn, stored as values keyed to that turn. |
+| `api_event_log` | api | HTTP request and response log for the backend API: method, path, status, duration, and bodies. |
+
+### Human-in-the-Loop Interactions (HITL)
 
 Mash supports durable agent-to-user interactions as part of the hosted runtime.
 An agent can pause mid-execution to request approval before a sensitive tool
@@ -152,15 +201,67 @@ result = await ask_user(
 
 ### Workflows
 
-Mash workflows are ordered sequences of tasks. Each task runs through a
-registered agent and is paired with a skill and a structured
-output. That structured output becomes the task's persisted state for future
-runs and downstream steps.
+A workflow is an ordered sequence of tasks, JSON in and JSON out where each task is wired to an agent and optionally a structured
+output schema. Workflow can be deployed via code and composed in the host or registered dynamically at runtime via
+the host API or a client. Under the hood a workflow run is invoked with a fixed input payload that the runtime
+routes to the task agent as a JSON request:
 
-Mash supports both code-defined workflows and dynamic workflow and skill
-registration, so teams can define workflows in host code or publish them at
-runtime. This makes workflows a concrete execution model for repeatable,
-stateful agent tasks rather than a loose orchestration layer.
+```json
+{ "workflow_id": "...", 
+  "workflow_run_id": "...", 
+  "task_id": "...",
+  "workflow_input": { ... }, 
+  "task_state": { ... } 
+}
+```
+
+The agent reads `workflow_input` and the prior `task_state`, and its structured
+output becomes that task's persisted state for future runs and downstream steps.
+
+A code-deployed workflow gets a dedicated workflow agent by passing an
+`agent_spec`, which `HostBuilder.workflow()` registers as a workflow-only agent
+hidden from delegation and listings. That agent carries the task's skill in its
+own `build_skills()`, and the `WorkflowSpec` ships with the pool at build time:
+
+```python
+from mash.workflows import TaskSpec, WorkflowSpec
+
+quiz_workflow = WorkflowSpec(
+    workflow_id="pilot-quiz",
+    tasks=[TaskSpec(task_id="run-quiz", agent_spec=QuizAgentSpec(...))],
+)
+# HostBuilder().agent(PilotSpec(), metadata=...).workflow(quiz_workflow)
+```
+
+A dynamically registered workflow repurposes an existing agent instead of adding
+one. The client registers a dynamic `Skill` holding the task instructions, then a
+workflow whose task points at that skill through a `task_message`, and runs it:
+
+```python
+client.register_agent_skill("pilot", {
+    "type": "dynamic",
+    "name": "workflow:pilot-changelog",
+    "description": "Generate a changelog from recent git commits.",
+    "content": skill_markdown,
+})
+client.register_agent_workflow("pilot", {
+    "workflow_id": "pilot-changelog",
+    "tasks": [{"task_id": "scan-recent-commits", "agent_id": "pilot",
+               "structured_output": {...}}],
+    "task_message": {"skill_name": "workflow:pilot-changelog"},
+})
+client.run_workflow("pilot-changelog", workflow_input={"commit_count": 5})
+```
+
+The same pair is exposed via the Host API as
+`POST /api/v1/agent/{agent_id}/skill` and `POST /api/v1/agent/{agent_id}/workflow`,
+so a service can generate a skill, publish a workflow that loads it, and trigger
+runs without redeploying. 
+
+Dynamic definitions live in memory, so the owning
+application republishes them after a restart. This makes workflows a concrete
+execution model for repeatable, stateful agent tasks rather than a loose
+orchestration layer.
 
 
 ## Observability
@@ -352,4 +453,5 @@ Default slash commands inside the REPL:
 /history    View conversation history
 /trace [N]  Show trace analysis for recent traces
 /workflow   List, run, and inspect workflows
+/feedback   Record a note or bug report about this session
 ```

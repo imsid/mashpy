@@ -13,28 +13,37 @@ tags:
 Building agents is on the rise as frontier and open-source models get smarter. We’re headed in a direction 
 where agents will soon be commoditized similar to mobile apps, whether it's *consumer agents* 
 that prepare morning briefs, triage email, monitor finances, and plan travel, or *enterprise agents* 
-that automate incident triage, release readiness, onboarding, and integrations. 
+that automate incident triage, release readiness, onboarding, and integrations. However, integrating these agents into the application layer is fragmented and lacks a standard.
 
-However, integrating these agents into the application layer is fragmented and lacks a standard.
+Every application wires itself to each agent on its own: a bespoke gateway
+for one, hand-rolled streaming for the next, a homegrown approval flow bolted on
+for a third. Every app-to-agent pair becomes its own integration.
+
+```mermaid
+flowchart LR
+    U["User application<br/>(web · api · cli · app)"]
+    Ag1["Agent A"]
+    Ag2["Agent B"]
+    Ag3["Agent C"]
+    U -- "bespoke gateway" --> Ag1
+    U -- "ad-hoc streaming" --> Ag2
+    U -- "homegrown approvals" --> Ag3
+```
 
 ## Host-to-Agent Protocol (H2A)
-
-The bridge between an application and the agents it relies on is largely built
-as a bespoke gateway with ad-hoc streaming or a homegrown approval flow bolted
-on. 
 
 The [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) protocol is the
 contract that runs between the **application -> host -> agents**.
 It standardizes how a request is submitted, how its lifecycle streams back, how an agent pauses
-for human approval or input, and how it recovers from failure.
+for human approval or input, and how it recovers from failure across the full lifecycle.
 
 ### Host
 
-The **Host** is the operating system that agents run on. It gives
+The **Host** is the OS that agents run on. It gives
 every agent a lifecycle, permissions, a stable address, and one consistent way
 for a user application to reach it.
 
-Similar to apps, agents are composable where they get added and swapped constantly. The Host
+Similar to apps in a mobile OS, agents are composable where they get added and swapped inside a Host. The Host
 gives every agent one session model, one event contract, and one
 human-in-the-loop interaction model thereby standardizing the communication between host and the agent.
 
@@ -55,7 +64,7 @@ flowchart TD
 ## Mash
 
 Mash is a Python SDK that implements the H2A protocol. You use it to build
-agents, to deploy the host that governs them and the interface to interact, 
+agents, to deploy the Host that governs them and the interface to interact whether 
 running on a consumer home server or an enterprise platform.
 
 Mash gives you three primitives, anchored to H2A:
@@ -95,7 +104,7 @@ workflow ───────► │        ▲                      output    
                   └─────────────────────────────────────────┘
 ```
 
-## Frontier and open-source models
+## Being model agnostic across Frontier and Open-source (OSS) models
 
 Open-source models like Gemma, Qwen, and DeepSeek now sit near the top of public
 benchmarks for reasoning, coding, and tool use, within range of the frontier
@@ -104,8 +113,8 @@ of frontier API pricing, and self-hosting on your own hardware removes per-token
 cost entirely.
 
 Mash runs these models on the same durable harness as the frontier providers. An
-agent that uses Anthropic, OpenAI, or Gemini moves to an open-source model served
-by vLLM, Ollama, or OpenRouter with a one-line change in `build_llm()`. The tool
+agent that uses Anthropic, OpenAI, or Gemini moves seamlessly to an open-source model served
+by vLLM, Ollama, or OpenRouter. The tool
 loop, human-in-the-loop pauses, workflows, observability, and durability stay the
 same across every model.
 
