@@ -1179,6 +1179,27 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.text, "visible")
         self.assertEqual(parsed.provider_metadata["reasoning"], "secret")
 
+    def test_parse_splits_openrouter_reasoning_field(self) -> None:
+        # OpenRouter normalizes thinking into a `reasoning` field (not
+        # `reasoning_content`); it must be split out the same way.
+        provider = object.__new__(OSSCompatibleProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="visible", reasoning="step by step", tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        parsed = provider._parse(raw, LLMCapabilities(reasoning_content=True))
+
+        self.assertEqual(parsed.text, "visible")
+        self.assertEqual(parsed.provider_metadata["reasoning"], "step by step")
+
     def test_parse_keeps_reasoning_inline_when_capability_off(self) -> None:
         provider = object.__new__(OSSCompatibleProvider)
         raw = SimpleNamespace(
@@ -1251,6 +1272,42 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             ),
             SimpleNamespace(
                 choices=[SimpleNamespace(delta=SimpleNamespace(content="answer", reasoning_content=None, tool_calls=None), finish_reason="stop")],
+                usage=None,
+            ),
+        ]
+        provider = self._make_provider(
+            create=AsyncMock(return_value=_FakeOSSStream(chunks))
+        )
+        provider.capabilities = lambda: LLMCapabilities(
+            streaming=True, native_tool_calling=True, reasoning_content=True
+        )
+        request = LLMRequest(
+            model="qwen3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            streaming=True,
+        )
+
+        response = await provider.send(request)
+
+        self.assertEqual(response.text, "answer")
+        self.assertEqual(response.provider_metadata["reasoning"], "think more")
+
+    async def test_streamed_send_accumulates_openrouter_reasoning_field(self) -> None:
+        # Streamed deltas may carry thinking under OpenRouter's `reasoning` name.
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None, reasoning="think ", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None, reasoning="more", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="answer", reasoning=None, tool_calls=None), finish_reason="stop")],
                 usage=None,
             ),
         ]

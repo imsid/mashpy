@@ -350,12 +350,15 @@ class OSSCompatibleProvider(BaseLLMProvider):
     def _split_reasoning(self, message: Any, text: str) -> tuple[str, Optional[str]]:
         """Separate model thinking from the visible answer.
 
-        Prefers a dedicated ``reasoning_content`` field (DeepSeek-R1 style, as
-        surfaced by vLLM/SGLang reasoning parsers); otherwise strips an inline
+        Prefers a dedicated reasoning field — ``reasoning_content`` (DeepSeek-R1
+        style, as surfaced by vLLM/SGLang reasoning parsers) or ``reasoning``
+        (OpenRouter's normalized name) — otherwise strips an inline
         ``<think>...</think>`` block from the content. Keeps the reasoning out of
         the transcript while preserving it in ``provider_metadata``.
         """
-        reasoning = block_value(message, "reasoning_content")
+        reasoning = block_value(message, "reasoning_content") or block_value(
+            message, "reasoning"
+        )
         if reasoning:
             return text, str(reasoning)
         match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
@@ -438,7 +441,9 @@ class OSSCompatibleProvider(BaseLLMProvider):
                 content_parts.append(content)
                 await deltas.push(content)
 
-            reasoning = block_value(delta, "reasoning_content")
+            reasoning = block_value(delta, "reasoning_content") or block_value(
+                delta, "reasoning"
+            )
             if reasoning:
                 reasoning_parts.append(reasoning)
 
