@@ -1,6 +1,6 @@
 ---
 title: Mash
-description: A self-hosted runtime and SDK for building multi-agent applications.
+description: Build self-hosted and model agnostic, multi-agent applications.
 hide:
   - navigation
   - toc
@@ -8,7 +8,7 @@ hide:
 
 # Mash
 
-**Build self-hosted, multi-agent applications.**
+**Build self-hosted and model agnostic, multi-agent applications.**
 
 [Mash](posts/product-brief.md) is a Python SDK and a host runtime for composing agents.
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
