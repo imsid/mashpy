@@ -104,7 +104,7 @@ workflow ───────► │        ▲                      output    
                   └─────────────────────────────────────────┘
 ```
 
-## Being model agnostic across Frontier and Open-source (OSS) models
+## Model agnostic across Frontier and Open-source (OSS) models
 
 Open-source models like Gemma, Qwen, and DeepSeek now sit near the top of public
 benchmarks for reasoning, coding, and tool use, within range of the frontier

@@ -145,6 +145,7 @@ AgentConfig(
     prompt_caching_enabled=True,          # provider prompt caching
     streaming_enabled=True,               # stream tokens + emit llm.response.delta events
     conversation_history_turns=3,         # prior turns replayed into context
+    max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
@@ -234,6 +235,23 @@ For tools that need user consent before executing:
 class DangerousTool:
     name = "deploy"
     requires_approval = True  # runtime auto-pauses for user consent
+    ...
+```
+
+Tool calls a model emits together in one turn run concurrently by default, on
+both the in-process loop and the durable runtime. A tool opts out by setting
+`parallel_safe = False` (the default is `True`), which makes it run alone as a
+barrier — nothing in the turn runs concurrently with it. Approval-gated tools,
+`AskUser`, and `InvokeSubagent` are always serialized. Calls run in order, with
+each maximal run of consecutive parallel-safe calls dispatched together (capped
+by `max_parallel_tools`); on the durable runtime that run executes as one atomic
+step. A failing tool is captured as an error result and never aborts the other
+calls in the batch.
+
+```python
+class WriteLedger:
+    name = "write_ledger"
+    parallel_safe = False  # has ordering-sensitive side effects
     ...
 ```
 

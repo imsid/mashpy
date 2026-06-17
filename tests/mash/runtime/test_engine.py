@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import time
@@ -289,6 +290,184 @@ class _ResponseThenFinishDefinition(_BaseDefinition):
             system_prompt="You are a test app.",
             max_steps=3,
         )
+
+
+class _TwoToolCallLLMProvider(LLMProvider):
+    """Emits two tool calls in one turn, then finishes."""
+
+    def __init__(self, names: tuple[str, str]) -> None:
+        self._names = names
+        self._call_count = 0
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        del request
+        self._call_count += 1
+        if self._call_count == 1:
+            a, b = self._names
+            return LLMResponse(
+                text="Two tools.",
+                tool_calls=[
+                    ToolCall(id="call-a", name=a, arguments={}),
+                    ToolCall(id="call-b", name=b, arguments={}),
+                ],
+                content_blocks=[
+                    LLMContentBlock.text("Two tools."),
+                    LLMContentBlock.tool_call(
+                        tool_call_id="call-a", name=a, arguments={}
+                    ),
+                    LLMContentBlock.tool_call(
+                        tool_call_id="call-b", name=b, arguments={}
+                    ),
+                ],
+                stop_reason="tool_call",
+                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+            )
+        return LLMResponse(
+            text="Done.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("Done.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _ParallelToolsDefinition(_BaseDefinition):
+    """Two tools that each sleep and record their wall-clock interval.
+
+    Concurrency is detected by interval overlap rather than shared asyncio
+    primitives, which would not survive the runtime executing the workflow on a
+    different event loop than the test's. ``intervals`` maps tool name to its
+    (start, end) monotonic times.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        app_id: str = "test-app",
+        second_parallel_safe: bool = True,
+        sleep_seconds: float = 0.25,
+    ) -> None:
+        super().__init__(root, app_id=app_id)
+        self.provider = _TwoToolCallLLMProvider(("tool_a", "tool_b"))
+        self.intervals: dict[str, tuple[float, float]] = {}
+        self._second_parallel_safe = second_parallel_safe
+        self._sleep_seconds = sleep_seconds
+
+    def _overlap(self) -> bool:
+        if len(self.intervals) < 2:
+            return False
+        (s_a, e_a), (s_b, e_b) = self.intervals["a"], self.intervals["b"]
+        return s_a < e_b and s_b < e_a
+
+    def build_tools(self) -> ToolRegistry:
+        async def run(name: str) -> ToolResult:
+            start = time.monotonic()
+            await asyncio.sleep(self._sleep_seconds)
+            self.intervals[name] = (start, time.monotonic())
+            return ToolResult.success(name)
+
+        async def tool_a(_args: Dict[str, Any]) -> ToolResult:
+            return await run("a")
+
+        async def tool_b(_args: Dict[str, Any]) -> ToolResult:
+            return await run("b")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="tool_a",
+                description="First tool.",
+                parameters={"type": "object", "properties": {}},
+                _executor=tool_a,
+            )
+        )
+        tools.register(
+            FunctionTool(
+                name="tool_b",
+                description="Second tool.",
+                parameters={"type": "object", "properties": {}},
+                _executor=tool_b,
+                parallel_safe=self._second_parallel_safe,
+            )
+        )
+        return tools
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=self.app_id,
+            system_prompt="You are a test app.",
+            max_steps=3,
+        )
+
+    def enable_runtime_tools(self) -> bool:
+        return False
+
+
+class _ConcurrencyCapDefinition(_BaseDefinition):
+    """Registers several tools that record peak simultaneous execution."""
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        app_id: str = "test-app",
+        tool_count: int = 4,
+        max_parallel_tools: int = 2,
+        sleep_seconds: float = 0.05,
+    ) -> None:
+        super().__init__(root, app_id=app_id)
+        self.tool_count = tool_count
+        self.max_parallel_tools = max_parallel_tools
+        self._sleep_seconds = sleep_seconds
+        self.active = 0
+        self.peak = 0
+
+    def build_tools(self) -> ToolRegistry:
+        async def run(_args: Dict[str, Any]) -> ToolResult:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(self._sleep_seconds)
+            finally:
+                self.active -= 1
+            return ToolResult.success("ok")
+
+        tools = ToolRegistry()
+        for i in range(self.tool_count):
+            tools.register(
+                FunctionTool(
+                    name=f"tool_{i}",
+                    description=f"Tool {i}.",
+                    parameters={"type": "object", "properties": {}},
+                    _executor=run,
+                )
+            )
+        return tools
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=self.app_id,
+            system_prompt="You are a test app.",
+            max_steps=3,
+            max_parallel_tools=self.max_parallel_tools,
+        )
+
+    def enable_runtime_tools(self) -> bool:
+        return False
 
 
 class _AlwaysRespondDefinition(_BaseDefinition):
@@ -641,6 +820,105 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(turns[-1]["user_message"], "hi")
                 self.assertEqual(turns[-1]["agent_response"], "hello")
                 self.assertEqual(turns[-1]["metadata"]["token_usage"]["input"], 2)
+
+                await runtime.shutdown()
+
+    async def test_tool_batch_step_runs_calls_concurrently_in_order(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                definition = _ParallelToolsDefinition(Path(tmp))
+                runtime = AgentRuntime.from_spec(
+                    definition, session_id="host-session", **_test_stores()
+                )
+                await runtime.open()
+
+                # Drive the batch step directly on the test loop. (Routing a
+                # full request through DBOS under IsolatedAsyncioTestCase runs
+                # the gathered step on a loop the harness does not pump
+                # concurrently; the production server loop does — verified out
+                # of band. Calling the step here keeps the concurrency check on
+                # one loop and deterministic.)
+                from mash.runtime.engine.steps import run_step_tool_batch
+
+                new_state = await run_step_tool_batch(
+                    definition.app_id,
+                    "req-batch",
+                    runtime.session_id,
+                    "trace-batch",
+                    {"loop_index": 0, "result_payloads": [], "tool_usage": {}},
+                    [
+                        {"id": "call-a", "name": "tool_a", "arguments": {}},
+                        {"id": "call-b", "name": "tool_b", "arguments": {}},
+                    ],
+                )
+
+                # Both calls ran with overlapping windows (concurrent), and
+                # results are appended in call order.
+                self.assertEqual(set(definition.intervals), {"a", "b"})
+                self.assertTrue(definition._overlap())
+                self.assertEqual(
+                    [rp["tool_call_id"] for rp in new_state["result_payloads"]],
+                    ["call-a", "call-b"],
+                )
+
+                await runtime.shutdown()
+
+    async def test_tool_batch_step_caps_concurrency_at_max_parallel_tools(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                from mash.runtime.engine.steps import run_step_tool_batch
+
+                definition = _ConcurrencyCapDefinition(
+                    Path(tmp), tool_count=4, max_parallel_tools=2
+                )
+                runtime = AgentRuntime.from_spec(
+                    definition, session_id="host-session", **_test_stores()
+                )
+                await runtime.open()
+
+                new_state = await run_step_tool_batch(
+                    definition.app_id,
+                    "req-cap",
+                    runtime.session_id,
+                    "trace-cap",
+                    {"loop_index": 0, "result_payloads": [], "tool_usage": {}},
+                    [
+                        {"id": f"call-{i}", "name": f"tool_{i}", "arguments": {}}
+                        for i in range(4)
+                    ],
+                )
+
+                # All four ran, but never more than max_parallel_tools at once.
+                self.assertEqual(len(new_state["result_payloads"]), 4)
+                self.assertEqual(definition.peak, 2)
+                self.assertEqual(
+                    [rp["tool_call_id"] for rp in new_state["result_payloads"]],
+                    ["call-0", "call-1", "call-2", "call-3"],
+                )
+
+                await runtime.shutdown()
+
+    async def test_submit_request_serializes_non_parallel_safe_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                # tool_b opts out of parallelism, so it acts as a barrier and
+                # cannot overlap tool_a.
+                definition = _ParallelToolsDefinition(
+                    Path(tmp), second_parallel_safe=False
+                )
+                runtime = AgentRuntime.from_spec(
+                    definition, session_id="host-session", **_test_stores()
+                )
+                await runtime.open()
+                await self._invoke_request(runtime, message="go")
+
+                # Both still run, but serially: their windows do not overlap.
+                self.assertEqual(set(definition.intervals), {"a", "b"})
+                self.assertFalse(definition._overlap())
 
                 await runtime.shutdown()
 

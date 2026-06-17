@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -130,6 +131,7 @@ async def _plan_step_payload(
                     "id": tool_call.id,
                     "name": tool_call.name,
                     "arguments": dict(tool_call.arguments or {}),
+                    "parallel_safe": agent._is_parallel_safe(tool_call),
                 }
                 for tool_call in action.tool_calls
             ],
@@ -422,21 +424,22 @@ async def plan_request_step(
     }
 
 
-async def run_step_tool_call(
-    agent_id: str,
+async def _execute_and_record_tool_call(
+    runtime: "AgentRuntime",
+    *,
     request_id: str,
     session_id: str,
     trace_id: str,
-    workflow_state: dict[str, Any],
-    tool_call_payload: dict[str, Any],
+    loop_index: int,
+    tool_call: ToolCall,
+    host: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    runtime = _require_runtime(agent_id)
-    loop_index = int(workflow_state.get("loop_index") or 0)
-    tool_call = ToolCall(
-        id=str(tool_call_payload.get("id") or ""),
-        name=str(tool_call_payload.get("name") or ""),
-        arguments=dict(tool_call_payload.get("arguments") or {}),
-    )
+    """Run one tool call, emitting its started/completed events.
+
+    Returns the result payload. This is the shared body for both the single
+    serial step and the parallel batch step, so event keys and result shape are
+    identical no matter which path executed the call.
+    """
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -460,7 +463,7 @@ async def run_step_tool_call(
         tool_call=tool_call,
         session_id=session_id,
         trace_id=trace_id,
-        host=workflow_state.get("host") or None,
+        host=host,
     )
     result_payload = _step_tool_result_payload(
         tool_call,
@@ -487,6 +490,37 @@ async def run_step_tool_call(
             payload=result_payload,
         ),
     )
+    return result_payload
+
+
+def _tool_call_from_payload(tool_call_payload: dict[str, Any]) -> ToolCall:
+    return ToolCall(
+        id=str(tool_call_payload.get("id") or ""),
+        name=str(tool_call_payload.get("name") or ""),
+        arguments=dict(tool_call_payload.get("arguments") or {}),
+    )
+
+
+async def run_step_tool_call(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    workflow_state: dict[str, Any],
+    tool_call_payload: dict[str, Any],
+) -> dict[str, Any]:
+    runtime = _require_runtime(agent_id)
+    loop_index = int(workflow_state.get("loop_index") or 0)
+    tool_call = _tool_call_from_payload(tool_call_payload)
+    result_payload = await _execute_and_record_tool_call(
+        runtime,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
+        loop_index=loop_index,
+        tool_call=tool_call,
+        host=workflow_state.get("host") or None,
+    )
     return {
         **dict(workflow_state or {}),
         "result_payloads": list(workflow_state.get("result_payloads") or [])
@@ -495,6 +529,60 @@ async def run_step_tool_call(
             workflow_state.get("tool_usage"),
             tool_call.name,
         ),
+    }
+
+
+async def run_step_tool_batch(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    workflow_state: dict[str, Any],
+    tool_call_payloads: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Execute a batch of parallel-safe tool calls concurrently.
+
+    Runs as a single DBOS step so crash recovery replays the batch atomically:
+    either all of its results are recorded or the whole batch re-runs. Each call
+    still builds its own turn agent (mirroring the serial path), so concurrent
+    executions share no mutable agent state. Concurrency is capped by the
+    agent's ``max_parallel_tools`` so a wide fan-out can't exhaust the
+    connection pool or downstream limits. Results are appended in call order so
+    they map back to their ``tool_call_id``.
+    """
+    runtime = _require_runtime(agent_id)
+    loop_index = int(workflow_state.get("loop_index") or 0)
+    host = workflow_state.get("host") or None
+    tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
+
+    max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
+    semaphore = asyncio.Semaphore(max_parallel)
+
+    async def _run(tool_call: ToolCall) -> dict[str, Any]:
+        async with semaphore:
+            return await _execute_and_record_tool_call(
+                runtime,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                loop_index=loop_index,
+                tool_call=tool_call,
+                host=host,
+            )
+
+    result_payloads = await asyncio.gather(
+        *(_run(tool_call) for tool_call in tool_calls)
+    )
+
+    tool_usage = workflow_state.get("tool_usage")
+    for tool_call in tool_calls:
+        tool_usage = _record_tool_invocation(tool_usage, tool_call.name)
+
+    return {
+        **dict(workflow_state or {}),
+        "result_payloads": list(workflow_state.get("result_payloads") or [])
+        + list(result_payloads),
+        "tool_usage": tool_usage,
     }
 
 
