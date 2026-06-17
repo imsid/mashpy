@@ -11,6 +11,7 @@ from mash.core.context import ToolCall
 from mash.core.llm import (
     AnthropicProvider,
     GeminiProvider,
+    GemmaProvider,
     OpenAIProvider,
     OSSCompatibleProvider,
 )
@@ -1195,6 +1196,47 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         parsed = provider._parse(raw, LLMCapabilities(reasoning_content=False))
 
         self.assertEqual(parsed.text, "<think>x</think>hello")
+        self.assertNotIn("reasoning", parsed.provider_metadata)
+
+    def test_gemma_capabilities_split_inline_think_block(self) -> None:
+        # Gemma enables reasoning_content so its inline <think> block is split
+        # out of the transcript instead of leaking into the answer.
+        provider = object.__new__(GemmaProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="<think>plan</think>answer", tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        self.assertTrue(provider.capabilities().reasoning_content)
+        parsed = provider._parse(raw, provider.capabilities())
+
+        self.assertEqual(parsed.text, "answer")
+        self.assertEqual(parsed.provider_metadata["reasoning"], "plan")
+
+    def test_gemma_capabilities_leave_plain_content_unchanged(self) -> None:
+        # With reasoning off, a non-reasoning response has no <think> block; the
+        # split is a no-op and the text passes through untouched.
+        provider = object.__new__(GemmaProvider)
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="just answer", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        parsed = provider._parse(raw, provider.capabilities())
+
+        self.assertEqual(parsed.text, "just answer")
         self.assertNotIn("reasoning", parsed.provider_metadata)
 
     async def test_streamed_send_accumulates_reasoning_content(self) -> None:
