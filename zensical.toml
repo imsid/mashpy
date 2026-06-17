@@ -25,6 +25,7 @@ nav = [
             { "Human-in-the-Loop" = "posts/human-in-the-loop.md" },
             { "Remote Tools over MCP" = "posts/remote-tools-mcp.md" },
             { "One LLM Contract for Three Providers" = "posts/one-llm-contract.md" },
+            { "Open-Source Models over Chat Completions" = "posts/oss-models.md" },
             { "Skills: Instructions on Demand" = "posts/skills-on-demand.md" },
             { "Memory and Compaction" = "posts/memory-and-compaction.md" },
             { "Composing Agents Under One Host" = "posts/composing-agents.md" },
