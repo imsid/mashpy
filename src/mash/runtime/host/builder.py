@@ -75,9 +75,12 @@ class HostBuilder:
                 create_masher_agent_spec,
             ) = load_masher_components()
             masher_spec = create_masher_agent_spec()
-            pool.register_workflow_agent(masher_spec, agent_id=masher_agent_id)
-            for workflow in build_masher_workflow_specs(masher_spec):
-                pool.register_workflow(workflow)
+            # Masher is built at pool startup and needs an LLM provider; skip it
+            # when none is configured so keyless deployments still start cleanly.
+            if masher_spec.provider_available():
+                pool.register_workflow_agent(masher_spec, agent_id=masher_agent_id)
+                for workflow in build_masher_workflow_specs(masher_spec):
+                    pool.register_workflow(workflow)
         for workflow in self._workflows:
             pool.register_workflow(workflow)
         # Hosts are defined last so workflow-id validation sees every

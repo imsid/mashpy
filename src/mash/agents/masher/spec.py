@@ -37,6 +37,24 @@ MASHER_TRACE_DIGEST_TASK_ID = "digest-traces"
 MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
 MASHER_ONLINE_EVAL_TASK_ID = "curate-online-evals"
 
+
+def _select_masher_provider_kind() -> str | None:
+    """Which provider family build_llm() dispatches on, or None if unconfigured.
+
+    Single source of truth shared by build_llm() and provider_available() so the
+    two cannot drift. OSS is selected on OSS_BASE_URL alone; build_llm() then
+    enforces MASHER_OSS_MODEL.
+    """
+    if os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip():
+        return "gemini"
+    if os.getenv("OPENAI_API_KEY", "").strip():
+        return "openai"
+    if os.getenv("ANTHROPIC_API_KEY", "").strip():
+        return "anthropic"
+    if os.getenv("OSS_BASE_URL", "").strip():
+        return "oss"
+    return None
+
 MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT = {
     "title": "MasherTraceDigestWorkflowOutput",
     "type": "object",
@@ -155,22 +173,39 @@ class MasherAgentSpec(AgentSpec):
         )
         return skills
 
+    @staticmethod
+    def provider_available() -> bool:
+        """Whether build_llm() would construct a provider from the environment.
+
+        HostBuilder uses this to decide whether to register Masher by default:
+        Masher cannot run without an LLM, so a keyless deployment skips it rather
+        than failing at pool startup. True exactly when build_llm() succeeds — an
+        OSS endpoint counts only once MASHER_OSS_MODEL is also set.
+        """
+        kind = _select_masher_provider_kind()
+        if kind is None:
+            return False
+        if kind == "oss":
+            return bool(os.getenv("MASHER_OSS_MODEL", "").strip())
+        return True
+
     def build_llm(self) -> LLMProvider:
-        if os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip():
+        kind = _select_masher_provider_kind()
+        if kind == "gemini":
             return GeminiProvider(
                 app_id=MASHER_AGENT_ID,
                 model=os.getenv(
                     "MASHER_GEMINI_MODEL", os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
                 ),
             )
-        if os.getenv("OPENAI_API_KEY", "").strip():
+        if kind == "openai":
             return OpenAIProvider(
                 app_id=MASHER_AGENT_ID,
                 model=os.getenv(
                     "MASHER_OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-5-mini")
                 ),
             )
-        if os.getenv("ANTHROPIC_API_KEY", "").strip():
+        if kind == "anthropic":
             return AnthropicProvider(
                 app_id=MASHER_AGENT_ID,
                 model=os.getenv(
@@ -178,12 +213,7 @@ class MasherAgentSpec(AgentSpec):
                     os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
                 ),
             )
-        # OSS fallback: any Chat Completions endpoint (self-hosted vLLM/Ollama or
-        # a hosted gateway). Gated on OSS_BASE_URL so keyless deployments that
-        # never configured an endpoint still fail loudly rather than silently
-        # pointing at localhost. The model must support native tool calling.
-        oss_base_url = os.getenv("OSS_BASE_URL", "").strip()
-        if oss_base_url:
+        if kind == "oss":
             # Generic OSS endpoints have no universal model name, so the served
             # model must be named explicitly via MASHER_OSS_MODEL. It must also
             # support native tool calling for Masher to route correctly.
@@ -196,12 +226,13 @@ class MasherAgentSpec(AgentSpec):
             return OSSCompatibleProvider(
                 app_id=MASHER_AGENT_ID,
                 model=oss_model,
-                base_url=oss_base_url,
+                base_url=os.getenv("OSS_BASE_URL", "").strip(),
                 api_key=os.getenv("OSS_API_KEY", "").strip() or None,
             )
         raise RuntimeError(
             "Masher requires GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, "
-            "ANTHROPIC_API_KEY, or OSS_BASE_URL to be configured."
+            "ANTHROPIC_API_KEY, or OSS_BASE_URL (with MASHER_OSS_MODEL) to be "
+            "configured."
         )
 
     def build_agent_config(self) -> AgentConfig:

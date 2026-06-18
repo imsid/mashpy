@@ -12,9 +12,14 @@ Because Masher is registered by default, it is built at pool startup and needs a
 LLM provider. `build_llm()` resolves the first configured of `GEMINI_API_KEY` /
 `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, then an OSS endpoint via
 `OSS_BASE_URL` (which also requires `MASHER_OSS_MODEL` to name the served
-tool-calling model, optionally `OSS_API_KEY`). With none of these set, startup
-raises. Per-provider model overrides: `MASHER_GEMINI_MODEL`,
-`MASHER_OPENAI_MODEL`, `MASHER_ANTHROPIC_MODEL`, `MASHER_OSS_MODEL`.
+tool-calling model, optionally `OSS_API_KEY`). Per-provider model overrides:
+`MASHER_GEMINI_MODEL`, `MASHER_OPENAI_MODEL`, `MASHER_ANTHROPIC_MODEL`,
+`MASHER_OSS_MODEL`.
+
+When **none** of these is configured Masher cannot be built, so `HostBuilder`
+skips registering it rather than failing pool startup — a keyless deployment
+simply runs without the Masher workflows. `enable_masher(True)` does not override
+this; the worker is registered only when a provider is available.
 
 ## Workflows
 
