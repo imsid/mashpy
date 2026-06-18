@@ -41,6 +41,7 @@ def _build_test_client(
     ):
         builder = (
             HostBuilder()
+            .enable_masher(False)
             .agent(
                 build_spec(agent_id="primary", response_text="primary-ok"),
                 metadata=metadata(),

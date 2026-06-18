@@ -93,6 +93,72 @@ def _resolve_saved_connection(
     return base_url, api_key
 
 
+def _agent_rows(agents: list[dict]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for agent in sorted(agents, key=lambda a: str(a.get("agent_id") or "")):
+        metadata = agent.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        rows.append(
+            [
+                str(agent.get("agent_id") or ""),
+                str(metadata.get("display_name") or ""),
+                str(metadata.get("description") or ""),
+            ]
+        )
+    return rows
+
+
+def _workflow_rows(workflows: list[dict]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for workflow in sorted(workflows, key=lambda w: str(w.get("workflow_id") or "")):
+        rendered_tasks = []
+        for task in workflow.get("tasks") or []:
+            if isinstance(task, dict):
+                rendered_tasks.append(
+                    f"{task.get('task_id') or ''} -> {task.get('agent_id') or ''}"
+                )
+        rows.append([str(workflow.get("workflow_id") or ""), ", ".join(rendered_tasks)])
+    return rows
+
+
+def _host_rows(hosts: list[dict]) -> list[list[str]]:
+    return [
+        [
+            str(host.get("host_id") or ""),
+            str(host.get("primary") or ""),
+            ", ".join(host.get("subagents") or []),
+            ", ".join(host.get("workflows") or []),
+        ]
+        for host in hosts
+    ]
+
+
+def _run_browse(client: MashHostClient, renderer: RichRenderer) -> int:
+    renderer.info("Agent pool")
+    renderer.table(["Agent", "Name", "Description"], _agent_rows(client.list_agents()))
+
+    renderer.info("Workflows (attach to a host with `mash compose ... --workflows <id>`)")
+    workflow_rows = _workflow_rows(client.list_workflows())
+    if workflow_rows:
+        renderer.table(["Workflow", "Tasks"], workflow_rows)
+    else:
+        renderer.info("(none registered)")
+
+    renderer.info("Hosts")
+    host_rows = _host_rows(client.list_hosts())
+    if host_rows:
+        renderer.table(["Host", "Primary", "Subagents", "Workflows"], host_rows)
+    else:
+        renderer.info("(no hosts defined)")
+
+    renderer.info(
+        "Compose a host with `mash compose --host <id> --primary <agent> "
+        "--subagents a,b`, then enter it with `mash repl`."
+    )
+    return 0
+
+
 def _render_host_view(renderer: RichRenderer, described: dict) -> None:
     primary = described.get("primary") or {}
     members = ", ".join(
@@ -222,6 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--host", dest="host_id", default=None, help="Target host id")
 
     subparsers.add_parser("status", parents=[common], help="Show deployment status")
+    subparsers.add_parser(
+        "browse",
+        parents=[common],
+        help="Browse the pool: agents, workflows, and hosts",
+    )
     subparsers.add_parser("agents", parents=[common], help="List deployment agents")
     subparsers.add_parser("hosts", parents=[common], help="List defined hosts")
 
@@ -273,6 +344,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     client = MashHostClient(base_url, api_key=api_key)
     try:
+        if args.command == "browse":
+            return _run_browse(client, renderer)
+
         if args.command == "status":
             health = client.health()
             deployment = health.get("deployment") or {}

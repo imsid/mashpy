@@ -4,15 +4,15 @@
 
 Masher is Mash's built-in workflow-only trace processing worker.
 
-It is registered by `HostBuilder.enable_masher()` as a workflow agent for
-Masher-owned workflows. It must not be exposed as a normal subagent or as a
-delegation target for `InvokeSubagent`.
+`HostBuilder` registers it as a workflow agent for Masher-owned workflows by
+default (opt out with `enable_masher(False)`). It must not be exposed as a normal
+subagent or as a delegation target for `InvokeSubagent`.
 
 ## What Must Stay True
 
 - Masher remains workflow-only.
-- `HostBuilder.enable_masher()` registers Masher as a workflow agent and registers
-  all built-in Masher workflows.
+- `HostBuilder` registers Masher as a workflow agent and registers all built-in
+  Masher workflows by default; `enable_masher(False)` opts out.
 - Built-in Masher workflows use `TaskSpec(agent_spec=masher_spec)`.
 - `workflow_input` is trigger input and is immutable for the run.
 - `task_state` is checkpoint state only.

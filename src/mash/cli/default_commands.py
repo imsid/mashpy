@@ -259,16 +259,15 @@ def register_default_commands(shell) -> None:
                 str(host.get("host_id") or ""),
                 str(host.get("primary") or ""),
                 ", ".join(host.get("subagents") or []),
+                ", ".join(host.get("workflows") or []),
             ]
             for host in hosts
         ]
-        ctx.renderer.table(["Host", "Primary", "Subagents"], rows)
+        ctx.renderer.table(["Host", "Primary", "Subagents", "Workflows"], rows)
 
     def workflow_command(ctx, args: list[str]) -> None:
-        if not args:
-            ctx.renderer.error("Usage: /workflow [list|run|status] ...")
-            return
-        subcommand = args[0].strip().lower()
+        # Bare `/workflow` behaves like `/workflow list`.
+        subcommand = args[0].strip().lower() if args else "list"
         if subcommand == "list":
             workflows = ctx.client.list_workflows(host=ctx.host_id)
             if not workflows:
@@ -544,7 +543,7 @@ def register_default_commands(shell) -> None:
     )
     shell.command_registry.register(
         Command(
-            name="agents",
+            name="agent",
             help="List available agents (host members only when connected through a host)",
             handler=agents_command,
         )
@@ -560,7 +559,7 @@ def register_default_commands(shell) -> None:
     )
     shell.command_registry.register(
         Command(
-            name="hosts",
+            name="host",
             help="List defined hosts (retarget with `mash compose` or `mash connect`)",
             handler=hosts_command,
         )
@@ -568,7 +567,7 @@ def register_default_commands(shell) -> None:
     shell.command_registry.register(
         Command(
             name="workflow",
-            help="List, run, and inspect workflows (host-attached only when connected through a host)",
+            help="List, run, and inspect workflows; bare `/workflow` lists (host-attached only when connected through a host)",
             handler=workflow_command,
         )
     )

@@ -351,8 +351,10 @@ operations.
 
 ### Built-In Eval and Trace Digest
 
-Masher, Mash's built-in workflow agent, exposes two workflows that build on the
-same span and analysis infrastructure:
+Masher, Mash's built-in workflow agent, is registered into every pool by default
+(opt out with `HostBuilder.enable_masher(False)`). It is a hidden workflow-only
+worker — it never appears in agent listings or `InvokeSubagent` delegation — and
+it exposes two workflows that build on the same span and analysis infrastructure:
 
 - **`masher-trace-digest`** produces a schema v2 digest with the full latency
   breakdown, tool stats, step breakdown, slowest operations, nested subagent
@@ -434,6 +436,7 @@ Top-level commands exposed by `mash`:
 connect     Persist a deployment connection and target
 compose     Define a host composition and target it
 status      Show deployment status
+browse      Browse the pool: agents, workflows, and hosts
 agents      List pooled agents
 hosts       List defined host compositions
 sessions    List sessions for the target agent
@@ -442,16 +445,21 @@ repl        Start the interactive shell
 host serve  Run the host API server
 ```
 
+`mash browse` is the one-shot tour of a deployment: it lists the agent pool, the
+pool-wide workflow registry (unfiltered by host — this is where built-in
+workflows like Masher's surface), and the defined host compositions, so you can
+see what is available to wire into a host before composing one.
+
 Default slash commands inside the REPL:
 
 ```
 /status     Show deployment, current host, agent, and session
-/agents     List pooled agents
-/hosts      List defined host compositions
+/agent      List pooled agents
+/host       List defined host compositions (with attached workflows)
 /sessions   List remote sessions
 /session    Show current session info
 /history    View conversation history
 /trace [N]  Show trace analysis for recent traces
-/workflow   List, run, and inspect workflows
+/workflow   List, run, and inspect workflows (bare /workflow lists)
 /feedback   Record a note or bug report about this session
 ```

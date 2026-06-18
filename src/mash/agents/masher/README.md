@@ -2,10 +2,19 @@
 
 `src/mash/agents/masher` contains Mash's built-in workflow-only Masher worker.
 
-Masher is not a user-invokable subagent. `HostBuilder.enable_masher()` registers
-Masher as a workflow-only runtime and registers Masher workflows. Masher is
-hidden from public agent listings and from primary-agent `InvokeSubagent`
-delegation, but workflow tasks can still call it through the host runtime client.
+Masher is not a user-invokable subagent. `HostBuilder` registers Masher as a
+workflow-only runtime and registers Masher's workflows into the pool. This is on
+by default; call `HostBuilder.enable_masher(False)` to opt out. Masher is hidden
+from public agent listings and from primary-agent `InvokeSubagent` delegation,
+but workflow tasks can still call it through the host runtime client.
+
+Because Masher is registered by default, it is built at pool startup and needs an
+LLM provider. `build_llm()` resolves the first configured of `GEMINI_API_KEY` /
+`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, then an OSS endpoint via
+`OSS_BASE_URL` (which also requires `MASHER_OSS_MODEL` to name the served
+tool-calling model, optionally `OSS_API_KEY`). With none of these set, startup
+raises. Per-provider model overrides: `MASHER_GEMINI_MODEL`,
+`MASHER_OPENAI_MODEL`, `MASHER_ANTHROPIC_MODEL`, `MASHER_OSS_MODEL`.
 
 ## Workflows
 

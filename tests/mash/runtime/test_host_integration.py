@@ -203,6 +203,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 primary_spec = build_spec(agent_id="primary", response_text="primary-ok")
                 pool = (
                     HostBuilder()
+                    .enable_masher(False)
                     .agent(primary_spec, metadata=metadata())
                     .workflow(
                         WorkflowSpec(
@@ -292,7 +293,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
 
     def test_host_unregister_agent_workflow_is_idempotent(self) -> None:
-        pool = HostBuilder().agent(
+        pool = HostBuilder().enable_masher(False).agent(
             build_spec(agent_id="primary", response_text="primary-ok"),
             metadata=metadata(),
         ).build()
@@ -343,6 +344,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 worker_b = build_spec(agent_id="worker-b", response_text="{}")
                 pool = (
                     HostBuilder()
+                    .enable_masher(False)
                     .agent(
                         build_spec(agent_id="primary", response_text="primary-ok"),
                         metadata=metadata(),
@@ -508,6 +510,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 pool = (
                     HostBuilder()
+                    .enable_masher(False)
                     .agent(primary_spec, metadata=metadata())
                     .workflow(
                         WorkflowSpec(
