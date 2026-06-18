@@ -25,15 +25,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 
@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload dist artifacts
         if: ${{ steps.resolve_target.outputs.should_publish == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.resolve_target.outputs.artifact_name }}
           path: ${{ steps.resolve_target.outputs.package_dir }}/dist/*
@@ -114,7 +114,7 @@ jobs:
 
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.artifact_name }}
           path: dist
