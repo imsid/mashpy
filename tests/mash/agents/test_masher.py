@@ -639,7 +639,11 @@ class MasherTests(unittest.TestCase):
 
     def test_builder_enables_masher_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+            with patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
+                clear=True,
+            ):
                 host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
                 try:
                     self.assertNotIn("masher", host.list_agents())
@@ -652,9 +656,27 @@ class MasherTests(unittest.TestCase):
                 finally:
                     asyncio.run(host.close())
 
+    def test_builder_skips_masher_when_no_provider_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
+                host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
+                try:
+                    workflows = {
+                        workflow.workflow_id
+                        for workflow in host.get_workflow_registry().list()
+                    }
+                    self.assertNotIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
+                    self.assertNotIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
+                finally:
+                    asyncio.run(host.close())
+
     def test_builder_enable_masher_registers_hidden_workflow_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+            with patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
+                clear=True,
+            ):
                 host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).enable_masher().build()
                 try:
                     described = {item["agent_id"]: item for item in host.describe_agents()}
