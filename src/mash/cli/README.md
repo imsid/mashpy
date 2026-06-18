@@ -23,6 +23,7 @@ Common options shared by most host-facing commands
 Host-facing commands
 
 - `status [common]`: show deployment base URL, agent count, and defined hosts.
+- `browse [common]`: browse the pool in one view — agents, pool-wide workflows (unfiltered by host), and defined host compositions.
 - `agents [common]`: list pooled agents and their display names.
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
@@ -50,14 +51,14 @@ Notes
 - `/exit`: leave the shell.
 - `/clear`: clear the terminal renderer.
 - `/status`: show deployment, current agent, and session state.
-- `/agents`: list agents exposed by the host.
+- `/agent`: list agents exposed by the host.
 - `/session`: show the current remote session details.
 - `/sessions`: list sessions for the current agent.
 - `/history [limit]`: show conversation history for the current session.
-- `/hosts`: list the host compositions defined on the deployment. The shell's own target is fixed at connect time.
+- `/host`: list the host compositions defined on the deployment, including their attached workflows. The shell's own target is fixed at connect time.
 - `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
 - `/feedback <message>`: record a free-form note or bug report about the current session. The message is stored with the host, agent, session, and last request id so app developers can read it back later through the feedback API.
-- `/workflow list`: list registered workflows.
+- `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
 

@@ -344,11 +344,12 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         command_names = [command.name for command in shell.command_registry.list_commands()]
         self.assertIn("status", command_names)
-        self.assertIn("agents", command_names)
+        self.assertIn("agent", command_names)
         self.assertIn("sessions", command_names)
-        self.assertIn("hosts", command_names)
+        self.assertIn("host", command_names)
         self.assertNotIn("use", command_names)
-        self.assertNotIn("host", command_names)
+        self.assertNotIn("agents", command_names)
+        self.assertNotIn("hosts", command_names)
         self.assertIn("workflow", command_names)
         self.assertNotIn("changelog", command_names)
 
@@ -392,16 +393,16 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_hosts_command_lists_hosts(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "table") as table:
-            shell.command_registry.execute(shell.context, "/hosts")
+            shell.command_registry.execute(shell.context, "/host")
         table.assert_called_once_with(
-            ["Host", "Primary", "Subagents"],
-            [["assistant", "primary", "research"]],
+            ["Host", "Primary", "Subagents", "Workflows"],
+            [["assistant", "primary", "research", ""]],
         )
 
     def test_agents_command_lists_pool_agents_without_host(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "table") as table:
-            shell.command_registry.execute(shell.context, "/agents")
+            shell.command_registry.execute(shell.context, "/agent")
         table.assert_called_once_with(
             ["Agent", "Name"],
             [["primary", "Primary"], ["research", "Research"]],
@@ -410,7 +411,7 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_agents_command_host_scoped_shows_members_with_roles(self) -> None:
         shell = self._build_host_shell()
         with patch.object(shell.context.renderer, "table") as table:
-            shell.command_registry.execute(shell.context, "/agents")
+            shell.command_registry.execute(shell.context, "/agent")
         table.assert_called_once_with(
             ["Agent", "Name", "Role"],
             [["primary", "Primary", "primary"], ["research", "Research", "subagent"]],
@@ -595,11 +596,14 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.command_registry.execute(shell.context, "/workflow nope")
         error.assert_called_once_with("Usage: /workflow [list|run|status] ...")
 
-    def test_workflow_without_subcommand_usage_error_is_local(self) -> None:
+    def test_workflow_without_subcommand_lists_workflows(self) -> None:
         shell = self._build_shell()
-        with patch.object(shell.context.renderer, "error") as error:
+        with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow")
-        error.assert_called_once_with("Usage: /workflow [list|run|status] ...")
+        table.assert_called_once_with(
+            ["Workflow ID", "Tasks"],
+            [["changelog", "scan -> worker"]],
+        )
 
     def test_handle_repl_message_renders_remote_response(self) -> None:
         shell = self._build_shell()

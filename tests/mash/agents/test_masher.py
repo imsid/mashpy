@@ -26,7 +26,7 @@ from mash.agents.masher.tool import (
 )
 from mash.runtime.events import build_runtime_trace, build_span_tree, analyze_trace
 from mash.core.agent import Agent
-from mash.core.llm import LLMProvider
+from mash.core.llm import LLMProvider, OSSCompatibleProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.runtime import AgentSpec, HostBuilder
 from mash.testing.runtime_fixtures import metadata
@@ -196,6 +196,36 @@ class MasherTests(unittest.TestCase):
             self.assertEqual(sorted(described.keys()), ["primary"])
         finally:
             asyncio.run(host.close())
+
+    def test_build_llm_falls_back_to_oss_when_base_url_and_model_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {
+                    "MASH_DATA_DIR": tmp,
+                    "OSS_BASE_URL": "http://gpu-box:8000/v1",
+                    "MASHER_OSS_MODEL": "Qwen/Qwen3-32B",
+                },
+                clear=True,
+            ):
+                provider = MasherAgentSpec().build_llm()
+                self.assertIsInstance(provider, OSSCompatibleProvider)
+
+    def test_build_llm_raises_when_oss_base_url_set_without_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "OSS_BASE_URL": "http://gpu-box:8000/v1"},
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError):
+                    MasherAgentSpec().build_llm()
+
+    def test_build_llm_raises_without_any_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
+                with self.assertRaises(RuntimeError):
+                    MasherAgentSpec().build_llm()
 
     def test_spec_registers_only_workflow_tools_and_normal_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -606,6 +636,21 @@ class MasherTests(unittest.TestCase):
 
         self.assertTrue(result.is_error)
         self.assertIn("workflow_input.trace_id is required", result.content)
+
+    def test_builder_enables_masher_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+                host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
+                try:
+                    self.assertNotIn("masher", host.list_agents())
+                    workflows = {
+                        workflow.workflow_id
+                        for workflow in host.get_workflow_registry().list()
+                    }
+                    self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
+                    self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
+                finally:
+                    asyncio.run(host.close())
 
     def test_builder_enable_masher_registers_hidden_workflow_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

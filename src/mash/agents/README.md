@@ -8,7 +8,9 @@
 - Keeps built-in agent prompts, tools, and module-specific behavior separate from generic runtime code.
 
 ## Current Built-In Agents
-- `masher`: bundled workflow-only trace digest worker.
+- `masher`: bundled workflow-only trace digest worker. Registered into every pool
+  by default (opt out with `HostBuilder.enable_masher(False)`). See
+  [`masher/README.md`](masher/README.md).
 
 ## Package Boundary
 - Built-in agents should compose `mash.runtime`, `mash.tools`, `mash.memory`, and `mash.logging`.

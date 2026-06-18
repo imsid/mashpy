@@ -28,7 +28,7 @@ class HostBuilder:
     def __init__(self) -> None:
         self._agents: list[AgentRegistration] = []
         self._hosts: list[Host] = []
-        self._masher_enabled = False
+        self._masher_enabled = True
         self._workflows: list[WorkflowSpec] = []
 
     def agent(

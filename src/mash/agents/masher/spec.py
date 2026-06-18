@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mash.core.config import AgentConfig
-from mash.core.llm import AnthropicProvider, LLMProvider, OpenAIProvider, GeminiProvider, DEFAULT_GEMINI_MODEL
+from mash.core.llm import (
+    AnthropicProvider,
+    LLMProvider,
+    OpenAIProvider,
+    GeminiProvider,
+    OSSCompatibleProvider,
+    DEFAULT_GEMINI_MODEL,
+)
 from mash.runtime.host.subagents import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.base import Skill
@@ -171,8 +178,30 @@ class MasherAgentSpec(AgentSpec):
                     os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
                 ),
             )
+        # OSS fallback: any Chat Completions endpoint (self-hosted vLLM/Ollama or
+        # a hosted gateway). Gated on OSS_BASE_URL so keyless deployments that
+        # never configured an endpoint still fail loudly rather than silently
+        # pointing at localhost. The model must support native tool calling.
+        oss_base_url = os.getenv("OSS_BASE_URL", "").strip()
+        if oss_base_url:
+            # Generic OSS endpoints have no universal model name, so the served
+            # model must be named explicitly via MASHER_OSS_MODEL. It must also
+            # support native tool calling for Masher to route correctly.
+            oss_model = os.getenv("MASHER_OSS_MODEL", "").strip()
+            if not oss_model:
+                raise RuntimeError(
+                    "Masher's OSS endpoint requires MASHER_OSS_MODEL to name the "
+                    "served model (must support native tool calling)."
+                )
+            return OSSCompatibleProvider(
+                app_id=MASHER_AGENT_ID,
+                model=oss_model,
+                base_url=oss_base_url,
+                api_key=os.getenv("OSS_API_KEY", "").strip() or None,
+            )
         raise RuntimeError(
-            "Masher requires GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY to be configured."
+            "Masher requires GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, "
+            "ANTHROPIC_API_KEY, or OSS_BASE_URL to be configured."
         )
 
     def build_agent_config(self) -> AgentConfig:
