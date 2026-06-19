@@ -19,24 +19,28 @@ export function BarChart({ data, height = 160, format = compactNumber }) {
   const barW = (viewW - barGap * (data.length - 1)) / data.length;
 
   return (
-    <div className="w-full">
-      <div className="mb-1 flex justify-between text-xs text-slate-400">
-        <span>{format(max)}</span>
-        <span>0</span>
-      </div>
-      <svg
-        viewBox={`0 0 ${viewW} ${height}`}
-        preserveAspectRatio="none"
-        className="h-40 w-full"
-        role="img"
+    <div className="flex w-full gap-2">
+      <div
+        className="flex flex-col justify-between py-0.5 text-right text-[10px] text-slate-400"
+        style={{ height }}
       >
-        <line x1="0" y1={plotH} x2={viewW} y2={plotH} stroke="#e2e8f0" strokeWidth="1" />
-        {data.map((d, i) => {
-          const h = max > 0 ? (d.value / max) * (plotH - 4) : 0;
-          const x = i * (barW + barGap);
-          return (
-            <g key={i}>
+        <span>{format(max)}</span>
+        <span className="pb-5">0</span>
+      </div>
+      <div className="min-w-0 flex-1">
+        <svg
+          viewBox={`0 0 ${viewW} ${height}`}
+          preserveAspectRatio="none"
+          className="h-40 w-full"
+          role="img"
+        >
+          <line x1="0" y1={plotH} x2={viewW} y2={plotH} stroke="#e2e8f0" strokeWidth="1" />
+          {data.map((d, i) => {
+            const h = max > 0 ? (d.value / max) * (plotH - 4) : 0;
+            const x = i * (barW + barGap);
+            return (
               <rect
+                key={i}
                 x={x}
                 y={plotH - h}
                 width={barW}
@@ -46,16 +50,16 @@ export function BarChart({ data, height = 160, format = compactNumber }) {
               >
                 <title>{`${d.label}: ${format(d.value)}`}</title>
               </rect>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="mt-1 flex justify-between text-[10px] text-slate-400">
-        {data.map((d, i) => (
-          <span key={i} className="flex-1 truncate text-center">
-            {d.label}
-          </span>
-        ))}
+            );
+          })}
+        </svg>
+        <div className="mt-1 flex justify-between text-[10px] text-slate-400">
+          {data.map((d, i) => (
+            <span key={i} className="flex-1 truncate text-center">
+              {d.label}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
