@@ -42,7 +42,7 @@ export function BarChart({ data, height = 160, format = compactNumber }) {
                 width={barW}
                 height={h}
                 rx="2"
-                className="fill-indigo-500"
+                className="fill-blue-500"
               >
                 <title>{`${d.label}: ${format(d.value)}`}</title>
               </rect>

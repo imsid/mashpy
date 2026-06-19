@@ -40,9 +40,7 @@ function AgentCard({ agent, usedIn }) {
       {meta?.capabilities?.length ? (
         <div className="flex flex-wrap gap-1.5">
           {meta.capabilities.map((cap) => (
-            <Chip key={cap} tone="indigo">
-              {cap}
-            </Chip>
+            <Chip key={cap}>{cap}</Chip>
           ))}
         </div>
       ) : null}
@@ -61,7 +59,7 @@ function AgentCard({ agent, usedIn }) {
         {usedIn?.length ? (
           <div className="flex flex-wrap gap-1.5">
             {usedIn.map(({ hostId, role }) => (
-              <Chip key={`${hostId}-${role}`} tone={role === 'primary' ? 'emerald' : 'slate'}>
+              <Chip key={`${hostId}-${role}`}>
                 {hostId} · {role}
               </Chip>
             ))}

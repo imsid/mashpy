@@ -52,10 +52,10 @@ export default function Shell() {
                   to={item.to}
                   end={item.end}
                   className={({ isActive }) =>
-                    `block rounded-md px-3 py-2 text-sm font-medium transition ${
+                    `flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
                       isActive
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:bg-slate-100'
+                        ? 'bg-slate-100 text-slate-900'
+                        : 'text-slate-600 hover:bg-slate-50'
                     }`
                   }
                 >

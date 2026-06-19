@@ -31,7 +31,7 @@ function HostCard({ host, onEdit, onTest }) {
           <span className="w-20 shrink-0 text-xs font-medium uppercase tracking-wide text-slate-400">
             Primary
           </span>
-          <Chip tone="emerald">{host.primary}</Chip>
+          <Chip>{host.primary}</Chip>
         </div>
         <div className="flex items-start gap-2">
           <span className="w-20 shrink-0 pt-0.5 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -52,9 +52,7 @@ function HostCard({ host, onEdit, onTest }) {
             </span>
             <div className="flex flex-wrap gap-1.5">
               {host.workflows.map((w) => (
-                <Chip key={w} tone="amber">
-                  {w}
-                </Chip>
+                <Chip key={w}>{w}</Chip>
               ))}
             </div>
           </div>
