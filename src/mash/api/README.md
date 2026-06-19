@@ -433,10 +433,27 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - Query params:
   - `agent_id` required
   - `session_id` optional
+  - `host_id` optional, filters traces to one host composition
   - `limit` optional, default `5`, clamped to `1..100`
 - Returns:
-  - `traces`: list of `{ trace_id, session_id, started_at, latest_event_at, event_count }`
+  - `traces`: list of `{ trace_id, session_id, host_id, started_at, latest_event_at, latest_event_id, event_count }`
   - `agent_id`
+  - `host_id`
+
+`GET /api/v1/telemetry/usage`
+- Time-bucketed usage aggregation for one agent, ordered by bucket ascending.
+- Query params:
+  - `agent_id` required
+  - `host_id` optional
+  - `session_id` optional
+  - `bucket` optional, `hour` or `day` (default `day`)
+  - `from_ts` optional unix-seconds lower bound (inclusive)
+  - `to_ts` optional unix-seconds upper bound (exclusive)
+- Returns:
+  - `buckets`: list of `{ bucket_start, request_count, input_tokens, output_tokens, tool_error_count }`
+  - `agent_id`, `host_id`, `session_id`, `bucket`, `from_ts`, `to_ts`
+- Errors:
+  - `400 INVALID_BUCKET`: `bucket` is not `hour` or `day`
 
 `GET /api/v1/telemetry/trace/analysis`
 - Returns span tree and deterministic latency analysis for one trace.

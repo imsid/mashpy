@@ -59,6 +59,15 @@ def _delete_app_session_rows(database_url: str, *, app_id: str, session_id: str)
             )
 
 
+def _delete_app_rows(database_url: str, app_id: str) -> None:
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM runtime_event_log WHERE app_id = %s",
+                (app_id,),
+            )
+
+
 def _fetch_committed_rows(database_url: str, request_id: str) -> list[dict[str, Any]]:
     with psycopg.connect(database_url, autocommit=True, row_factory=dict_row) as conn:
         with conn.cursor() as cursor:
@@ -327,3 +336,159 @@ class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
         # full-text q matches on message terms.
         matched = await self.store.list_feedback(self.app_id, after=0.0, q="streaming")
         self.assertEqual([f.session_id for f in matched], ["s-1"])
+
+
+class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.app_id = f"traces-{uuid.uuid4().hex[:8]}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+        _delete_app_rows(self.database_url, self.app_id)
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_app_rows(self.database_url, self.app_id)
+
+    async def _append(self, *, trace_id: str, host_id: str, created_at: float) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                session_id="session-1",
+                trace_id=trace_id,
+                host_id=host_id,
+                event_type=RuntimeEventType.TRACE_STARTED.value,
+                created_at=created_at,
+                payload={"message": "hi"},
+            )
+        )
+
+    async def test_summaries_carry_host_id(self) -> None:
+        await self._append(trace_id="t-a", host_id="assistant", created_at=100.0)
+        await self._append(trace_id="t-b", host_id="ops", created_at=200.0)
+
+        traces = await self.store.list_recent_traces(self.app_id)
+        by_trace = {item["trace_id"]: item for item in traces}
+        self.assertEqual(by_trace["t-a"]["host_id"], "assistant")
+        self.assertEqual(by_trace["t-b"]["host_id"], "ops")
+
+    async def test_host_id_filter(self) -> None:
+        await self._append(trace_id="t-a", host_id="assistant", created_at=100.0)
+        await self._append(trace_id="t-b", host_id="ops", created_at=200.0)
+
+        only_ops = await self.store.list_recent_traces(self.app_id, host_id="ops")
+        self.assertEqual([item["trace_id"] for item in only_ops], ["t-b"])
+        self.assertTrue(all(item["host_id"] == "ops" for item in only_ops))
+
+
+class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
+    DAY = 86400.0
+
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.app_id = f"usage-{uuid.uuid4().hex[:8]}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+        _delete_app_rows(self.database_url, self.app_id)
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_app_rows(self.database_url, self.app_id)
+
+    async def _append(
+        self,
+        *,
+        trace_id: str,
+        event_type: str,
+        created_at: float,
+        payload: dict[str, Any],
+    ) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                session_id="session-1",
+                trace_id=trace_id,
+                host_id="assistant",
+                event_type=event_type,
+                created_at=created_at,
+                payload=payload,
+            )
+        )
+
+    async def test_buckets_sum_tokens_requests_and_tool_errors(self) -> None:
+        # Two day-buckets, anchored so each timestamp lands mid-day.
+        day1 = self.DAY * 19600 + 100.0
+        day2 = self.DAY * 19602 + 100.0
+
+        # Day 1: one trace, two LLM steps, one failed tool call.
+        await self._append(
+            trace_id="t-1",
+            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            created_at=day1,
+            payload={"token_usage": {"input": 100, "output": 10}},
+        )
+        await self._append(
+            trace_id="t-1",
+            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            created_at=day1 + 1.0,
+            payload={"token_usage": {"input": 200, "output": 20}},
+        )
+        await self._append(
+            trace_id="t-1",
+            event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+            created_at=day1 + 2.0,
+            payload={"tool_name": "x", "result": {"is_error": True}},
+        )
+
+        # Day 2: two distinct traces, one LLM step each.
+        await self._append(
+            trace_id="t-2",
+            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            created_at=day2,
+            payload={"token_usage": {"input": 50, "output": 5}},
+        )
+        await self._append(
+            trace_id="t-3",
+            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            created_at=day2 + 1.0,
+            payload={"token_usage": {"input": 70, "output": 7}},
+        )
+
+        buckets = await self.store.aggregate_usage(self.app_id, bucket="day")
+        self.assertEqual(len(buckets), 2)
+
+        first, second = buckets
+        self.assertEqual(first["bucket_start"], self.DAY * 19600)
+        self.assertEqual(first["request_count"], 1)
+        self.assertEqual(first["input_tokens"], 300)
+        self.assertEqual(first["output_tokens"], 30)
+        self.assertEqual(first["tool_error_count"], 1)
+
+        self.assertEqual(second["bucket_start"], self.DAY * 19602)
+        self.assertEqual(second["request_count"], 2)
+        self.assertEqual(second["input_tokens"], 120)
+        self.assertEqual(second["output_tokens"], 12)
+        self.assertEqual(second["tool_error_count"], 0)
+
+    async def test_time_window_and_host_filter(self) -> None:
+        day1 = self.DAY * 19600 + 100.0
+        day2 = self.DAY * 19602 + 100.0
+        for trace_id, created_at in (("t-1", day1), ("t-2", day2)):
+            await self._append(
+                trace_id=trace_id,
+                event_type=RuntimeEventType.STEP_COMPLETED.value,
+                created_at=created_at,
+                payload={"token_usage": {"input": 10, "output": 1}},
+            )
+
+        windowed = await self.store.aggregate_usage(
+            self.app_id, bucket="day", from_ts=day2 - 50.0
+        )
+        self.assertEqual([b["bucket_start"] for b in windowed], [self.DAY * 19602])
+
+        wrong_host = await self.store.aggregate_usage(self.app_id, host_id="nope")
+        self.assertEqual(wrong_host, [])

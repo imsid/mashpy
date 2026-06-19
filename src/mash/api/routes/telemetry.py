@@ -325,6 +325,7 @@ def build_telemetry_router() -> APIRouter:
         request: Request,
         agent_id: str,
         session_id: Optional[str] = Query(default=None),
+        host_id: Optional[str] = Query(default=None),
         limit: int = Query(default=5),
     ) -> dict[str, Any]:
         state = state_from_request(request)
@@ -336,12 +337,66 @@ def build_telemetry_router() -> APIRouter:
         except ValueError as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
+        resolved_host_id = normalize_optional_text(host_id)
         traces = await agent.runtime_store.list_recent_traces(
             agent_id,
             session_id=normalize_optional_text(session_id),
+            host_id=resolved_host_id,
             limit=max(1, min(limit, 100)),
         )
-        return success({"traces": traces, "agent_id": agent_id})
+        return success(
+            {"traces": traces, "agent_id": agent_id, "host_id": resolved_host_id}
+        )
+
+    @router.get("/telemetry/usage")
+    async def get_usage(
+        request: Request,
+        agent_id: str,
+        host_id: Optional[str] = Query(default=None),
+        session_id: Optional[str] = Query(default=None),
+        bucket: str = Query(default="day"),
+        from_ts: Optional[float] = Query(default=None),
+        to_ts: Optional[float] = Query(default=None),
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        normalized_bucket = str(bucket or "day").strip().lower()
+        if normalized_bucket not in {"hour", "day"}:
+            raise APIError(
+                code="INVALID_BUCKET",
+                message="bucket must be 'hour' or 'day'",
+                status_code=400,
+                details={"param": "bucket"},
+            )
+
+        try:
+            agent = state.pool.get_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        resolved_host_id = normalize_optional_text(host_id)
+        resolved_session_id = normalize_optional_text(session_id)
+        buckets = await agent.runtime_store.aggregate_usage(
+            agent_id,
+            host_id=resolved_host_id,
+            session_id=resolved_session_id,
+            bucket=normalized_bucket,
+            from_ts=from_ts,
+            to_ts=to_ts,
+        )
+        return success(
+            {
+                "buckets": buckets,
+                "agent_id": agent_id,
+                "host_id": resolved_host_id,
+                "session_id": resolved_session_id,
+                "bucket": normalized_bucket,
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+            }
+        )
 
     @router.get("/telemetry/trace/analysis")
     async def get_trace_analysis(
