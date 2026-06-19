@@ -28,6 +28,7 @@ from mash.runtime import AgentClientError, AgentPool
 from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
 
 from .config import MashHostConfig
+from .admin_ui import mount_admin_ui
 from .telemetry_ui import mount_telemetry_ui
 
 
@@ -65,6 +66,7 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
 
     app = FastAPI(title="Mash Host", version="1.0.0", lifespan=_lifespan)
     mount_telemetry_ui(app)
+    mount_admin_ui(app)
 
     cors_origins = resolved_config.resolved_cors_origins()
     if cors_origins:
