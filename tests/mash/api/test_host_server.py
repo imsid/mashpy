@@ -15,7 +15,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mash.api import MashHostConfig, create_app
-from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE, get_telemetry_static_dir
+from mash.api.admin_ui import get_admin_static_dir
+from mash.api.routes.common import API_KEY_COOKIE
 from mash.runtime import Host, HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec, metadata
@@ -134,9 +135,9 @@ def test_health_and_agent_contract() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            telemetry = client.get("/telemetry")
-            assert telemetry.status_code == 200
-            assert "text/html" in telemetry.headers["content-type"]
+            admin = client.get("/admin")
+            assert admin.status_code == 200
+            assert "text/html" in admin.headers["content-type"]
 
             health = client.get("/api/v1/health")
             assert health.status_code == 200
@@ -157,17 +158,17 @@ def test_health_and_agent_contract() -> None:
             assert agents.status_code == 200
             assert len(agents.json()["data"]["agents"]) == 2
 
-            static_dir = get_telemetry_static_dir()
+            static_dir = get_admin_static_dir()
             asset_paths = sorted(
                 path.relative_to(static_dir).as_posix()
                 for path in (static_dir / "assets").iterdir()
             )
             assert asset_paths
 
-            asset = client.get(f"/telemetry/{asset_paths[0]}")
+            asset = client.get(f"/admin/{asset_paths[0]}")
             assert asset.status_code == 200
 
-            spa = client.get("/telemetry/sessions/foo")
+            spa = client.get("/admin/logs")
             assert spa.status_code == 200
             assert "text/html" in spa.headers["content-type"]
 
@@ -687,16 +688,16 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
                     assert names[-1] == "request.completed"
 
 
-def test_telemetry_ui_bootstraps_auth_cookie() -> None:
+def test_admin_ui_bootstraps_auth_cookie() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, api_key="secret") as client:
             unauthorized = client.get("/api/v1/health")
             assert unauthorized.status_code == 401
 
-            telemetry = client.get("/telemetry")
-            assert telemetry.status_code == 200
-            assert client.cookies.get(TELEMETRY_API_KEY_COOKIE) == "secret"
+            admin = client.get("/admin")
+            assert admin.status_code == 200
+            assert client.cookies.get(API_KEY_COOKIE) == "secret"
 
             authorized = client.get("/api/v1/health")
             assert authorized.status_code == 200
@@ -1302,8 +1303,10 @@ def test_workflow_run_events_respects_api_auth() -> None:
                     assert "text/event-stream" in stream.headers["content-type"]
 
 
-def test_missing_telemetry_assets_fail_fast() -> None:
-    with patch("mash.api.app.mount_telemetry_ui", side_effect=RuntimeError("missing telemetry assets")):
+def test_missing_admin_assets_degrade_gracefully() -> None:
+    # The admin SPA is best-effort: a deployment that never built the bundle
+    # still serves the API, it just does not expose the /admin route.
+    with patch("mash.api.admin_ui.admin_assets_available", return_value=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with patch.dict(
@@ -1317,15 +1320,13 @@ def test_missing_telemetry_assets_fail_fast() -> None:
                     build_spec(agent_id="primary", response_text="primary-ok"),
                     metadata=metadata(),
                 ).build()
-                try:
-                    create_app(
-                        host,
-                        config=MashHostConfig(runtime_database_url="postgresql://test/runtime"),
-                    )
-                except RuntimeError as exc:
-                    assert "missing telemetry assets" in str(exc)
-                else:  # pragma: no cover
-                    raise AssertionError("expected create_app() to fail when telemetry assets are missing")
+                app = create_app(
+                    host,
+                    config=MashHostConfig(runtime_database_url="postgresql://test/runtime"),
+                )
+                with TestClient(app) as client:
+                    assert client.get("/api/v1/health").status_code == 200
+                    assert client.get("/admin").status_code == 404
 
 
 def _collect_terminal_response(

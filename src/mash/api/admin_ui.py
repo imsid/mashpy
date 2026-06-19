@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .telemetry_ui import TELEMETRY_API_KEY_COOKIE
+from .routes.common import API_KEY_COOKIE
 
 
 def get_admin_static_dir() -> Path:
@@ -56,7 +56,7 @@ def mount_admin_ui(app: FastAPI) -> None:
         api_key = getattr(runtime_state, "api_key", None)
         if api_key:
             response.set_cookie(
-                key=TELEMETRY_API_KEY_COOKIE,
+                key=API_KEY_COOKIE,
                 value=api_key,
                 httponly=True,
                 secure=False,

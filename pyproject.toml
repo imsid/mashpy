@@ -61,7 +61,7 @@ include = ["mash*"]
 exclude = ["apps*", "tests*"]
 
 [tool.setuptools.package-data]
-"mash.api" = ["static/telemetry/**/*", "static/admin/**/*"]
+"mash.api" = ["static/admin/**/*"]
 "mash.agents.masher" = [
   "skills/*/SKILL.md",
   "skills/*/references/**/*",

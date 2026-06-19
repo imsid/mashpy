@@ -12,8 +12,8 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 - Swagger UI: `/docs`
 - ReDoc: `/redoc`
 - Root discovery: `/`
-- Telemetry SPA: `/telemetry`, `/telemetry/`, `/telemetry/{path:path}`
-- Telemetry static assets: `/telemetry/assets/...`
+- Admin dashboard SPA: `/admin`, `/admin/`, `/admin/{path:path}` (mounted only when its bundle is built into `static/admin`)
+- Admin static assets: `/admin/assets/...`
 
 ## Auth
 - If `MashHostConfig.api_key` is unset, API routes are open.
@@ -21,7 +21,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `Authorization: Bearer <token>`
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
-- `/telemetry` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
+- `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -504,7 +504,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - Agent/session routes live in [routes/agent.py](/Users/sid/Projects/mashpy/src/mash/api/routes/agent.py).
 - Workflow routes live in [routes/workflow.py](/Users/sid/Projects/mashpy/src/mash/api/routes/workflow.py).
 - Telemetry routes live in [routes/telemetry.py](/Users/sid/Projects/mashpy/src/mash/api/routes/telemetry.py).
-- The telemetry SPA routes live in [telemetry_ui.py](/Users/sid/Projects/mashpy/src/mash/api/telemetry_ui.py).
+- The admin dashboard SPA routes live in [admin_ui.py](/Users/sid/Projects/mashpy/src/mash/api/admin_ui.py).
 - The default host config lives in [config.py](/Users/sid/Projects/mashpy/src/mash/api/config.py).
 
 ## Verification Notes
