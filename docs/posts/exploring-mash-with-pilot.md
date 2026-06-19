@@ -86,7 +86,7 @@ entry in the host config file:
 |-------|-------|
 | `pilot` (primary) | shared and cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
 | `cli-copilot` | `src/mash/cli`: commands, REPL, terminal rendering |
-| `api-copilot` | `src/mash/api`: HTTP routes, FastAPI, telemetry UI |
+| `api-copilot` | `src/mash/api`: HTTP routes, FastAPI, admin dashboard |
 | `mcp-copilot` | `src/mash/mcp`: MCP client/server, transport, tool adaptation |
 | `runtime-copilot` | `src/mash/runtime`: request lifecycle, event sourcing, durability |
 | `workflow-copilot` | `src/mash/workflows`: DBOS orchestration, task state, run status |
@@ -125,8 +125,8 @@ After any answer, `/trace` shows where the time went: the timing breakdown,
 per-tool stats, and slowest operations from [the trace
 post](reading-a-trace.md). For a delegated question the subagent call is its
 own span, so you can see how much latency belonged to the copilot. The host
-also serves the telemetry UI with the span waterfall at
-`http://127.0.0.1:8000/telemetry`.
+also serves the admin dashboard, with the trace drawer and span tree, at
+`http://127.0.0.1:8000/admin`.
 
 ## Reference
 

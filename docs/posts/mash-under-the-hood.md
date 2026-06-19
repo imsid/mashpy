@@ -326,14 +326,13 @@ GET /telemetry/memory/search           # search agent memory
 The `/telemetry/trace/analysis` endpoint returns the full span tree and
 analysis dict in a single call, with no client-side computation needed.
 
-### Telemetry UI
+### Admin dashboard
 
-The built-in telemetry dashboard at `http://<HOST>/telemetry` renders traces
-with a visual span waterfall. Each span is a collapsible row showing kind,
-name, duration, and a proportional bar scaled to the trace total. A summary
-bar at the top shows the time distribution across think, tool, subagent, cold
-start, and idle phases. Below the waterfall, collapsible panels show tool stats,
-step breakdown, and slowest operations tables.
+The built-in admin dashboard at `http://<HOST>/admin` renders traces under its
+Logs section. Each agent's recent requests list as rows; click one and a drawer
+opens with summary tiles for duration, tokens, throughput, and tool count, the
+reconstructed message-by-message conversation, and a collapsible span tree with
+per-span durations. The raw events sit one expander below.
 
 ### CLI Trace Inspection
 
