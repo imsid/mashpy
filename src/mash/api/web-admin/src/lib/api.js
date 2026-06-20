@@ -99,6 +99,7 @@ export const api = {
   listEvents: (params) => request('/telemetry/events', { params }),
   usage: (params) => request('/telemetry/usage', { params }),
   listApiEvents: (params) => request('/telemetry/api/events', { params }),
+  listCommandEvents: (params) => request('/telemetry/command-events', { params }),
 
   // --- Sessions ---
   listSessions: (agentId) =>

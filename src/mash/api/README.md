@@ -302,7 +302,9 @@ validation).
 
 `GET /api/v1/workflow`
 - Lists registered host workflows.
-- Returns `workflows`.
+- Returns `workflows`; each carries `workflow_id`, `tasks`, optional `metadata`,
+  and — when the spec sets them — a workflow-level `skill_name` (from
+  `task_message`) and a per-task `structured_output` schema.
 
 `POST /api/v1/workflow/{workflow_id}/run`
 - Starts a workflow run.
@@ -427,6 +429,32 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - Emits:
   - `data: <serialized API event>`
 - Emits `: keep-alive` frames while idle.
+
+`POST /api/v1/telemetry/command-events`
+- Ingests one CLI command lifecycle event from the REPL into the agent's runtime
+  event log. The remote shell posts these best-effort as `/commands` run.
+- Body fields:
+  - `agent_id` required
+  - `event_type` required, must start with `command.` (e.g. `command.start`,
+    `command.complete`, `command.error`)
+  - `session_id`, `host_id`, `trace_id` optional context
+  - `command_name`, `args`, `duration_ms`, `error` optional command detail
+  - `ts` optional unix timestamp; defaults to ingest time
+- Returns:
+  - `event`: the stored runtime event (command detail lives under `payload`)
+- Errors:
+  - `400 INVALID_EVENT_TYPE`: `event_type` does not start with `command.`
+
+`GET /api/v1/telemetry/command-events`
+- Lists CLI command events for one agent, most recent first.
+- Query params:
+  - `agent_id` required
+  - `session_id` optional
+  - `limit` optional, clamped to `1..2000`
+- Returns:
+  - `events`: runtime events with `event_type` prefixed `command.`; each carries
+    `command_name`, `args`, `duration_ms`, and `error` under `payload`
+  - `source`, `agent_id`, `session_id`, `limit`
 
 `GET /api/v1/telemetry/traces`
 - Lists recent traces for one agent, ordered by most recent first.

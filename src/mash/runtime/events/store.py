@@ -46,6 +46,7 @@ class RuntimeStore(Protocol):
         session_id: str | None = None,
         trace_id: str | None = None,
         host_id: str | None = None,
+        event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
@@ -320,6 +321,7 @@ class PostgresRuntimeStore(RuntimeStore):
         session_id: str | None = None,
         trace_id: str | None = None,
         host_id: str | None = None,
+        event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
@@ -335,6 +337,9 @@ class PostgresRuntimeStore(RuntimeStore):
         if host_id is not None:
             clauses.append("host_id = %s")
             params.append(host_id)
+        if event_type_prefix is not None:
+            clauses.append("event_type LIKE %s")
+            params.append(f"{event_type_prefix}%")
         if limit is not None:
             query = f"""
                 SELECT event_id, request_id, request_seq, trace_id, app_id,

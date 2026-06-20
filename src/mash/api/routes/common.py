@@ -102,6 +102,21 @@ class RunWorkflowRequest(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
 
 
+class CommandEventIngest(BaseModel):
+    """One CLI command lifecycle event shipped from the REPL."""
+
+    agent_id: str
+    event_type: str
+    session_id: Optional[str] = None
+    host_id: Optional[str] = None
+    command_name: Optional[str] = None
+    args: Optional[str] = None
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
+    trace_id: Optional[str] = None
+    ts: Optional[float] = None
+
+
 class APIEventSearchRequest(BaseModel):
     method: Optional[str] = None
     path: Optional[str] = None

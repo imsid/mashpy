@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { BarChart } from '../components/BarChart.jsx';
@@ -11,71 +10,101 @@ import { compactNumber } from '../lib/format.js';
 const DAY = 86400;
 const WINDOW_DAYS = 7;
 
-function Stat({ label, value, to }) {
-  const body = (
-    <Card className="px-4 py-3 transition hover:border-slate-300">
-      <div className="text-2xl font-semibold tabular-nums">{value}</div>
+function Stat({ label, value, hint, to }) {
+  return (
+    <Card to={to} className="px-4 py-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-2xl font-semibold tabular-nums">{value}</div>
+        {to ? (
+          <span className="text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500">
+            →
+          </span>
+        ) : null}
+      </div>
       <div className="mt-0.5 text-xs font-medium uppercase tracking-wide text-slate-400">
         {label}
       </div>
+      {hint ? <div className="mt-0.5 text-xs text-slate-400">{hint}</div> : null}
     </Card>
   );
-  return to ? <Link to={to}>{body}</Link> : body;
 }
 
-// Fetch agents, then per-agent usage + sessions, and aggregate into pool totals
-// and a merged daily series. Per-agent calls because the telemetry endpoints
-// are agent-scoped by design.
+// Key a unix timestamp to the start of its day in the viewer's local timezone.
+// The backend buckets on UTC midnight, so without this the bars land under the
+// wrong day for anyone west of UTC and disagree with the local times in Logs.
+function localDayKey(unixSeconds) {
+  const d = new Date(unixSeconds * 1000);
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
+// Fetch agents, then per-agent usage + sessions + recent traces, and aggregate
+// into pool totals and a merged daily series. Per-agent calls because the
+// telemetry endpoints are agent-scoped by design.
 async function loadOverview() {
   const { agents = [], hosts = [] } = await api.listAgents();
   const fromTs = Math.floor(Date.now() / 1000) - WINDOW_DAYS * DAY;
 
   const perAgent = await Promise.all(
     agents.map(async (a) => {
-      const [usage, sessions] = await Promise.all([
+      const [usage, sessions, traces] = await Promise.all([
         api.usage({ agent_id: a.agent_id, bucket: 'day', from_ts: fromTs }).catch(() => ({ buckets: [] })),
         api.listSessions(a.agent_id).catch(() => ({ sessions: [] })),
+        api.listTraces({ agent_id: a.agent_id, limit: 100 }).catch(() => ({ traces: [] })),
       ]);
-      return { usage: usage.buckets || [], sessions: sessions.sessions || [] };
+      return {
+        usage: usage.buckets || [],
+        sessions: sessions.sessions || [],
+        traces: traces.traces || [],
+      };
     }),
   );
 
+  // Aggregate tokens (from usage) and traces (from recent traces) by local day.
   const merged = new Map();
   let tokens = 0;
   let sessions = 0;
-  for (const { usage, sessions: ss } of perAgent) {
+  let traceTotal = 0;
+  for (const { usage, sessions: ss, traces } of perAgent) {
     sessions += ss.length;
     for (const b of usage) {
       tokens += b.input_tokens + b.output_tokens;
-      const cur = merged.get(b.bucket_start) || { requests: 0, tokens: 0 };
-      cur.requests += b.request_count;
+      const key = localDayKey(b.bucket_start);
+      const cur = merged.get(key) || { traces: 0, tokens: 0 };
       cur.tokens += b.input_tokens + b.output_tokens;
-      merged.set(b.bucket_start, cur);
+      merged.set(key, cur);
+    }
+    for (const t of traces) {
+      if (!t.started_at || t.started_at < fromTs) continue;
+      traceTotal += 1;
+      const key = localDayKey(t.started_at);
+      const cur = merged.get(key) || { traces: 0, tokens: 0 };
+      cur.traces += 1;
+      merged.set(key, cur);
     }
   }
 
-  // Build a contiguous day series so empty days still show.
-  const todayBucket = Math.floor(Date.now() / 1000 / DAY) * DAY;
+  // Build a contiguous local-day series so empty days still show.
   const series = [];
   for (let i = WINDOW_DAYS - 1; i >= 0; i -= 1) {
-    const bucketStart = todayBucket - i * DAY;
-    const entry = merged.get(bucketStart) || { requests: 0, tokens: 0 };
-    const label = new Date(bucketStart * 1000).toLocaleDateString(undefined, {
-      month: 'numeric',
-      day: 'numeric',
-    });
-    series.push({ label, requests: entry.requests, tokens: entry.tokens });
+    const day = new Date();
+    day.setHours(0, 0, 0, 0);
+    day.setDate(day.getDate() - i);
+    const key = Math.floor(day.getTime() / 1000);
+    const entry = merged.get(key) || { traces: 0, tokens: 0 };
+    const label = day.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+    series.push({ label, traces: entry.traces, tokens: entry.tokens });
   }
 
   return {
-    counts: { agents: agents.length, hosts: hosts.length, sessions, tokens },
+    counts: { agents: agents.length, hosts: hosts.length, sessions, tokens, traces: traceTotal },
     series,
   };
 }
 
 export default function Overview() {
   const state = useApi(loadOverview, []);
-  const [metric, setMetric] = useState('requests');
+  const [metric, setMetric] = useState('traces');
 
   return (
     <div className="space-y-6">
@@ -95,14 +124,19 @@ export default function Overview() {
             <div className="grid grid-cols-3 gap-3">
               <Stat label="Agents" value={data.counts.agents} to="/agents" />
               <Stat label="Hosts" value={data.counts.hosts} to="/hosts" />
-              <Stat label="Sessions" value={data.counts.sessions} to="/logs?tab=sessions" />
+              <Stat
+                label="Sessions"
+                value={data.counts.sessions}
+                hint="across all agents"
+                to="/logs?tab=sessions"
+              />
             </div>
 
             <Card className="p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Usage</h2>
                 <div className="flex gap-1 rounded-md border border-slate-200 p-0.5 text-xs">
-                  {['requests', 'tokens'].map((m) => (
+                  {['traces', 'tokens'].map((m) => (
                     <button
                       key={m}
                       onClick={() => setMetric(m)}
