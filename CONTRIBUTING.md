@@ -31,6 +31,30 @@ Before submitting broad changes, run the full suite:
 uv run --extra dev pytest -q tests/mash
 ```
 
+## Admin UI Development
+
+The admin dashboard is a React + Vite app in `src/mash/api/web-admin`. The host
+serves a pre-built bundle from `src/mash/api/static/admin`, so changes to the UI
+need a rebuild before they show up on the `/admin` route. The Makefile wraps the
+workflow:
+
+```bash
+make admin-web-install        # once after cloning, or when frontend deps change
+make admin-web                # Vite dev server (proxies /api to 127.0.0.1:8000)
+make admin-web-build          # production bundle into web-admin/dist
+make admin-web-package-sync   # build, then sync dist/ into static/admin/
+```
+
+Iterate against the dev server (`make admin-web`) at http://localhost:5174/admin,
+pointing it at a running host on port 8000. When you're done, run
+`make admin-web-package-sync` and commit the regenerated `static/admin/` bundle
+along with your source changes — the host reads those files from disk, so a
+refresh of `/admin` picks them up without a code change.
+
+`package-lock.json` is intentionally gitignored; dependencies are tracked in
+`web-admin/package.json`, and `make admin-web-install` (i.e. `npm install`)
+resolves them locally.
+
 ## Repo Structure
 
 ```text
