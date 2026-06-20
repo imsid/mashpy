@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/Page.jsx';
-import { Async, Empty } from '../components/State.jsx';
+import { Async, Empty, Loading } from '../components/State.jsx';
 import { Table } from '../components/Table.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
@@ -13,7 +13,6 @@ import { useApi } from '../lib/useApi.js';
 import { compactNumber, formatTime, formatDuration } from '../lib/format.js';
 
 const TABS = [
-  { id: 'requests', label: 'Requests' },
   { id: 'sessions', label: 'Sessions' },
   { id: 'api', label: 'API access' },
 ];
@@ -24,62 +23,172 @@ function statusTone(code) {
   return 'emerald';
 }
 
-function RequestsTab({ agentId, hostId, sessionId }) {
-  const state = useApi(
+const TRACE_COLUMNS = [
+  { key: 'time', header: 'Time', render: (r) => formatTime(r.latest_event_at) },
+  {
+    key: 'host_id',
+    header: 'Host',
+    render: (r) => (r.host_id ? <Mono>{r.host_id}</Mono> : <span className="text-slate-300">—</span>),
+  },
+  {
+    key: 'duration',
+    header: 'Duration',
+    align: 'right',
+    render: (r) => formatDuration((r.latest_event_at - r.started_at) * 1000),
+  },
+  { key: 'event_count', header: 'Events', align: 'right' },
+  {
+    key: 'trace_id',
+    header: 'Trace',
+    render: (r) => <Mono>{String(r.trace_id).slice(0, 12)}…</Mono>,
+  },
+];
+
+// One session row: a header that toggles open, revealing its traces lazily.
+function SessionRow({ agentId, session, expanded, onToggle, onSelectTrace, activeTraceId }) {
+  const tracesState = useApi(
     () =>
-      agentId
-        ? api.listTraces({
-            agent_id: agentId,
-            host_id: hostId || undefined,
-            session_id: sessionId || undefined,
-            limit: 100,
-          })
-        : Promise.resolve({ traces: [] }),
-    [agentId, hostId, sessionId],
+      expanded
+        ? api.listTraces({ agent_id: agentId, session_id: session.session_id, limit: 100 })
+        : Promise.resolve(null),
+    [expanded, agentId, session.session_id],
   );
+
+  const traces = useMemo(() => {
+    const rows = tracesState.data?.traces || [];
+    return [...rows].sort((a, b) => (b.latest_event_at || 0) - (a.latest_event_at || 0));
+  }, [tracesState.data]);
+
+  return (
+    <div className="border-b border-slate-100 last:border-0">
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-slate-50"
+      >
+        <span className={`text-slate-400 transition ${expanded ? 'rotate-90' : ''}`}>›</span>
+        <Mono>{session.session_id}</Mono>
+        <span className="ml-auto flex items-center gap-4 text-xs text-slate-400">
+          <span>{session.turn_count} turns</span>
+          <span className="tabular-nums">{compactNumber(session.session_total_tokens)} tok</span>
+          <span>{formatTime(session.last_activity_at)}</span>
+        </span>
+      </button>
+      {expanded ? (
+        <div className="bg-slate-50/60 px-4 pb-3 pt-1">
+          {tracesState.loading && !tracesState.data ? (
+            <Loading />
+          ) : traces.length ? (
+            <Table
+              columns={TRACE_COLUMNS}
+              rows={traces}
+              getRowKey={(r) => r.trace_id}
+              activeKey={activeTraceId}
+              onRowClick={onSelectTrace}
+            />
+          ) : (
+            <p className="py-3 text-center text-xs text-slate-400">No traces in this session.</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionsTab({ agentId }) {
+  const state = useApi(
+    () => (agentId ? api.listSessions(agentId) : Promise.resolve({ sessions: [] })),
+    [agentId],
+  );
+  const [expanded, setExpanded] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [sessionQuery, setSessionQuery] = useState('');
+  const [traceQuery, setTraceQuery] = useState('');
+  const [jumpError, setJumpError] = useState('');
 
-  if (!agentId) return <Empty>Pick an agent to view its request traces.</Empty>;
+  if (!agentId) return <Empty>Pick an agent to view its sessions.</Empty>;
 
-  const columns = [
-    { key: 'time', header: 'Time', render: (r) => formatTime(r.latest_event_at) },
-    {
-      key: 'host_id',
-      header: 'Host',
-      render: (r) => (r.host_id ? <Mono>{r.host_id}</Mono> : <span className="text-slate-300">—</span>),
-    },
-    {
-      key: 'session_id',
-      header: 'Session',
-      render: (r) => <Mono>{r.session_id || '—'}</Mono>,
-    },
-    {
-      key: 'duration',
-      header: 'Duration',
-      align: 'right',
-      render: (r) => formatDuration((r.latest_event_at - r.started_at) * 1000),
-    },
-    { key: 'event_count', header: 'Events', align: 'right' },
-    {
-      key: 'trace_id',
-      header: 'Trace',
-      render: (r) => <Mono>{String(r.trace_id).slice(0, 12)}…</Mono>,
-    },
-  ];
+  const jumpToTrace = async () => {
+    const q = traceQuery.trim();
+    if (!q) return;
+    setJumpError('');
+    try {
+      const { traces = [] } = await api.listTraces({ agent_id: agentId, limit: 100 });
+      const match = traces.find(
+        (t) => String(t.trace_id) === q || String(t.trace_id).startsWith(q),
+      );
+      if (match) {
+        setSelected(match);
+        setExpanded(match.session_id);
+      } else {
+        setJumpError('No matching trace in the recent 100.');
+      }
+    } catch {
+      setJumpError('Trace lookup failed.');
+    }
+  };
 
   return (
     <>
-      <Async state={state} empty={(d) => !d.traces?.length}>
-        {(data) => (
-          <Table
-            columns={columns}
-            rows={data.traces}
-            getRowKey={(r) => r.trace_id}
-            activeKey={selected?.trace_id}
-            onRowClick={setSelected}
-          />
-        )}
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-600">Session</span>
+          <div className="w-56">
+            <TextInput
+              value={sessionQuery}
+              placeholder="filter by session id"
+              onChange={(e) => setSessionQuery(e.target.value)}
+            />
+          </div>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-600">Trace</span>
+          <div className="flex w-72 gap-2">
+            <TextInput
+              value={traceQuery}
+              placeholder="open by trace id"
+              onChange={(e) => setTraceQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') jumpToTrace();
+              }}
+            />
+            <Button variant="secondary" onClick={jumpToTrace}>
+              Open
+            </Button>
+          </div>
+        </label>
+        <Button variant="ghost" onClick={state.reload}>
+          Refresh
+        </Button>
+        {jumpError ? <span className="pb-1.5 text-xs text-rose-600">{jumpError}</span> : null}
+      </div>
+
+      <Async state={state} empty={(d) => !d.sessions?.length}>
+        {(data) => {
+          const q = sessionQuery.trim().toLowerCase();
+          const sessions = q
+            ? data.sessions.filter((s) => s.session_id.toLowerCase().includes(q))
+            : data.sessions;
+          if (!sessions.length) return <Empty>No sessions match that filter.</Empty>;
+          return (
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              {sessions.map((s) => (
+                <SessionRow
+                  key={s.session_id}
+                  agentId={agentId}
+                  session={s}
+                  expanded={expanded === s.session_id}
+                  onToggle={() =>
+                    setExpanded((cur) => (cur === s.session_id ? null : s.session_id))
+                  }
+                  onSelectTrace={setSelected}
+                  activeTraceId={selected?.trace_id}
+                />
+              ))}
+            </div>
+          );
+        }}
       </Async>
+
       <TraceDrawer
         open={selected !== null}
         trace={selected}
@@ -87,44 +196,6 @@ function RequestsTab({ agentId, hostId, sessionId }) {
         onClose={() => setSelected(null)}
       />
     </>
-  );
-}
-
-function SessionsTab({ agentId, onOpenSession }) {
-  const state = useApi(
-    () => (agentId ? api.listSessions(agentId) : Promise.resolve({ sessions: [] })),
-    [agentId],
-  );
-
-  if (!agentId) return <Empty>Pick an agent to view its sessions.</Empty>;
-
-  const columns = [
-    { key: 'session_id', header: 'Session', render: (r) => <Mono>{r.session_id}</Mono> },
-    { key: 'turn_count', header: 'Turns', align: 'right' },
-    {
-      key: 'session_total_tokens',
-      header: 'Tokens',
-      align: 'right',
-      render: (r) => compactNumber(r.session_total_tokens),
-    },
-    {
-      key: 'last_activity_at',
-      header: 'Last activity',
-      render: (r) => formatTime(r.last_activity_at),
-    },
-  ];
-
-  return (
-    <Async state={state} empty={(d) => !d.sessions?.length}>
-      {(data) => (
-        <Table
-          columns={columns}
-          rows={data.sessions}
-          getRowKey={(r) => r.session_id}
-          onRowClick={(r) => onOpenSession(r.session_id)}
-        />
-      )}
-    </Async>
   );
 }
 
@@ -151,6 +222,11 @@ function ApiAccessTab() {
 
   return (
     <>
+      <div className="mb-3 flex justify-end">
+        <Button variant="ghost" onClick={state.reload}>
+          Refresh
+        </Button>
+      </div>
       <Async state={state} empty={(d) => !d.events?.length}>
         {(data) => (
           <Table
@@ -198,10 +274,8 @@ export default function Logs() {
   const agentsState = useApi(() => api.listAgents(), []);
   const agents = agentsState.data?.agents || [];
 
-  const tab = params.get('tab') || 'requests';
+  const tab = params.get('tab') || 'sessions';
   const agentId = params.get('agent') || agents[0]?.agent_id || '';
-  const hostId = params.get('host') || '';
-  const sessionId = params.get('session') || '';
 
   const update = (next) => {
     const merged = new URLSearchParams(params);
@@ -216,7 +290,7 @@ export default function Logs() {
     <div>
       <PageHeader
         title="Logs"
-        description="Request traces, sessions, and API access for one agent."
+        description="Sessions, traces, and API access for one agent."
       />
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
@@ -232,25 +306,6 @@ export default function Logs() {
             </Select>
           </div>
         </label>
-        {tab === 'requests' ? (
-          <>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-slate-600">Host</span>
-              <div className="w-40">
-                <TextInput
-                  value={hostId}
-                  placeholder="any"
-                  onChange={(e) => update({ host: e.target.value })}
-                />
-              </div>
-            </label>
-            {sessionId ? (
-              <Button variant="ghost" onClick={() => update({ session: '' })}>
-                session: {sessionId} ✕
-              </Button>
-            ) : null}
-          </>
-        ) : null}
       </div>
 
       <div className="mb-4 flex gap-1 border-b border-slate-200">
@@ -269,15 +324,7 @@ export default function Logs() {
         ))}
       </div>
 
-      {tab === 'requests' ? (
-        <RequestsTab agentId={agentId} hostId={hostId} sessionId={sessionId} />
-      ) : null}
-      {tab === 'sessions' ? (
-        <SessionsTab
-          agentId={agentId}
-          onOpenSession={(s) => update({ session: s, tab: 'requests' })}
-        />
-      ) : null}
+      {tab === 'sessions' ? <SessionsTab agentId={agentId} /> : null}
       {tab === 'api' ? <ApiAccessTab /> : null}
     </div>
   );

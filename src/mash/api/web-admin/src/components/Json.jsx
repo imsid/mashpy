@@ -19,7 +19,7 @@ function stringify(value) {
 export function JsonBlock({ value, className = '' }) {
   return (
     <pre
-      className={`max-h-96 overflow-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed text-slate-100 ${className}`}
+      className={`max-h-96 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-relaxed text-slate-800 ${className}`}
     >
       {stringify(value)}
     </pre>

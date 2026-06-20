@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import Shell from './components/Shell.jsx';
 import Overview from './routes/Overview.jsx';
 import Agents from './routes/Agents.jsx';
+import Workflows from './routes/Workflows.jsx';
 import Hosts from './routes/Hosts.jsx';
 import Logs from './routes/Logs.jsx';
 import Feedback from './routes/Feedback.jsx';
@@ -13,6 +14,7 @@ export default function App() {
       <Route element={<Shell />}>
         <Route index element={<Overview />} />
         <Route path="agents" element={<Agents />} />
+        <Route path="workflows" element={<Workflows />} />
         <Route path="hosts" element={<Hosts />} />
         <Route path="logs" element={<Logs />} />
         <Route path="feedback" element={<Feedback />} />

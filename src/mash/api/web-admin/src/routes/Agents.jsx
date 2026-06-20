@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
@@ -24,7 +25,11 @@ function AgentCard({ agent, usedIn }) {
   const meta = agent.metadata;
   const name = meta?.display_name || agent.agent_id;
   return (
-    <Card className="flex flex-col gap-3 p-4">
+    <Link
+      to={`/logs?agent=${encodeURIComponent(agent.agent_id)}&tab=sessions`}
+      className="block"
+    >
+    <Card className="flex h-full flex-col gap-3 p-4 transition hover:border-slate-300 hover:shadow-sm">
       <div>
         <div className="flex items-center justify-between gap-2">
           <h3 className="font-display text-base font-semibold">{name}</h3>
@@ -69,6 +74,7 @@ function AgentCard({ agent, usedIn }) {
         )}
       </div>
     </Card>
+    </Link>
   );
 }
 

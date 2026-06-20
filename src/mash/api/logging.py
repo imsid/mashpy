@@ -174,16 +174,10 @@ class PostgresAPIEventStore(APIEventStore):
             SELECT api_event_id, method, path, query_params,
                    status_code, duration_ms, request_headers, response_headers,
                    request_body, response_body, client_host, event_type, created_at
-            FROM (
-                SELECT api_event_id, method, path, query_params,
-                       status_code, duration_ms, request_headers, response_headers,
-                       request_body, response_body, client_host, event_type, created_at
-                FROM api_event_log
-                WHERE {' AND '.join(clauses)}
-                ORDER BY api_event_id DESC
-                LIMIT %s
-            ) AS recent_events
-            ORDER BY api_event_id ASC
+            FROM api_event_log
+            WHERE {' AND '.join(clauses)}
+            ORDER BY api_event_id DESC
+            LIMIT %s
         """
         async with self._lock:
             async with conn.cursor() as cursor:
@@ -318,7 +312,8 @@ class _InMemoryAPIEventStore(APIEventStore):
         async with self._lock:
             events = list(self._events)
         filtered = [event for event in events if _matches_filter(event, filters)]
-        return filtered[-max(1, int(filters.limit)) :]
+        recent = filtered[-max(1, int(filters.limit)) :]
+        return list(reversed(recent))
 
 
 def serialize_api_event(event: APIEvent) -> dict[str, Any]:

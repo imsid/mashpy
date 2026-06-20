@@ -5,6 +5,7 @@ import { useApi } from '../lib/useApi.js';
 const NAV = [
   { to: '/', label: 'Overview', end: true },
   { to: '/agents', label: 'Agents' },
+  { to: '/workflows', label: 'Workflows' },
   { to: '/hosts', label: 'Hosts' },
   { to: '/logs', label: 'Logs' },
   { to: '/feedback', label: 'Feedback' },
