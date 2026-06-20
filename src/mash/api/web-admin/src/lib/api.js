@@ -107,6 +107,13 @@ export const api = {
     request(
       `/agent/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/history`,
     ),
+  sessionSignals: (agentId, sessionId) =>
+    request(
+      `/agent/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/signals`,
+    ),
+
+  // --- Workflows ---
+  listWorkflows: () => request('/workflow'),
 
   // --- Feedback ---
   listFeedback: (params) => request('/feedback', { params }),

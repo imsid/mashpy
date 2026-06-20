@@ -3,7 +3,8 @@ import { Drawer } from './Drawer.jsx';
 import { Chip, Mono } from './Chip.jsx';
 import { Card } from './Page.jsx';
 import { JsonBlock, Disclosure } from './Json.jsx';
-import { TextInput, Select } from './Form.jsx';
+import { Markdown } from './Markdown.jsx';
+import { TextInput, Select, Button } from './Form.jsx';
 import { Loading, ErrorState } from './State.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
@@ -12,9 +13,9 @@ import { compactNumber, formatDuration, tokensInOut } from '../lib/format.js';
 
 const ROLE_TONE = { user: 'emerald', assistant: 'indigo', tool: 'amber', system: 'slate' };
 
-function StatTile({ label, value }) {
+function StatTile({ label, value, hint }) {
   return (
-    <div className="rounded-md border border-slate-200 px-3 py-2">
+    <div className="rounded-md border border-slate-200 px-3 py-2" title={hint}>
       <div className="text-xs text-slate-400">{label}</div>
       <div className="mt-0.5 text-sm font-semibold tabular-nums">{value}</div>
     </div>
@@ -45,6 +46,73 @@ function SpanNode({ node, depth = 0 }) {
   );
 }
 
+function SignalsSection({ turn, definitions, loading }) {
+  if (loading) {
+    return (
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">Signals</h3>
+        <Loading />
+      </section>
+    );
+  }
+  const signals = turn?.signals || {};
+  const keys = Object.keys(signals);
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-semibold">Signals</h3>
+      {keys.length ? (
+        <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {keys.map((key) => {
+            const def = definitions[key];
+            const value = signals[key];
+            return (
+              <div key={key} className="rounded-md border border-slate-200 px-3 py-2">
+                <dt className="flex items-center gap-1.5 text-xs text-slate-500" title={def?.description}>
+                  <Mono>{key}</Mono>
+                </dt>
+                <dd className="mt-0.5 text-sm tabular-nums text-slate-800">
+                  {typeof value === 'object' ? (
+                    <JsonBlock value={value} className="mt-1" />
+                  ) : (
+                    String(value)
+                  )}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      ) : (
+        <p className="text-sm text-slate-400">No signals recorded for this trace.</p>
+      )}
+    </section>
+  );
+}
+
+function RawEvents({ events }) {
+  const [type, setType] = useState('all');
+  const types = useMemo(() => {
+    const set = new Set();
+    for (const e of events) if (e?.event_type) set.add(e.event_type);
+    return Array.from(set).sort();
+  }, [events]);
+  const filtered = type === 'all' ? events : events.filter((e) => e?.event_type === type);
+  return (
+    <div className="space-y-2">
+      <div className="w-56">
+        <Select value={type} onChange={(e) => setType(e.target.value)}>
+          <option value="all">All event types ({events.length})</option>
+          {types.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <JsonBlock value={filtered} />
+    </div>
+  );
+}
+
 function MessageDetail({ message }) {
   if (!message) {
     return <div className="text-sm text-slate-400">Select a message.</div>;
@@ -65,9 +133,7 @@ function MessageDetail({ message }) {
   if (message.role === 'assistant') {
     return (
       <div className="space-y-3">
-        {message.text ? (
-          <p className="whitespace-pre-wrap text-sm text-slate-700">{message.text}</p>
-        ) : null}
+        {message.text ? <Markdown>{message.text}</Markdown> : null}
         {message.toolCalls?.length ? (
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -90,7 +156,7 @@ function MessageDetail({ message }) {
     );
   }
   // user / system
-  return <p className="whitespace-pre-wrap text-sm text-slate-700">{message.text}</p>;
+  return <Markdown>{message.text}</Markdown>;
 }
 
 function MessagesInspector({ messages }) {
@@ -199,11 +265,31 @@ export function TraceDrawer({ open, trace, agentId, onClose }) {
         : Promise.resolve(null),
     [agentId, sessionId, traceId],
   );
+  const signalsState = useApi(
+    () =>
+      traceId && sessionId
+        ? api.sessionSignals(agentId, sessionId)
+        : Promise.resolve(null),
+    [agentId, sessionId, traceId],
+  );
+
+  const reloadAll = () => {
+    analysisState.reload();
+    eventsState.reload();
+    signalsState.reload();
+  };
 
   const messages = useMemo(
     () => reconstructMessages(eventsState.data?.events),
     [eventsState.data],
   );
+
+  // Per-turn signals are keyed by turn_id, which equals the trace_id.
+  const traceSignals = useMemo(() => {
+    const turns = signalsState.data?.turns || [];
+    return turns.find((t) => t.turn_id === traceId) || null;
+  }, [signalsState.data, traceId]);
+  const signalDefinitions = signalsState.data?.definitions || {};
 
   const analysis = analysisState.data;
   const tokens = analysis?.tokens || {};
@@ -226,18 +312,39 @@ export function TraceDrawer({ open, trace, agentId, onClose }) {
 
       {analysis ? (
         <div className="space-y-5">
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={reloadAll}>
+              Refresh
+            </Button>
+          </div>
           <div className="grid grid-cols-4 gap-2">
-            <StatTile label="Duration" value={formatDuration(durationMs)} />
+            <StatTile
+              label="Duration"
+              value={formatDuration(durationMs)}
+              hint="Total wall-clock time for the trace"
+            />
             <StatTile
               label="Tokens"
               value={tokensInOut(tokens.input_tokens, tokens.output_tokens)}
+              hint="Input → output tokens across the trace"
             />
-            <StatTile label="Throughput" value={`${throughput.toFixed(1)}/s`} />
+            <StatTile
+              label="Output tok/s"
+              value={`${throughput.toFixed(1)}/s`}
+              hint="Output tokens divided by trace duration"
+            />
             <StatTile
               label="Tools"
               value={`${counts.tool_call_count || 0} (${counts.tool_error_count || 0}✗)`}
+              hint="Tool calls (errors)"
             />
           </div>
+
+          <SignalsSection
+            turn={traceSignals}
+            definitions={signalDefinitions}
+            loading={signalsState.loading && !signalsState.data}
+          />
 
           <section>
             <h3 className="mb-2 text-sm font-semibold">Messages</h3>
@@ -257,7 +364,7 @@ export function TraceDrawer({ open, trace, agentId, onClose }) {
           ) : null}
 
           <Disclosure label="Raw events" hint={`${eventsState.data?.events?.length || 0}`}>
-            <JsonBlock value={eventsState.data?.events || []} />
+            <RawEvents events={eventsState.data?.events || []} />
           </Disclosure>
         </div>
       ) : null}

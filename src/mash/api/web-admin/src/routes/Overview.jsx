@@ -41,13 +41,11 @@ async function loadOverview() {
   );
 
   const merged = new Map();
-  let requests = 0;
   let tokens = 0;
   let sessions = 0;
   for (const { usage, sessions: ss } of perAgent) {
     sessions += ss.length;
     for (const b of usage) {
-      requests += b.request_count;
       tokens += b.input_tokens + b.output_tokens;
       const cur = merged.get(b.bucket_start) || { requests: 0, tokens: 0 };
       cur.requests += b.request_count;
@@ -70,7 +68,7 @@ async function loadOverview() {
   }
 
   return {
-    counts: { agents: agents.length, hosts: hosts.length, sessions, requests, tokens },
+    counts: { agents: agents.length, hosts: hosts.length, sessions, tokens },
     series,
   };
 }
@@ -94,11 +92,10 @@ export default function Overview() {
       <Async state={state}>
         {(data) => (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="grid grid-cols-3 gap-3">
               <Stat label="Agents" value={data.counts.agents} to="/agents" />
               <Stat label="Hosts" value={data.counts.hosts} to="/hosts" />
               <Stat label="Sessions" value={data.counts.sessions} to="/logs?tab=sessions" />
-              <Stat label={`Requests / ${WINDOW_DAYS}d`} value={data.counts.requests} to="/logs" />
             </div>
 
             <Card className="p-4">
