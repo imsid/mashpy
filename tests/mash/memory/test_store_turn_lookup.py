@@ -19,6 +19,9 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         user_message: str,
         agent_response: str,
         app_id: str = "test-app",
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        task_id: str | None = None,
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
@@ -30,6 +33,10 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
             agent_response=agent_response,
             signals={},
             session_total_tokens=0,
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
+            task_id=task_id,
+            replayable=workflow_id is None,
         )
         return turn_id
 
@@ -187,40 +194,47 @@ class SQLiteStoreTurnLookupTests(unittest.IsolatedAsyncioTestCase):
         assert matching_b is not None
         self.assertEqual([turn["turn_id"] for turn in matching_b], [turn_b])
 
-    async def test_list_workflow_turns_filters_by_app_and_session_prefix(self) -> None:
-        run_session = (
-            "workflow:masher-trace-digest:task:digest-traces:run:"
-            "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60"
-        )
+    async def test_list_workflow_turns_filters_by_app_and_workflow(self) -> None:
+        run_id = "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60"
         turn_id = await self._save_turn(
-            session_id=run_session,
+            session_id="session-1",
             app_id="masher",
             user_message="digest input",
             agent_response="digest output",
+            workflow_id="masher-trace-digest",
+            workflow_run_id=run_id,
+            task_id="digest-traces",
         )
         await self._save_turn(
-            session_id="workflow:other:task:digest-traces:run:mw:h_1:other:r1",
+            session_id="session-2",
             app_id="masher",
             user_message="other workflow",
             agent_response="ignore",
+            workflow_id="other",
+            workflow_run_id="mw:h_1:other:r1",
+            task_id="digest-traces",
         )
         await self._save_turn(
-            session_id=run_session,
+            session_id="session-1",
             app_id="other-app",
             user_message="other app",
             agent_response="ignore",
+            workflow_id="masher-trace-digest",
+            workflow_run_id=run_id,
+            task_id="digest-traces",
         )
 
         turns = await self.store.list_workflow_turns(
             app_id="masher",
-            session_prefix="workflow:masher-trace-digest:task:digest-traces:run:",
+            workflow_id="masher-trace-digest",
             limit=10,
             sort_desc=False,
         )
 
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["turn_id"], turn_id)
-        self.assertEqual(turns[0]["session_id"], run_session)
+        self.assertEqual(turns[0]["workflow_run_id"], run_id)
+        self.assertEqual(turns[0]["task_id"], "digest-traces")
         self.assertEqual(turns[0]["user_message"], "digest input")
         self.assertEqual(turns[0]["agent_response"], "digest output")
 

@@ -7,6 +7,7 @@ import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
 import { TextInput, Select, Button } from '../components/Form.jsx';
 import { JsonBlock } from '../components/Json.jsx';
+import { CopyId } from '../components/CopyId.jsx';
 import { TraceDrawer } from '../components/TraceDrawer.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
@@ -24,14 +25,6 @@ const COMMAND_EVENT = {
   'command.error': { label: 'error', tone: 'rose' },
 };
 
-// Workflow task sessions are keyed `workflow:{workflow_id}:task:{task_id}:run:{run_id}`.
-// Parse that so workflow runs read as a workflow + run, not a raw run-scoped blob.
-function parseWorkflowSession(sessionId) {
-  const m = /^workflow:(.+?):task:(.+?):run:(.+)$/.exec(sessionId || '');
-  if (!m) return null;
-  return { workflowId: m[1], taskId: m[2], runId: m[3] };
-}
-
 // Refresh control that spins its glyph while the request is in flight.
 function RefreshButton({ state }) {
   return (
@@ -48,34 +41,28 @@ function statusTone(code) {
   return 'emerald';
 }
 
-// Identify a session row: workflow runs get a workflow chip + short run id;
-// everything else shows its raw session id. `agentLabel` is shown in pool-wide
-// (all-agents) mode so each row carries its owning agent.
-function SessionLabel({ sessionId, agentLabel }) {
-  const wf = parseWorkflowSession(sessionId);
+// A workflow trace shows its workflow + run id; other traces show a dash.
+function WorkflowCell({ trace }) {
+  if (!trace.workflow_id) return <span className="text-slate-300">—</span>;
   return (
-    <span className="flex flex-wrap items-center gap-1.5">
-      {agentLabel ? <Chip>{agentLabel}</Chip> : null}
-      {wf ? (
-        <>
-          <Chip tone="indigo">{wf.workflowId}</Chip>
-          <span className="text-xs text-slate-400">task {wf.taskId}</span>
-          <Mono>run {wf.runId.length > 10 ? `…${wf.runId.slice(-8)}` : wf.runId}</Mono>
-        </>
-      ) : (
-        <Mono>{sessionId}</Mono>
-      )}
+    <span className="flex flex-col gap-0.5">
+      <Chip tone="indigo">{trace.workflow_id}</Chip>
+      {trace.workflow_run_id ? (
+        <CopyId value={trace.workflow_run_id} className="text-[11px]" />
+      ) : null}
     </span>
   );
 }
 
 const TRACE_COLUMNS = [
-  { key: 'time', header: 'Time', render: (r) => formatTime(r.latest_event_at) },
+  { key: 'started', header: 'Started', render: (r) => formatTime(r.started_at) },
+  { key: 'trace_id', header: 'Trace ID', render: (r) => <CopyId value={r.trace_id} /> },
   {
-    key: 'host_id',
-    header: 'Host',
-    render: (r) => (r.host_id ? <Mono>{r.host_id}</Mono> : <span className="text-slate-300">—</span>),
+    key: 'agent',
+    header: 'Ran on',
+    render: (r) => (r.agent_id ? <Chip>{r.agent_id}</Chip> : <span className="text-slate-300">—</span>),
   },
+  { key: 'workflow', header: 'Workflow', render: (r) => <WorkflowCell trace={r} /> },
   {
     key: 'duration',
     header: 'Duration',
@@ -83,93 +70,89 @@ const TRACE_COLUMNS = [
     render: (r) => formatDuration((r.latest_event_at - r.started_at) * 1000),
   },
   { key: 'event_count', header: 'Events', align: 'right' },
-  {
-    key: 'trace_id',
-    header: 'Trace',
-    render: (r) => <Mono>{String(r.trace_id).slice(0, 12)}…</Mono>,
-  },
 ];
 
-// One session row: a header that toggles open, revealing its traces lazily.
-function SessionRow({ session, expanded, onToggle, onSelectTrace, activeTraceId, showAgent }) {
-  const agentId = session.__agentId;
+// One session row: a table row that toggles open, revealing its traces lazily.
+// Traces are listed across the whole pool (a session can span agents) by
+// session id alone.
+function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, activeTraceId }) {
   const tracesState = useApi(
     () =>
       expanded
-        ? api.listTraces({ agent_id: agentId, session_id: session.session_id, limit: 100 })
+        ? api.listTraces({ session_id: session.session_id, limit: 100 })
         : Promise.resolve(null),
-    [expanded, agentId, session.session_id],
+    [expanded, session.session_id],
   );
 
   const traces = useMemo(() => {
     const rows = tracesState.data?.traces || [];
-    return [...rows].sort((a, b) => (b.latest_event_at || 0) - (a.latest_event_at || 0));
+    return [...rows].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
   }, [tracesState.data]);
 
   return (
-    <div className="border-b border-slate-100 last:border-0">
-      <button
+    <>
+      <tr
         onClick={onToggle}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-slate-50"
+        className="cursor-pointer border-b border-slate-100 hover:bg-slate-50"
       >
-        <span className={`text-slate-400 transition ${expanded ? 'rotate-90' : ''}`}>›</span>
-        <SessionLabel sessionId={session.session_id} agentLabel={showAgent ? agentId : null} />
-        <span className="ml-auto flex shrink-0 items-center gap-4 text-xs text-slate-400">
-          <span>{session.turn_count} turns</span>
-          <span className="tabular-nums">{compactNumber(session.session_total_tokens)} tok</span>
-          <span>{formatTime(session.last_activity_at)}</span>
-        </span>
-      </button>
-      {expanded ? (
-        <div className="bg-slate-50/60 px-4 pb-3 pt-1">
-          {tracesState.loading && !tracesState.data ? (
-            <Loading />
-          ) : traces.length ? (
-            <Table
-              columns={TRACE_COLUMNS}
-              rows={traces}
-              getRowKey={(r) => r.trace_id}
-              activeKey={activeTraceId}
-              onRowClick={(t) => onSelectTrace({ ...t, __agentId: agentId })}
-            />
+        <td className="py-2.5 pl-4 pr-2 align-top text-slate-400">
+          <span className={`inline-block transition ${expanded ? 'rotate-90' : ''}`}>›</span>
+        </td>
+        <td className="px-2 py-2.5 align-top">
+          {session.owner_agent_id ? (
+            <Chip>{session.owner_agent_id}</Chip>
           ) : (
-            <p className="py-3 text-center text-xs text-slate-400">No traces in this session.</p>
+            <span className="text-slate-300">—</span>
           )}
-        </div>
+        </td>
+        <td className="px-2 py-2.5 align-top">
+          <CopyId value={session.session_id} />
+        </td>
+        <td className="px-2 py-2.5 align-top text-slate-500">{formatTime(session.started_at)}</td>
+        <td className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500">
+          {compactNumber(session.total_tokens)}
+        </td>
+        <td className="px-2 py-2.5 pr-4 text-right align-top tabular-nums text-slate-500">
+          {session.trace_count}
+        </td>
+      </tr>
+      {expanded ? (
+        <tr className="bg-slate-50/60">
+          <td />
+          <td colSpan={columnCount - 1} className="px-2 pb-3 pt-1 pr-4">
+            {tracesState.loading && !tracesState.data ? (
+              <Loading />
+            ) : traces.length ? (
+              <Table
+                columns={TRACE_COLUMNS}
+                rows={traces}
+                getRowKey={(r) => r.trace_id}
+                activeKey={activeTraceId}
+                onRowClick={(t) => onSelectTrace({ ...t, __agentId: t.agent_id })}
+              />
+            ) : (
+              <p className="py-3 text-center text-xs text-slate-400">No traces in this session.</p>
+            )}
+          </td>
+        </tr>
       ) : null}
-    </div>
+    </>
   );
 }
 
-// Sessions for one agent, or merged across the whole pool when `agentId` is
-// empty. Each session is tagged with its owning agent so rows, traces, and the
-// trace drawer all resolve correctly in pool-wide mode.
-function SessionsTab({ agentId, agents, initialSession }) {
-  const agentKey = agents.map((a) => a.agent_id).join(',');
-  const allAgents = !agentId;
+const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Traces'];
 
-  const state = useApi(() => {
-    const owners = agentId ? [agentId] : agents.map((a) => a.agent_id);
-    if (!owners.length) return Promise.resolve({ sessions: [] });
-    return Promise.all(
-      owners.map((id) =>
-        api
-          .listSessions(id)
-          .then((d) => (d.sessions || []).map((s) => ({ ...s, __agentId: id })))
-          .catch(() => []),
-      ),
-    ).then((lists) => ({
-      sessions: lists.flat().sort((a, b) => (b.last_activity_at || 0) - (a.last_activity_at || 0)),
-    }));
-  }, [agentId, agentKey]);
-
-  const workflowsState = useApi(() => api.listWorkflows(), []);
-  const workflows = workflowsState.data?.workflows || [];
+// Pool-wide session rollup (owned by the primary agent), or scoped to one owner
+// agent. Each session expands to its traces, which may span multiple agents.
+function SessionsTab({ agentId, initialSession }) {
+  const state = useApi(
+    () => api.listSessionRollups({ agent_id: agentId || undefined, limit: 500 }),
+    [agentId],
+  );
 
   const [expanded, setExpanded] = useState(initialSession || null);
   const [selected, setSelected] = useState(null);
   const [sessionQuery, setSessionQuery] = useState(initialSession || '');
-  const [workflowFilter, setWorkflowFilter] = useState('');
   const [traceQuery, setTraceQuery] = useState('');
   const [jumpError, setJumpError] = useState('');
 
@@ -185,25 +168,20 @@ function SessionsTab({ agentId, agents, initialSession }) {
     const q = traceQuery.trim();
     if (!q) return;
     setJumpError('');
-    const owners = agentId ? [agentId] : agents.map((a) => a.agent_id);
     try {
-      const results = await Promise.all(
-        owners.map((id) =>
-          api
-            .listTraces({ agent_id: id, limit: 100 })
-            .then((d) => (d.traces || []).map((t) => ({ ...t, __agentId: id })))
-            .catch(() => []),
-        ),
-      );
-      const match = results
-        .flat()
-        .find((t) => String(t.trace_id) === q || String(t.trace_id).startsWith(q));
-      if (match) {
-        setSelected(match);
-        setExpanded(match.session_id);
-      } else {
-        setJumpError('No matching trace in the recent 100.');
+      const { sessions = [] } = state.data || {};
+      for (const session of sessions) {
+        const { traces = [] } = await api.listTraces({ session_id: session.session_id, limit: 100 });
+        const match = traces.find(
+          (t) => String(t.trace_id) === q || String(t.trace_id).startsWith(q),
+        );
+        if (match) {
+          setSelected({ ...match, __agentId: match.agent_id });
+          setExpanded(session.session_id);
+          return;
+        }
       }
+      setJumpError('No matching trace in recent sessions.');
     } catch {
       setJumpError('Trace lookup failed.');
     }
@@ -214,7 +192,7 @@ function SessionsTab({ agentId, agents, initialSession }) {
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">Session</span>
-          <div className="w-56">
+          <div className="w-72">
             <TextInput
               value={sessionQuery}
               placeholder="filter by session id"
@@ -222,21 +200,6 @@ function SessionsTab({ agentId, agents, initialSession }) {
             />
           </div>
         </label>
-        {workflows.length ? (
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-slate-600">Workflow</span>
-            <div className="w-52">
-              <Select value={workflowFilter} onChange={(e) => setWorkflowFilter(e.target.value)}>
-                <option value="">All sessions</option>
-                {workflows.map((w) => (
-                  <option key={w.workflow_id} value={w.workflow_id}>
-                    {w.metadata?.display_name || w.workflow_id}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </label>
-        ) : null}
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">Trace</span>
           <div className="flex w-72 gap-2">
@@ -260,31 +223,43 @@ function SessionsTab({ agentId, agents, initialSession }) {
       <Async state={state} empty={(d) => !d.sessions?.length}>
         {(data) => {
           const q = sessionQuery.trim().toLowerCase();
-          let sessions = data.sessions;
-          if (workflowFilter) {
-            sessions = sessions.filter(
-              (s) => parseWorkflowSession(s.session_id)?.workflowId === workflowFilter,
-            );
-          }
-          if (q) {
-            sessions = sessions.filter((s) => s.session_id.toLowerCase().includes(q));
-          }
+          const sessions = q
+            ? data.sessions.filter((s) => s.session_id.toLowerCase().includes(q))
+            : data.sessions;
           if (!sessions.length) return <Empty>No sessions match that filter.</Empty>;
           return (
-            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-              {sessions.map((s) => (
-                <SessionRow
-                  key={`${s.__agentId}:${s.session_id}`}
-                  session={s}
-                  showAgent={allAgents}
-                  expanded={expanded === s.session_id}
-                  onToggle={() =>
-                    setExpanded((cur) => (cur === s.session_id ? null : s.session_id))
-                  }
-                  onSelectTrace={setSelected}
-                  activeTraceId={selected?.trace_id}
-                />
-              ))}
+            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
+                    {SESSION_HEADERS.map((h, i) => (
+                      <th
+                        key={h || 'chevron'}
+                        className={`px-2 py-2.5 ${i === 0 ? 'pl-4' : ''} ${
+                          i >= 4 ? 'text-right' : ''
+                        } ${i === SESSION_HEADERS.length - 1 ? 'pr-4' : ''}`}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.map((s) => (
+                    <SessionRow
+                      key={s.session_id}
+                      session={s}
+                      columnCount={SESSION_HEADERS.length}
+                      expanded={expanded === s.session_id}
+                      onToggle={() =>
+                        setExpanded((cur) => (cur === s.session_id ? null : s.session_id))
+                      }
+                      onSelectTrace={setSelected}
+                      activeTraceId={selected?.trace_id}
+                    />
+                  ))}
+                </tbody>
+              </table>
             </div>
           );
         }}
@@ -511,7 +486,7 @@ export default function Logs() {
       </div>
 
       {tab === 'sessions' ? (
-        <SessionsTab agentId={agentId} agents={agents} initialSession={params.get('session') || ''} />
+        <SessionsTab agentId={agentId} initialSession={params.get('session') || ''} />
       ) : null}
       {tab === 'api' ? <ApiAccessTab /> : null}
       {tab === 'cli' ? <CliTab agentId={agentId} agents={agents} /> : null}

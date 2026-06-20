@@ -67,6 +67,8 @@ class _TestRuntimeStore:
                 agent_id=event.agent_id,
                 session_id=event.session_id,
                 host_id=event.host_id,
+                workflow_id=event.workflow_id,
+                workflow_run_id=event.workflow_run_id,
                 event_type=event.event_type,
                 loop_index=event.loop_index,
                 step_key=event.step_key,
@@ -101,6 +103,7 @@ class _TestRuntimeStore:
         session_id: str | None = None,
         trace_id: str | None = None,
         host_id: str | None = None,
+        workflow_run_id: str | None = None,
         event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
@@ -115,6 +118,7 @@ class _TestRuntimeStore:
             and (session_id is None or event.session_id == session_id)
             and (trace_id is None or event.trace_id == trace_id)
             and (host_id is None or event.host_id == host_id)
+            and (workflow_run_id is None or event.workflow_run_id == workflow_run_id)
             and (event_type_prefix is None or event.event_type.startswith(event_type_prefix))
         ]
         if limit is not None:
@@ -192,16 +196,18 @@ class _TestRuntimeStore:
 
     async def list_recent_traces(
         self,
-        app_id: str,
+        app_id: str | None = None,
         *,
         session_id: str | None = None,
+        host_id: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
+        del host_id
         async with self._lock:
             events = list(self._events)
         grouped: dict[tuple[str, str | None], list[RuntimeEvent]] = {}
         for event in events:
-            if event.app_id != app_id or event.trace_id is None:
+            if (app_id is not None and event.app_id != app_id) or event.trace_id is None:
                 continue
             if session_id is not None and event.session_id != session_id:
                 continue
@@ -213,6 +219,19 @@ class _TestRuntimeStore:
                 {
                     "trace_id": trace_id_value,
                     "session_id": session_id_value,
+                    "host_id": next(
+                        (e.host_id for e in trace_events if e.host_id), None
+                    ),
+                    "agent_id": next(
+                        (e.agent_id for e in trace_events if e.agent_id), None
+                    ),
+                    "workflow_id": next(
+                        (e.workflow_id for e in trace_events if e.workflow_id), None
+                    ),
+                    "workflow_run_id": next(
+                        (e.workflow_run_id for e in trace_events if e.workflow_run_id),
+                        None,
+                    ),
                     "event_count": len(trace_events),
                     "started_at": float(trace_events[0].created_at),
                     "latest_event_at": float(trace_events[-1].created_at),
@@ -224,6 +243,53 @@ class _TestRuntimeStore:
             reverse=True,
         )
         return summaries[: max(1, int(limit))]
+
+    async def list_sessions(
+        self,
+        *,
+        owner_agent_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self._lock:
+            events = list(self._events)
+        by_session: dict[str, list[RuntimeEvent]] = {}
+        for event in events:
+            if event.session_id is None:
+                continue
+            by_session.setdefault(event.session_id, []).append(event)
+
+        def _tokens(event: RuntimeEvent) -> int:
+            payload = event.payload or {}
+            usage = payload.get("token_usage") or {}
+            inp = usage.get("input") or usage.get("input_tokens") or payload.get("input_tokens") or 0
+            out = usage.get("output") or usage.get("output_tokens") or payload.get("output_tokens") or 0
+            try:
+                return int(inp) + int(out)
+            except (TypeError, ValueError):
+                return 0
+
+        sessions: list[dict[str, Any]] = []
+        for session_id, session_events in by_session.items():
+            ordered = sorted(session_events, key=lambda e: (e.created_at, e.event_id))
+            owner = next((e.agent_id for e in ordered if e.agent_id), None)
+            if owner_agent_id is not None and owner != owner_agent_id:
+                continue
+            trace_ids = {e.trace_id for e in ordered if e.trace_id is not None}
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "owner_agent_id": owner,
+                    "host_id": next((e.host_id for e in ordered if e.host_id), None),
+                    "started_at": float(ordered[0].created_at),
+                    "latest_event_at": float(ordered[-1].created_at),
+                    "trace_count": len(trace_ids),
+                    "total_tokens": sum(_tokens(e) for e in session_events),
+                }
+            )
+        sessions.sort(key=lambda s: (s["latest_event_at"], s["session_id"]), reverse=True)
+        if limit is not None:
+            sessions = sessions[: max(1, int(limit))]
+        return sessions
 
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()

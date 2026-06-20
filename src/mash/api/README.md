@@ -313,6 +313,8 @@ validation).
 - Body fields:
   - `dedup_key` optional string
   - `input` optional JSON object
+  - `session_id` optional; the run executes under this session (e.g. the REPL
+    session) so it is a trace within it. Absent → a fresh per-run session.
 - Returns:
   - `run_id`
   - `workflow_id`
@@ -456,17 +458,30 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
     `command_name`, `args`, `duration_ms`, and `error` under `payload`
   - `source`, `agent_id`, `session_id`, `limit`
 
-`GET /api/v1/telemetry/traces`
-- Lists recent traces for one agent, ordered by most recent first.
+`GET /api/v1/telemetry/sessions`
+- Rolls up sessions from the runtime event log, most recent activity first. A
+  session is the container for traces; its owner is the agent of its earliest
+  event (the primary for a chat session). Traces within a session may run on
+  other agents (subagents, cross-agent workflow tasks).
 - Query params:
-  - `agent_id` required
-  - `session_id` optional
+  - `agent_id` optional; when set, scopes to sessions owned by that agent
+  - `limit` optional, clamped to `1..2000`
+- Returns:
+  - `sessions`: list of `{ session_id, owner_agent_id, host_id, started_at, latest_event_at, trace_count, total_tokens }`
+  - `source`, `agent_id`, `limit`
+
+`GET /api/v1/telemetry/traces`
+- Lists recent traces, ordered by most recent first.
+- Query params:
+  - `agent_id` or `session_id` required (at least one). With only `session_id`,
+    lists that session's traces across every executing agent.
   - `host_id` optional, filters traces to one host composition
   - `limit` optional, default `5`, clamped to `1..100`
 - Returns:
-  - `traces`: list of `{ trace_id, session_id, host_id, started_at, latest_event_at, latest_event_id, event_count }`
-  - `agent_id`
-  - `host_id`
+  - `traces`: list of `{ trace_id, session_id, host_id, agent_id, workflow_id, workflow_run_id, started_at, latest_event_at, latest_event_id, event_count }` — `agent_id` is the executing agent; `workflow_id`/`workflow_run_id` are set when the trace was issued by a workflow task
+  - `agent_id`, `session_id`, `host_id`
+- Errors:
+  - `400 INVALID_REQUEST`: neither `agent_id` nor `session_id` was provided
 
 `GET /api/v1/telemetry/usage`
 - Time-bucketed usage aggregation for one agent, ordered by bucket ascending.

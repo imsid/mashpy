@@ -59,6 +59,7 @@ def build_workflow_router() -> APIRouter:
                 workflow_id.strip(),
                 dedup_key=normalize_optional_text(body.dedup_key),
                 workflow_input=body.input,
+                session_id=normalize_optional_text(body.session_id),
             )
         except (WorkflowNotFoundError, DuplicateWorkflowRunError):
             raise

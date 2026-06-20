@@ -404,12 +404,15 @@ class MashHostClient:
         *,
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {}
         if dedup_key is not None:
             body["dedup_key"] = dedup_key
         if workflow_input is not None:
             body["input"] = workflow_input
+        if session_id is not None:
+            body["session_id"] = session_id
         response = self._request(
             "POST",
             f"/api/v1/workflow/{quote(workflow_id, safe='')}/run",

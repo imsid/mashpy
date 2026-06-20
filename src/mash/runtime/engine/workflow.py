@@ -8,6 +8,7 @@ from typing import Any
 from dbos import DBOS
 
 from ...logging import bound_host_id, bound_request_id
+from ...logging.trace_context import bound_workflow_ids
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
 from ..requests import host_id_from_request_metadata
@@ -217,6 +218,9 @@ async def execute_request_workflow(
     trace_id: str | None = None
     with bound_request_id(request_id), bound_host_id(
         host_id_from_request_metadata(request_metadata)
+    ), bound_workflow_ids(
+        request_metadata.get("workflow_id"),
+        request_metadata.get("workflow_run_id"),
     ):
         try:
             trace_id = await DBOS.run_step_async(

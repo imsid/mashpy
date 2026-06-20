@@ -136,6 +136,10 @@ async def build_context_with_history(
             app_id=self.app_id,
             limit=None,
         )
+        # Workflow / subagent / command turns share the session but are not part
+        # of the user's conversation, so they are excluded from what the model
+        # replays as history.
+        turns = [turn for turn in turns if turn.get("replayable", True)]
         if turns:
             summary_index = None
             for idx in range(len(turns) - 1, -1, -1):

@@ -100,6 +100,7 @@ class RegisterAgentWorkflowRequest(BaseModel):
 class RunWorkflowRequest(BaseModel):
     dedup_key: Optional[str] = None
     input: dict[str, Any] = Field(default_factory=dict)
+    session_id: Optional[str] = None
 
 
 class CommandEventIngest(BaseModel):

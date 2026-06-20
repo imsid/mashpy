@@ -18,6 +18,14 @@ _host_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_host_id",
     default=None,
 )
+_workflow_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_workflow_id",
+    default=None,
+)
+_workflow_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_workflow_run_id",
+    default=None,
+)
 
 
 def set_trace_id(trace_id: Optional[str]) -> None:
@@ -83,3 +91,31 @@ def bound_host_id(host_id: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _host_id.reset(token)
+
+
+def get_workflow_id() -> Optional[str]:
+    """Get the workflow ID bound for the current task context, if any."""
+    return _workflow_id.get()
+
+
+def get_workflow_run_id() -> Optional[str]:
+    """Get the workflow run ID bound for the current task context, if any."""
+    return _workflow_run_id.get()
+
+
+@contextmanager
+def bound_workflow_ids(
+    workflow_id: Optional[str], workflow_run_id: Optional[str]
+) -> Iterator[None]:
+    """Temporarily bind the workflow id + run id for the current task context.
+
+    Lets ``append_runtime_event`` stamp every event of a workflow-issued request
+    with its originating workflow, so a run's traces are queryable by run id.
+    """
+    workflow_token = _workflow_id.set(workflow_id)
+    run_token = _workflow_run_id.set(workflow_run_id)
+    try:
+        yield
+    finally:
+        _workflow_run_id.reset(run_token)
+        _workflow_id.reset(workflow_token)

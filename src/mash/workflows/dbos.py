@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from mash.runtime.engine.dbos import start_request_workflow
-from mash.runtime.engine.workflow import workflow_id_for
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import append_runtime_event
 from mash.runtime.structured_output import normalize_structured_output_schema
@@ -118,12 +117,14 @@ def register_workflow(dbos_class: Any) -> None:
         workflow_id: str,
         run_id: str,
         workflow_input: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         return await execute_registered_workflow(
             runner_id,
             workflow_id,
             run_id,
             workflow_input=workflow_input,
+            session_id=session_id,
         )
 
     _STATE.registered_workflow = dbos_class.workflow(name=_WORKFLOW_NAME)(_workflow)
@@ -136,6 +137,7 @@ async def start_workflow_run(
     workflow: WorkflowSpec,
     dedup_key: str | None,
     workflow_input: dict[str, Any] | None = None,
+    session_id: str | None = None,
 ) -> str:
     from mash.runtime.engine.dbos import ensure_dbos_ready
 
@@ -148,6 +150,7 @@ async def start_workflow_run(
 
     run_id = make_run_id(runner_id, workflow.workflow_id)
     normalized_workflow_input = _normalize_workflow_input(workflow_input)
+    normalized_session_id = str(session_id).strip() if session_id else None
     try:
         with set_workflow_id(run_id):
             if dedup_key is None:
@@ -157,6 +160,7 @@ async def start_workflow_run(
                     workflow.workflow_id,
                     run_id,
                     normalized_workflow_input,
+                    normalized_session_id,
                 )
             else:
                 with set_enqueue_options(
@@ -168,6 +172,7 @@ async def start_workflow_run(
                         workflow.workflow_id,
                         run_id,
                         normalized_workflow_input,
+                        normalized_session_id,
                     )
     except dedup_error as exc:
         existing_run_id = str(getattr(exc, "workflow_id", "") or "")
@@ -186,6 +191,7 @@ async def execute_registered_workflow(
     run_id: str,
     *,
     workflow_input: dict[str, Any] | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     dbos_class, _, _, _, _ = _load_dbos_api()
     pool = require_runner(runner_id)
@@ -214,6 +220,7 @@ async def execute_registered_workflow(
             previous_state,
             workflow.task_message,
             task.structured_output,
+            session_id=session_id,
         )
         payload = await dbos_class.run_step_async(
             {"name": f"{task.task_id}.request.await"},
@@ -281,14 +288,16 @@ async def _post_task_request(
     task_state: dict[str, Any],
     task_message: WorkflowTaskMessageSpec | None,
     structured_output: dict[str, Any] | None,
+    *,
+    session_id: str | None = None,
 ) -> str:
     pool = require_runner(runner_id)
     client = pool.get_client(agent_id)
-    session_id = _task_session_id(
-        workflow_id=workflow_id,
-        task_id=task_id,
-        run_id=run_id,
-    )
+    # A workflow run executes under one session: the caller's session when one is
+    # threaded through (e.g. the REPL), otherwise a fresh per-run session. The run
+    # is a trace in that session, tagged with workflow_run_id, not a session of
+    # its own.
+    session_id = session_id or _run_session_id(run_id)
     message = _build_task_message(
         workflow_id=workflow_id,
         workflow_run_id=run_id,
@@ -310,6 +319,9 @@ async def _post_task_request(
             message=message,
             session_id=session_id,
             structured_output=task_structured_output,
+            workflow_id=workflow_id,
+            workflow_run_id=run_id,
+            task_id=task_id,
         )
     return await client.post_request(
         message,
@@ -335,10 +347,22 @@ async def _execute_inline_task_request(
     message: str,
     session_id: str,
     structured_output: dict[str, Any],
+    workflow_id: str,
+    workflow_run_id: str,
+    task_id: str,
 ) -> str:
     request_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"mash.workflow.task:{agent_id}:{session_id}")
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"mash.workflow.task:{agent_id}:{workflow_run_id}:{task_id}",
+        )
     )
+    request_metadata = {
+        "structured_output_request": dict(structured_output),
+        "workflow_id": workflow_id,
+        "workflow_run_id": workflow_run_id,
+        "task_id": task_id,
+    }
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -346,15 +370,14 @@ async def _execute_inline_task_request(
             app_id=runtime.app_id,
             agent_id=runtime.app_id,
             session_id=session_id,
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
             event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
             dedupe_key="request.accepted",
             payload={
-                "workflow_id": workflow_id_for(runtime.app_id, request_id),
                 "message": message,
                 "initial_session_id": session_id,
-                "request_metadata": {
-                    "structured_output_request": dict(structured_output)
-                },
+                "request_metadata": dict(request_metadata),
             },
         ),
     )
@@ -368,7 +391,7 @@ async def _execute_inline_task_request(
         request_id,
         message,
         session_id,
-        {"structured_output_request": dict(structured_output)},
+        request_metadata,
         require_runtime_fallback=_resolve,
     )
     return request_id
@@ -436,8 +459,13 @@ def _build_task_message(
     return json.dumps(payload, ensure_ascii=True)
 
 
-def _task_session_id(*, workflow_id: str, task_id: str, run_id: str) -> str:
-    return f"workflow:{workflow_id}:task:{task_id}:run:{run_id}"
+def _run_session_id(run_id: str) -> str:
+    """Deterministic session id for one workflow run.
+
+    Placeholder until a caller (e.g. the REPL) session is threaded through:
+    every task of the run shares it, and it is stable across DBOS retries.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mash.workflow.run:{run_id}"))
 
 
 def _normalize_workflow_input(value: dict[str, Any] | None) -> dict[str, Any]:

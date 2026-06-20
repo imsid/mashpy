@@ -311,6 +311,17 @@ The events endpoint replays task lifecycle events and each task agent's normal
 runtime events over SSE from runtime event logs; it does not query DBOS for live
 workflow status.
 
+### Session model
+
+A workflow run executes under one session — the caller's `session_id` when
+`POST /workflow/{id}/run` provides one (e.g. the REPL session), otherwise a
+fresh per-run session. The run is a **trace** within that session, tagged with
+`workflow_id` / `workflow_run_id` (first-class columns on both the runtime event
+log and the persisted turn). There is no `workflow:…:run:…` session scheme; run
+history, summaries, and the live event stream are all keyed by `workflow_run_id`.
+Workflow task turns are persisted but marked non-replayable, so they never enter
+the conversation history the model replays.
+
 ## CLI
 
 The interactive Mash REPL exposes workflow commands as thin wrappers around the

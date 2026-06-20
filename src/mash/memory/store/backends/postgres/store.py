@@ -77,11 +77,24 @@ class PostgresStore(MemoryStore):
                             user_message TEXT NOT NULL,
                             agent_response TEXT NOT NULL,
                             session_total_tokens BIGINT NOT NULL DEFAULT 0,
+                            workflow_id TEXT,
+                            workflow_run_id TEXT,
+                            task_id TEXT,
+                            replayable BOOLEAN NOT NULL DEFAULT TRUE,
                             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                             created_at DOUBLE PRECISION NOT NULL
                         )
                         """
                     )
+                    for _column_ddl in (
+                        "ADD COLUMN IF NOT EXISTS workflow_id TEXT",
+                        "ADD COLUMN IF NOT EXISTS workflow_run_id TEXT",
+                        "ADD COLUMN IF NOT EXISTS task_id TEXT",
+                        "ADD COLUMN IF NOT EXISTS replayable BOOLEAN NOT NULL DEFAULT TRUE",
+                    ):
+                        await cursor.execute(
+                            f"ALTER TABLE memory_turns {_column_ddl}"
+                        )
                     await cursor.execute(
                         """
                         CREATE TABLE IF NOT EXISTS memory_signals (
@@ -118,6 +131,20 @@ class PostgresStore(MemoryStore):
                         """
                         CREATE INDEX IF NOT EXISTS idx_memory_turns_app
                         ON memory_turns(app_id)
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_memory_turns_workflow
+                        ON memory_turns(app_id, workflow_id)
+                        WHERE workflow_id IS NOT NULL
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_memory_turns_workflow_run
+                        ON memory_turns(app_id, workflow_run_id)
+                        WHERE workflow_run_id IS NOT NULL
                         """
                     )
                     await cursor.execute(
@@ -341,6 +368,11 @@ class PostgresStore(MemoryStore):
         signals: Dict[str, Any],
         session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        replayable: bool = True,
     ) -> str:
         turn_id = trace_id
         timestamp = time.time()
@@ -360,10 +392,14 @@ class PostgresStore(MemoryStore):
                             user_message,
                             agent_response,
                             session_total_tokens,
+                            workflow_id,
+                            workflow_run_id,
+                            task_id,
+                            replayable,
                             metadata,
                             created_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                         """,
                         (
                             turn_id,
@@ -372,6 +408,10 @@ class PostgresStore(MemoryStore):
                             user_message,
                             agent_response,
                             int(session_total_tokens),
+                            workflow_id,
+                            workflow_run_id,
+                            task_id,
+                            bool(replayable),
                             metadata_json,
                             timestamp,
                         ),
@@ -413,7 +453,7 @@ class PostgresStore(MemoryStore):
             if limit is None:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
+                    SELECT turn_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND app_id = %s
                     ORDER BY created_at ASC, turn_id ASC
@@ -423,7 +463,7 @@ class PostgresStore(MemoryStore):
             else:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
+                    SELECT turn_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND app_id = %s
                     ORDER BY created_at DESC, turn_id DESC
@@ -451,6 +491,7 @@ class PostgresStore(MemoryStore):
                         else str(row["agent_response"])
                     ),
                     "session_total_tokens": int(row["session_total_tokens"] or 0),
+                    "replayable": bool(row.get("replayable", True)),
                     "signals": signals_by_turn.get(str(row["turn_id"]), {}),
                     "metadata": metadata if isinstance(metadata, dict) else {},
                     "created_at": float(row["created_at"] or 0.0),
@@ -461,8 +502,9 @@ class PostgresStore(MemoryStore):
     async def list_workflow_turns(
         self,
         app_id: str,
-        session_prefix: str,
         *,
+        workflow_id: str,
+        workflow_run_id: Optional[str] = None,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
         limit: Optional[int] = None,
@@ -473,8 +515,11 @@ class PostgresStore(MemoryStore):
         if normalized_limit == 0:
             return []
 
-        params: List[Any] = [app_id, f"{session_prefix}%"]
-        filters = ["app_id = %s", "session_id LIKE %s"]
+        params: List[Any] = [app_id, workflow_id]
+        filters = ["app_id = %s", "workflow_id = %s"]
+        if workflow_run_id is not None:
+            filters.append("workflow_run_id = %s")
+            params.append(workflow_run_id)
         if start_time is not None:
             filters.append("created_at >= %s")
             params.append(float(start_time))
@@ -484,7 +529,8 @@ class PostgresStore(MemoryStore):
 
         direction = "DESC" if sort_desc else "ASC"
         sql = f"""
-            SELECT turn_id, session_id, user_message, agent_response, metadata, created_at
+            SELECT turn_id, session_id, workflow_id, workflow_run_id, task_id,
+                   user_message, agent_response, metadata, created_at
             FROM memory_turns
             WHERE {' AND '.join(filters)}
             ORDER BY created_at {direction}, turn_id {direction}
@@ -508,6 +554,9 @@ class PostgresStore(MemoryStore):
                 {
                     "turn_id": str(row["turn_id"]),
                     "session_id": str(row["session_id"]),
+                    "workflow_id": row.get("workflow_id"),
+                    "workflow_run_id": row.get("workflow_run_id"),
+                    "task_id": row.get("task_id"),
                     "user_message": (
                         "" if row["user_message"] is None else str(row["user_message"])
                     ),

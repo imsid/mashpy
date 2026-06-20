@@ -222,6 +222,13 @@ async def _persist_turn_payload(
     session_total_tokens += total_tokens
     trace_id = response_metadata.get("trace_id")
     resolved_trace_id = str(trace_id or uuid.uuid4())
+    # Workflow task and subagent turns (their request_metadata carries
+    # workflow_id/run_id/task_id or subagent_id) share the session but are kept
+    # out of the model's replayed conversation history.
+    workflow_id = response_metadata.get("workflow_id") or None
+    workflow_run_id = response_metadata.get("workflow_run_id") or None
+    task_id = response_metadata.get("task_id") or None
+    is_subagent = bool(response_metadata.get("subagent_id"))
     await runtime.store.save_turn(
         trace_id=resolved_trace_id,
         session_id=session_id,
@@ -231,6 +238,10 @@ async def _persist_turn_payload(
         signals=signals,
         session_total_tokens=session_total_tokens,
         metadata=response_metadata,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        task_id=task_id,
+        replayable=workflow_id is None and not is_subagent,
     )
     response_payload = {
         "text": response.text,
@@ -261,6 +272,8 @@ async def start_request_trace(
 ) -> str:
     runtime = _require_runtime(agent_id)
     trace_id = str(uuid.uuid4())
+    # workflow_id / workflow_run_id are stamped by append_runtime_event from the
+    # bound workflow context when the request was issued by a workflow task.
     await append_runtime_event(
         runtime,
         RuntimeEvent(

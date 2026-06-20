@@ -9,7 +9,6 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from mash.logging import clear_trace_id, set_trace_id
 from mash.tools.subagent import InvokeSubagentTool
-from mash.tools.subagent import derive_subagent_session_id
 
 
 class _FakeClient:
@@ -109,11 +108,8 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
             {"agent_id": "research", "prompt": "Summarize issue", "opts": {"x": 1}}
         )
         self.assertFalse(result.is_error)
-        expected_subagent_session_id = derive_subagent_session_id(
-            "primary-app",
-            "s1",
-            "research",
-        )
+        # The subagent now runs under the parent session.
+        expected_subagent_session_id = "s1"
         payload = json.loads(result.content)
         self.assertEqual(payload["agent_id"], "research")
         self.assertEqual(payload["primary_session_id"], "s1")
@@ -233,11 +229,8 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
             {"agent_id": "research", "prompt": "Summarize issue", "opts": {"timeout_ms": 2500}}
         )
         self.assertFalse(result.is_error)
-        expected_subagent_session_id = derive_subagent_session_id(
-            "primary-app",
-            "s2",
-            "research",
-        )
+        # The subagent now runs under the parent session.
+        expected_subagent_session_id = "s2"
         payload = json.loads(result.content)
         self.assertEqual(payload["request_id"], "r1")
         self.assertEqual(payload["text"], "client-ok")
