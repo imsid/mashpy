@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { BarChart } from '../components/BarChart.jsx';
@@ -8,7 +7,12 @@ import { useApi } from '../lib/useApi.js';
 import { compactNumber } from '../lib/format.js';
 
 const DAY = 86400;
-const WINDOW_DAYS = 7;
+const WINDOW_DAYS = 30;
+
+const USAGE_SERIES = [
+  { key: 'traces', label: 'Traces', barClass: 'fill-blue-500', dotClass: 'bg-blue-500' },
+  { key: 'tokens', label: 'Tokens', barClass: 'fill-emerald-500', dotClass: 'bg-emerald-500' },
+];
 
 function Stat({ label, value, hint, to }) {
   return (
@@ -38,8 +42,11 @@ function localDayKey(unixSeconds) {
   return Math.floor(d.getTime() / 1000);
 }
 
-// Fetch agents, then per-agent usage + sessions + recent traces, and aggregate
-// into pool totals and a merged daily series. Per-agent calls because the
+// Fetch agents, then per-agent hourly usage + sessions, and aggregate into pool
+// totals and a merged daily series. Hourly buckets (not daily) so re-bucketing
+// to the viewer's local day is accurate: each bucket's instant maps to the
+// right local day, and traces (request_count) and tokens come from the same
+// source, keeping the two bars on the same day. Per-agent calls because the
 // telemetry endpoints are agent-scoped by design.
 async function loadOverview() {
   const { agents = [], hosts = [] } = await api.listAgents();
@@ -47,39 +54,29 @@ async function loadOverview() {
 
   const perAgent = await Promise.all(
     agents.map(async (a) => {
-      const [usage, sessions, traces] = await Promise.all([
-        api.usage({ agent_id: a.agent_id, bucket: 'day', from_ts: fromTs }).catch(() => ({ buckets: [] })),
+      const [usage, sessions] = await Promise.all([
+        api.usage({ agent_id: a.agent_id, bucket: 'hour', from_ts: fromTs }).catch(() => ({ buckets: [] })),
         api.listSessions(a.agent_id).catch(() => ({ sessions: [] })),
-        api.listTraces({ agent_id: a.agent_id, limit: 100 }).catch(() => ({ traces: [] })),
       ]);
-      return {
-        usage: usage.buckets || [],
-        sessions: sessions.sessions || [],
-        traces: traces.traces || [],
-      };
+      return { usage: usage.buckets || [], sessions: sessions.sessions || [] };
     }),
   );
 
-  // Aggregate tokens (from usage) and traces (from recent traces) by local day.
   const merged = new Map();
   let tokens = 0;
   let sessions = 0;
   let traceTotal = 0;
-  for (const { usage, sessions: ss, traces } of perAgent) {
+  for (const { usage, sessions: ss } of perAgent) {
     sessions += ss.length;
     for (const b of usage) {
-      tokens += b.input_tokens + b.output_tokens;
+      const bucketTokens = (b.input_tokens || 0) + (b.output_tokens || 0);
+      const bucketTraces = b.request_count || 0;
+      tokens += bucketTokens;
+      traceTotal += bucketTraces;
       const key = localDayKey(b.bucket_start);
       const cur = merged.get(key) || { traces: 0, tokens: 0 };
-      cur.tokens += b.input_tokens + b.output_tokens;
-      merged.set(key, cur);
-    }
-    for (const t of traces) {
-      if (!t.started_at || t.started_at < fromTs) continue;
-      traceTotal += 1;
-      const key = localDayKey(t.started_at);
-      const cur = merged.get(key) || { traces: 0, tokens: 0 };
-      cur.traces += 1;
+      cur.traces += bucketTraces;
+      cur.tokens += bucketTokens;
       merged.set(key, cur);
     }
   }
@@ -104,7 +101,6 @@ async function loadOverview() {
 
 export default function Overview() {
   const state = useApi(loadOverview, []);
-  const [metric, setMetric] = useState('traces');
 
   return (
     <div className="space-y-6">
@@ -135,24 +131,9 @@ export default function Overview() {
             <Card className="p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Usage</h2>
-                <div className="flex gap-1 rounded-md border border-slate-200 p-0.5 text-xs">
-                  {['traces', 'tokens'].map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setMetric(m)}
-                      className={`rounded px-2 py-1 font-medium capitalize ${
-                        metric === m ? 'bg-slate-900 text-white' : 'text-slate-500'
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
+                <span className="text-xs text-slate-400">Last {WINDOW_DAYS} days</span>
               </div>
-              <BarChart
-                data={data.series.map((d) => ({ label: d.label, value: d[metric] }))}
-                format={compactNumber}
-              />
+              <BarChart data={data.series} series={USAGE_SERIES} format={compactNumber} />
             </Card>
           </>
         )}
