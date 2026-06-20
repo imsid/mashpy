@@ -13,15 +13,20 @@ ADMIN_WEB_STATIC_DIR ?= src/mash/api/static/admin
 #   Run to produce a fresh production bundle in `src/mash/api/web-admin/dist`.
 # `make admin-web-package-sync`
 #   Run after building the UI, before packaging or testing the embedded `/admin` route.
-.PHONY: admin-web-install admin-web admin-web-build admin-web-package-sync
+.PHONY: admin-web-install admin-web admin-web-build admin-web-package-sync admin-cli-docs
 
 admin-web-install:
 	cd $(ADMIN_WEB_SOURCE_DIR) && npm install
 
+# Regenerate the CLI reference (cli.json) from the live argparse parser and
+# REPL command registry so the dashboard's CLI docs stay in sync with the code.
+admin-cli-docs:
+	uv run python scripts/gen_cli_docs.py
+
 admin-web:
 	cd $(ADMIN_WEB_SOURCE_DIR) && npm run dev -- --port $(ADMIN_VITE_PORT)
 
-admin-web-build:
+admin-web-build: admin-cli-docs
 	cd $(ADMIN_WEB_SOURCE_DIR) && npm run build
 
 admin-web-package-sync: admin-web-build

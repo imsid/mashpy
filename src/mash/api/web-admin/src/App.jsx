@@ -5,6 +5,7 @@ import Agents from './routes/Agents.jsx';
 import Hosts from './routes/Hosts.jsx';
 import Logs from './routes/Logs.jsx';
 import Feedback from './routes/Feedback.jsx';
+import Reference from './routes/Reference.jsx';
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="hosts" element={<Hosts />} />
         <Route path="logs" element={<Logs />} />
         <Route path="feedback" element={<Feedback />} />
+        <Route path="reference" element={<Reference />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

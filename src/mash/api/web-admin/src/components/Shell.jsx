@@ -8,6 +8,7 @@ const NAV = [
   { to: '/hosts', label: 'Hosts' },
   { to: '/logs', label: 'Logs' },
   { to: '/feedback', label: 'Feedback' },
+  { to: '/reference', label: 'Reference', divider: true },
 ];
 
 function ObservabilityBadge() {
@@ -47,7 +48,7 @@ export default function Shell() {
         <nav className="w-48 shrink-0 px-3 py-5">
           <ul className="space-y-0.5">
             {NAV.map((item) => (
-              <li key={item.to}>
+              <li key={item.to} className={item.divider ? 'mt-2 border-t border-slate-100 pt-2' : undefined}>
                 <NavLink
                   to={item.to}
                   end={item.end}

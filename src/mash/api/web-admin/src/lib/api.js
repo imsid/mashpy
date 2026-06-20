@@ -65,8 +65,20 @@ async function request(path, { method = 'GET', params, body, signal } = {}) {
   return payload && 'data' in payload ? payload.data : payload;
 }
 
+// The OpenAPI schema lives at the app root, outside the /api/v1 envelope.
+async function openapi() {
+  const response = await fetch('/openapi.json');
+  if (!response.ok) {
+    throw new ApiError(`failed to load OpenAPI schema (${response.status})`, {
+      status: response.status,
+    });
+  }
+  return response.json();
+}
+
 export const api = {
   request,
+  openapi,
 
   // --- Deployment / pool ---
   health: () => request('/health'),
