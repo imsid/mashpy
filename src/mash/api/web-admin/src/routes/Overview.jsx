@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
-import { Chip, Mono } from '../components/Chip.jsx';
 import { BarChart } from '../components/BarChart.jsx';
 import { Button } from '../components/Form.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
-import { compactNumber, formatTime } from '../lib/format.js';
+import { compactNumber } from '../lib/format.js';
 
 const DAY = 86400;
 const WINDOW_DAYS = 7;
@@ -76,57 +75,9 @@ async function loadOverview() {
   };
 }
 
-// Merge SSE event streams across every agent into one rolling feed.
-function useLiveFeed(agentIds) {
-  const [events, setEvents] = useState([]);
-  const sourcesRef = useRef([]);
-
-  useEffect(() => {
-    if (!agentIds.length) return undefined;
-    const sources = agentIds.map((agentId) =>
-      api.streamEvents({ agent_id: agentId }, (event) => {
-        setEvents((cur) => [{ ...event, _key: `${event.event_id}-${agentId}` }, ...cur].slice(0, 30));
-      }),
-    );
-    sourcesRef.current = sources;
-    return () => sources.forEach((s) => s.close());
-  }, [agentIds.join(',')]);
-
-  return events;
-}
-
-function LiveFeed({ agentIds }) {
-  const events = useLiveFeed(agentIds);
-  return (
-    <Card className="divide-y divide-slate-100">
-      {events.length === 0 ? (
-        <div className="px-4 py-8 text-center text-sm text-slate-400">
-          Waiting for activity…
-        </div>
-      ) : (
-        events.map((e) => (
-          <div key={e._key} className="flex items-center gap-3 px-4 py-2 text-sm">
-            <span className="w-20 shrink-0 text-xs tabular-nums text-slate-400">
-              {formatTime(e.created_at).split(', ')[1] || ''}
-            </span>
-            <Mono>{e.agent_id || e.app_id}</Mono>
-            {e.host_id ? <Chip>{e.host_id}</Chip> : null}
-            <span className="truncate text-slate-600">
-              {String(e.event_type || '').replace('runtime.', '')}
-            </span>
-          </div>
-        ))
-      )}
-    </Card>
-  );
-}
-
 export default function Overview() {
   const state = useApi(loadOverview, []);
-  const agentsState = useApi(() => api.listAgents(), []);
   const [metric, setMetric] = useState('requests');
-
-  const agentIds = (agentsState.data?.agents || []).map((a) => a.agent_id);
 
   return (
     <div className="space-y-6">
@@ -175,17 +126,6 @@ export default function Overview() {
           </>
         )}
       </Async>
-
-      <div>
-        <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-sm font-semibold">Live activity</h2>
-          <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-            streaming
-          </span>
-        </div>
-        <LiveFeed agentIds={agentIds} />
-      </div>
     </div>
   );
 }

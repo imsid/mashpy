@@ -65,24 +65,8 @@ async function request(path, { method = 'GET', params, body, signal } = {}) {
   return payload && 'data' in payload ? payload.data : payload;
 }
 
-// Open a server-sent event stream. Returns the EventSource so callers can close
-// it; `onEvent` receives the parsed JSON of each message.
-function stream(path, params, onEvent) {
-  const source = new EventSource(`${API_BASE}${path}${buildQuery(params)}`);
-  source.onmessage = (event) => {
-    if (!event.data) return;
-    try {
-      onEvent(JSON.parse(event.data));
-    } catch {
-      /* ignore malformed frames */
-    }
-  };
-  return source;
-}
-
 export const api = {
   request,
-  stream,
 
   // --- Deployment / pool ---
   health: () => request('/health'),
@@ -103,8 +87,6 @@ export const api = {
   listEvents: (params) => request('/telemetry/events', { params }),
   usage: (params) => request('/telemetry/usage', { params }),
   listApiEvents: (params) => request('/telemetry/api/events', { params }),
-  streamEvents: (params, onEvent) =>
-    stream('/telemetry/events/stream', params, onEvent),
 
   // --- Sessions ---
   listSessions: (agentId) =>
