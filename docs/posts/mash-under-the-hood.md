@@ -24,7 +24,7 @@ harness and observability underneath.
 - [Observability](#observability)
     - [Spans and Trace Analysis](#spans-and-trace-analysis)
     - [Telemetry API](#telemetry-api)
-    - [Telemetry UI](#telemetry-ui)
+    - [Admin dashboard](#admin-dashboard)
     - [CLI Trace Inspection](#cli-trace-inspection)
     - [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
 - [Self-Hosted Interfaces](#self-hosted-interfaces)
@@ -328,18 +328,40 @@ analysis dict in a single call, with no client-side computation needed.
 
 ### Admin dashboard
 
-The built-in admin dashboard at `http://<HOST>/admin` renders traces under its
-Logs section. Each agent's recent requests list as rows; click one and a drawer
-opens with summary tiles for duration, tokens, throughput, and tool count, the
-reconstructed message-by-message conversation, and a collapsible span tree with
-per-span durations. The raw events sit one expander below.
+The built-in admin dashboard at `http://<HOST>/admin` is a read view over the
+running deployment. The left nav has seven sections.
+
+Overview reports deployment health: counts of agents, hosts, and sessions, plus
+a per-day chart of requests and tokens across the pool.
+
+Agents lists the role-less pool as cards. Each card shows the agent's display
+name, description, capabilities, usage guidance, and the hosts that use it as
+primary or subagent. Clicking a card opens that agent's logs.
+
+Workflows lists the workflows registered in the pool with the task chain each
+one runs, every task next to the agent that runs it.
+
+Hosts shows the host compositions: which agent is primary and which are
+subagents for each host.
+
+Logs is the trace view. Sessions list for the selected agent. Expand a session
+to see its traces newest first, then click a trace to open a drawer. The drawer
+has summary tiles for duration, tokens, output tokens per second, and tool
+count; the signals collected on that turn; the conversation reconstructed
+message by message and rendered as markdown; a collapsible span tree with
+per-span durations; and the raw events behind a filter by event type. A
+separate API access tab lists the backend HTTP request logs newest first.
+
+Feedback shows the notes captured by the REPL's `/feedback` command. Reference
+embeds the API and CLI documentation so it stays next to the deployment it
+describes.
 
 ### CLI Trace Inspection
 
 The `/trace` REPL command gives developers access to trace analysis
 without leaving the terminal:
 
-```
+```bash
 /trace        # analyze the most recent trace
 /trace 5      # analyze the 5 most recent traces
 ```
@@ -365,7 +387,7 @@ Both workflows run deterministically over the runtime event log. Incremental
 mode processes only new traces since the last checkpoint, making it safe to run
 on a schedule.
 
-```
+```bash
 /workflow run masher-trace-digest --input '{"mode": "trace", "target_agent_id": "..", "session_id": "..", "trace_id": ".."}'
 
 /workflow run masher-online-eval-curation --input '{"mode": "incremental", "target_agent_id": ".."}'
@@ -431,17 +453,18 @@ Example messages inside the REPL:
 
 Top-level commands exposed by `mash`:
 
-```
-connect     Persist a deployment connection and target
-compose     Define a host composition and target it
-status      Show deployment status
-browse      Browse the pool: agents, workflows, and hosts
-agents      List pooled agents
-hosts       List defined host compositions
-sessions    List sessions for the target agent
-history     Show session history
-repl        Start the interactive shell
-host serve  Run the host API server
+```bash
+host serve  # Run the host API server
+connect     # Persist a deployment connection and target
+status      # Show deployment status
+browse      # Browse the pool: agents, workflows so you can
+            # see what is available to wire into a host before composing one.
+compose     # Define a host composition
+agents      # List pooled agents
+hosts       # List defined host compositions
+sessions    # List sessions for the target agent
+history     # Show session history
+repl        # Start the interactive shell
 ```
 
 `mash browse` is the one-shot tour of a deployment: it lists the agent pool, the
@@ -451,14 +474,14 @@ see what is available to wire into a host before composing one.
 
 Default slash commands inside the REPL:
 
-```
-/status     Show deployment, current host, agent, and session
-/agent      List pooled agents
-/host       List defined host compositions (with attached workflows)
-/sessions   List remote sessions
-/session    Show current session info
-/history    View conversation history
-/trace [N]  Show trace analysis for recent traces
-/workflow   List, run, and inspect workflows (bare /workflow lists)
-/feedback   Record a note or bug report about this session
+```bash
+/status     # Show deployment, current host, agent, and session
+/agent      # List pooled agents
+/host       # List defined host compositions (with attached workflows)
+/sessions   # List remote sessions
+/session    # Show current session info
+/history    # View conversation history
+/trace [N]  # Show trace analysis for recent traces
+/workflow   # List, run, and inspect workflows (bare /workflow lists)
+/feedback   # Record a note or bug report about this session
 ```
