@@ -18,7 +18,7 @@ The API is REST plus SSE, composed in `src/mash/api`. Three conventions apply ac
 
 **Envelopes.** Success responses arrive as `{"data": ...}`. Errors arrive as `{"error": {"code": ..., "message": ..., "details": ...}}` with stable codes (`AGENT_NOT_FOUND`, `REQUEST_NOT_FOUND`, `OBSERVABILITY_DISABLED`), so client code matches on the code rather than the message.
 
-**Auth.** With no API key configured, routes are open, which suits local development. With `MASH_API_KEY` set, every `/api/v1/*` route requires `Authorization: Bearer <key>` or `X-API-Key: <key>`. The telemetry UI sets a `mash_api_key` cookie on load so the browser SPA can call the protected routes too.
+**Auth.** With no API key configured, routes are open, which suits local development. With `MASH_API_KEY` set, every `/api/v1/*` route requires `Authorization: Bearer <key>` or `X-API-Key: <key>`. The admin dashboard sets a `mash_api_key` cookie on load so the browser SPA can call the protected routes too.
 
 **Discovery.** `GET /` returns service discovery info, `/openapi.json` is the generated schema, and `/docs` serves Swagger UI. `GET /api/v1/health` reports the deployment shape, including the primary agent id and the agent list, and doubles as the liveness and readiness probe in [deployment](how-to-deploy.md).
 

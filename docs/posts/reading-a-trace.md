@@ -20,7 +20,7 @@ flowchart LR
     T --> A["analyze_trace()\ntiming, tools, steps"]
     A --> S1["/trace (REPL)"]
     A --> S2["GET /telemetry/trace/analysis"]
-    A --> S3["telemetry UI waterfall"]
+    A --> S3["admin dashboard trace drawer"]
 ```
 
 All three stages are pure computation over event timestamps and payloads. Run `analyze_trace` twice on the same trace and you get the same numbers, which matters when the output is what you'll use to argue about latency.
@@ -77,7 +77,7 @@ In the REPL, `/trace` analyzes the most recent trace (or `/trace 5` for the last
 
 Over HTTP, `GET /api/v1/telemetry/trace/analysis?agent_id=…&session_id=…&trace_id=…` returns the span tree and the full analysis dict in one call, which suits dashboards, alerts, and regression checks in CI. The trace id to query for is sitting on each turn in memory, since [trace id doubles as turn id](two-stores.md).
 
-In the browser, `/telemetry` renders the waterfall: collapsible spans with proportional bars, a phase-distribution summary on top, tool and step tables below. This is the view for comparing several traces, where a terminal table stops scaling.
+In the browser, the admin dashboard at `/admin` renders the trace under Logs: a request list per agent, and a drawer per trace with summary tiles, the reconstructed conversation, and a collapsible span tree with per-span durations. This is the view for browsing and reading traces, where a terminal table stops scaling.
 
 For continuous use, Masher (the built-in workflow-only agent from the composition post) packages the same analysis into scheduled workflows. `masher-trace-digest` emits a full diagnostic snapshot per trace, and `masher-online-eval-curation` writes eval records with latency context. Both run incrementally over the event log, checkpointed by [task state](workflows-and-task-state.md), which makes them safe on a schedule.
 

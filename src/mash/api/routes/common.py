@@ -10,12 +10,15 @@ from fastapi import Request
 from pydantic import BaseModel, Field
 
 from mash.api.logging import build_api_event_filter
-from mash.api.telemetry_ui import TELEMETRY_API_KEY_COOKIE
 from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import AgentPool
 from mash.runtime.client import AgentClientLike
+
+# Cookie the admin SPA sets so its same-origin API calls authenticate without
+# an explicit Authorization header.
+API_KEY_COOKIE = "mash_api_key"
 
 
 class APIError(RuntimeError):
@@ -238,5 +241,5 @@ def api_key_from_request(request: Request) -> Optional[str]:
         header_token = auth_header[7:].strip() or None
 
     x_api_key = normalize_optional_text(request.headers.get("x-api-key"))
-    cookie_api_key = normalize_optional_text(request.cookies.get(TELEMETRY_API_KEY_COOKIE))
+    cookie_api_key = normalize_optional_text(request.cookies.get(API_KEY_COOKIE))
     return header_token or x_api_key or cookie_api_key

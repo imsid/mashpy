@@ -85,7 +85,20 @@ class RuntimeStore(Protocol):
         app_id: str,
         *,
         session_id: str | None = None,
+        host_id: str | None = None,
         limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    async def aggregate_usage(
+        self,
+        app_id: str,
+        *,
+        host_id: str | None = None,
+        session_id: str | None = None,
+        bucket: str = "day",
+        from_ts: float | None = None,
+        to_ts: float | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -492,14 +505,18 @@ class PostgresRuntimeStore(RuntimeStore):
         app_id: str,
         *,
         session_id: str | None = None,
+        host_id: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         await self.open()
+        filters = ["app_id = %s", "trace_id IS NOT NULL"]
         params: list[Any] = [app_id]
-        session_clause = ""
         if session_id is not None:
-            session_clause = "AND session_id = %s"
+            filters.append("session_id = %s")
             params.append(session_id)
+        if host_id is not None:
+            filters.append("host_id = %s")
+            params.append(host_id)
         params.append(max(1, int(limit)))
         async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
@@ -508,14 +525,13 @@ class PostgresRuntimeStore(RuntimeStore):
                     SELECT
                         trace_id,
                         session_id,
+                        MAX(host_id) AS host_id,
                         MIN(created_at) AS started_at,
                         MAX(created_at) AS latest_event_at,
                         MAX(event_id) AS latest_event_id,
                         COUNT(*) AS event_count
                     FROM runtime_event_log
-                    WHERE app_id = %s
-                      AND trace_id IS NOT NULL
-                      {session_clause}
+                    WHERE {' AND '.join(filters)}
                     GROUP BY trace_id, session_id
                     ORDER BY MAX(created_at) DESC, MAX(event_id) DESC
                     LIMIT %s
@@ -524,6 +540,83 @@ class PostgresRuntimeStore(RuntimeStore):
                 )
                 rows = await cursor.fetchall()
         return [self._trace_row_to_summary(row) for row in rows]
+
+    async def aggregate_usage(
+        self,
+        app_id: str,
+        *,
+        host_id: str | None = None,
+        session_id: str | None = None,
+        bucket: str = "day",
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        await self.open()
+        bucket_seconds = 3600 if str(bucket).lower() == "hour" else 86400
+        tool_completed = (
+            RuntimeEventType.TOOL_CALL_COMPLETED.value,
+            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
+        )
+        # Placeholders are bound in SQL text order: the two bucket divisors and
+        # the two tool-completed event types live in the SELECT, ahead of the
+        # WHERE-clause filters.
+        filters = ["app_id = %s"]
+        params: list[Any] = [
+            bucket_seconds,
+            bucket_seconds,
+            tool_completed[0],
+            tool_completed[1],
+            app_id,
+        ]
+        if host_id is not None:
+            filters.append("host_id = %s")
+            params.append(host_id)
+        if session_id is not None:
+            filters.append("session_id = %s")
+            params.append(session_id)
+        if from_ts is not None:
+            filters.append("created_at >= %s")
+            params.append(float(from_ts))
+        if to_ts is not None:
+            filters.append("created_at < %s")
+            params.append(float(to_ts))
+        query = f"""
+            SELECT
+                floor(created_at / %s) * %s AS bucket_start,
+                COUNT(DISTINCT trace_id) AS request_count,
+                COALESCE(SUM(
+                    COALESCE(
+                        NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric,
+                        NULLIF(payload -> 'token_usage' ->> 'input_tokens', '')::numeric,
+                        NULLIF(payload ->> 'input_tokens', '')::numeric,
+                        0
+                    )
+                ), 0) AS input_tokens,
+                COALESCE(SUM(
+                    COALESCE(
+                        NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric,
+                        NULLIF(payload -> 'token_usage' ->> 'output_tokens', '')::numeric,
+                        NULLIF(payload ->> 'output_tokens', '')::numeric,
+                        0
+                    )
+                ), 0) AS output_tokens,
+                COALESCE(SUM(
+                    CASE
+                        WHEN event_type IN (%s, %s)
+                         AND (payload -> 'result' ->> 'is_error') = 'true'
+                        THEN 1 ELSE 0
+                    END
+                ), 0) AS tool_error_count
+            FROM runtime_event_log
+            WHERE {' AND '.join(filters)}
+            GROUP BY bucket_start
+            ORDER BY bucket_start ASC
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(query, tuple(params))
+                rows = await cursor.fetchall()
+        return [self._usage_row_to_bucket(row) for row in rows]
 
     async def _init_schema(self) -> None:
         async with self._pool.connection() as conn:
@@ -717,8 +810,19 @@ class PostgresRuntimeStore(RuntimeStore):
         return {
             "trace_id": str(row["trace_id"]),
             "session_id": str(row["session_id"]) if row.get("session_id") else None,
+            "host_id": str(row["host_id"]) if row.get("host_id") else None,
             "event_count": int(row["event_count"]),
             "started_at": float(row["started_at"]),
             "latest_event_at": float(row["latest_event_at"]),
             "latest_event_id": int(row["latest_event_id"]),
+        }
+
+    @staticmethod
+    def _usage_row_to_bucket(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "bucket_start": float(row["bucket_start"]),
+            "request_count": int(row["request_count"]),
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+            "tool_error_count": int(row["tool_error_count"]),
         }

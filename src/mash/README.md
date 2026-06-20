@@ -6,7 +6,7 @@
 - `core`: single-agent execution loop, config, context, and LLM provider contracts.
 - `runtime`: agent specs, host composition, server/client runtime behavior, and session routing.
 - `workflows`: code-defined host-level workflow specs, registry, and DBOS-backed orchestration service.
-- `api`: FastAPI app wiring, host serving helpers, and telemetry UI serving.
+- `api`: FastAPI app wiring, host serving helpers, and admin dashboard UI serving.
 - `cli`: the `mash` command-line, remote shell flow, and terminal rendering.
 - `tools`: built-in tools such as bash access, MCP-backed tools, and subagent invocation.
 - `skills`: optional skill abstractions and registration.

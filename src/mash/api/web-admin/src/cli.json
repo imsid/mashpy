@@ -1,0 +1,697 @@
+{
+  "cli": {
+    "prog": "mash",
+    "args": [
+      {
+        "flags": [
+          "--version"
+        ],
+        "name": "version",
+        "help": "Show installed mash version and documentation URL.",
+        "positional": false,
+        "required": false,
+        "default": false,
+        "choices": null
+      }
+    ],
+    "commands": [
+      {
+        "name": "connect",
+        "help": "Persist a deployment connection and target",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL, e.g. http://127.0.0.1:8000 (falls back to saved config)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Optional bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target a bare agent id (no composition)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target an existing host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "compose",
+        "help": "Define a host composition on the deployment and target it",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL (falls back to saved config)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Optional bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Host id to define or replace",
+            "positional": false,
+            "required": true,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--primary"
+            ],
+            "name": "primary",
+            "help": "Primary agent id",
+            "positional": false,
+            "required": true,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--subagents"
+            ],
+            "name": "subagents",
+            "help": "Comma-separated subagent ids",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--workflows"
+            ],
+            "name": "workflows",
+            "help": "Comma-separated workflow ids",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "status",
+        "help": "Show deployment status",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "browse",
+        "help": "Browse the pool: agents, workflows, and hosts",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "agents",
+        "help": "List deployment agents",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "hosts",
+        "help": "List defined hosts",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "sessions",
+        "help": "List sessions for an agent",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "history",
+        "help": "Show session history",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--session-id"
+            ],
+            "name": "session_id",
+            "help": "Remote session id",
+            "positional": false,
+            "required": true,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--limit"
+            ],
+            "name": "limit",
+            "help": "Optional turn limit",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "repl",
+        "help": "Start an interactive remote REPL",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--session-id"
+            ],
+            "name": "session_id",
+            "help": "Remote session id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "host",
+        "help": "Host management commands",
+        "args": [],
+        "subcommands": [
+          {
+            "name": "serve",
+            "help": "Run the Mash host API server",
+            "args": [
+              {
+                "flags": [
+                  "--host-app"
+                ],
+                "name": "host_app",
+                "help": "Host application reference in module:attribute format.",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--host"
+                ],
+                "name": "host",
+                "help": "API bind host",
+                "positional": false,
+                "required": false,
+                "default": "127.0.0.1",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--port"
+                ],
+                "name": "port",
+                "help": "API bind port",
+                "positional": false,
+                "required": false,
+                "default": 8000,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--database-url"
+                ],
+                "name": "runtime_database_url",
+                "help": "Required shared Postgres database URL for Mash runtime, memory, and API tables.",
+                "positional": false,
+                "required": false,
+                "default": "postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--api-key"
+                ],
+                "name": "api_key",
+                "help": "Optional API key (or set MASH_API_KEY)",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--cors-origin"
+                ],
+                "name": "cors_origin",
+                "help": "Allowed CORS origin; repeat for multiple values.",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--disable-observability"
+                ],
+                "name": "disable_observability",
+                "help": "Disable telemetry endpoints.",
+                "positional": false,
+                "required": false,
+                "default": false,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      }
+    ]
+  },
+  "repl": {
+    "commands": [
+      {
+        "name": "agent",
+        "help": "List available agents (host members only when connected through a host)",
+        "aliases": []
+      },
+      {
+        "name": "clear",
+        "help": "Clear the screen",
+        "aliases": [
+          "cls"
+        ]
+      },
+      {
+        "name": "exit",
+        "help": "Exit the application",
+        "aliases": [
+          "quit",
+          "q"
+        ]
+      },
+      {
+        "name": "feedback",
+        "help": "Send feedback or a bug report about this session (/feedback <message>)",
+        "aliases": []
+      },
+      {
+        "name": "help",
+        "help": "Show available commands",
+        "aliases": [
+          "h",
+          "?"
+        ]
+      },
+      {
+        "name": "history",
+        "help": "View conversation history",
+        "aliases": []
+      },
+      {
+        "name": "host",
+        "help": "List defined hosts (retarget with `mash compose` or `mash connect`)",
+        "aliases": []
+      },
+      {
+        "name": "session",
+        "help": "Show current remote session info",
+        "aliases": []
+      },
+      {
+        "name": "sessions",
+        "help": "List remote sessions for the current agent",
+        "aliases": []
+      },
+      {
+        "name": "status",
+        "help": "Show deployment status",
+        "aliases": []
+      },
+      {
+        "name": "trace",
+        "help": "Show trace analysis for recent traces (/trace [N])",
+        "aliases": []
+      },
+      {
+        "name": "workflow",
+        "help": "List, run, and inspect workflows; bare `/workflow` lists (host-attached only when connected through a host)",
+        "aliases": []
+      }
+    ]
+  }
+}

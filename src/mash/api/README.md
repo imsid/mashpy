@@ -12,8 +12,8 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 - Swagger UI: `/docs`
 - ReDoc: `/redoc`
 - Root discovery: `/`
-- Telemetry SPA: `/telemetry`, `/telemetry/`, `/telemetry/{path:path}`
-- Telemetry static assets: `/telemetry/assets/...`
+- Admin dashboard SPA: `/admin`, `/admin/`, `/admin/{path:path}` (mounted only when its bundle is built into `static/admin`)
+- Admin static assets: `/admin/assets/...`
 
 ## Auth
 - If `MashHostConfig.api_key` is unset, API routes are open.
@@ -21,7 +21,7 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `Authorization: Bearer <token>`
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
-- `/telemetry` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
+- `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -433,10 +433,27 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - Query params:
   - `agent_id` required
   - `session_id` optional
+  - `host_id` optional, filters traces to one host composition
   - `limit` optional, default `5`, clamped to `1..100`
 - Returns:
-  - `traces`: list of `{ trace_id, session_id, started_at, latest_event_at, event_count }`
+  - `traces`: list of `{ trace_id, session_id, host_id, started_at, latest_event_at, latest_event_id, event_count }`
   - `agent_id`
+  - `host_id`
+
+`GET /api/v1/telemetry/usage`
+- Time-bucketed usage aggregation for one agent, ordered by bucket ascending.
+- Query params:
+  - `agent_id` required
+  - `host_id` optional
+  - `session_id` optional
+  - `bucket` optional, `hour` or `day` (default `day`)
+  - `from_ts` optional unix-seconds lower bound (inclusive)
+  - `to_ts` optional unix-seconds upper bound (exclusive)
+- Returns:
+  - `buckets`: list of `{ bucket_start, request_count, input_tokens, output_tokens, tool_error_count }`
+  - `agent_id`, `host_id`, `session_id`, `bucket`, `from_ts`, `to_ts`
+- Errors:
+  - `400 INVALID_BUCKET`: `bucket` is not `hour` or `day`
 
 `GET /api/v1/telemetry/trace/analysis`
 - Returns span tree and deterministic latency analysis for one trace.
@@ -487,7 +504,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - Agent/session routes live in [routes/agent.py](/Users/sid/Projects/mashpy/src/mash/api/routes/agent.py).
 - Workflow routes live in [routes/workflow.py](/Users/sid/Projects/mashpy/src/mash/api/routes/workflow.py).
 - Telemetry routes live in [routes/telemetry.py](/Users/sid/Projects/mashpy/src/mash/api/routes/telemetry.py).
-- The telemetry SPA routes live in [telemetry_ui.py](/Users/sid/Projects/mashpy/src/mash/api/telemetry_ui.py).
+- The admin dashboard SPA routes live in [admin_ui.py](/Users/sid/Projects/mashpy/src/mash/api/admin_ui.py).
 - The default host config lives in [config.py](/Users/sid/Projects/mashpy/src/mash/api/config.py).
 
 ## Verification Notes
