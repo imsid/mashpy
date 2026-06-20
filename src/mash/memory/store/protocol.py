@@ -63,8 +63,18 @@ class MemoryStore(Protocol):
         signals: Dict[str, Any],
         session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        replayable: bool = True,
     ) -> str:
-        """Save a conversation turn with signals."""
+        """Save a conversation turn with signals.
+
+        Workflow task turns carry their ``workflow_id`` / ``workflow_run_id`` /
+        ``task_id`` and are marked ``replayable=False`` so they are excluded from
+        the conversation history replayed into the model.
+        """
         ...
 
     async def get_turns(
@@ -79,15 +89,21 @@ class MemoryStore(Protocol):
     async def list_workflow_turns(
         self,
         app_id: str,
-        session_prefix: str,
         *,
+        workflow_id: str,
+        workflow_run_id: Optional[str] = None,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
         limit: Optional[int] = None,
         offset: int = 0,
         sort_desc: bool = True,
     ) -> List[Dict[str, Any]]:
-        """List workflow task turns for one application and session prefix."""
+        """List workflow task turns for one application and workflow.
+
+        Filters on the ``workflow_id`` column (optionally scoped to a single
+        ``workflow_run_id``); each turn carries its ``workflow_run_id`` and
+        ``task_id``.
+        """
         ...
 
     async def get_session_signals(

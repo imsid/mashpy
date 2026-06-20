@@ -22,7 +22,6 @@ from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import TaskSpec, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
-from mash.workflows.service import workflow_task_session_id
 
 
 @contextmanager
@@ -111,21 +110,20 @@ def _save_workflow_turn(
     agent_response: str = '{"status":"ok"}',
 ) -> str:
     runtime = client.app.state.runtime_state.pool.get_agent("changelog-agent")
-    session_id = workflow_task_session_id(
-        workflow_id="changelog",
-        task_id="scan-codebase-and-append-changelog",
-        run_id=run_id,
-    )
     turn_id = f"trace-{run_id.replace(':', '-')}"
     asyncio.run(
         runtime.memory_store.save_turn(
             trace_id=turn_id,
-            session_id=session_id,
+            session_id=f"session-{run_id.replace(':', '-')}",
             app_id="changelog-agent",
             user_message=user_message,
             agent_response=agent_response,
             signals={},
             session_total_tokens=0,
+            workflow_id="changelog",
+            workflow_run_id=run_id,
+            task_id="scan-codebase-and-append-changelog",
+            replayable=False,
         )
     )
     return turn_id
@@ -722,6 +720,37 @@ def test_telemetry_events_filter_by_agent() -> None:
             assert payload["source"] == "runtime_event_log"
 
 
+def test_telemetry_sessions_rollup_from_events() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-roll"},
+            )
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", request_id)
+
+            listed = client.get("/api/v1/telemetry/sessions")
+            assert listed.status_code == 200
+            sessions = listed.json()["data"]["sessions"]
+            rolled = next(s for s in sessions if s["session_id"] == "s-roll")
+            assert rolled["owner_agent_id"] == "primary"
+            assert rolled["trace_count"] >= 1
+            assert "started_at" in rolled and "total_tokens" in rolled
+
+            # Owner filter scopes to one owning agent.
+            scoped = client.get("/api/v1/telemetry/sessions?agent_id=primary")
+            assert scoped.status_code == 200
+            assert all(
+                s["owner_agent_id"] == "primary"
+                for s in scoped.json()["data"]["sessions"]
+            )
+            none = client.get("/api/v1/telemetry/sessions?agent_id=nonexistent")
+            assert none.json()["data"]["sessions"] == []
+
+
 def test_command_events_ingest_and_list_round_trip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1153,11 +1182,7 @@ def test_workflow_runs_endpoint_lists_memory_turn_summaries() -> None:
             assert "output" not in payload["runs"][0]
             assert run["summary"] == {
                 "turn_id": turn_id,
-                "session_id": workflow_task_session_id(
-                    workflow_id="changelog",
-                    task_id="scan-codebase-and-append-changelog",
-                    run_id=run_id,
-                ),
+                "session_id": f"session-{run_id.replace(':', '-')}",
                 "task_id": "scan-codebase-and-append-changelog",
                 "agent_id": "changelog-agent",
                 "user_message": "summarize run",
@@ -1206,11 +1231,7 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
             host_id = pool.runner_id
             run_id = f"mw:{host_id}:changelog:abc"
             task_id = "scan-codebase-and-append-changelog"
-            session_id = workflow_task_session_id(
-                workflow_id="changelog",
-                task_id=task_id,
-                run_id=run_id,
-            )
+            session_id = f"session-{run_id.replace(':', '-')}"
             runtime = pool.get_agent("changelog-agent")
 
             async def list_events(
@@ -1218,10 +1239,13 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
                 *,
                 session_id: str | None = None,
                 trace_id: str | None = None,
+                host_id: str | None = None,
+                workflow_run_id: str | None = None,
+                event_type_prefix: str | None = None,
                 after_event_id: int = 0,
                 limit: int | None = None,
             ):
-                del trace_id, limit
+                del trace_id, host_id, event_type_prefix, limit
                 events = [
                     RuntimeEvent(
                         event_id=1,
@@ -1229,6 +1253,7 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
                         app_id="changelog-agent",
                         agent_id="changelog-agent",
                         session_id=session_id,
+                        workflow_run_id=run_id,
                         event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
                     ),
                     RuntimeEvent(
@@ -1237,6 +1262,7 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
                         app_id="changelog-agent",
                         agent_id="changelog-agent",
                         session_id=session_id,
+                        workflow_run_id=run_id,
                         trace_id="trace-1",
                         event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
                         payload={"action_type": "response", "assistant_text": "{}"},
@@ -1247,6 +1273,7 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
                         app_id="changelog-agent",
                         agent_id="changelog-agent",
                         session_id=session_id,
+                        workflow_run_id=run_id,
                         trace_id="trace-1",
                         event_type=RuntimeEventType.REQUEST_COMPLETED.value,
                         payload={"request_id": "req-1", "response": {"text": "{}"}},
@@ -1255,7 +1282,9 @@ def test_workflow_run_events_streams_workflow_and_agent_events() -> None:
                 return [
                     event
                     for event in events
-                    if event.app_id == app_id and event.event_id > after_event_id
+                    if event.app_id == app_id
+                    and event.event_id > after_event_id
+                    and (workflow_run_id is None or event.workflow_run_id == workflow_run_id)
                 ]
 
             runtime.runtime_store.list_events = list_events
@@ -1315,10 +1344,13 @@ def test_workflow_run_events_respects_api_auth() -> None:
                 *,
                 session_id: str | None = None,
                 trace_id: str | None = None,
+                host_id: str | None = None,
+                workflow_run_id: str | None = None,
+                event_type_prefix: str | None = None,
                 after_event_id: int = 0,
                 limit: int | None = None,
             ):
-                del trace_id, limit
+                del trace_id, host_id, event_type_prefix, limit, workflow_run_id
                 events = [
                     RuntimeEvent(
                         event_id=1,

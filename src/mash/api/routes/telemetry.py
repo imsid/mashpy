@@ -326,7 +326,7 @@ def build_telemetry_router() -> APIRouter:
     @router.get("/telemetry/traces")
     async def list_traces(
         request: Request,
-        agent_id: str,
+        agent_id: Optional[str] = Query(default=None),
         session_id: Optional[str] = Query(default=None),
         host_id: Optional[str] = Query(default=None),
         limit: int = Query(default=5),
@@ -335,20 +335,37 @@ def build_telemetry_router() -> APIRouter:
         if not state.observability_enabled:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
+        resolved_agent_id = normalize_optional_text(agent_id)
+        resolved_session_id = normalize_optional_text(session_id)
+        if resolved_agent_id is None and resolved_session_id is None:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="agent_id or session_id is required",
+                status_code=400,
+            )
+
+        # With a session but no agent, list a session's traces across the pool
+        # (subagents / cross-agent workflow tasks). Use any agent's shared store.
+        store_agent_id = resolved_agent_id or state.pool.list_agents()[0]
         try:
-            agent = state.pool.get_agent(agent_id)
-        except ValueError as exc:
+            agent = state.pool.get_agent(store_agent_id)
+        except (ValueError, IndexError) as exc:
             raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
         resolved_host_id = normalize_optional_text(host_id)
         traces = await agent.runtime_store.list_recent_traces(
-            agent_id,
-            session_id=normalize_optional_text(session_id),
+            resolved_agent_id,
+            session_id=resolved_session_id,
             host_id=resolved_host_id,
             limit=max(1, min(limit, 100)),
         )
         return success(
-            {"traces": traces, "agent_id": agent_id, "host_id": resolved_host_id}
+            {
+                "traces": traces,
+                "agent_id": resolved_agent_id,
+                "session_id": resolved_session_id,
+                "host_id": resolved_host_id,
+            }
         )
 
     @router.get("/telemetry/usage")
@@ -398,6 +415,41 @@ def build_telemetry_router() -> APIRouter:
                 "bucket": normalized_bucket,
                 "from_ts": from_ts,
                 "to_ts": to_ts,
+            }
+        )
+
+    @router.get("/telemetry/sessions")
+    async def list_sessions(
+        request: Request,
+        agent_id: Optional[str] = Query(default=None),
+        limit: Optional[int] = Query(default=None),
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        owner_agent_id = normalize_optional_text(agent_id)
+        # The runtime event log is shared across the pool, so any agent's store
+        # rolls up every session; owner_agent_id scopes to one owning agent.
+        agent_ids = state.pool.list_agents()
+        if not agent_ids:
+            return success({"sessions": [], "agent_id": owner_agent_id})
+        store = state.pool.get_agent(agent_ids[0]).runtime_store
+        resolved_limit = (
+            parse_limit(limit, default=state.default_events_limit, max_value=2000)
+            if limit is not None
+            else None
+        )
+        sessions = await store.list_sessions(
+            owner_agent_id=owner_agent_id,
+            limit=resolved_limit,
+        )
+        return success(
+            {
+                "sessions": sessions,
+                "source": telemetry_event_source(),
+                "agent_id": owner_agent_id,
+                "limit": resolved_limit,
             }
         )
 

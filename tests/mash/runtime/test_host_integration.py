@@ -22,7 +22,6 @@ from mash.testing.runtime_fixtures import (
 )
 from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
 from mash.workflows import dbos as workflow_dbos
-from mash.tools.subagent import derive_subagent_session_id
 
 _IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "in_fake_dbos_step",
@@ -591,13 +590,33 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                 "wf",
                                 f"mw:{pool.runner_id}:wf:test",
                                 workflow_input={"target_agent_id": "primary"},
+                                session_id="repl-session-1",
                             )
 
                         self.assertEqual(output["task_states"]["task"], {"ok": True})
+                        run_id = f"mw:{pool.runner_id}:wf:test"
                         worker = pool.get_agent("worker")
                         sessions = await worker.list_sessions()
+                        # The run executes under the threaded caller session (no
+                        # synthetic workflow:...:run: scheme), tagged by run id.
                         self.assertEqual(len(sessions), 1)
-                        self.assertTrue(sessions[0]["session_id"].startswith("workflow:wf:task:task:run:"))
+                        self.assertEqual(sessions[0]["session_id"], "repl-session-1")
+
+                        run_turns = await worker.memory_store.list_workflow_turns(
+                            app_id="worker", workflow_id="wf"
+                        )
+                        self.assertEqual(len(run_turns), 1)
+                        self.assertEqual(run_turns[0]["workflow_run_id"], run_id)
+                        self.assertEqual(run_turns[0]["task_id"], "task")
+
+                        # The run's trace events are queryable by workflow_run_id.
+                        events = await worker.runtime_store.list_events(
+                            app_id="worker", workflow_run_id=run_id
+                        )
+                        self.assertTrue(events)
+                        self.assertTrue(
+                            all(e.workflow_run_id == run_id for e in events)
+                        )
                     finally:
                         await pool.close()
 
@@ -724,11 +743,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                     research = pool.get_agent("research")
-                    expected_subagent_session = derive_subagent_session_id(
-                        "primary-app",
-                        "s-1",
-                        "research",
-                    )
+                    expected_subagent_session = "s-1"
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
                         app_id=research.app_id,
@@ -782,9 +797,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     research = pool.get_agent("research")
                     turns = await research.store.get_turns(
-                        session_id=derive_subagent_session_id(
-                            "primary-app", "s-1", "research"
-                        ),
+                        session_id="s-1",
                         app_id=research.app_id,
                         limit=1,
                     )
@@ -846,9 +859,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     research = pool.get_agent("research")
                     turns = await research.store.get_turns(
-                        session_id=derive_subagent_session_id(
-                            "primary-app", "s-2", "research"
-                        ),
+                        session_id="s-2",
                         app_id=research.app_id,
                         limit=1,
                     )
@@ -901,9 +912,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     research = pool.get_agent("research")
                     turns = await research.store.get_turns(
-                        session_id=derive_subagent_session_id(
-                            "primary-app", "s-1", "research"
-                        ),
+                        session_id="s-1",
                         app_id=research.app_id,
                         limit=1,
                     )
@@ -973,11 +982,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         )
 
                         research = pool.get_agent("research")
-                        expected_subagent_session = derive_subagent_session_id(
-                            "primary-app",
-                            "s-1",
-                            "research",
-                        )
+                        expected_subagent_session = "s-1"
                         turns = await research.store.get_turns(
                             session_id=expected_subagent_session,
                             app_id=research.app_id,

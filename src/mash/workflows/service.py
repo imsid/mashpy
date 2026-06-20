@@ -101,16 +101,13 @@ class WorkflowService:
         parsed_end_time = _parse_time_filter(end_time)
 
         turns: list[dict[str, Any]] = []
-        for task in workflow.tasks:
-            store = self._workflow_task_memory_store(task.agent_id)
+        for agent_id in self._workflow_task_agent_ids(workflow):
+            store = self._workflow_task_memory_store(agent_id)
             if store is None:
                 continue
             task_turns = await store.list_workflow_turns(
-                app_id=task.agent_id,
-                session_prefix=_workflow_task_session_prefix(
-                    workflow_id=resolved_workflow_id,
-                    task_id=task.task_id,
-                ),
+                app_id=agent_id,
+                workflow_id=resolved_workflow_id,
                 start_time=parsed_start_time,
                 end_time=parsed_end_time,
                 limit=None,
@@ -118,21 +115,14 @@ class WorkflowService:
                 sort_desc=bool(sort_desc),
             )
             for turn in task_turns:
-                parsed = parse_workflow_task_session_id(str(turn.get("session_id") or ""))
-                if parsed is None:
-                    continue
-                parsed_workflow_id, parsed_task_id, parsed_run_id = parsed
-                if (
-                    parsed_workflow_id != resolved_workflow_id
-                    or parsed_task_id != task.task_id
-                    or not parsed_run_id
-                ):
+                run_id = str(turn.get("workflow_run_id") or "").strip()
+                if not run_id:
                     continue
                 item = dict(turn)
-                item["workflow_id"] = parsed_workflow_id
-                item["task_id"] = parsed_task_id
-                item["run_id"] = parsed_run_id
-                item["agent_id"] = task.agent_id
+                item["workflow_id"] = resolved_workflow_id
+                item["task_id"] = turn.get("task_id")
+                item["run_id"] = run_id
+                item["agent_id"] = agent_id
                 turns.append(item)
 
         return _runs_from_workflow_turns(
@@ -149,12 +139,14 @@ class WorkflowService:
         *,
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> WorkflowRun:
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
         normalized_dedup_key = _normalize_optional_text(dedup_key)
         normalized_workflow_input = _normalize_workflow_input(workflow_input)
+        normalized_session_id = _normalize_optional_text(session_id)
         workflow = self._require_workflow(resolved_workflow_id)
         database_url = str(getattr(self._pool, "runtime_database_url", "") or "").strip()
         if not database_url:
@@ -167,6 +159,7 @@ class WorkflowService:
                 workflow=workflow,
                 dedup_key=normalized_dedup_key,
                 workflow_input=normalized_workflow_input,
+                session_id=normalized_session_id,
             )
         except workflow_dbos.WorkflowDeduplicatedError as exc:
             existing_run = WorkflowRun(
@@ -368,11 +361,7 @@ class WorkflowService:
         agent = self._pool.get_agent(agent_id)
         return await agent.runtime_store.list_events(
             app_id=agent_id,
-            session_id=workflow_task_session_id(
-                workflow_id=workflow_id,
-                task_id=task_id,
-                run_id=run_id,
-            ),
+            workflow_run_id=run_id,
             after_event_id=max(0, int(after_event_id)),
         )
 
@@ -383,31 +372,22 @@ class WorkflowService:
     ) -> dict[str, Any] | None:
         workflow = self._require_workflow(workflow_id)
         turns: list[dict[str, Any]] = []
-        for task in workflow.tasks:
-            store = self._workflow_task_memory_store(task.agent_id)
+        for agent_id in self._workflow_task_agent_ids(workflow):
+            store = self._workflow_task_memory_store(agent_id)
             if store is None:
                 continue
             task_turns = await store.list_workflow_turns(
-                app_id=task.agent_id,
-                session_prefix=workflow_task_session_id(
-                    workflow_id=workflow_id,
-                    task_id=task.task_id,
-                    run_id=run_id,
-                ),
+                app_id=agent_id,
+                workflow_id=workflow_id,
+                workflow_run_id=run_id,
                 limit=None,
                 offset=0,
                 sort_desc=True,
             )
             for turn in task_turns:
-                if str(turn.get("session_id") or "") != workflow_task_session_id(
-                    workflow_id=workflow_id,
-                    task_id=task.task_id,
-                    run_id=run_id,
-                ):
-                    continue
                 item = dict(turn)
-                item["task_id"] = task.task_id
-                item["agent_id"] = task.agent_id
+                item["task_id"] = turn.get("task_id")
+                item["agent_id"] = agent_id
                 turns.append(item)
         if not turns:
             return None
@@ -419,6 +399,15 @@ class WorkflowService:
             ),
         )
         return _workflow_run_summary_from_turn(latest)
+
+    @staticmethod
+    def _workflow_task_agent_ids(workflow: Any) -> list[str]:
+        """Distinct task agent ids, preserving order (turns carry task_id)."""
+        seen: list[str] = []
+        for task in workflow.tasks:
+            if task.agent_id not in seen:
+                seen.append(task.agent_id)
+        return seen
 
     def _workflow_task_memory_store(self, agent_id: str) -> Any | None:
         try:
@@ -470,28 +459,6 @@ def _normalize_workflow_input(value: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("workflow_input must be a JSON object")
     return dict(value)
-
-
-def workflow_task_session_id(*, workflow_id: str, task_id: str, run_id: str) -> str:
-    return f"workflow:{workflow_id}:task:{task_id}:run:{run_id}"
-
-
-def parse_workflow_task_session_id(session_id: str) -> tuple[str, str, str] | None:
-    parts = str(session_id or "").split(":")
-    if len(parts) < 6:
-        return None
-    if parts[0] != "workflow" or parts[2] != "task" or parts[4] != "run":
-        return None
-    workflow_id = parts[1].strip()
-    task_id = parts[3].strip()
-    run_id = ":".join(parts[5:]).strip()
-    if not workflow_id or not task_id or not run_id:
-        return None
-    return workflow_id, task_id, run_id
-
-
-def _workflow_task_session_prefix(*, workflow_id: str, task_id: str) -> str:
-    return f"workflow:{workflow_id}:task:{task_id}:run:"
 
 
 def _workflow_task_event(

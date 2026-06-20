@@ -21,10 +21,6 @@ from mash.workflows import (
     WorkflowTaskMessageSpec,
 )
 from mash.workflows import dbos as workflow_dbos
-from mash.workflows.service import (
-    parse_workflow_task_session_id,
-    workflow_task_session_id,
-)
 
 
 def _task(task_id: str, agent_id: str) -> TaskSpec:
@@ -121,14 +117,18 @@ class _FakeRuntimeStore:
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
+        host_id: str | None = None,
+        workflow_run_id: str | None = None,
+        event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
-        del trace_id, limit
+        del trace_id, host_id, event_type_prefix, limit
         self.calls.append(
             {
                 "app_id": app_id,
                 "session_id": session_id,
+                "workflow_run_id": workflow_run_id,
                 "after_event_id": after_event_id,
             }
         )
@@ -136,7 +136,8 @@ class _FakeRuntimeStore:
             event
             for event in self.events
             if event.app_id == app_id
-            and event.session_id == session_id
+            and (session_id is None or event.session_id == session_id)
+            and (workflow_run_id is None or event.workflow_run_id == workflow_run_id)
             and event.event_id > after_event_id
         ]
 
@@ -149,8 +150,9 @@ class _FakeMemoryStore:
     async def list_workflow_turns(
         self,
         app_id: str,
-        session_prefix: str,
         *,
+        workflow_id: str,
+        workflow_run_id: str | None = None,
         start_time: float | None = None,
         end_time: float | None = None,
         limit: int | None = None,
@@ -160,7 +162,8 @@ class _FakeMemoryStore:
         self.calls.append(
             {
                 "app_id": app_id,
-                "session_prefix": session_prefix,
+                "workflow_id": workflow_id,
+                "workflow_run_id": workflow_run_id,
                 "start_time": start_time,
                 "end_time": end_time,
                 "limit": limit,
@@ -171,7 +174,8 @@ class _FakeMemoryStore:
         rows = [
             turn
             for turn in self.turns
-            if turn["session_id"].startswith(session_prefix)
+            if turn.get("workflow_id") == workflow_id
+            and (workflow_run_id is None or turn.get("workflow_run_id") == workflow_run_id)
             and turn.get("app_id", app_id) == app_id
         ]
         if start_time is not None:
@@ -359,17 +363,16 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = "mw:h_TI1UUyBX5w8Q:wf:bHfMwMfMsPDPHI60"
-        session_id = workflow_task_session_id(
-            workflow_id="wf",
-            task_id="task-1",
-            run_id=run_id,
-        )
+        session_id = "session-abc"
         memory_store = _FakeMemoryStore(
             [
                 {
                     "turn_id": "turn-1",
                     "session_id": session_id,
                     "app_id": "worker",
+                    "workflow_id": "wf",
+                    "workflow_run_id": run_id,
+                    "task_id": "task-1",
                     "user_message": "run input",
                     "agent_response": '{"ok":true}',
                     "metadata": {},
@@ -406,7 +409,8 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "app_id": "worker",
-                    "session_prefix": "workflow:wf:task:task-1:run:",
+                    "workflow_id": "wf",
+                    "workflow_run_id": None,
                     "start_time": None,
                     "end_time": None,
                     "limit": None,
@@ -429,23 +433,6 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         runs = await service.list_runs("wf", status="failed")
 
         self.assertEqual(runs, [])
-
-    def test_parse_workflow_task_session_id_preserves_colon_run_id(self) -> None:
-        session_id = (
-            "workflow:masher-trace-digest:task:digest-traces:run:"
-            "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60"
-        )
-
-        parsed = parse_workflow_task_session_id(session_id)
-
-        self.assertEqual(
-            parsed,
-            (
-                "masher-trace-digest",
-                "digest-traces",
-                "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60",
-            ),
-        )
 
     async def test_list_runs_unknown_workflow_raises_not_found(self) -> None:
         registry = WorkflowRegistry()
@@ -587,11 +574,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = "mw:host-1:wf:abc"
-        session_id = workflow_task_session_id(
-            workflow_id="wf",
-            task_id="task-1",
-            run_id=run_id,
-        )
+        session_id = "session-abc"
         store = _FakeRuntimeStore(
             [
                 RuntimeEvent(
@@ -600,6 +583,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                     app_id="worker",
                     agent_id="worker",
                     session_id=session_id,
+                    workflow_run_id=run_id,
                     event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
                 ),
                 RuntimeEvent(
@@ -608,6 +592,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                     app_id="worker",
                     agent_id="worker",
                     session_id=session_id,
+                    workflow_run_id=run_id,
                     event_type=RuntimeEventType.REQUEST_COMPLETED.value,
                     payload={"request_id": "req-1", "response": {"text": "{}"}},
                 ),
@@ -635,7 +620,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 "workflow.task.completed",
             ],
         )
-        self.assertEqual(store.calls[0]["session_id"], session_id)
+        self.assertEqual(store.calls[0]["workflow_run_id"], run_id)
         self.assertEqual(store.calls[0]["after_event_id"], 0)
         self.assertEqual(len(store.calls), 1)
         self.assertEqual(events[1].data["workflow_id"], "wf")
@@ -651,11 +636,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = "mw:host-1:wf:abc"
-        session_id = workflow_task_session_id(
-            workflow_id="wf",
-            task_id="task-1",
-            run_id=run_id,
-        )
+        session_id = "session-abc"
         store = _FakeRuntimeStore(
             [
                 RuntimeEvent(
@@ -664,6 +645,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                     app_id="worker",
                     agent_id="worker",
                     session_id=session_id,
+                    workflow_run_id=run_id,
                     event_type=RuntimeEventType.REQUEST_COMPLETED.value,
                     payload={"request_id": "req-1", "response": {"text": "{}"}},
                 )
@@ -722,11 +704,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = "mw:host-1:wf:abc"
-        session_id = workflow_task_session_id(
-            workflow_id="wf",
-            task_id="task-1",
-            run_id=run_id,
-        )
+        session_id = "session-abc"
         store = _FakeRuntimeStore(
             [
                 RuntimeEvent(
@@ -735,6 +713,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                     app_id="worker",
                     agent_id="worker",
                     session_id=session_id,
+                    workflow_run_id=run_id,
                     event_type=RuntimeEventType.REQUEST_COMPLETED.value,
                     payload={"request_id": "req-1", "response": {"text": "not-json"}},
                 )

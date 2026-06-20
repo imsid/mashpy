@@ -8,7 +8,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
-from ..logging.trace_context import bound_host_id, get_host_id
+from ..logging.trace_context import (
+    bound_host_id,
+    get_host_id,
+    get_workflow_id,
+    get_workflow_run_id,
+)
 from .errors import classify_error
 from .events import RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
@@ -202,6 +207,14 @@ async def append_runtime_event(
         bound = get_host_id()
         if bound is not None:
             event = replace(event, host_id=bound)
+    if event.workflow_id is None:
+        bound_workflow_id = get_workflow_id()
+        if bound_workflow_id is not None:
+            event = replace(event, workflow_id=bound_workflow_id)
+    if event.workflow_run_id is None:
+        bound_run_id = get_workflow_run_id()
+        if bound_run_id is not None:
+            event = replace(event, workflow_run_id=bound_run_id)
     return await self.runtime_store.append_event(event)
 
 

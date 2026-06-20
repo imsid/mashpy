@@ -42,6 +42,9 @@ async def compact_conversation(
         raise ValueError("turn_limit must be > 0")
 
     turns = await store.get_turns(session_id=session_id, app_id=app_id, limit=None)
+    # Only the replayable conversation is summarized; workflow / subagent turns
+    # are recorded in the session but never part of the replayed history.
+    turns = [turn for turn in turns if turn.get("replayable", True)]
     if not turns:
         return "", ""
 

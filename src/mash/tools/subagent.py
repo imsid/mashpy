@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
@@ -14,17 +13,6 @@ from .base import ToolResult
 
 DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
 MAX_STEP_LIMIT_PREFIX = "Stopped after reaching the max step limit"
-
-
-def derive_subagent_session_id(
-    primary_app_id: str,
-    primary_session_id: str,
-    subagent_id: str,
-) -> str:
-    """Derive deterministic subagent session namespace from primary context."""
-    key = f"{primary_app_id}:{primary_session_id}:{subagent_id}"
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
-    return f"subagent:{subagent_id}:{digest}"
 
 
 class SupportsSubagentStream(Protocol):
@@ -228,11 +216,9 @@ class InvokeSubagentTool:
         primary_session_id = self._primary_session_id_provider().strip()
         if not primary_session_id:
             return ToolResult.error("primary_session_id is required")
-        subagent_session_id = derive_subagent_session_id(
-            self._primary_app_id,
-            primary_session_id,
-            agent_id,
-        )
+        # A subagent call runs under the parent session: it is a trace within it
+        # (executed by the subagent), not a session of its own.
+        subagent_session_id = primary_session_id
 
         started_at = time.time()
         request_id: Optional[str] = None

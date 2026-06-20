@@ -71,11 +71,28 @@ class SQLiteStore(MemoryStore):
                     user_message TEXT NOT NULL,
                     agent_response TEXT NOT NULL,
                     session_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    workflow_id TEXT,
+                    workflow_run_id TEXT,
+                    task_id TEXT,
+                    replayable INTEGER NOT NULL DEFAULT 1,
                     metadata TEXT,
                     created_at REAL NOT NULL
                 )
                 """
             )
+            # Idempotent migration for databases created before these columns.
+            existing_columns = {
+                str(row[1])
+                for row in await (await conn.execute("PRAGMA table_info(turns)")).fetchall()
+            }
+            for column, ddl in (
+                ("workflow_id", "workflow_id TEXT"),
+                ("workflow_run_id", "workflow_run_id TEXT"),
+                ("task_id", "task_id TEXT"),
+                ("replayable", "replayable INTEGER NOT NULL DEFAULT 1"),
+            ):
+                if column not in existing_columns:
+                    await conn.execute(f"ALTER TABLE turns ADD COLUMN {ddl}")
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS signals (
@@ -108,6 +125,12 @@ class SQLiteStore(MemoryStore):
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_turns_app ON turns(app_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turns_workflow ON turns(app_id, workflow_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turns_workflow_run ON turns(app_id, workflow_run_id)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_name ON signals(signal_name)"
@@ -335,6 +358,11 @@ class SQLiteStore(MemoryStore):
         signals: Dict[str, Any],
         session_total_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        replayable: bool = True,
     ) -> str:
         turn_id = trace_id
         timestamp = time.time()
@@ -352,10 +380,14 @@ class SQLiteStore(MemoryStore):
                     user_message,
                     agent_response,
                     session_total_tokens,
+                    workflow_id,
+                    workflow_run_id,
+                    task_id,
+                    replayable,
                     metadata,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     turn_id,
@@ -364,6 +396,10 @@ class SQLiteStore(MemoryStore):
                     user_message,
                     agent_response,
                     int(session_total_tokens),
+                    workflow_id,
+                    workflow_run_id,
+                    task_id,
+                    1 if replayable else 0,
                     metadata_json,
                     timestamp,
                 ),
@@ -418,7 +454,7 @@ class SQLiteStore(MemoryStore):
             if limit is None:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
+                    SELECT turn_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM turns
                     WHERE session_id = ? AND app_id = ?
                     ORDER BY created_at ASC
@@ -428,7 +464,7 @@ class SQLiteStore(MemoryStore):
             else:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, user_message, agent_response, session_total_tokens, metadata, created_at
+                    SELECT turn_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM turns
                     WHERE session_id = ? AND app_id = ?
                     ORDER BY created_at DESC
@@ -453,6 +489,7 @@ class SQLiteStore(MemoryStore):
                     "user_message": row["user_message"],
                     "agent_response": row["agent_response"],
                     "session_total_tokens": row["session_total_tokens"],
+                    "replayable": bool(row["replayable"]) if "replayable" in row.keys() else True,
                     "signals": signals_by_turn.get(str(row["turn_id"]), {}),
                     "metadata": metadata,
                     "created_at": row["created_at"],
@@ -463,8 +500,9 @@ class SQLiteStore(MemoryStore):
     async def list_workflow_turns(
         self,
         app_id: str,
-        session_prefix: str,
         *,
+        workflow_id: str,
+        workflow_run_id: Optional[str] = None,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
         limit: Optional[int] = None,
@@ -475,8 +513,11 @@ class SQLiteStore(MemoryStore):
         if normalized_limit == 0:
             return []
 
-        params: List[Any] = [app_id, f"{session_prefix}%"]
-        filters = ["app_id = ?", "session_id LIKE ?"]
+        params: List[Any] = [app_id, workflow_id]
+        filters = ["app_id = ?", "workflow_id = ?"]
+        if workflow_run_id is not None:
+            filters.append("workflow_run_id = ?")
+            params.append(workflow_run_id)
         if start_time is not None:
             filters.append("created_at >= ?")
             params.append(float(start_time))
@@ -485,7 +526,8 @@ class SQLiteStore(MemoryStore):
             params.append(float(end_time))
 
         sql = f"""
-            SELECT turn_id, session_id, user_message, agent_response, metadata, created_at
+            SELECT turn_id, session_id, workflow_id, workflow_run_id, task_id,
+                   user_message, agent_response, metadata, created_at
             FROM turns
             WHERE {' AND '.join(filters)}
             ORDER BY created_at {'DESC' if sort_desc else 'ASC'}, turn_id {'DESC' if sort_desc else 'ASC'}
@@ -506,6 +548,9 @@ class SQLiteStore(MemoryStore):
             {
                 "turn_id": str(row["turn_id"]),
                 "session_id": str(row["session_id"]),
+                "workflow_id": row["workflow_id"],
+                "workflow_run_id": row["workflow_run_id"],
+                "task_id": row["task_id"],
                 "user_message": (
                     "" if row["user_message"] is None else str(row["user_message"])
                 ),

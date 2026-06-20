@@ -94,6 +94,7 @@ export const api = {
     request(`/hosts/${encodeURIComponent(hostId)}/request`, { method: 'POST', body }),
 
   // --- Logs / telemetry ---
+  listSessionRollups: (params) => request('/telemetry/sessions', { params }),
   listTraces: (params) => request('/telemetry/traces', { params }),
   traceAnalysis: (params) => request('/telemetry/trace/analysis', { params }),
   listEvents: (params) => request('/telemetry/events', { params }),

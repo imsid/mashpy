@@ -46,6 +46,7 @@ class RuntimeStore(Protocol):
         session_id: str | None = None,
         trace_id: str | None = None,
         host_id: str | None = None,
+        workflow_run_id: str | None = None,
         event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
@@ -83,11 +84,19 @@ class RuntimeStore(Protocol):
 
     async def list_recent_traces(
         self,
-        app_id: str,
+        app_id: str | None = None,
         *,
         session_id: str | None = None,
         host_id: str | None = None,
         limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    async def list_sessions(
+        self,
+        *,
+        owner_agent_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -224,7 +233,8 @@ class PostgresRuntimeStore(RuntimeStore):
                         await cursor.execute(
                             """
                             SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                                   agent_id, session_id, host_id, event_type, loop_index, step_key,
+                                   agent_id, session_id, host_id, workflow_id, workflow_run_id,
+                                   event_type, loop_index, step_key,
                                    dedupe_key, payload, created_at
                             FROM runtime_event_log
                             WHERE request_id = %s AND dedupe_key = %s
@@ -258,12 +268,14 @@ class PostgresRuntimeStore(RuntimeStore):
                     await cursor.execute(
                         """
                         INSERT INTO runtime_event_log (
-                            request_id, trace_id, app_id, agent_id, session_id, host_id, seq,
+                            request_id, trace_id, app_id, agent_id, session_id, host_id,
+                            workflow_id, workflow_run_id, seq,
                             event_type, loop_index, step_key, dedupe_key, payload, created_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                         RETURNING event_id, request_id, seq AS request_seq, trace_id, app_id,
-                                  agent_id, session_id, host_id, event_type, loop_index, step_key,
+                                  agent_id, session_id, host_id, workflow_id, workflow_run_id,
+                                  event_type, loop_index, step_key,
                                   dedupe_key, payload, created_at
                         """,
                         (
@@ -273,6 +285,8 @@ class PostgresRuntimeStore(RuntimeStore):
                             event.agent_id,
                             event.session_id,
                             event.host_id,
+                            event.workflow_id,
+                            event.workflow_run_id,
                             next_request_seq,
                             event.event_type,
                             event.loop_index,
@@ -321,6 +335,7 @@ class PostgresRuntimeStore(RuntimeStore):
         session_id: str | None = None,
         trace_id: str | None = None,
         host_id: str | None = None,
+        workflow_run_id: str | None = None,
         event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
@@ -337,6 +352,9 @@ class PostgresRuntimeStore(RuntimeStore):
         if host_id is not None:
             clauses.append("host_id = %s")
             params.append(host_id)
+        if workflow_run_id is not None:
+            clauses.append("workflow_run_id = %s")
+            params.append(workflow_run_id)
         if event_type_prefix is not None:
             clauses.append("event_type LIKE %s")
             params.append(f"{event_type_prefix}%")
@@ -507,15 +525,20 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def list_recent_traces(
         self,
-        app_id: str,
+        app_id: str | None = None,
         *,
         session_id: str | None = None,
         host_id: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         await self.open()
-        filters = ["app_id = %s", "trace_id IS NOT NULL"]
-        params: list[Any] = [app_id]
+        # app_id=None lists a session's traces across every executing agent
+        # (primary + subagents + cross-agent workflow tasks).
+        filters = ["trace_id IS NOT NULL"]
+        params: list[Any] = []
+        if app_id is not None:
+            filters.append("app_id = %s")
+            params.append(app_id)
         if session_id is not None:
             filters.append("session_id = %s")
             params.append(session_id)
@@ -531,6 +554,9 @@ class PostgresRuntimeStore(RuntimeStore):
                         trace_id,
                         session_id,
                         MAX(host_id) AS host_id,
+                        MAX(agent_id) AS agent_id,
+                        MAX(workflow_id) AS workflow_id,
+                        MAX(workflow_run_id) AS workflow_run_id,
                         MIN(created_at) AS started_at,
                         MAX(created_at) AS latest_event_at,
                         MAX(event_id) AS latest_event_id,
@@ -545,6 +571,74 @@ class PostgresRuntimeStore(RuntimeStore):
                 )
                 rows = await cursor.fetchall()
         return [self._trace_row_to_summary(row) for row in rows]
+
+    async def list_sessions(
+        self,
+        *,
+        owner_agent_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Sessions rolled up from the event log, newest activity first.
+
+        A session is the unit that contains traces; its owner is the agent of its
+        earliest event (the REPL primary for a chat session, the task agent for a
+        fresh API-triggered workflow run). Traces in a session may run on other
+        agents (subagents, cross-agent workflow tasks).
+        """
+        await self.open()
+        params: list[Any] = [owner_agent_id, owner_agent_id]
+        sql = """
+            SELECT * FROM (
+                SELECT
+                    session_id,
+                    (ARRAY_AGG(agent_id ORDER BY created_at ASC, event_id ASC))[1]
+                        AS owner_agent_id,
+                    MAX(host_id) AS host_id,
+                    MIN(created_at) AS started_at,
+                    MAX(created_at) AS latest_event_at,
+                    COUNT(DISTINCT trace_id) AS trace_count,
+                    COALESCE(SUM(
+                        COALESCE(
+                            NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric,
+                            NULLIF(payload -> 'token_usage' ->> 'input_tokens', '')::numeric,
+                            NULLIF(payload ->> 'input_tokens', '')::numeric,
+                            0
+                        )
+                        + COALESCE(
+                            NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric,
+                            NULLIF(payload -> 'token_usage' ->> 'output_tokens', '')::numeric,
+                            NULLIF(payload ->> 'output_tokens', '')::numeric,
+                            0
+                        )
+                    ), 0) AS total_tokens
+                FROM runtime_event_log
+                WHERE session_id IS NOT NULL
+                GROUP BY session_id
+            ) sessions
+            WHERE (%s IS NULL OR sessions.owner_agent_id = %s)
+            ORDER BY sessions.latest_event_at DESC, sessions.session_id ASC
+        """
+        if limit is not None:
+            sql += "\nLIMIT %s"
+            params.append(max(1, int(limit)))
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(sql, tuple(params))
+                rows = await cursor.fetchall()
+        return [
+            {
+                "session_id": str(row["session_id"]),
+                "owner_agent_id": (
+                    str(row["owner_agent_id"]) if row.get("owner_agent_id") else None
+                ),
+                "host_id": str(row["host_id"]) if row.get("host_id") else None,
+                "started_at": float(row["started_at"]),
+                "latest_event_at": float(row["latest_event_at"]),
+                "trace_count": int(row["trace_count"] or 0),
+                "total_tokens": int(row["total_tokens"] or 0),
+            }
+            for row in rows
+        ]
 
     async def aggregate_usage(
         self,
@@ -637,6 +731,8 @@ class PostgresRuntimeStore(RuntimeStore):
                             agent_id TEXT NOT NULL,
                             session_id TEXT,
                             host_id TEXT,
+                            workflow_id TEXT,
+                            workflow_run_id TEXT,
                             seq INTEGER,
                             event_type TEXT NOT NULL,
                             loop_index INTEGER,
@@ -657,6 +753,18 @@ class PostgresRuntimeStore(RuntimeStore):
                         """
                         ALTER TABLE runtime_event_log
                         ADD COLUMN IF NOT EXISTS host_id TEXT
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        ALTER TABLE runtime_event_log
+                        ADD COLUMN IF NOT EXISTS workflow_id TEXT
+                        """
+                    )
+                    await cursor.execute(
+                        """
+                        ALTER TABLE runtime_event_log
+                        ADD COLUMN IF NOT EXISTS workflow_run_id TEXT
                         """
                     )
                     await cursor.execute(
@@ -783,6 +891,8 @@ class PostgresRuntimeStore(RuntimeStore):
             agent_id=str(row["agent_id"]),
             session_id=row.get("session_id"),
             host_id=row.get("host_id"),
+            workflow_id=row.get("workflow_id"),
+            workflow_run_id=row.get("workflow_run_id"),
             event_type=str(row["event_type"]),
             loop_index=(
                 int(row["loop_index"]) if row.get("loop_index") is not None else None
@@ -816,6 +926,11 @@ class PostgresRuntimeStore(RuntimeStore):
             "trace_id": str(row["trace_id"]),
             "session_id": str(row["session_id"]) if row.get("session_id") else None,
             "host_id": str(row["host_id"]) if row.get("host_id") else None,
+            "agent_id": str(row["agent_id"]) if row.get("agent_id") else None,
+            "workflow_id": str(row["workflow_id"]) if row.get("workflow_id") else None,
+            "workflow_run_id": (
+                str(row["workflow_run_id"]) if row.get("workflow_run_id") else None
+            ),
             "event_count": int(row["event_count"]),
             "started_at": float(row["started_at"]),
             "latest_event_at": float(row["latest_event_at"]),

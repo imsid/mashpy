@@ -63,6 +63,8 @@ class RuntimeEvent:
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     host_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    workflow_run_id: Optional[str] = None
     loop_index: Optional[int] = None
     step_key: Optional[str] = None
     dedupe_key: Optional[str] = None
