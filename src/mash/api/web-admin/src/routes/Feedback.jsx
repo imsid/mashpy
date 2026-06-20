@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
@@ -84,14 +85,12 @@ export default function Feedback() {
                   <span>{formatTime(f.created_at)}</span>
                   {f.host_id ? <Chip>{f.host_id}</Chip> : null}
                   {f.session_id ? (
-                    <span>
+                    <Link
+                      to={`/logs?tab=sessions&agent=${encodeURIComponent(resolvedAgent)}&session=${encodeURIComponent(f.session_id)}`}
+                      className="inline-flex items-center gap-1 hover:text-slate-600"
+                    >
                       session <Mono>{f.session_id}</Mono>
-                    </span>
-                  ) : null}
-                  {f.request_id ? (
-                    <span>
-                      request <Mono>{String(f.request_id).slice(0, 12)}…</Mono>
-                    </span>
+                    </Link>
                   ) : null}
                 </div>
               </Card>

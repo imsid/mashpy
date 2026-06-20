@@ -14,6 +14,7 @@ from mash.runtime.events import (
 
 from .chain_renderer import ChainOfThoughtRenderer
 from .client import MashHostClient
+from .command_log import RemoteCommandEventLogger
 from .commands import Command, CommandRegistry
 from .default_commands import register_default_commands
 from .repl import REPL
@@ -41,7 +42,11 @@ class MashRemoteShell:
         self.chain_renderer = ChainOfThoughtRenderer(self.renderer.console)
         self.command_registry = CommandRegistry(
             app_id=self.target.agent_id,
-            event_logger=None,
+            event_logger=RemoteCommandEventLogger(
+                client,
+                agent_id=self.target.agent_id,
+                host_id=self.target.host_id,
+            ),
             session_id=self.target.session_id,
         )
         self.context = CLIContext(

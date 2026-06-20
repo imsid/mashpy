@@ -62,6 +62,13 @@ Notes
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
 
+Each `/command` invocation is wrapped in `command.start` and
+`command.complete`/`command.error` events. The remote shell ships them
+best-effort to the deployment (`POST /telemetry/command-events`), where they land
+in the agent's runtime event log and surface in the admin UI's CLI logs. Shipping
+runs on a background thread and never blocks or breaks the session if the host is
+slow or unreachable.
+
 ## Main Components
 - `main.py`: top-level parser, command dispatch, and command execution.
 - `client.py`: HTTP client used to talk to hosted Mash agents.

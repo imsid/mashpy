@@ -291,7 +291,9 @@ latest = await workflow_service.get_run("changelog", run.run_id)
 
 When the host is wrapped by `mash.api`, workflows are exposed through:
 
-- `GET /api/v1/workflow`
+- `GET /api/v1/workflow` — each serialized workflow carries `workflow_id`,
+  `tasks`, optional `metadata`, and, when the spec defines them, a workflow-level
+  `skill_name` (from `task_message`) and a per-task `structured_output` schema.
 - `POST /api/v1/workflow/{workflow_id}/run`
 - `GET /api/v1/workflow/{workflow_id}/runs`
 - `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`

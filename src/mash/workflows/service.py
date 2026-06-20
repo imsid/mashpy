@@ -437,16 +437,21 @@ class WorkflowService:
 
     @staticmethod
     def _serialize_workflow(workflow: WorkflowSpec) -> dict[str, Any]:
+        def _task(task: Any) -> dict[str, Any]:
+            entry: dict[str, Any] = {
+                "task_id": task.task_id,
+                "agent_id": task.agent_id,
+            }
+            if task.structured_output is not None:
+                entry["structured_output"] = dict(task.structured_output)
+            return entry
+
         payload: dict[str, Any] = {
             "workflow_id": workflow.workflow_id,
-            "tasks": [
-                {
-                    "task_id": task.task_id,
-                    "agent_id": task.agent_id,
-                }
-                for task in workflow.tasks
-            ],
+            "tasks": [_task(task) for task in workflow.tasks],
         }
+        if workflow.task_message is not None:
+            payload["skill_name"] = workflow.task_message.skill_name
         if workflow.metadata:
             payload["metadata"] = dict(workflow.metadata)
         return payload

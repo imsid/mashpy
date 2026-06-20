@@ -722,6 +722,55 @@ def test_telemetry_events_filter_by_agent() -> None:
             assert payload["source"] == "runtime_event_log"
 
 
+def test_command_events_ingest_and_list_round_trip() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            start = client.post(
+                "/api/v1/telemetry/command-events",
+                json={
+                    "agent_id": "primary",
+                    "event_type": "command.start",
+                    "session_id": "s-1",
+                    "command_name": "/help",
+                    "args": "topics",
+                },
+            )
+            assert start.status_code == 200
+            done = client.post(
+                "/api/v1/telemetry/command-events",
+                json={
+                    "agent_id": "primary",
+                    "event_type": "command.complete",
+                    "session_id": "s-1",
+                    "command_name": "/help",
+                    "duration_ms": 12,
+                },
+            )
+            assert done.status_code == 200
+
+            listed = client.get(
+                "/api/v1/telemetry/command-events?agent_id=primary&session_id=s-1"
+            )
+            assert listed.status_code == 200
+            events = listed.json()["data"]["events"]
+            assert [e["event_type"] for e in events] == [
+                "command.start",
+                "command.complete",
+            ]
+            assert events[0]["payload"]["command_name"] == "/help"
+            assert events[0]["payload"]["args"] == "topics"
+            assert events[1]["payload"]["duration_ms"] == 12
+
+            # Command events must not leak into the generic event feed's
+            # reasoning, but they share the store — the prefix filter scopes them.
+            bad = client.post(
+                "/api/v1/telemetry/command-events",
+                json={"agent_id": "primary", "event_type": "agent.run.start"},
+            )
+            assert bad.status_code == 400
+
+
 def test_feedback_submit_and_list_round_trip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

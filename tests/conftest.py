@@ -101,6 +101,7 @@ class _TestRuntimeStore:
         session_id: str | None = None,
         trace_id: str | None = None,
         host_id: str | None = None,
+        event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
     ) -> list[RuntimeEvent]:
@@ -114,6 +115,7 @@ class _TestRuntimeStore:
             and (session_id is None or event.session_id == session_id)
             and (trace_id is None or event.trace_id == trace_id)
             and (host_id is None or event.host_id == host_id)
+            and (event_type_prefix is None or event.event_type.startswith(event_type_prefix))
         ]
         if limit is not None:
             return filtered[-max(1, int(limit)) :]

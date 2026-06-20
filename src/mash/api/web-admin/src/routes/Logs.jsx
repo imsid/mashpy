@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/Page.jsx';
 import { Async, Empty, Loading } from '../components/State.jsx';
@@ -14,8 +14,25 @@ import { compactNumber, formatTime, formatDuration } from '../lib/format.js';
 
 const TABS = [
   { id: 'sessions', label: 'Sessions' },
-  { id: 'api', label: 'API access' },
+  { id: 'api', label: 'API' },
+  { id: 'cli', label: 'CLI' },
 ];
+
+const COMMAND_EVENT = {
+  'command.start': { label: 'start', tone: 'slate' },
+  'command.complete': { label: 'complete', tone: 'emerald' },
+  'command.error': { label: 'error', tone: 'rose' },
+};
+
+// Refresh control that spins its glyph while the request is in flight.
+function RefreshButton({ state }) {
+  return (
+    <Button variant="ghost" onClick={state.reload} disabled={state.loading}>
+      <span className={state.loading ? 'inline-block animate-spin' : 'inline-block'}>↻</span>
+      Refresh
+    </Button>
+  );
+}
 
 function statusTone(code) {
   if (code >= 500) return 'rose';
@@ -94,16 +111,24 @@ function SessionRow({ agentId, session, expanded, onToggle, onSelectTrace, activ
   );
 }
 
-function SessionsTab({ agentId }) {
+function SessionsTab({ agentId, initialSession }) {
   const state = useApi(
     () => (agentId ? api.listSessions(agentId) : Promise.resolve({ sessions: [] })),
     [agentId],
   );
-  const [expanded, setExpanded] = useState(null);
+  const [expanded, setExpanded] = useState(initialSession || null);
   const [selected, setSelected] = useState(null);
-  const [sessionQuery, setSessionQuery] = useState('');
+  const [sessionQuery, setSessionQuery] = useState(initialSession || '');
   const [traceQuery, setTraceQuery] = useState('');
   const [jumpError, setJumpError] = useState('');
+
+  // Deep links (from Feedback / Overview) carry a session to focus on.
+  useEffect(() => {
+    if (initialSession) {
+      setSessionQuery(initialSession);
+      setExpanded(initialSession);
+    }
+  }, [initialSession]);
 
   if (!agentId) return <Empty>Pick an agent to view its sessions.</Empty>;
 
@@ -156,9 +181,7 @@ function SessionsTab({ agentId }) {
             </Button>
           </div>
         </label>
-        <Button variant="ghost" onClick={state.reload}>
-          Refresh
-        </Button>
+        <RefreshButton state={state} />
         {jumpError ? <span className="pb-1.5 text-xs text-rose-600">{jumpError}</span> : null}
       </div>
 
@@ -223,9 +246,7 @@ function ApiAccessTab() {
   return (
     <>
       <div className="mb-3 flex justify-end">
-        <Button variant="ghost" onClick={state.reload}>
-          Refresh
-        </Button>
+        <RefreshButton state={state} />
       </div>
       <Async state={state} empty={(d) => !d.events?.length}>
         {(data) => (
@@ -254,6 +275,75 @@ function ApiAccessTab() {
           </div>
         ) : null}
       </Drawer>
+    </>
+  );
+}
+
+function CliTab({ agentId }) {
+  const state = useApi(
+    () => (agentId ? api.listCommandEvents({ agent_id: agentId, limit: 500 }) : Promise.resolve({ events: [] })),
+    [agentId],
+  );
+
+  if (!agentId) return <Empty>Pick an agent to view its CLI activity.</Empty>;
+
+  const columns = [
+    { key: 'time', header: 'Time', render: (r) => formatTime(r.created_at) },
+    {
+      key: 'event',
+      header: 'Event',
+      render: (r) => {
+        const kind = COMMAND_EVENT[r.event_type] || { label: r.event_type, tone: 'slate' };
+        return <Chip tone={kind.tone}>{kind.label}</Chip>;
+      },
+    },
+    {
+      key: 'command',
+      header: 'Command',
+      render: (r) =>
+        r.payload?.command_name ? (
+          <Mono>{r.payload.command_name}</Mono>
+        ) : (
+          <span className="text-slate-300">—</span>
+        ),
+    },
+    {
+      key: 'detail',
+      header: 'Detail',
+      render: (r) => {
+        const p = r.payload || {};
+        if (p.error) return <span className="text-rose-600">{p.error}</span>;
+        if (p.args) return <span className="font-mono text-xs text-slate-500">{p.args}</span>;
+        return <span className="text-slate-300">—</span>;
+      },
+    },
+    {
+      key: 'duration',
+      header: 'Duration',
+      align: 'right',
+      render: (r) =>
+        r.payload?.duration_ms != null ? (
+          formatDuration(r.payload.duration_ms)
+        ) : (
+          <span className="text-slate-300">—</span>
+        ),
+    },
+  ];
+
+  return (
+    <>
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs text-slate-400">
+          Lifecycle events for <Mono>/commands</Mono> run in the REPL.
+        </p>
+        <RefreshButton state={state} />
+      </div>
+      <Async state={state} empty={(d) => !d.events?.length}>
+        {(data) => {
+          const rows = [...data.events].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+          return <Table columns={columns} rows={rows} getRowKey={(r) => r.event_id} />;
+        }}
+      </Async>
     </>
   );
 }
@@ -290,7 +380,7 @@ export default function Logs() {
     <div>
       <PageHeader
         title="Logs"
-        description="Sessions, traces, and API access for one agent."
+        description="Sessions, traces, API access, and CLI activity for one agent."
       />
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
@@ -324,8 +414,11 @@ export default function Logs() {
         ))}
       </div>
 
-      {tab === 'sessions' ? <SessionsTab agentId={agentId} /> : null}
+      {tab === 'sessions' ? (
+        <SessionsTab agentId={agentId} initialSession={params.get('session') || ''} />
+      ) : null}
       {tab === 'api' ? <ApiAccessTab /> : null}
+      {tab === 'cli' ? <CliTab agentId={agentId} /> : null}
     </div>
   );
 }

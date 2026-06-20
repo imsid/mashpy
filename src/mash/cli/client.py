@@ -352,6 +352,16 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
+    def record_command_event(self, event: dict[str, Any]) -> None:
+        """Ship one CLI command lifecycle event to the host (best-effort)."""
+        body = {k: v for k, v in event.items() if v is not None}
+        self._request(
+            "POST",
+            "/api/v1/telemetry/command-events",
+            json_body=body,
+            timeout=(5, 5),
+        )
+
     def list_feedback(
         self,
         agent_id: str,

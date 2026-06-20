@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
 
@@ -17,10 +18,12 @@ from mash.runtime.events import (
     serialize_runtime_event,
     serialize_span,
 )
+from mash.runtime.events.types import RuntimeEvent
 
 from .common import (
     APIError,
     APIEventSearchRequest,
+    CommandEventIngest,
     api_event_source,
     build_api_filters,
     build_memory_search_service,
@@ -395,6 +398,84 @@ def build_telemetry_router() -> APIRouter:
                 "bucket": normalized_bucket,
                 "from_ts": from_ts,
                 "to_ts": to_ts,
+            }
+        )
+
+    @router.post("/telemetry/command-events")
+    async def ingest_command_event(
+        request: Request,
+        body: CommandEventIngest,
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        event_type = str(body.event_type or "").strip()
+        if not event_type.startswith("command."):
+            raise APIError(
+                code="INVALID_EVENT_TYPE",
+                message="event_type must start with 'command.'",
+                status_code=400,
+                details={"param": "event_type"},
+            )
+
+        agent_id = str(body.agent_id or "").strip()
+        try:
+            agent = state.pool.get_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        event = RuntimeEvent(
+            app_id=agent_id,
+            agent_id=agent_id,
+            event_type=event_type,
+            session_id=normalize_optional_text(body.session_id),
+            host_id=normalize_optional_text(body.host_id),
+            trace_id=normalize_optional_text(body.trace_id),
+            created_at=float(body.ts) if body.ts else time.time(),
+            payload={
+                "command_name": body.command_name,
+                "args": body.args,
+                "duration_ms": body.duration_ms,
+                "error": body.error,
+            },
+        )
+        stored = await agent.runtime_store.append_event(event)
+        return success({"event": serialize_runtime_event(stored)})
+
+    @router.get("/telemetry/command-events")
+    async def list_command_events(
+        request: Request,
+        agent_id: str,
+        session_id: Optional[str] = Query(default=None),
+        limit: Optional[int] = Query(default=None),
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        try:
+            agent = state.pool.get_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+
+        resolved_limit = parse_limit(limit, default=state.default_events_limit, max_value=2000)
+        events = [
+            serialize_runtime_event(item)
+            for item in await agent.runtime_store.list_events(
+                app_id=agent_id,
+                session_id=normalize_optional_text(session_id),
+                event_type_prefix="command.",
+                limit=resolved_limit,
+            )
+        ]
+        return success(
+            {
+                "events": events,
+                "source": telemetry_event_source(),
+                "agent_id": agent_id,
+                "session_id": normalize_optional_text(session_id),
+                "limit": resolved_limit,
             }
         )
 
