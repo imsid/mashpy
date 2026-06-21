@@ -28,6 +28,8 @@ class RuntimeTrace:
     step_count: int
     input_tokens: int
     output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
     failed_events: list[dict[str, Any]]
     reasoning_steps: list[dict[str, Any]]
     reasoning_error: dict[str, Any] | None = None
@@ -52,6 +54,8 @@ class RuntimeTrace:
                 "total_tools": total_tools,
                 "total_tokens": total_tokens,
                 "total_duration_ms": total_duration_ms,
+                "cache_read_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
             },
         }
         if self.reasoning_error is not None:
@@ -117,6 +121,8 @@ def build_runtime_trace(events: list[RuntimeEvent]) -> RuntimeTrace:
         step_count=_step_count(serialized),
         input_tokens=token_usage["input_tokens"],
         output_tokens=token_usage["output_tokens"],
+        cache_read_tokens=token_usage["cache_read_tokens"],
+        cache_write_tokens=token_usage["cache_write_tokens"],
         failed_events=failed_events,
         reasoning_steps=reasoning_steps,
         reasoning_error=reasoning_error,
@@ -428,16 +434,25 @@ def _extract_assistant_response(events: list[dict[str, Any]]) -> str:
 def _sum_token_usage(events: list[dict[str, Any]]) -> dict[str, int]:
     input_tokens = 0
     output_tokens = 0
+    cache_read_tokens = 0
+    cache_write_tokens = 0
     for event in events:
         payload = event.get("payload") or {}
         usage = payload.get("token_usage")
         if isinstance(usage, dict):
             input_tokens += _safe_int(usage.get("input") or usage.get("input_tokens"))
             output_tokens += _safe_int(usage.get("output") or usage.get("output_tokens"))
+            cache_read_tokens += _safe_int(usage.get("cache_read") or usage.get("cache_read_tokens"))
+            cache_write_tokens += _safe_int(usage.get("cache_write") or usage.get("cache_write_tokens"))
             continue
         input_tokens += _safe_int(payload.get("input_tokens"))
         output_tokens += _safe_int(payload.get("output_tokens"))
-    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+    }
 
 
 def _clean_text(value: Any) -> str | None:

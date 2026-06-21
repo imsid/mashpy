@@ -559,7 +559,21 @@ class PostgresRuntimeStore(RuntimeStore):
                                 NULLIF(payload ->> 'output_tokens', '')::numeric,
                                 0
                             )
-                        ), 0) AS total_tokens
+                        ), 0) AS total_tokens,
+                        COALESCE(SUM(
+                            COALESCE(
+                                NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric,
+                                NULLIF(payload -> 'token_usage' ->> 'cache_read_tokens', '')::numeric,
+                                0
+                            )
+                        ), 0) AS cache_read_tokens,
+                        COALESCE(SUM(
+                            COALESCE(
+                                NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric,
+                                NULLIF(payload -> 'token_usage' ->> 'cache_write_tokens', '')::numeric,
+                                0
+                            )
+                        ), 0) AS cache_write_tokens
                     FROM runtime_event_log
                     WHERE {' AND '.join(filters)}
                     GROUP BY trace_id, session_id
@@ -616,7 +630,21 @@ class PostgresRuntimeStore(RuntimeStore):
                             NULLIF(payload ->> 'output_tokens', '')::numeric,
                             0
                         )
-                    ), 0) AS total_tokens
+                    ), 0) AS total_tokens,
+                    COALESCE(SUM(
+                        COALESCE(
+                            NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric,
+                            NULLIF(payload -> 'token_usage' ->> 'cache_read_tokens', '')::numeric,
+                            0
+                        )
+                    ), 0) AS cache_read_tokens,
+                    COALESCE(SUM(
+                        COALESCE(
+                            NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric,
+                            NULLIF(payload -> 'token_usage' ->> 'cache_write_tokens', '')::numeric,
+                            0
+                        )
+                    ), 0) AS cache_write_tokens
                 FROM runtime_event_log
                 WHERE session_id IS NOT NULL
                 GROUP BY session_id
@@ -642,6 +670,8 @@ class PostgresRuntimeStore(RuntimeStore):
                 "latest_event_at": float(row["latest_event_at"]),
                 "trace_count": int(row["trace_count"] or 0),
                 "total_tokens": int(row["total_tokens"] or 0),
+                "cache_read_tokens": int(row["cache_read_tokens"] or 0),
+                "cache_write_tokens": int(row["cache_write_tokens"] or 0),
             }
             for row in rows
         ]
@@ -705,6 +735,20 @@ class PostgresRuntimeStore(RuntimeStore):
                         0
                     )
                 ), 0) AS output_tokens,
+                COALESCE(SUM(
+                    COALESCE(
+                        NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric,
+                        NULLIF(payload -> 'token_usage' ->> 'cache_read_tokens', '')::numeric,
+                        0
+                    )
+                ), 0) AS cache_read_tokens,
+                COALESCE(SUM(
+                    COALESCE(
+                        NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric,
+                        NULLIF(payload -> 'token_usage' ->> 'cache_write_tokens', '')::numeric,
+                        0
+                    )
+                ), 0) AS cache_write_tokens,
                 COALESCE(SUM(
                     CASE
                         WHEN event_type IN (%s, %s)
@@ -897,6 +941,8 @@ class PostgresRuntimeStore(RuntimeStore):
             ),
             "event_count": int(row["event_count"]),
             "total_tokens": int(row["total_tokens"] or 0),
+            "cache_read_tokens": int(row["cache_read_tokens"] or 0),
+            "cache_write_tokens": int(row["cache_write_tokens"] or 0),
             "started_at": float(row["started_at"]),
             "latest_event_at": float(row["latest_event_at"]),
             "latest_event_id": int(row["latest_event_id"]),
@@ -909,5 +955,7 @@ class PostgresRuntimeStore(RuntimeStore):
             "request_count": int(row["request_count"]),
             "input_tokens": int(row["input_tokens"]),
             "output_tokens": int(row["output_tokens"]),
+            "cache_read_tokens": int(row["cache_read_tokens"] or 0),
+            "cache_write_tokens": int(row["cache_write_tokens"] or 0),
             "tool_error_count": int(row["tool_error_count"]),
         }

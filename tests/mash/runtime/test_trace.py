@@ -206,6 +206,89 @@ class RuntimeTraceTests(unittest.TestCase):
         self.assertEqual(trace.output_tokens, 3)
         self.assertEqual(trace.duration_ms, 4000.0)
 
+    def test_build_runtime_trace_sums_cache_tokens(self) -> None:
+        trace = build_runtime_trace(
+            [
+                RuntimeEvent(
+                    event_id=1,
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    trace_id="trace-1",
+                    session_id="s-1",
+                    loop_index=0,
+                    created_at=1.0,
+                    payload={
+                        "action_type": "tool_call",
+                        "token_usage": {"input": 10, "output": 5, "cache_read": 200, "cache_write": 50},
+                    },
+                ),
+                RuntimeEvent(
+                    event_id=2,
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    trace_id="trace-1",
+                    session_id="s-1",
+                    loop_index=1,
+                    created_at=2.0,
+                    payload={
+                        "action_type": "response",
+                        "token_usage": {"input": 12, "output": 8, "cache_read": 150},
+                    },
+                ),
+                RuntimeEvent(
+                    event_id=3,
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    trace_id="trace-1",
+                    session_id="s-1",
+                    created_at=3.0,
+                    payload={},
+                ),
+            ]
+        )
+
+        self.assertEqual(trace.input_tokens, 22)
+        self.assertEqual(trace.output_tokens, 13)
+        self.assertEqual(trace.cache_read_tokens, 350)
+        self.assertEqual(trace.cache_write_tokens, 50)
+
+    def test_reasoning_trace_summary_includes_cache_tokens(self) -> None:
+        trace = build_runtime_trace(
+            [
+                RuntimeEvent(
+                    event_id=1,
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    trace_id="trace-1",
+                    session_id="s-1",
+                    loop_index=0,
+                    created_at=1.0,
+                    payload={
+                        "action_type": "response",
+                        "token_usage": {"input": 5, "output": 2, "cache_read": 100, "cache_write": 30},
+                    },
+                ),
+                RuntimeEvent(
+                    event_id=2,
+                    app_id="primary",
+                    agent_id="primary",
+                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    trace_id="trace-1",
+                    session_id="s-1",
+                    created_at=2.0,
+                    payload={},
+                ),
+            ]
+        )
+        payload = trace.to_reasoning_trace_payload()
+
+        self.assertEqual(payload["summary"]["cache_read_tokens"], 100)
+        self.assertEqual(payload["summary"]["cache_write_tokens"], 30)
+
     def test_build_runtime_trace_keeps_legacy_fallbacks(self) -> None:
         trace = build_runtime_trace(
             [

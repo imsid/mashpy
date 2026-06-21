@@ -576,6 +576,8 @@ def build_telemetry_router() -> APIRouter:
                 "tokens": {
                     "input_tokens": analysis.input_tokens,
                     "output_tokens": analysis.output_tokens,
+                    "cache_read_tokens": analysis.cache_read_tokens,
+                    "cache_write_tokens": analysis.cache_write_tokens,
                 },
                 "counts": {
                     "step_count": analysis.step_count,

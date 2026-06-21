@@ -363,6 +363,10 @@ class Agent:
                 "input": response.usage.input_tokens,
                 "output": response.usage.output_tokens,
             }
+            if response.usage.cache_read_tokens is not None:
+                token_usage["cache_read"] = response.usage.cache_read_tokens
+            if response.usage.cache_write_tokens is not None:
+                token_usage["cache_write"] = response.usage.cache_write_tokens
         if token_usage:
             input_tokens = token_usage.get("input")
             output_tokens = token_usage.get("output")
