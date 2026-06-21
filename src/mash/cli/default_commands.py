@@ -200,6 +200,10 @@ def register_default_commands(shell) -> None:
         if total_tokens is None:
             total_tokens = payload.get("session_total_tokens")
         ctx.renderer.info(f"Session tokens: {total_tokens}")
+        cache_read = payload.get("cache_read_tokens") or 0
+        cache_write = payload.get("cache_write_tokens") or 0
+        if cache_read or cache_write:
+            ctx.renderer.info(f"  Cache: {cache_read} read / {cache_write} written")
 
     def sessions_command(ctx, _args: list[str]) -> None:
         sessions = ctx.client.list_sessions(ctx.agent_id)

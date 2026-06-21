@@ -118,6 +118,12 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
         <td className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500">
           {compactNumber(session.total_tokens)}
         </td>
+        <td
+          className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500"
+          title={session.cache_read_tokens ? `${session.cache_read_tokens.toLocaleString()} tokens served from cache · ${(session.cache_read_tokens || 0) + (session.cache_write_tokens || 0)} total cache tokens` : undefined}
+        >
+          {session.cache_read_tokens ? compactNumber(session.cache_read_tokens) : <span className="text-slate-300">—</span>}
+        </td>
         <td className="px-2 py-2.5 pr-4 text-right align-top tabular-nums text-slate-500">
           {session.trace_count}
         </td>
@@ -146,7 +152,7 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
   );
 }
 
-const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Traces'];
+const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cached tokens', 'Traces'];
 
 // Pool-wide session rollup (owned by the primary agent), or scoped to one owner
 // agent. Each session expands to its traces, which may span multiple agents.

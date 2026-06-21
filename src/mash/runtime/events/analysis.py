@@ -91,6 +91,8 @@ class TraceAnalysis:
 
     input_tokens: int
     output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
 
     step_count: int
     tool_call_count: int
@@ -134,6 +136,8 @@ class TraceAnalysis:
             "tool_call_count": self.tool_call_count,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
         }
 
 
@@ -149,6 +153,8 @@ def analyze_trace(tree: TraceSpanTree) -> TraceAnalysis:
     tool_error_count = 0
     input_tokens = 0
     output_tokens = 0
+    cache_read_tokens = 0
+    cache_write_tokens = 0
 
     tool_call_spans: list[Span] = []
     subagent_spans: list[Span] = []
@@ -167,6 +173,12 @@ def analyze_trace(tree: TraceSpanTree) -> TraceAnalysis:
                 )
                 output_tokens += _safe_int(
                     usage.get("output") or usage.get("output_tokens")
+                )
+                cache_read_tokens += _safe_int(
+                    usage.get("cache_read") or usage.get("cache_read_tokens")
+                )
+                cache_write_tokens += _safe_int(
+                    usage.get("cache_write") or usage.get("cache_write_tokens")
                 )
         elif span.kind == SpanKind.TOOL_CALL:
             total_tool_ms += span.duration_ms
@@ -212,6 +224,8 @@ def analyze_trace(tree: TraceSpanTree) -> TraceAnalysis:
         idle_ms=idle_ms,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
         step_count=step_count,
         tool_call_count=tool_call_count,
         tool_error_count=tool_error_count,
@@ -265,7 +279,7 @@ def _compute_step_breakdown(root: Span) -> list[StepBreakdown]:
         tool_ms = 0.0
         subagent_ms = 0.0
         tool_calls: list[str] = []
-        token_usage: dict[str, int] = {"input": 0, "output": 0}
+        token_usage: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
         for grandchild in child.children:
             if grandchild.kind == SpanKind.THINK:
@@ -277,6 +291,12 @@ def _compute_step_breakdown(root: Span) -> list[StepBreakdown]:
                     )
                     token_usage["output"] += _safe_int(
                         usage.get("output") or usage.get("output_tokens")
+                    )
+                    token_usage["cache_read"] += _safe_int(
+                        usage.get("cache_read") or usage.get("cache_read_tokens")
+                    )
+                    token_usage["cache_write"] += _safe_int(
+                        usage.get("cache_write") or usage.get("cache_write_tokens")
                     )
             elif grandchild.kind == SpanKind.TOOL_CALL:
                 tool_ms += grandchild.duration_ms

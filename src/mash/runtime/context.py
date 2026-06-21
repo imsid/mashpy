@@ -30,7 +30,7 @@ async def get_session_info(
     # total_tokens is the true spend recorded in the event log across every agent
     # in the session (matching the admin rollup); session_total_tokens is the
     # memory context budget, which compaction resets.
-    total_tokens = await _session_event_token_total(self, session_id_value)
+    event_totals = await _session_event_token_totals(self, session_id_value)
     return {
         "app_id": self.app_id,
         "agent_id": self.app_id,
@@ -38,20 +38,26 @@ async def get_session_info(
         "model": self.get_model(),
         "max_steps": self.get_max_steps(),
         "session_total_tokens": await get_session_total_tokens(self, session_id_value),
-        "total_tokens": total_tokens,
+        "total_tokens": event_totals["total_tokens"],
+        "cache_read_tokens": event_totals["cache_read_tokens"],
+        "cache_write_tokens": event_totals["cache_write_tokens"],
     }
 
 
-async def _session_event_token_total(self: "AgentRuntime", session_id: str) -> int:
-    """Sum tokens for a session across all agents from the runtime event log."""
+async def _session_event_token_totals(self: "AgentRuntime", session_id: str) -> dict[str, int]:
+    """Sum token fields for a session across all agents from the runtime event log."""
     store = getattr(self, "runtime_store", None)
     if store is None or not hasattr(store, "list_recent_traces"):
-        return 0
+        return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
     try:
         traces = await store.list_recent_traces(session_id=session_id, limit=1000)
     except Exception:
-        return 0
-    return sum(int(trace.get("total_tokens") or 0) for trace in traces)
+        return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    return {
+        "total_tokens": sum(int(trace.get("total_tokens") or 0) for trace in traces),
+        "cache_read_tokens": sum(int(trace.get("cache_read_tokens") or 0) for trace in traces),
+        "cache_write_tokens": sum(int(trace.get("cache_write_tokens") or 0) for trace in traces),
+    }
 
 
 async def get_history_turns(

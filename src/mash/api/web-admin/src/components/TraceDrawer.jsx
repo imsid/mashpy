@@ -338,6 +338,13 @@ export function TraceDrawer({ open, trace, agentId, onClose }) {
               value={`${counts.tool_call_count || 0} (${counts.tool_error_count || 0}✗)`}
               hint="Tool calls (errors)"
             />
+            {(tokens.cache_read_tokens > 0 || tokens.cache_write_tokens > 0) && (
+              <StatTile
+                label="Cached tokens"
+                value={compactNumber(tokens.cache_read_tokens || 0)}
+                hint={`Tokens served from prompt cache — reduces latency and cost. ${tokens.cache_write_tokens ? `${tokens.cache_write_tokens.toLocaleString()} written to cache this trace.` : ''}`}
+              />
+            )}
           </div>
 
           <SignalsSection

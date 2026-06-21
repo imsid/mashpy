@@ -467,7 +467,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `agent_id` optional; when set, scopes to sessions owned by that agent
   - `limit` optional, clamped to `1..2000`
 - Returns:
-  - `sessions`: list of `{ session_id, owner_agent_id, host_id, started_at, latest_event_at, trace_count, total_tokens }`
+  - `sessions`: list of `{ session_id, owner_agent_id, host_id, started_at, latest_event_at, trace_count, total_tokens, cache_read_tokens, cache_write_tokens }`
   - `source`, `agent_id`, `limit`
 
 `GET /api/v1/telemetry/traces`
@@ -493,7 +493,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `from_ts` optional unix-seconds lower bound (inclusive)
   - `to_ts` optional unix-seconds upper bound (exclusive)
 - Returns:
-  - `buckets`: list of `{ bucket_start, request_count, input_tokens, output_tokens, tool_error_count }`
+  - `buckets`: list of `{ bucket_start, request_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, tool_error_count }`
   - `agent_id`, `host_id`, `session_id`, `bucket`, `from_ts`, `to_ts`
 - Errors:
   - `400 INVALID_BUCKET`: `bucket` is not `hour` or `day`
@@ -508,7 +508,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `analysis`: timing breakdown, tool stats, step breakdown, slowest operations, subagent traces
   - `span_tree`: hierarchical span tree with kind, name, duration, children, and attributes
   - `status`, `total_duration_ms`
-  - `tokens`: `{ input_tokens, output_tokens }`
+  - `tokens`: `{ input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }`
   - `counts`: `{ step_count, tool_call_count, tool_error_count, event_count }`
 - Errors:
   - `404 TRACE_NOT_FOUND`: no events found for the given trace
