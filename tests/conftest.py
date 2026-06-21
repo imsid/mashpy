@@ -29,6 +29,18 @@ from mash.runtime.engine.steps import (
 from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
 
 
+def _event_tokens(event: RuntimeEvent) -> int:
+    """Input+output tokens on one event, mirroring the Postgres token SUM."""
+    payload = event.payload or {}
+    usage = payload.get("token_usage") or {}
+    inp = usage.get("input") or usage.get("input_tokens") or payload.get("input_tokens") or 0
+    out = usage.get("output") or usage.get("output_tokens") or payload.get("output_tokens") or 0
+    try:
+        return int(inp) + int(out)
+    except (TypeError, ValueError):
+        return 0
+
+
 class _TestRuntimeStore:
     def __init__(self, _database_url: str) -> None:
         self._events: list[RuntimeEvent] = []
@@ -233,6 +245,7 @@ class _TestRuntimeStore:
                         None,
                     ),
                     "event_count": len(trace_events),
+                    "total_tokens": sum(_event_tokens(e) for e in trace_events),
                     "started_at": float(trace_events[0].created_at),
                     "latest_event_at": float(trace_events[-1].created_at),
                     "latest_event_id": int(trace_events[-1].event_id),
@@ -258,15 +271,6 @@ class _TestRuntimeStore:
                 continue
             by_session.setdefault(event.session_id, []).append(event)
 
-        def _tokens(event: RuntimeEvent) -> int:
-            payload = event.payload or {}
-            usage = payload.get("token_usage") or {}
-            inp = usage.get("input") or usage.get("input_tokens") or payload.get("input_tokens") or 0
-            out = usage.get("output") or usage.get("output_tokens") or payload.get("output_tokens") or 0
-            try:
-                return int(inp) + int(out)
-            except (TypeError, ValueError):
-                return 0
 
         sessions: list[dict[str, Any]] = []
         for session_id, session_events in by_session.items():
@@ -283,7 +287,7 @@ class _TestRuntimeStore:
                     "started_at": float(ordered[0].created_at),
                     "latest_event_at": float(ordered[-1].created_at),
                     "trace_count": len(trace_ids),
-                    "total_tokens": sum(_tokens(e) for e in session_events),
+                    "total_tokens": sum(_event_tokens(e) for e in session_events),
                 }
             )
         sessions.sort(key=lambda s: (s["latest_event_at"], s["session_id"]), reverse=True)

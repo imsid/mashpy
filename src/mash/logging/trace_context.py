@@ -18,6 +18,10 @@ _host_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_host_id",
     default=None,
 )
+_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_session_id",
+    default=None,
+)
 _workflow_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_workflow_id",
     default=None,
@@ -76,6 +80,30 @@ def bound_request_id(request_id: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _request_id.reset(token)
+
+
+def get_session_id() -> Optional[str]:
+    """Get the session ID bound for the current task context, if any."""
+    return _session_id.get()
+
+
+def set_session_id(session_id: Optional[str]) -> None:
+    """Set the session ID for the current task context."""
+    _session_id.set(session_id)
+
+
+@contextmanager
+def bound_session_id(session_id: Optional[str]) -> Iterator[None]:
+    """Temporarily bind the session ID for the current task context.
+
+    Lets components that emit events out-of-band (e.g. the MCP manager) tag them
+    with the request's session instead of a fixed construction-time value.
+    """
+    token = _session_id.set(session_id)
+    try:
+        yield
+    finally:
+        _session_id.reset(token)
 
 
 def get_host_id() -> Optional[str]:

@@ -740,6 +740,17 @@ def test_telemetry_sessions_rollup_from_events() -> None:
             assert rolled["trace_count"] >= 1
             assert "started_at" in rolled and "total_tokens" in rolled
 
+            # The session total equals the sum of its traces' token totals.
+            traces = client.get(
+                "/api/v1/telemetry/traces?session_id=s-roll&limit=100"
+            ).json()["data"]["traces"]
+            assert traces and all("total_tokens" in t for t in traces)
+            assert sum(t["total_tokens"] for t in traces) == rolled["total_tokens"]
+
+            # /session (get_session) reports the same event-log total.
+            info = client.get("/api/v1/agent/primary/sessions/s-roll").json()["data"]
+            assert info["total_tokens"] == rolled["total_tokens"]
+
             # Owner filter scopes to one owning agent.
             scoped = client.get("/api/v1/telemetry/sessions?agent_id=primary")
             assert scoped.status_code == 200

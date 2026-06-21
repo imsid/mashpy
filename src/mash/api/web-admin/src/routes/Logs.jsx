@@ -69,6 +69,12 @@ const TRACE_COLUMNS = [
     align: 'right',
     render: (r) => formatDuration((r.latest_event_at - r.started_at) * 1000),
   },
+  {
+    key: 'total_tokens',
+    header: 'Tokens',
+    align: 'right',
+    render: (r) => compactNumber(r.total_tokens || 0),
+  },
   { key: 'event_count', header: 'Events', align: 'right' },
 ];
 

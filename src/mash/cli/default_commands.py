@@ -196,7 +196,10 @@ def register_default_commands(shell) -> None:
         ctx.renderer.info(f"Session ID: {payload.get('session_id') or ctx.session_id}")
         ctx.renderer.info(f"Model: {payload.get('model')}")
         ctx.renderer.info(f"Max steps: {payload.get('max_steps')}")
-        ctx.renderer.info(f"Session tokens: {payload.get('session_total_tokens')}")
+        total_tokens = payload.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = payload.get("session_total_tokens")
+        ctx.renderer.info(f"Session tokens: {total_tokens}")
 
     def sessions_command(ctx, _args: list[str]) -> None:
         sessions = ctx.client.list_sessions(ctx.agent_id)

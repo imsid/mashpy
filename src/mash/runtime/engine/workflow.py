@@ -7,7 +7,7 @@ from typing import Any
 
 from dbos import DBOS
 
-from ...logging import bound_host_id, bound_request_id
+from ...logging import bound_host_id, bound_request_id, bound_session_id
 from ...logging.trace_context import bound_workflow_ids
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
@@ -216,7 +216,7 @@ async def execute_request_workflow(
     if not session_id:
         raise ValueError("session_id is required")
     trace_id: str | None = None
-    with bound_request_id(request_id), bound_host_id(
+    with bound_request_id(request_id), bound_session_id(session_id), bound_host_id(
         host_id_from_request_metadata(request_metadata)
     ), bound_workflow_ids(
         request_metadata.get("workflow_id"),
