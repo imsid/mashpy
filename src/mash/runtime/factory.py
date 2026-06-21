@@ -137,7 +137,6 @@ def configure_remote_tools(
     if self.mcp_manager is None:
         self.mcp_manager = MCPManager(
             event_logger=self.event_logger,
-            session_id=self.session_id,
             app_id=self.app_id,
         )
         self.has_mcp_manager = True
@@ -198,7 +197,6 @@ def configure_web_search_tools(
     if self.mcp_manager is None:
         self.mcp_manager = MCPManager(
             event_logger=self.event_logger,
-            session_id=self.session_id,
             app_id=self.app_id,
         )
         self.has_mcp_manager = True
