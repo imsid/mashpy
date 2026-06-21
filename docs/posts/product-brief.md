@@ -10,10 +10,7 @@ tags:
 
 # Mash Product Brief
 
-Building agents is on the rise as frontier and open-source models get smarter. We’re headed in a direction 
-where agents will soon be commoditized similar to mobile apps, whether it's *consumer agents* 
-that prepare morning briefs, triage email, monitor finances, and plan travel, or *enterprise agents* 
-that automate incident triage, release readiness, onboarding, and integrations. However, integrating these agents into the application layer is fragmented and lacks a standard.
+Building agents is on the rise as frontier and open-source models get smarter. Agents will soon be commoditized similar to mobile apps, whether it's *consumer agents* that prepare morning briefs, triage email, monitor finances, and plan travel, or *enterprise agents* that automate incident triage, release readiness, onboarding, and integrations. However, integrating these agents into the application layer is fragmented and lacks a standard.
 
 Every application wires itself to each agent on its own: a bespoke gateway
 for one, hand-rolled streaming for the next, a homegrown approval flow bolted on
@@ -104,7 +101,7 @@ workflow ───────► │        ▲                      output    
                   └─────────────────────────────────────────┘
 ```
 
-## Model agnostic across Frontier and Open-source (OSS) models
+## One harness across frontier and open-source models
 
 Open-source models like Gemma, Qwen, and DeepSeek now sit near the top of public
 benchmarks for reasoning, coding, and tool use, within range of the frontier
@@ -125,7 +122,7 @@ process, behind the same host. You match the model to the task and the budget,
 and the harness underneath is identical.
 
 ## Where to go next
-
+- [**Getting started**](../index.md): install, define agents, and run your first host
 - [**Mash Under the Hood**](mash-under-the-hood.md): what Mash provides, one
   host over many agents, the durable harness, observability, and the
   self-hosted interfaces
