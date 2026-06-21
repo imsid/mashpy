@@ -1,6 +1,6 @@
 name: Bug report
 description: Report a problem with Mash
-labels: ["bug"]
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -52,6 +52,23 @@ body:
       placeholder: "macOS 14 / Ubuntu 22.04"
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Mash is affected?
+      options:
+        - runtime
+        - cli
+        - api
+        - tools
+        - workflows
+        - llm
+        - mcp
+        - memory
+        - Not sure
+    validations:
+      required: false
   - type: dropdown
     id: provider
     attributes:

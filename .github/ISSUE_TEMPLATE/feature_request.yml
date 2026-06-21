@@ -1,6 +1,6 @@
 name: Feature request
 description: Suggest an idea or improvement for Mash
-labels: ["enhancement"]
+labels: ["enhancement", "needs-triage"]
 body:
   - type: textarea
     id: problem
