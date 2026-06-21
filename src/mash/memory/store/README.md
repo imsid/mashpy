@@ -4,26 +4,23 @@
 
 ## What This Package Exposes
 - `MemoryStore`: protocol contract that all storage backends must implement.
-- `SQLiteStore`: the built-in file-backed backend.
 - `PostgresStore`: the built-in Postgres-backed backend.
 
 ## Supported Backends
-- `SQLiteStore` in `src/mash/memory/store/backends/sqlite/store.py`
 - `PostgresStore` in `src/mash/memory/store/backends/postgres/store.py`
 
 Backend expectations:
 - Backends must preserve the `MemoryStore` method signatures.
 - Backends must preserve return shapes so callers and agents can switch backends without changing logic.
 - Search methods must return store-level hit dictionaries with:
-  - `turn_id`
+  - `trace_id`
   - `session_id`
   - `score`
   - `preview`
 
 Current backend status:
-- Keyword search is implemented in `SQLiteStore` via SQLite FTS5.
 - Keyword search is implemented in `PostgresStore` via Postgres full-text search.
-- Semantic search is part of the protocol, but both built-in backends currently raise `NotImplementedError`.
+- Semantic search is part of the protocol, but the built-in backend currently raises `NotImplementedError`.
 
 ## Protocol Methods
 
@@ -50,9 +47,6 @@ Current backend status:
   - `event_class`
   - `payload`
   - class-specific top-level fields such as `trace_id`, `duration_ms`, `model`, `tool_calls`, `metadata`
-- Notes:
-  - SQLite uses an internal autoincrement `id` for cursoring and returns it as `log_id`.
-  - API/tool callers strip `log_id` before returning events to users.
 
 `list_recent_log_traces(app_id, session_id, limit=5) -> list[dict]`
 - Returns recent trace summaries grouped from the `logs` table.
@@ -72,7 +66,7 @@ Current backend status:
 `save_turn(...) -> str`
 - Persists one conversation turn.
 - Inputs:
-  - `trace_id`: used as the stored `turn_id`
+  - `trace_id`: used as the stored `trace_id`
   - `session_id`
   - `app_id`
   - `user_message`
@@ -81,7 +75,7 @@ Current backend status:
   - `session_total_tokens`
   - `metadata`
 - Returns:
-  - the persisted `turn_id`
+  - the persisted `trace_id`
 
 Notes:
 - `signals` are backend-defined JSON-compatible values associated with the turn.
@@ -89,7 +83,7 @@ Notes:
 `get_turns(session_id, app_id, limit=None) -> list[dict]`
 - Returns conversation turns for one session.
 - Expected shape per item:
-  - `turn_id`
+  - `trace_id`
   - `user_message`
   - `agent_response`
   - `session_total_tokens`
@@ -100,12 +94,11 @@ Notes:
 Behavior:
 - The contract is chronological turn order.
 - `app_id` is required and scopes reads to one agent.
-- In SQLite, `limit=None` returns all turns ascending by time; limited reads still return ascending order after an internal reverse query.
 
 `get_turn_by_ids(pairs, app_id) -> list[dict] | None`
-- Bulk lookup by exact `{session_id, turn_id}` pairs.
+- Bulk lookup by exact `{session_id, trace_id}` pairs.
 - Expected shape per returned item:
-  - `turn_id`
+  - `trace_id`
   - `session_id`
   - `user_message`
   - `agent_response`
@@ -118,7 +111,7 @@ Behavior:
 `get_session_signals(session_id, app_id, limit=None) -> list[dict]`
 - Returns chronological per-turn signal payloads for one session.
 - Expected shape per item:
-  - `turn_id`
+  - `trace_id`
   - `created_at`
   - `signals`
 
@@ -165,21 +158,15 @@ Behavior:
   - optional `session_id`
   - optional `app_id`
 - Required hit shape:
-  - `turn_id`
+  - `trace_id`
   - `session_id`
   - `score`
   - `preview`
 
-SQLite behavior:
-- Uses FTS5 with token-AND semantics.
-- Returns normalized scores in `(0, 1]` based on result rank, not raw BM25.
-
 `semantic_search(column, query_term, query_embedding, limit, session_id=None, app_id=None) -> list[dict]`
 - Protocol hook for semantic/vector retrieval over one text column.
 - Required hit shape matches `keyword_search`.
-
-SQLite behavior:
-- Not implemented yet.
+- Not implemented in the built-in backend.
 
 ## Return Shape Notes
 - Store methods return plain dictionaries/lists, not typed model objects.
@@ -187,22 +174,15 @@ SQLite behavior:
 - Callers should not assume backend-specific extra keys beyond the documented shapes.
 
 ## Backend Selection
-- `AgentSpec.build_memory_store()` uses `MASH_DATABASE_URL` when it is set.
-- When `MASH_DATABASE_URL` is unset, the default fallback is SQLite at `<MASH_DATA_DIR>/<agent_id>/state.db`.
+- `AgentSpec.build_memory_store()` requires `MASH_DATABASE_URL` to be set.
+- When `MASH_DATABASE_URL` is unset, `build_memory_store()` raises `RuntimeError`. Set the variable to a Postgres connection string before starting the agent.
+- Override `build_memory_store()` in your `AgentSpec` subclass to supply a custom store implementation.
 - In multi-agent pools, `AgentPool` shares a single `PostgresStore` instance
   across all agents that use the default `build_memory_store()`. Agents that
   override `build_memory_store()` get their own store instance. Store lifecycle
   (open/close) is owned by the host, not by individual runtimes.
 
-## SQLite-Specific Notes
-- Thread safety is enforced with a store-level lock around DB operations.
-- `trace_id` is persisted as the canonical `turn_id`.
-- Structured runtime events are persisted in the `logs` table inside the same `state.db` database file.
-- The `logs` table uses an internal autoincrement `id` for stable ordering and streaming cursors.
-- FTS index rows are rebuilt automatically if the main `turns` table has data but the FTS table is empty.
-- Database files are created on demand; parent directories are also created automatically.
-
-## Postgres-Specific Notes
+## Postgres Notes
 - `PostgresStore` persists only the protocol-required storage objects: turns, signals, and logs.
 - Keyword search is column-scoped and implemented with Postgres full-text search.
 - `memory_logs.id` is the stable cursor for `after_log_id`.

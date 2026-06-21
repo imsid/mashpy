@@ -27,7 +27,7 @@ class ParsedSearchQuery:
 class RetrievalHit:
     """A scored hit from an individual retrieval method."""
 
-    turn_id: str
+    trace_id: str
     session_id: str
     score: float
     preview: str
@@ -40,7 +40,7 @@ class RetrievalHit:
 class FusedHit:
     """Combined hit after weighted fusion reranking."""
 
-    turn_id: str
+    trace_id: str
     session_id: str
     final_score: float
     preview: str
@@ -52,7 +52,7 @@ class FusedHit:
 class SearchResult:
     """Public search result returned by the search service."""
 
-    turn_id: str
+    trace_id: str
     session_id: str
     similarity_score: float
     preview: str

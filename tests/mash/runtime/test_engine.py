@@ -1055,7 +1055,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         _, _, result = await self._invoke_request(runtime, message="hi")
 
                 self.assertEqual(result["compaction_summary_text"], "summary text")
-                self.assertEqual(result["compaction_summary_turn_id"], "summary-turn")
+                self.assertEqual(result["compaction_summary_trace_id"], "summary-turn")
                 await runtime.shutdown()
 
     async def test_submit_request_continues_after_non_terminal_response(self) -> None:
@@ -1140,10 +1140,10 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         metadata={},
                     )
 
-                    summary_text, turn_id = await runtime.compact_session("s-compact")
+                    summary_text, trace_id = await runtime.compact_session("s-compact")
 
                     self.assertEqual(summary_text, "Summary:\n- compacted")
-                    self.assertIsNotNone(turn_id)
+                    self.assertIsNotNone(trace_id)
 
                     llm = definition.last_built_llm
                     self.assertIsNotNone(llm)
@@ -1175,7 +1175,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         {event["trace_id"] for event in llm_logs},
                         {llm.trace_id_during_send},
                     )
-                    self.assertEqual(turn_id, llm.trace_id_during_send)
+                    self.assertEqual(trace_id, llm.trace_id_during_send)
                 finally:
                     await runtime.shutdown()
 

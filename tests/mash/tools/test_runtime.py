@@ -83,7 +83,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_session_scope(self) -> None:
         self.search_service.results = [
             SearchResult(
-                turn_id="t1",
+                trace_id="t1",
                 session_id="s1",
                 similarity_score=0.87,
                 preview="hello preview",
@@ -101,7 +101,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["scope"], "session")
         self.assertEqual(payload["session_id"], "s1")
         self.assertEqual(len(payload["results"]), 1)
-        self.assertEqual(payload["results"][0]["turn_id"], "t1")
+        self.assertEqual(payload["results"][0]["trace_id"], "t1")
 
     async def test_search_app_scope_uses_none_session(self) -> None:
         result = await self.search_tool.execute(
@@ -129,13 +129,13 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
         self.search_service.results_by_query = {
             "@user:ad conversion metrics": [
                 SearchResult(
-                    turn_id="t1",
+                    trace_id="t1",
                     session_id="s1",
                     similarity_score=0.61,
                     preview="user preview",
                 ),
                 SearchResult(
-                    turn_id="t2",
+                    trace_id="t2",
                     session_id="s2",
                     similarity_score=0.72,
                     preview="shared lower",
@@ -143,13 +143,13 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
             ],
             "@agent:ad conversion metrics": [
                 SearchResult(
-                    turn_id="t2",
+                    trace_id="t2",
                     session_id="s2",
                     similarity_score=0.91,
                     preview="shared higher",
                 ),
                 SearchResult(
-                    turn_id="t3",
+                    trace_id="t3",
                     session_id="s9",
                     similarity_score=0.55,
                     preview="agent preview",
@@ -176,7 +176,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
             ["@user:ad conversion metrics", "@agent:ad conversion metrics"],
         )
         self.assertEqual(
-            [item["turn_id"] for item in payload["results"]],
+            [item["trace_id"] for item in payload["results"]],
             ["t2", "t1", "t3"],
         )
         self.assertEqual(payload["results"][0]["similarity_score"], 0.91)
@@ -241,13 +241,13 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_turn_fetch_returns_full_messages(self) -> None:
         self.store.turn_lookup_result = [
             {
-                "turn_id": "t1",
+                "trace_id": "t1",
                 "session_id": "s2",
                 "user_message": "hello",
                 "agent_response": "world",
             },
             {
-                "turn_id": "t3",
+                "trace_id": "t3",
                 "session_id": "s9",
                 "user_message": "another",
                 "agent_response": "reply",
@@ -257,8 +257,8 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         result = await self.turn_tool.execute(
             {
                 "pairs": [
-                    {"turn_id": "t1", "session_id": "s2"},
-                    {"turn_id": "t3", "session_id": "s9"},
+                    {"trace_id": "t1", "session_id": "s2"},
+                    {"trace_id": "t3", "session_id": "s9"},
                 ]
             }
         )
@@ -267,8 +267,8 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.store.turn_lookup_calls,
             [[
-                {"turn_id": "t1", "session_id": "s2"},
-                {"turn_id": "t3", "session_id": "s9"},
+                {"trace_id": "t1", "session_id": "s2"},
+                {"trace_id": "t3", "session_id": "s9"},
             ]],
         )
         payload = json.loads(result.content)
@@ -283,7 +283,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         self.store.turn_lookup_result = None
 
         result = await self.turn_tool.execute(
-            {"pairs": [{"turn_id": "missing", "session_id": "s2"}]}
+            {"pairs": [{"trace_id": "missing", "session_id": "s2"}]}
         )
 
         self.assertFalse(result.is_error)
@@ -293,7 +293,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["turns"], [])
         self.assertEqual(
             payload["missing_pairs"],
-            [{"turn_id": "missing", "session_id": "s2"}],
+            [{"trace_id": "missing", "session_id": "s2"}],
         )
 
     async def test_missing_pairs_errors(self) -> None:
@@ -316,10 +316,10 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_blank_ids_error(self) -> None:
         result_a = await self.turn_tool.execute(
-            {"pairs": [{"turn_id": "   ", "session_id": "s2"}]}
+            {"pairs": [{"trace_id": "   ", "session_id": "s2"}]}
         )
         result_b = await self.turn_tool.execute(
-            {"pairs": [{"turn_id": "t1", "session_id": "   "}]}
+            {"pairs": [{"trace_id": "t1", "session_id": "   "}]}
         )
 
         self.assertTrue(result_a.is_error)
@@ -330,7 +330,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         self.store.turn_lookup_error = RuntimeError("db failed")
 
         result = await self.turn_tool.execute(
-            {"pairs": [{"turn_id": "t1", "session_id": "s2"}]}
+            {"pairs": [{"trace_id": "t1", "session_id": "s2"}]}
         )
 
         self.assertTrue(result.is_error)
@@ -339,7 +339,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_matches_include_missing_pairs(self) -> None:
         self.store.turn_lookup_result = [
             {
-                "turn_id": "t1",
+                "trace_id": "t1",
                 "session_id": "s2",
                 "user_message": "hello",
                 "agent_response": "world",
@@ -349,8 +349,8 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         result = await self.turn_tool.execute(
             {
                 "pairs": [
-                    {"turn_id": "t1", "session_id": "s2"},
-                    {"turn_id": "missing", "session_id": "s2"},
+                    {"trace_id": "t1", "session_id": "s2"},
+                    {"trace_id": "missing", "session_id": "s2"},
                 ]
             }
         )
@@ -362,7 +362,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["turns"]), 1)
         self.assertEqual(
             payload["missing_pairs"],
-            [{"turn_id": "missing", "session_id": "s2"}],
+            [{"trace_id": "missing", "session_id": "s2"}],
         )
 
 
@@ -392,7 +392,7 @@ class RuntimeToolMetadataTests(unittest.TestCase):
 
         search_tool = tools["search_conversations"]
         self.assertIn("ranked previews", search_tool.description)
-        self.assertIn("session_id and turn_id", search_tool.description)
+        self.assertIn("session_id and trace_id", search_tool.description)
         self.assertEqual(search_tool.parameters["properties"]["query"]["type"], "string")
         self.assertEqual(
             search_tool.parameters["properties"]["scope"]["enum"],

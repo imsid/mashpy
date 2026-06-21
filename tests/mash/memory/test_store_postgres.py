@@ -231,8 +231,8 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             limit=1,
         )
 
-        self.assertEqual([turn["turn_id"] for turn in turns], [turn_1, turn_2])
-        self.assertEqual([turn["turn_id"] for turn in limited], [turn_2])
+        self.assertEqual([turn["trace_id"] for turn in turns], [turn_1, turn_2])
+        self.assertEqual([turn["trace_id"] for turn in limited], [turn_2])
         self.assertEqual(turns[0]["signals"]["unused_tool_tokens"], 42)
         self.assertEqual(turns[0]["signals"]["unused_tools"], ["alpha", "beta"])
         self.assertEqual(turns[0]["metadata"], {"trace_id": "trace-1"})
@@ -274,7 +274,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(turns), 1)
-        self.assertEqual(turns[0]["turn_id"], turn_id)
+        self.assertEqual(turns[0]["trace_id"], turn_id)
         self.assertEqual(turns[0]["workflow_run_id"], run_id)
         self.assertEqual(turns[0]["task_id"], "digest-traces")
         self.assertEqual(turns[0]["user_message"], "digest input")
@@ -340,11 +340,11 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             limit=1,
         )
 
-        self.assertEqual([row["turn_id"] for row in rows], [first, second])
+        self.assertEqual([row["trace_id"] for row in rows], [first, second])
         self.assertEqual(rows[0]["signals"]["unused_tool_tokens"], 42)
         self.assertEqual(rows[0]["signals"]["unused_tools"], ["alpha"])
         self.assertEqual(rows[1]["signals"], {})
-        self.assertEqual([row["turn_id"] for row in limited], [second])
+        self.assertEqual([row["trace_id"] for row in limited], [second])
 
     async def test_list_sessions_and_latest_session_are_app_scoped(self) -> None:
         await self._save_turn(
@@ -417,9 +417,9 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
         turns = await self.store.get_turn_by_ids(
             [
-                {"session_id": "s2", "turn_id": turn_2},
-                {"session_id": "s1", "turn_id": "missing"},
-                {"session_id": "s1", "turn_id": turn_1},
+                {"session_id": "s2", "trace_id": turn_2},
+                {"session_id": "s1", "trace_id": "missing"},
+                {"session_id": "s1", "trace_id": turn_1},
             ],
             app_id=self.app_id,
         )
@@ -427,7 +427,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(turns)
         assert turns is not None
         self.assertEqual(
-            [(turn["session_id"], turn["turn_id"]) for turn in turns],
+            [(turn["session_id"], turn["trace_id"]) for turn in turns],
             [("s2", turn_2), ("s1", turn_1)],
         )
 
@@ -446,28 +446,28 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         filtered = await self.store.get_turn_by_ids(
-            [{"session_id": "shared-session", "turn_id": turn_b}],
+            [{"session_id": "shared-session", "trace_id": turn_b}],
             app_id=self.app_id,
         )
         matching_a = await self.store.get_turn_by_ids(
             [
-                {"session_id": "shared-session", "turn_id": turn_b},
-                {"session_id": "shared-session", "turn_id": turn_a},
+                {"session_id": "shared-session", "trace_id": turn_b},
+                {"session_id": "shared-session", "trace_id": turn_a},
             ],
             app_id=self.app_id,
         )
         matching_b = await self.store.get_turn_by_ids(
-            [{"session_id": "shared-session", "turn_id": turn_b}],
+            [{"session_id": "shared-session", "trace_id": turn_b}],
             app_id=self.other_app_id,
         )
 
         self.assertIsNone(filtered)
         self.assertIsNotNone(matching_a)
         assert matching_a is not None
-        self.assertEqual([turn["turn_id"] for turn in matching_a], [turn_a])
+        self.assertEqual([turn["trace_id"] for turn in matching_a], [turn_a])
         self.assertIsNotNone(matching_b)
         assert matching_b is not None
-        self.assertEqual([turn["turn_id"] for turn in matching_b], [turn_b])
+        self.assertEqual([turn["trace_id"] for turn in matching_b], [turn_b])
 
     async def test_keyword_search_returns_empty_for_blank_query_or_non_positive_limit(
         self,
@@ -532,13 +532,13 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             app_id=self.app_id,
         )
 
-        self.assertEqual([hit["turn_id"] for hit in user_results], [user_hit])
+        self.assertEqual([hit["trace_id"] for hit in user_results], [user_hit])
         self.assertEqual(user_results[0]["preview"], "hello world")
         self.assertEqual(
-            {hit["turn_id"] for hit in agent_results},
+            {hit["trace_id"] for hit in agent_results},
             {agent_hit, "turn-2"},
         )
-        self.assertNotIn(user_hit, {hit["turn_id"] for hit in agent_results})
+        self.assertNotIn(user_hit, {hit["trace_id"] for hit in agent_results})
 
     async def test_keyword_search_uses_rank_based_score_normalization(self) -> None:
         await self._save_turn(

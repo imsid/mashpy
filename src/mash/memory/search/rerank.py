@@ -41,7 +41,7 @@ class WeightedFusionReranker:
 
             for hit in semantic_hits:
                 entry = accum.setdefault(
-                    hit.turn_id,
+                    hit.trace_id,
                     {
                         "session_id": hit.session_id,
                         "semantic_score": 0.0,
@@ -52,7 +52,7 @@ class WeightedFusionReranker:
                 )
                 if str(entry["session_id"]) != hit.session_id:
                     raise ValueError(
-                        f"Conflicting session_id for turn_id {hit.turn_id}: "
+                        f"Conflicting session_id for trace_id {hit.trace_id}: "
                         f"{entry['session_id']} vs {hit.session_id}"
                     )
                 entry["semantic_score"] = max(float(entry["semantic_score"]), hit.score)
@@ -61,7 +61,7 @@ class WeightedFusionReranker:
 
             for hit in keyword_hits:
                 entry = accum.setdefault(
-                    hit.turn_id,
+                    hit.trace_id,
                     {
                         "session_id": hit.session_id,
                         "semantic_score": 0.0,
@@ -72,7 +72,7 @@ class WeightedFusionReranker:
                 )
                 if str(entry["session_id"]) != hit.session_id:
                     raise ValueError(
-                        f"Conflicting session_id for turn_id {hit.turn_id}: "
+                        f"Conflicting session_id for trace_id {hit.trace_id}: "
                         f"{entry['session_id']} vs {hit.session_id}"
                     )
                 entry["keyword_score"] = max(float(entry["keyword_score"]), hit.score)
@@ -81,7 +81,7 @@ class WeightedFusionReranker:
                     entry["keyword_preview"] = _cap_preview(hit.preview)
 
             fused: list[FusedHit] = []
-            for turn_id, entry in accum.items():
+            for trace_id, entry in accum.items():
                 semantic_score = float(entry["semantic_score"])
                 keyword_score = float(entry["keyword_score"])
                 final_score = (
@@ -91,7 +91,7 @@ class WeightedFusionReranker:
                 preview = entry["keyword_preview"] or entry["semantic_preview"] or ""
                 fused.append(
                     FusedHit(
-                        turn_id=turn_id,
+                        trace_id=trace_id,
                         session_id=str(entry["session_id"]),
                         final_score=final_score,
                         preview=_cap_preview(preview),
@@ -105,7 +105,7 @@ class WeightedFusionReranker:
                     -item.final_score,
                     -item.semantic_score,
                     -item.keyword_score,
-                    item.turn_id,
+                    item.trace_id,
                 )
             )
             await self._emit_event(

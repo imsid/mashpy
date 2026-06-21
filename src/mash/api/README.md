@@ -267,7 +267,7 @@ validation).
   - `agent_id`
   - `session_id`
   - `definitions`: map keyed by signal name describing the runtime's built-in signals
-  - `turns`: chronological per-turn signal payloads with `turn_id`, `created_at`, and `signals`
+  - `turns`: chronological per-turn signal payloads with `trace_id`, `created_at`, and `signals`
 - Notes:
   - `definitions` is always returned, even when the session has no turns.
   - `turns[*].signals` contains the persisted per-turn values and may be `{}`.
@@ -280,7 +280,7 @@ validation).
 - Body: `CompactSessionRequest`
 - Returns:
   - `summary_text`
-  - `turn_id`
+  - `trace_id`
 
 `GET /api/v1/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning`
 - Returns the compact CLI-style reasoning trace for one trace.

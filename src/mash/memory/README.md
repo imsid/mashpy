@@ -4,12 +4,12 @@
 
 ## What This Package Does
 - Defines the memory store protocol used by agents.
-- Provides a SQLite-backed store implementation.
+- Provides a Postgres-backed store implementation.
 - Implements retrieval/search services over stored memory.
 - Provides compaction and signaling helpers for longer-lived memory flows.
 
 ## Main Components
-- `store/`: storage protocol and concrete backends such as SQLite.
+- `store/`: storage protocol and concrete Postgres backend.
 - `search/`: retrieval service, parser/rerank logic, and typed search results.
 - `compaction.py`: memory compaction support.
 - `signals.py`: memory-related signaling hooks plus typed signal definitions.
@@ -17,7 +17,6 @@
 ## Public Exports
 - `MemorySearchService`
 - `MemoryStore`
-- `SQLiteStore`
 - `RetrievalConfig`
 - `SearchResult`
 

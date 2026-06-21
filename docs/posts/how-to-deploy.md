@@ -488,8 +488,27 @@ replicas at any time without data loss, because all state is in Postgres.
   agent runtimes, reconnects to Postgres, and starts serving.
 - **Scale to zero:** Stop all replicas. State is preserved in Postgres. Start
   replicas again when needed.
-- **Database migrations:** Mash auto-creates its tables on first startup. No
-  manual migration step is required.
+- **Database migrations:** Mash runs pending migrations automatically on
+  startup. No manual migration step is required for new deployments. See
+  [Schema migrations](#schema-migrations) below for details on how migrations
+  work and how to add new ones.
+
+## Schema Migrations
+
+Mash uses an ordered-file migration runner rather than a third-party tool. On every startup the runner:
+
+1. Creates a `_mash_migrations` tracking table if it does not exist.
+2. Reads all `.sql` files from `src/mash/runtime/events/store/postgres/migrations/` in filename order.
+3. Applies any file not yet recorded in `_mash_migrations`, each in its own transaction.
+4. Records the filename and timestamp in `_mash_migrations` so it is not applied again.
+
+The initial schema (`001_initial_schema.sql`) is idempotent — all `CREATE TABLE` and `CREATE INDEX` statements use `IF NOT EXISTS`, so applying it against an existing database is a no-op.
+
+**Adding a migration:** Create a new file named `NNN_description.sql` (e.g. `002_add_model_column.sql`) in the migrations directory. The next startup applies it automatically. Keep each migration in a single transaction and write it to be rollback-safe.
+
+**Upgrading from a pre-migration deployment** (any release before this schema runner was introduced): The initial migration file contains the full current schema using `IF NOT EXISTS` guards, so the runner applies it safely against an existing database. Only the `_mash_migrations` table is new; existing tables and data are untouched.
+
+**Memory store (`PostgresStore`):** Uses the same migration runner pattern. Migrations live in `src/mash/memory/store/backends/postgres/migrations/`, are tracked in `_mash_memory_migrations`, and run automatically on `open()`. Add new memory-store migrations the same way — a new `NNN_description.sql` file in that directory. `MASH_DATABASE_URL` is required; the agent raises `RuntimeError` at startup if it is unset.
 
 ## Environment Variables Reference
 

@@ -206,7 +206,7 @@ class RuntimeToolBuilder:
             name="search_conversations",
             description=(
                 "Search stored conversation turns and return ranked previews plus "
-                "the session_id and turn_id needed to retrieve full messages."
+                "the session_id and trace_id needed to retrieve full messages."
             ),
             parameters={
                 "type": "object",
@@ -244,7 +244,7 @@ class RuntimeToolBuilder:
                 limit=limit,
                 session_id=session_id,
             ):
-                key = (result.session_id, result.turn_id)
+                key = (result.session_id, result.trace_id)
                 existing = merged.get(key)
                 if existing is None or result.similarity_score > existing.similarity_score:
                     merged[key] = result
@@ -264,16 +264,16 @@ class RuntimeToolBuilder:
             for idx, pair in enumerate(raw_pairs):
                 if not isinstance(pair, dict):
                     return ToolResult.error(
-                        f"pairs[{idx}] must be an object with session_id and turn_id"
+                        f"pairs[{idx}] must be an object with session_id and trace_id"
                     )
                 session_id = pair.get("session_id")
-                turn_id = pair.get("turn_id")
+                trace_id = pair.get("trace_id")
                 if not isinstance(session_id, str) or not session_id.strip():
                     return ToolResult.error(f"pairs[{idx}].session_id must be a non-empty string")
-                if not isinstance(turn_id, str) or not turn_id.strip():
-                    return ToolResult.error(f"pairs[{idx}].turn_id must be a non-empty string")
+                if not isinstance(trace_id, str) or not trace_id.strip():
+                    return ToolResult.error(f"pairs[{idx}].trace_id must be a non-empty string")
                 normalized_pairs.append(
-                    {"session_id": session_id.strip(), "turn_id": turn_id.strip()}
+                    {"session_id": session_id.strip(), "trace_id": trace_id.strip()}
                 )
 
             try:
@@ -286,13 +286,13 @@ class RuntimeToolBuilder:
 
             found_turns = turns or []
             found_keys = {
-                (str(turn.get("session_id")), str(turn.get("turn_id")))
+                (str(turn.get("session_id")), str(turn.get("trace_id")))
                 for turn in found_turns
             }
             missing_pairs = [
                 pair
                 for pair in normalized_pairs
-                if (pair["session_id"], pair["turn_id"]) not in found_keys
+                if (pair["session_id"], pair["trace_id"]) not in found_keys
             ]
             return ToolResult(
                 content=json.dumps(
@@ -319,9 +319,9 @@ class RuntimeToolBuilder:
                             "type": "object",
                             "properties": {
                                 "session_id": {"type": "string"},
-                                "turn_id": {"type": "string"},
+                                "trace_id": {"type": "string"},
                             },
-                            "required": ["session_id", "turn_id"],
+                            "required": ["session_id", "trace_id"],
                         },
                     }
                 },

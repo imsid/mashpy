@@ -184,7 +184,7 @@ class _FakeMemoryStore:
             rows = [turn for turn in rows if float(turn["created_at"]) <= end_time]
         rows = sorted(
             rows,
-            key=lambda turn: (float(turn["created_at"]), str(turn["turn_id"])),
+            key=lambda turn: (float(turn["created_at"]), str(turn["trace_id"])),
             reverse=sort_desc,
         )
         if offset:
@@ -367,7 +367,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         memory_store = _FakeMemoryStore(
             [
                 {
-                    "turn_id": "turn-1",
+                    "trace_id": "turn-1",
                     "session_id": session_id,
                     "app_id": "worker",
                     "workflow_id": "wf",
@@ -398,7 +398,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runs[0].workflow_id, "wf")
         self.assertIsNone(runs[0].dedup_key)
         self.assertEqual(runs[0].status, "completed")
-        self.assertEqual(runs[0].summary["turn_id"], "turn-1")
+        self.assertEqual(runs[0].summary["trace_id"], "turn-1")
         self.assertEqual(runs[0].summary["session_id"], session_id)
         self.assertEqual(runs[0].summary["task_id"], "task-1")
         self.assertEqual(runs[0].summary["agent_id"], "worker")

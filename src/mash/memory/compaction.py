@@ -68,7 +68,7 @@ async def compact_conversation(
     lines: List[str] = []
     turn_ids: List[str] = []
     for turn in base_turns:
-        turn_ids.append(turn.get("turn_id", ""))
+        turn_ids.append(turn.get("trace_id", ""))
         user_message = turn.get("user_message") or ""
         agent_response = turn.get("agent_response") or ""
         if user_message:
@@ -114,7 +114,7 @@ async def compact_conversation(
         "app_id": app_id,
         "token_usage": {"input": 0, "output": 0},
     }
-    turn_id = await store.save_turn(
+    saved_trace_id = await store.save_turn(
         trace_id=trace_id,
         session_id=session_id,
         app_id=app_id,
@@ -125,4 +125,4 @@ async def compact_conversation(
         metadata=metadata,
     )
 
-    return summary_text, turn_id
+    return summary_text, saved_trace_id
