@@ -5,7 +5,7 @@ Hybrid memory search pipeline for `turns`: query parsing, retrieval orchestratio
 
 ## Pipeline Contracts
 - Keep the pipeline split into three stages with simple boundaries: parser, retrieval, reranking.
-- `MemorySearchService.search()` returns ranked `SearchResult` items with `turn_id`, `similarity_score`, and `preview`.
+- `MemorySearchService.search()` returns ranked `SearchResult` items with `trace_id`, `similarity_score`, and `preview`.
 - `MemorySearchService.__init__()` requires an `EventLogger` for structured search telemetry.
 - `MemorySearchService.search()` requires `app_id` and generates a per-call `query_id` for event correlation.
 - Retrieval methods must access storage only through `MemoryStore.keyword_search()` and `MemoryStore.semantic_search()`.

@@ -38,12 +38,12 @@ def _to_hit(
     rank: int,
 ) -> RetrievalHit:
     """Convert a store hit dict to a typed retrieval hit."""
-    turn_id = str(raw_hit["turn_id"])
+    trace_id = str(raw_hit["trace_id"])
     session_id = str(raw_hit["session_id"])
     score = _validate_score(raw_hit["score"])
     preview = _sanitize_preview(raw_hit.get("preview", ""))
     return RetrievalHit(
-        turn_id=turn_id,
+        trace_id=trace_id,
         session_id=session_id,
         score=score,
         preview=preview,

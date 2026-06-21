@@ -210,8 +210,8 @@ async def _persist_turn_payload(
     response_metadata["compaction_summary_text"] = compaction_payload.get(
         "compaction_summary_text"
     )
-    response_metadata["compaction_summary_turn_id"] = compaction_payload.get(
-        "compaction_summary_turn_id"
+    response_metadata["compaction_summary_trace_id"] = compaction_payload.get(
+        "compaction_summary_trace_id"
     )
     if extra_metadata:
         response_metadata.update(dict(extra_metadata))
@@ -251,15 +251,14 @@ async def _persist_turn_payload(
     if "structured_output" in response_metadata:
         response_payload["structured_output"] = response_metadata["structured_output"]
     return {
-        "turn_id": resolved_trace_id,
         "trace_id": resolved_trace_id,
         "response": response_payload,
         "session_total_tokens": session_total_tokens,
         "signals": dict(signals or {}),
         "response_metadata": dict(response_metadata or {}),
         "compaction_summary_text": compaction_payload.get("compaction_summary_text"),
-        "compaction_summary_turn_id": compaction_payload.get(
-            "compaction_summary_turn_id"
+        "compaction_summary_trace_id": compaction_payload.get(
+            "compaction_summary_trace_id"
         ),
     }
 

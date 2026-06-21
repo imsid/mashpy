@@ -52,7 +52,7 @@ class MemorySearchService:
         limit: int = 10,
         session_id: str | None = None,
     ) -> list[SearchResult]:
-        """Return ranked results with turn_id, session_id, score, and preview."""
+        """Return ranked results with trace_id, session_id, score, and preview."""
         query_id = uuid.uuid4().hex
         overall_start = time.time()
         normalized_limit = max(0, int(limit))
@@ -115,7 +115,7 @@ class MemorySearchService:
 
         results = [
             SearchResult(
-                turn_id=hit.turn_id,
+                trace_id=hit.trace_id,
                 session_id=hit.session_id,
                 similarity_score=hit.final_score,
                 preview=hit.preview,

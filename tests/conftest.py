@@ -542,10 +542,8 @@ class _TestMemoryStore:
         task_id: str | None = None,
         replayable: bool = True,
     ) -> str:
-        turn_id = trace_id
         self._turns.append(
             {
-                "turn_id": turn_id,
                 "trace_id": trace_id,
                 "session_id": session_id,
                 "app_id": app_id,
@@ -560,7 +558,7 @@ class _TestMemoryStore:
                 "replayable": replayable,
             }
         )
-        return turn_id
+        return trace_id
 
     async def get_turns(
         self,
@@ -570,7 +568,7 @@ class _TestMemoryStore:
     ) -> list[dict[str, Any]]:
         rows = [
             {
-                "turn_id": t["turn_id"],
+                "trace_id": t["trace_id"],
                 "user_message": t.get("user_message", ""),
                 "agent_response": t.get("agent_response", ""),
                 "session_total_tokens": t.get("session_total_tokens", 0),
@@ -616,7 +614,7 @@ class _TestMemoryStore:
     ) -> list[dict[str, Any]]:
         rows = [
             {
-                "turn_id": t["turn_id"],
+                "trace_id": t["trace_id"],
                 "created_at": 0.0,
                 "signals": t.get("signals") or {},
             }
@@ -651,7 +649,7 @@ class _TestMemoryStore:
     ) -> list[dict[str, Any]]:
         rows = [
             {
-                "trace_id": t["turn_id"],
+                "trace_id": t["trace_id"],
                 "session_id": t["session_id"],
                 "user_message": t.get("user_message", ""),
                 "agent_response": t.get("agent_response", ""),
@@ -688,7 +686,7 @@ class _TestMemoryStore:
             if term in text.lower():
                 results.append(
                     {
-                        "turn_id": t["turn_id"],
+                        "trace_id": t["trace_id"],
                         "session_id": t["session_id"],
                         "preview": text,
                         "score": 1.0,

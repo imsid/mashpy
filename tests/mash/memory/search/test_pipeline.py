@@ -154,7 +154,7 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_keyword_only_calls_only_keyword_search(self) -> None:
         self.store.keyword_hits = [
-            {"turn_id": "t1", "session_id": "s1", "score": 0.8, "preview": "hello"},
+            {"trace_id": "t1", "session_id": "s1", "score": 0.8, "preview": "hello"},
         ]
         orchestrator = HybridRetrievalOrchestrator(
             self.keyword_retriever,
@@ -171,7 +171,7 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(outputs.keyword_hits), 1)
-        self.assertEqual(outputs.keyword_hits[0].turn_id, "t1")
+        self.assertEqual(outputs.keyword_hits[0].trace_id, "t1")
         self.assertEqual(outputs.keyword_hits[0].session_id, "s1")
         self.assertEqual(outputs.keyword_hits[0].preview, "hello")
         self.assertEqual(outputs.semantic_hits, [])
@@ -181,7 +181,7 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_semantic_only_calls_only_semantic_search(self) -> None:
         self.store.semantic_hits = [
-            {"turn_id": "t2", "session_id": "s2", "score": 0.9, "preview": "answer"},
+            {"trace_id": "t2", "session_id": "s2", "score": 0.9, "preview": "answer"},
         ]
         orchestrator = HybridRetrievalOrchestrator(
             self.keyword_retriever,
@@ -217,7 +217,7 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_retrieval_caps_preview_length(self) -> None:
         self.store.keyword_hits = [
-            {"turn_id": "t1", "session_id": "s1", "score": 0.5, "preview": "x" * 300},
+            {"trace_id": "t1", "session_id": "s1", "score": 0.5, "preview": "x" * 300},
         ]
         orchestrator = HybridRetrievalOrchestrator(
             self.keyword_retriever,
@@ -243,7 +243,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
     async def test_fuses_overlapping_hits_with_weighted_scores(self) -> None:
         keyword_hits = [
             RetrievalHit(
-                turn_id="t1",
+                trace_id="t1",
                 session_id="s1",
                 score=0.5,
                 preview="keyword preview",
@@ -254,7 +254,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
         ]
         semantic_hits = [
             RetrievalHit(
-                turn_id="t1",
+                trace_id="t1",
                 session_id="s1",
                 score=0.8,
                 preview="semantic preview",
@@ -284,7 +284,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
             event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
-                    turn_id="t1",
+                    trace_id="t1",
                     session_id="s1",
                     score=0.4,
                     preview="k",
@@ -295,7 +295,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
             ],
             semantic_hits=[
                 RetrievalHit(
-                    turn_id="t2",
+                    trace_id="t2",
                     session_id="s2",
                     score=0.6,
                     preview="s",
@@ -306,17 +306,17 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        self.assertEqual([hit.turn_id for hit in fused], ["t2", "t1"])
+        self.assertEqual([hit.trace_id for hit in fused], ["t2", "t1"])
         self.assertAlmostEqual(fused[0].final_score, 0.42)
         self.assertAlmostEqual(fused[1].final_score, 0.12)
 
-    async def test_tie_breaks_by_turn_id(self) -> None:
+    async def test_tie_breaks_by_trace_id(self) -> None:
         fused = await self.reranker.rerank(
             query_id=self.query_id,
             event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
-                    turn_id="b",
+                    trace_id="b",
                     session_id="s1",
                     score=0.3,
                     preview="b",
@@ -325,7 +325,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
                     rank=1,
                 ),
                 RetrievalHit(
-                    turn_id="a",
+                    trace_id="a",
                     session_id="s1",
                     score=0.3,
                     preview="a",
@@ -336,7 +336,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
             ],
             semantic_hits=[],
         )
-        self.assertEqual([hit.turn_id for hit in fused], ["a", "b"])
+        self.assertEqual([hit.trace_id for hit in fused], ["a", "b"])
 
     async def test_caps_preview_length(self) -> None:
         fused = await self.reranker.rerank(
@@ -344,7 +344,7 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
             event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
-                    turn_id="t1",
+                    trace_id="t1",
                     session_id="s1",
                     score=0.2,
                     preview="y" * 500,
@@ -365,11 +365,11 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_returns_search_results_with_scores_and_preview(self) -> None:
         self.store.keyword_hits = [
-            {"turn_id": "t1", "session_id": "s1", "score": 0.6, "preview": "keyword hit"},
+            {"trace_id": "t1", "session_id": "s1", "score": 0.6, "preview": "keyword hit"},
         ]
         self.store.semantic_hits = [
-            {"turn_id": "t1", "session_id": "s1", "score": 0.5, "preview": "semantic hit"},
-            {"turn_id": "t2", "session_id": "s1", "score": 0.8, "preview": "semantic only"},
+            {"trace_id": "t1", "session_id": "s1", "score": 0.5, "preview": "semantic hit"},
+            {"trace_id": "t2", "session_id": "s1", "score": 0.8, "preview": "semantic only"},
         ]
         service = MemorySearchService(  # type: ignore[arg-type]
             self.store,
@@ -387,7 +387,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 2)
         self.assertIsInstance(results[0], SearchResult)
         self.assertEqual(
-            [result.turn_id for result in results],
+            [result.trace_id for result in results],
             ["t2", "t1"],
         )
         self.assertEqual(results[1].preview, "keyword hit")
@@ -402,8 +402,8 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_honors_limit_and_supports_keyword_only(self) -> None:
         self.store.keyword_hits = [
-            {"turn_id": "t1", "session_id": "s9", "score": 0.9, "preview": "one"},
-            {"turn_id": "t2", "session_id": "s9", "score": 0.8, "preview": "two"},
+            {"trace_id": "t1", "session_id": "s9", "score": 0.9, "preview": "one"},
+            {"trace_id": "t2", "session_id": "s9", "score": 0.8, "preview": "two"},
         ]
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
@@ -414,7 +414,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
         results = await service.search("@agent:test", limit=1, app_id="app1")
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].turn_id, "t1")
+        self.assertEqual(results[0].trace_id, "t1")
         self.assertEqual(results[0].session_id, "s9")
         self.assertEqual(len(self.store.calls), 1)
         self.assertEqual(self.store.calls[0]["method"], "keyword")
@@ -422,7 +422,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_supports_semantic_only(self) -> None:
         self.store.semantic_hits = [
-            {"turn_id": "t9", "session_id": "s3", "score": 0.7, "preview": "sem"},
+            {"trace_id": "t9", "session_id": "s3", "score": 0.7, "preview": "sem"},
         ]
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
@@ -432,7 +432,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
         results = await service.search("@user:test", app_id="app1")
 
-        self.assertEqual([r.turn_id for r in results], ["t9"])
+        self.assertEqual([r.trace_id for r in results], ["t9"])
         self.assertEqual([r.session_id for r in results], ["s3"])
         self.assertEqual(len(self.store.calls), 1)
         self.assertEqual(self.store.calls[0]["method"], "semantic")
@@ -447,10 +447,10 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_emits_per_stage_memory_search_events_on_success(self) -> None:
         self.store.keyword_hits = [
-            {"turn_id": "t1", "session_id": "s1", "score": 0.6, "preview": "keyword hit"},
+            {"trace_id": "t1", "session_id": "s1", "score": 0.6, "preview": "keyword hit"},
         ]
         self.store.semantic_hits = [
-            {"turn_id": "t2", "session_id": "s1", "score": 0.8, "preview": "semantic hit"},
+            {"trace_id": "t2", "session_id": "s1", "score": 0.8, "preview": "semantic hit"},
         ]
         event_logger = FakeEventLogger()
         service = MemorySearchService(
@@ -543,10 +543,10 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rerank_failure_emits_error_event(self) -> None:
         self.store.keyword_hits = [
-            {"turn_id": "t1", "session_id": "s1", "score": 0.5, "preview": "hit"},
+            {"trace_id": "t1", "session_id": "s1", "score": 0.5, "preview": "hit"},
         ]
         self.store.semantic_hits = [
-            {"turn_id": "t1", "session_id": "s2", "score": 0.6, "preview": "other"},
+            {"trace_id": "t1", "session_id": "s2", "score": 0.6, "preview": "other"},
         ]
         event_logger = FakeEventLogger()
         service = MemorySearchService(

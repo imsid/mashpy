@@ -490,9 +490,9 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
             assert set(payload["definitions"].keys()) == {"unused_tools", "unused_tool_tokens"}
             assert payload["definitions"]["unused_tools"]["value_type"] == "string_list"
             assert payload["definitions"]["unused_tool_tokens"]["computed_at"] == "turn_complete"
-            assert [turn["turn_id"] for turn in payload["turns"]] == [
-                first_payload["turn_id"],
-                second_payload["turn_id"],
+            assert [turn["trace_id"] for turn in payload["turns"]] == [
+                first_payload["trace_id"],
+                second_payload["trace_id"],
             ]
             assert "unused_tools" in payload["turns"][0]["signals"]
             assert "unused_tool_tokens" in payload["turns"][0]["signals"]
@@ -500,8 +500,8 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
             limited = client.get("/api/v1/agent/primary/sessions/s1/signals", params={"limit": 1})
             assert limited.status_code == 200
             limited_payload = limited.json()["data"]
-            assert [turn["turn_id"] for turn in limited_payload["turns"]] == [
-                second_payload["turn_id"]
+            assert [turn["trace_id"] for turn in limited_payload["turns"]] == [
+                second_payload["trace_id"]
             ]
 
 
@@ -1192,7 +1192,7 @@ def test_workflow_runs_endpoint_lists_memory_turn_summaries() -> None:
             assert run["error"] is None
             assert "output" not in payload["runs"][0]
             assert run["summary"] == {
-                "turn_id": turn_id,
+                "trace_id": turn_id,
                 "session_id": f"session-{run_id.replace(':', '-')}",
                 "task_id": "scan-codebase-and-append-changelog",
                 "agent_id": "changelog-agent",

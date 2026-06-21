@@ -405,7 +405,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     signal_rows = await primary.get_session_signals("s-1")
                     self.assertGreaterEqual(len(signal_rows), 1)
-                    self.assertEqual(signal_rows[-1]["turn_id"], result["turn_id"])
+                    self.assertEqual(signal_rows[-1]["trace_id"], result["trace_id"])
                     self.assertIn("unused_tools", signal_rows[-1]["signals"])
                     self.assertIn("unused_tool_tokens", signal_rows[-1]["signals"])
                 finally:

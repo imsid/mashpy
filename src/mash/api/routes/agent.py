@@ -365,12 +365,12 @@ def build_agent_router() -> APIRouter:
                 message="session_id is required",
                 status_code=400,
             )
-        summary_text, turn_id = await agent.compact_session(
+        summary_text, trace_id = await agent.compact_session(
             session_id=session_id,
             reason=body.reason,
             session_total_tokens_reset=body.session_total_tokens_reset,
         )
-        return success({"summary_text": summary_text, "turn_id": turn_id})
+        return success({"summary_text": summary_text, "trace_id": trace_id})
 
     @router.get("/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning")
     async def get_reasoning_trace(

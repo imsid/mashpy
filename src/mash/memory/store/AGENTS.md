@@ -16,11 +16,11 @@ Memory store protocol and backend implementations.
 ## Behavioral Invariants
 - Preserve `MemoryStore` method signatures and return payload shapes across backends.
 - Memory search retrieval must access storage through `MemoryStore.keyword_search()` and `MemoryStore.semantic_search()`.
-- Keep search result contracts stable (`turn_id`, `session_id`, `score`, `preview` for store-level search hits).
+- Keep search result contracts stable (`trace_id`, `session_id`, `score`, `preview` for store-level search hits).
 - `get_turns()` and `get_turn_by_ids()` must require `app_id` scoping so cross-agent reads cannot mix sessions.
 
 ## Built-In Backend Notes
-- `save_turn()` uses `trace_id` as `turn_id`.
+- `save_turn()` stores the `trace_id` argument as the row PK (`trace_id` column).
 - `get_turns()` returns chronological order.
 - Signal persistence is JSON-compatible across backends.
 - `semantic_search()` is currently a stub (`NotImplementedError`) in the built-in backend.

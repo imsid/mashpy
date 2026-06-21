@@ -508,7 +508,7 @@ The initial schema (`001_initial_schema.sql`) is idempotent — all `CREATE TABL
 
 **Upgrading from a pre-migration deployment** (any release before this schema runner was introduced): The initial migration file contains the full current schema using `IF NOT EXISTS` guards, so the runner applies it safely against an existing database. Only the `_mash_migrations` table is new; existing tables and data are untouched.
 
-**Memory store (`PostgresStore`):** Uses the same principle — schema is initialized on `open()` using `IF NOT EXISTS` guards. `MASH_DATABASE_URL` is required; the agent raises `RuntimeError` at startup if it is unset.
+**Memory store (`PostgresStore`):** Uses the same migration runner pattern. Migrations live in `src/mash/memory/store/backends/postgres/migrations/`, are tracked in `_mash_memory_migrations`, and run automatically on `open()`. Add new memory-store migrations the same way — a new `NNN_description.sql` file in that directory. `MASH_DATABASE_URL` is required; the agent raises `RuntimeError` at startup if it is unset.
 
 ## Environment Variables Reference
 

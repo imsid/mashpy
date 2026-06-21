@@ -13,7 +13,7 @@ Backend expectations:
 - Backends must preserve the `MemoryStore` method signatures.
 - Backends must preserve return shapes so callers and agents can switch backends without changing logic.
 - Search methods must return store-level hit dictionaries with:
-  - `turn_id`
+  - `trace_id`
   - `session_id`
   - `score`
   - `preview`
@@ -66,7 +66,7 @@ Current backend status:
 `save_turn(...) -> str`
 - Persists one conversation turn.
 - Inputs:
-  - `trace_id`: used as the stored `turn_id`
+  - `trace_id`: used as the stored `trace_id`
   - `session_id`
   - `app_id`
   - `user_message`
@@ -75,7 +75,7 @@ Current backend status:
   - `session_total_tokens`
   - `metadata`
 - Returns:
-  - the persisted `turn_id`
+  - the persisted `trace_id`
 
 Notes:
 - `signals` are backend-defined JSON-compatible values associated with the turn.
@@ -83,7 +83,7 @@ Notes:
 `get_turns(session_id, app_id, limit=None) -> list[dict]`
 - Returns conversation turns for one session.
 - Expected shape per item:
-  - `turn_id`
+  - `trace_id`
   - `user_message`
   - `agent_response`
   - `session_total_tokens`
@@ -96,9 +96,9 @@ Behavior:
 - `app_id` is required and scopes reads to one agent.
 
 `get_turn_by_ids(pairs, app_id) -> list[dict] | None`
-- Bulk lookup by exact `{session_id, turn_id}` pairs.
+- Bulk lookup by exact `{session_id, trace_id}` pairs.
 - Expected shape per returned item:
-  - `turn_id`
+  - `trace_id`
   - `session_id`
   - `user_message`
   - `agent_response`
@@ -111,7 +111,7 @@ Behavior:
 `get_session_signals(session_id, app_id, limit=None) -> list[dict]`
 - Returns chronological per-turn signal payloads for one session.
 - Expected shape per item:
-  - `turn_id`
+  - `trace_id`
   - `created_at`
   - `signals`
 
@@ -158,7 +158,7 @@ Behavior:
   - optional `session_id`
   - optional `app_id`
 - Required hit shape:
-  - `turn_id`
+  - `trace_id`
   - `session_id`
   - `score`
   - `preview`

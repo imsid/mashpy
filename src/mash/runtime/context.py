@@ -186,7 +186,7 @@ async def build_context_with_history(
                         MessageRole.USER,
                         user_text,
                         source="history",
-                        turn_id=turn.get("turn_id"),
+                        trace_id=turn.get("trace_id"),
                     )
 
                 agent_text = turn.get("agent_response")
@@ -195,7 +195,7 @@ async def build_context_with_history(
                         MessageRole.ASSISTANT,
                         agent_text,
                         source="history",
-                        turn_id=turn.get("turn_id"),
+                        trace_id=turn.get("trace_id"),
                     )
 
     context.add_user_message(message)
@@ -223,11 +223,11 @@ async def build_context_payload(
     system_prompt: Any = None,
 ) -> dict[str, Any]:
     compaction_summary_text: Optional[str] = None
-    compaction_summary_turn_id: Optional[str] = None
+    compaction_summary_trace_id: Optional[str] = None
     if self.agent.config.compaction_token_threshold > 0:
         session_total_tokens = await self.get_session_total_tokens(session_id)
         if session_total_tokens >= self.agent.config.compaction_token_threshold:
-            compaction_summary_text, compaction_summary_turn_id = await self.compact_session(
+            compaction_summary_text, compaction_summary_trace_id = await self.compact_session(
                 session_id,
                 reason="auto",
                 session_total_tokens_reset=0,
@@ -239,7 +239,7 @@ async def build_context_payload(
         "context": serialize_context(context),
         "compaction": {
             "compaction_summary_text": compaction_summary_text,
-            "compaction_summary_turn_id": compaction_summary_turn_id,
+            "compaction_summary_trace_id": compaction_summary_trace_id,
         },
     }
 

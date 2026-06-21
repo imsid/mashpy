@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
 from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
 from ...protocol import MemoryStore
+from .migrations import run_migrations
 
 try:  # pragma: no cover - environment dependent
     import psycopg
@@ -32,7 +33,7 @@ class PostgresStore(MemoryStore):
         self._lock = asyncio.Lock()
 
     async def open(self) -> None:
-        """Open the Postgres connection and initialize schema lazily."""
+        """Open the Postgres connection and run pending migrations lazily."""
         if self._conn is not None:
             return
         if psycopg is None or dict_row is None:  # pragma: no cover - env dependent
@@ -49,7 +50,7 @@ class PostgresStore(MemoryStore):
             conn.row_factory = dict_row
             await conn.set_autocommit(True)
             self._conn = conn
-            await self._init_schema()
+            await run_migrations(self._conn)
 
     async def close(self) -> None:
         """Close the Postgres connection."""
@@ -62,135 +63,6 @@ class PostgresStore(MemoryStore):
         if self._conn is None:
             raise RuntimeError("PostgresStore is not open")
         return self._conn
-
-    async def _init_schema(self) -> None:
-        conn = self._get_conn()
-        async with self._lock:
-            async with conn.transaction():
-                async with conn.cursor() as cursor:
-                    await cursor.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_turns (
-                            turn_id TEXT PRIMARY KEY,
-                            session_id TEXT NOT NULL,
-                            app_id TEXT NOT NULL,
-                            user_message TEXT NOT NULL,
-                            agent_response TEXT NOT NULL,
-                            session_total_tokens BIGINT NOT NULL DEFAULT 0,
-                            workflow_id TEXT,
-                            workflow_run_id TEXT,
-                            task_id TEXT,
-                            replayable BOOLEAN NOT NULL DEFAULT TRUE,
-                            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                            created_at DOUBLE PRECISION NOT NULL
-                        )
-                        """
-                    )
-                    for _column_ddl in (
-                        "ADD COLUMN IF NOT EXISTS workflow_id TEXT",
-                        "ADD COLUMN IF NOT EXISTS workflow_run_id TEXT",
-                        "ADD COLUMN IF NOT EXISTS task_id TEXT",
-                        "ADD COLUMN IF NOT EXISTS replayable BOOLEAN NOT NULL DEFAULT TRUE",
-                    ):
-                        await cursor.execute(
-                            f"ALTER TABLE memory_turns {_column_ddl}"
-                        )
-                    await cursor.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_signals (
-                            turn_id TEXT NOT NULL REFERENCES memory_turns(turn_id) ON DELETE CASCADE,
-                            session_id TEXT NOT NULL,
-                            app_id TEXT NOT NULL,
-                            signal_name TEXT NOT NULL,
-                            signal_value JSONB NOT NULL,
-                            PRIMARY KEY (turn_id, signal_name)
-                        )
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_logs (
-                            id BIGSERIAL PRIMARY KEY,
-                            app_id TEXT NOT NULL,
-                            session_id TEXT,
-                            trace_id TEXT,
-                            event_class TEXT NOT NULL,
-                            event_type TEXT NOT NULL,
-                            created_at DOUBLE PRECISION NOT NULL,
-                            payload JSONB NOT NULL
-                        )
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_turns_session
-                        ON memory_turns(session_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_turns_app
-                        ON memory_turns(app_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_turns_workflow
-                        ON memory_turns(app_id, workflow_id)
-                        WHERE workflow_id IS NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_turns_workflow_run
-                        ON memory_turns(app_id, workflow_run_id)
-                        WHERE workflow_run_id IS NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_signals_app_session
-                        ON memory_signals(app_id, session_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_signals_app_name
-                        ON memory_signals(app_id, signal_name)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_logs_app_id
-                        ON memory_logs(app_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_logs_session_id
-                        ON memory_logs(session_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_logs_trace_id
-                        ON memory_logs(trace_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_turns_user_message_tsv
-                        ON memory_turns
-                        USING GIN (to_tsvector('simple', COALESCE(user_message, '')))
-                        """
-                    )
-                    await cursor.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_turns_agent_response_tsv
-                        ON memory_turns
-                        USING GIN (to_tsvector('simple', COALESCE(agent_response, '')))
-                        """
-                    )
 
     async def save_logs(self, logs: List[Dict[str, Any]]) -> None:
         if not logs:
@@ -374,7 +246,6 @@ class PostgresStore(MemoryStore):
         task_id: Optional[str] = None,
         replayable: bool = True,
     ) -> str:
-        turn_id = trace_id
         timestamp = time.time()
         metadata_json = json.dumps(metadata or {}, default=str)
 
@@ -386,7 +257,7 @@ class PostgresStore(MemoryStore):
                     await cursor.execute(
                         """
                         INSERT INTO memory_turns (
-                            turn_id,
+                            trace_id,
                             session_id,
                             app_id,
                             user_message,
@@ -402,7 +273,7 @@ class PostgresStore(MemoryStore):
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                         """,
                         (
-                            turn_id,
+                            trace_id,
                             session_id,
                             app_id,
                             user_message,
@@ -420,7 +291,7 @@ class PostgresStore(MemoryStore):
                         await cursor.executemany(
                             """
                             INSERT INTO memory_signals (
-                                turn_id,
+                                trace_id,
                                 session_id,
                                 app_id,
                                 signal_name,
@@ -430,7 +301,7 @@ class PostgresStore(MemoryStore):
                             """,
                             [
                                 (
-                                    turn_id,
+                                    trace_id,
                                     session_id,
                                     app_id,
                                     signal_name,
@@ -439,7 +310,7 @@ class PostgresStore(MemoryStore):
                                 for signal_name, signal_value in signals.items()
                             ],
                         )
-        return turn_id
+        return trace_id
 
     async def get_turns(
         self,
@@ -453,35 +324,35 @@ class PostgresStore(MemoryStore):
             if limit is None:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
+                    SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND app_id = %s
-                    ORDER BY created_at ASC, turn_id ASC
+                    ORDER BY created_at ASC, trace_id ASC
                     """,
                     params,
                 )
             else:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
+                    SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND app_id = %s
-                    ORDER BY created_at DESC, turn_id DESC
+                    ORDER BY created_at DESC, trace_id DESC
                     LIMIT %s
                     """,
                     [*params, max(0, int(limit))],
                 )
                 rows = list(reversed(rows))
 
-            turn_ids = [str(row["turn_id"]) for row in rows]
-            signals_by_turn = await self._get_signals_for_turn_ids_unlocked(turn_ids)
+            trace_ids = [str(row["trace_id"]) for row in rows]
+            signals_by_trace = await self._get_signals_for_trace_ids_unlocked(trace_ids)
 
         turns: List[Dict[str, Any]] = []
         for row in rows:
             metadata = self._load_json_value(row["metadata"])
             turns.append(
                 {
-                    "turn_id": str(row["turn_id"]),
+                    "trace_id": str(row["trace_id"]),
                     "user_message": (
                         "" if row["user_message"] is None else str(row["user_message"])
                     ),
@@ -492,7 +363,7 @@ class PostgresStore(MemoryStore):
                     ),
                     "session_total_tokens": int(row["session_total_tokens"] or 0),
                     "replayable": bool(row.get("replayable", True)),
-                    "signals": signals_by_turn.get(str(row["turn_id"]), {}),
+                    "signals": signals_by_trace.get(str(row["trace_id"]), {}),
                     "metadata": metadata if isinstance(metadata, dict) else {},
                     "created_at": float(row["created_at"] or 0.0),
                 }
@@ -529,11 +400,11 @@ class PostgresStore(MemoryStore):
 
         direction = "DESC" if sort_desc else "ASC"
         sql = f"""
-            SELECT turn_id, session_id, workflow_id, workflow_run_id, task_id,
+            SELECT trace_id, session_id, workflow_id, workflow_run_id, task_id,
                    user_message, agent_response, metadata, created_at
             FROM memory_turns
             WHERE {' AND '.join(filters)}
-            ORDER BY created_at {direction}, turn_id {direction}
+            ORDER BY created_at {direction}, trace_id {direction}
         """
         if normalized_limit is not None:
             sql += "\nLIMIT %s"
@@ -552,7 +423,7 @@ class PostgresStore(MemoryStore):
             metadata = self._load_json_value(row["metadata"])
             turns.append(
                 {
-                    "turn_id": str(row["turn_id"]),
+                    "trace_id": str(row["trace_id"]),
                     "session_id": str(row["session_id"]),
                     "workflow_id": row.get("workflow_id"),
                     "workflow_run_id": row.get("workflow_run_id"),
@@ -583,34 +454,34 @@ class PostgresStore(MemoryStore):
             if limit is None:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, created_at
+                    SELECT trace_id, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND app_id = %s
-                    ORDER BY created_at ASC, turn_id ASC
+                    ORDER BY created_at ASC, trace_id ASC
                     """,
                     params,
                 )
             else:
                 rows = await self._fetchall_unlocked(
                     """
-                    SELECT turn_id, created_at
+                    SELECT trace_id, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND app_id = %s
-                    ORDER BY created_at DESC, turn_id DESC
+                    ORDER BY created_at DESC, trace_id DESC
                     LIMIT %s
                     """,
                     [*params, max(0, int(limit))],
                 )
                 rows = list(reversed(rows))
 
-            turn_ids = [str(row["turn_id"]) for row in rows]
-            signals_by_turn = await self._get_signals_for_turn_ids_unlocked(turn_ids)
+            trace_ids = [str(row["trace_id"]) for row in rows]
+            signals_by_trace = await self._get_signals_for_trace_ids_unlocked(trace_ids)
 
         return [
             {
-                "turn_id": str(row["turn_id"]),
+                "trace_id": str(row["trace_id"]),
                 "created_at": float(row["created_at"] or 0.0),
-                "signals": signals_by_turn.get(str(row["turn_id"]), {}),
+                "signals": signals_by_trace.get(str(row["trace_id"]), {}),
             }
             for row in rows
         ]
@@ -671,7 +542,7 @@ class PostgresStore(MemoryStore):
             rows = await self._fetchall_unlocked(
                 """
                 SELECT
-                    turn_id,
+                    trace_id,
                     session_id,
                     user_message,
                     agent_response,
@@ -679,7 +550,7 @@ class PostgresStore(MemoryStore):
                     created_at
                 FROM memory_turns
                 WHERE app_id = %s AND session_id = %s
-                ORDER BY created_at DESC, turn_id DESC
+                ORDER BY created_at DESC, trace_id DESC
                 LIMIT %s
                 """,
                 (app_id, session_id, normalized_limit),
@@ -690,7 +561,7 @@ class PostgresStore(MemoryStore):
             metadata = self._load_json_value(row["metadata"])
             traces.append(
                 {
-                    "trace_id": str(row["turn_id"]),
+                    "trace_id": str(row["trace_id"]),
                     "session_id": str(row["session_id"]),
                     "user_message": (
                         "" if row["user_message"] is None else str(row["user_message"])
@@ -715,30 +586,28 @@ class PostgresStore(MemoryStore):
         if not pairs:
             return None
 
-        requested_keys: List[tuple[str, str]] = []
         requested_rows: List[tuple[str, str, int]] = []
         for idx, pair in enumerate(pairs):
             session_id = str(pair.get("session_id", "")).strip()
-            turn_id = str(pair.get("turn_id", "")).strip()
-            if not session_id or not turn_id:
+            trace_id = str(pair.get("trace_id", "")).strip()
+            if not session_id or not trace_id:
                 continue
-            requested_keys.append((session_id, turn_id))
-            requested_rows.append((session_id, turn_id, idx))
+            requested_rows.append((session_id, trace_id, idx))
 
         if not requested_rows:
             return None
 
         values_sql = ", ".join("(%s, %s, %s)" for _ in requested_rows)
         params: List[Any] = []
-        for session_id, turn_id, idx in requested_rows:
-            params.extend([session_id, turn_id, idx])
+        for session_id, trace_id, idx in requested_rows:
+            params.extend([session_id, trace_id, idx])
         params.append(app_id)
         sql = f"""
-            WITH requested(session_id, turn_id, ord) AS (
+            WITH requested(session_id, trace_id, ord) AS (
                 VALUES {values_sql}
             )
             SELECT
-                t.turn_id,
+                t.trace_id,
                 t.session_id,
                 t.user_message,
                 t.agent_response,
@@ -746,7 +615,7 @@ class PostgresStore(MemoryStore):
             FROM requested AS r
             JOIN memory_turns AS t
               ON t.session_id = r.session_id
-             AND t.turn_id = r.turn_id
+             AND t.trace_id = r.trace_id
             WHERE t.app_id = %s
             ORDER BY r.ord ASC
         """
@@ -759,7 +628,7 @@ class PostgresStore(MemoryStore):
 
         return [
             {
-                "turn_id": str(row["turn_id"]),
+                "trace_id": str(row["trace_id"]),
                 "session_id": str(row["session_id"]),
                 "user_message": (
                     "" if row["user_message"] is None else str(row["user_message"])
@@ -804,14 +673,14 @@ class PostgresStore(MemoryStore):
 
         sql = f"""
             SELECT
-                turn_id,
+                trace_id,
                 session_id,
                 {column_name} AS preview,
                 ts_rank_cd({tsv_expression}, plainto_tsquery('simple', %s)) AS rank_score,
                 created_at
             FROM memory_turns
             WHERE {' AND '.join(filters)}
-            ORDER BY rank_score DESC, created_at DESC, turn_id ASC
+            ORDER BY rank_score DESC, created_at DESC, trace_id ASC
             LIMIT %s
         """
         params.append(normalized_limit)
@@ -821,7 +690,7 @@ class PostgresStore(MemoryStore):
 
         return [
             {
-                "turn_id": str(row["turn_id"]),
+                "trace_id": str(row["trace_id"]),
                 "session_id": str(row["session_id"]),
                 "score": 1.0 / (1.0 + rank),
                 "preview": "" if row["preview"] is None else str(row["preview"]),
@@ -851,31 +720,31 @@ class PostgresStore(MemoryStore):
             await cursor.execute(sql, tuple(params))
             return list(await cursor.fetchall())
 
-    async def _get_signals_for_turn_ids_unlocked(
+    async def _get_signals_for_trace_ids_unlocked(
         self,
-        turn_ids: Iterable[str],
+        trace_ids: Iterable[str],
     ) -> Dict[str, Dict[str, Any]]:
-        normalized_turn_ids = [str(turn_id) for turn_id in turn_ids if str(turn_id)]
-        if not normalized_turn_ids:
+        normalized_trace_ids = [str(t) for t in trace_ids if str(t)]
+        if not normalized_trace_ids:
             return {}
 
         rows = await self._fetchall_unlocked(
             """
-            SELECT turn_id, signal_name, signal_value
+            SELECT trace_id, signal_name, signal_value
             FROM memory_signals
-            WHERE turn_id = ANY(%s)
+            WHERE trace_id = ANY(%s)
             """,
-            (normalized_turn_ids,),
+            (normalized_trace_ids,),
         )
 
-        signals_by_turn: Dict[str, Dict[str, Any]] = {}
+        signals_by_trace: Dict[str, Dict[str, Any]] = {}
         for row in rows:
-            turn_id = str(row["turn_id"])
-            signals = signals_by_turn.setdefault(turn_id, {})
+            trace_id = str(row["trace_id"])
+            signals = signals_by_trace.setdefault(trace_id, {})
             signals[str(row["signal_name"])] = self._load_json_value(
                 row["signal_value"]
             )
-        return signals_by_turn
+        return signals_by_trace
 
     @staticmethod
     def _load_json_dict(value: Any) -> Dict[str, Any]:

@@ -395,7 +395,7 @@ class WorkflowService:
             turns,
             key=lambda item: (
                 float(item.get("created_at") or 0.0),
-                str(item.get("turn_id") or ""),
+                str(item.get("trace_id") or ""),
             ),
         )
         return _workflow_run_summary_from_turn(latest)
@@ -600,12 +600,12 @@ def _runs_from_workflow_turns(
 
 
 def _turn_sort_key(turn: dict[str, Any]) -> tuple[float, str]:
-    return float(turn.get("created_at") or 0.0), str(turn.get("turn_id") or "")
+    return float(turn.get("created_at") or 0.0), str(turn.get("trace_id") or "")
 
 
 def _workflow_run_summary_from_turn(turn: dict[str, Any]) -> dict[str, Any]:
     return {
-        "turn_id": str(turn.get("turn_id") or ""),
+        "trace_id": str(turn.get("trace_id") or ""),
         "session_id": str(turn.get("session_id") or ""),
         "task_id": str(turn.get("task_id") or ""),
         "agent_id": str(turn.get("agent_id") or ""),
