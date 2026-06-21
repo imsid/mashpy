@@ -437,16 +437,16 @@ def _sum_token_usage(events: list[dict[str, Any]]) -> dict[str, int]:
     cache_read_tokens = 0
     cache_write_tokens = 0
     for event in events:
+        if event.get("event_type") != RuntimeEventType.LLM_THINK_COMPLETED.value:
+            continue
         payload = event.get("payload") or {}
         usage = payload.get("token_usage")
-        if isinstance(usage, dict):
-            input_tokens += _safe_int(usage.get("input") or usage.get("input_tokens"))
-            output_tokens += _safe_int(usage.get("output") or usage.get("output_tokens"))
-            cache_read_tokens += _safe_int(usage.get("cache_read") or usage.get("cache_read_tokens"))
-            cache_write_tokens += _safe_int(usage.get("cache_write") or usage.get("cache_write_tokens"))
+        if not isinstance(usage, dict):
             continue
-        input_tokens += _safe_int(payload.get("input_tokens"))
-        output_tokens += _safe_int(payload.get("output_tokens"))
+        input_tokens += _safe_int(usage.get("input") or usage.get("input_tokens"))
+        output_tokens += _safe_int(usage.get("output") or usage.get("output_tokens"))
+        cache_read_tokens += _safe_int(usage.get("cache_read") or usage.get("cache_read_tokens"))
+        cache_write_tokens += _safe_int(usage.get("cache_write") or usage.get("cache_write_tokens"))
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,

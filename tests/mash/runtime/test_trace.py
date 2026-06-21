@@ -289,7 +289,7 @@ class RuntimeTraceTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["cache_read_tokens"], 100)
         self.assertEqual(payload["summary"]["cache_write_tokens"], 30)
 
-    def test_build_runtime_trace_keeps_legacy_fallbacks(self) -> None:
+    def test_build_runtime_trace_extracts_token_fields(self) -> None:
         trace = build_runtime_trace(
             [
                 RuntimeEvent(
@@ -316,11 +316,11 @@ class RuntimeTraceTests(unittest.TestCase):
                     event_id=3,
                     app_id="primary",
                     agent_id="primary",
-                    event_type="llm.request.complete",
+                    event_type="runtime.llm.think.completed",
                     trace_id="trace-1",
                     session_id="s-1",
                     created_at=3.0,
-                    payload={"input_tokens": 5, "output_tokens": 2},
+                    payload={"token_usage": {"input": 5, "output": 2}},
                 ),
                 RuntimeEvent(
                     event_id=4,
