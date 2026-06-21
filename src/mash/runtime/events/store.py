@@ -22,22 +22,18 @@ except ImportError:
 class RuntimeStore(Protocol):
     """Append-only runtime event store."""
 
-    async def open(self) -> None:
-        ...
+    async def open(self) -> None: ...
 
-    async def close(self) -> None:
-        ...
+    async def close(self) -> None: ...
 
-    async def append_event(self, event: RuntimeEvent) -> RuntimeEvent:
-        ...
+    async def append_event(self, event: RuntimeEvent) -> RuntimeEvent: ...
 
     async def list_request_events(
         self,
         request_id: str,
         *,
         after_seq: int = 0,
-    ) -> list[RuntimeEvent]:
-        ...
+    ) -> list[RuntimeEvent]: ...
 
     async def list_events(
         self,
@@ -50,17 +46,13 @@ class RuntimeStore(Protocol):
         event_type_prefix: str | None = None,
         after_event_id: int = 0,
         limit: int | None = None,
-    ) -> list[RuntimeEvent]:
-        ...
+    ) -> list[RuntimeEvent]: ...
 
-    async def has_request(self, request_id: str) -> bool:
-        ...
+    async def has_request(self, request_id: str) -> bool: ...
 
-    async def is_request_terminal(self, request_id: str) -> bool:
-        ...
+    async def is_request_terminal(self, request_id: str) -> bool: ...
 
-    async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
-        ...
+    async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord: ...
 
     async def list_feedback(
         self,
@@ -72,15 +64,13 @@ class RuntimeStore(Protocol):
         session_id: str | None = None,
         q: str | None = None,
         limit: int | None = None,
-    ) -> list[FeedbackRecord]:
-        ...
+    ) -> list[FeedbackRecord]: ...
 
     async def get_latest_trace(
         self,
         app_id: str,
         session_id: str,
-    ) -> dict[str, Any] | None:
-        ...
+    ) -> dict[str, Any] | None: ...
 
     async def list_recent_traces(
         self,
@@ -89,16 +79,14 @@ class RuntimeStore(Protocol):
         session_id: str | None = None,
         host_id: str | None = None,
         limit: int = 5,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     async def list_sessions(
         self,
         *,
         owner_agent_id: str | None = None,
-        limit: int | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
+        limit: int,
+    ) -> list[dict[str, Any]]: ...
 
     async def aggregate_usage(
         self,
@@ -109,22 +97,17 @@ class RuntimeStore(Protocol):
         bucket: str = "day",
         from_ts: float | None = None,
         to_ts: float | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
-    def register_request_waiter(self, request_id: str) -> asyncio.Event:
-        ...
+    def register_request_waiter(self, request_id: str) -> asyncio.Event: ...
 
     def unregister_request_waiter(
         self, request_id: str, event: asyncio.Event
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def register_global_waiter(self) -> asyncio.Event:
-        ...
+    def register_global_waiter(self) -> asyncio.Event: ...
 
-    def unregister_global_waiter(self, event: asyncio.Event) -> None:
-        ...
+    def unregister_global_waiter(self, event: asyncio.Event) -> None: ...
 
 
 class PostgresRuntimeStore(RuntimeStore):
@@ -207,9 +190,7 @@ class PostgresRuntimeStore(RuntimeStore):
         self._request_waiters[request_id].add(event)
         return event
 
-    def unregister_request_waiter(
-        self, request_id: str, event: asyncio.Event
-    ) -> None:
+    def unregister_request_waiter(self, request_id: str, event: asyncio.Event) -> None:
         waiters = self._request_waiters.get(request_id)
         if waiters:
             waiters.discard(event)
@@ -292,7 +273,9 @@ class PostgresRuntimeStore(RuntimeStore):
                             event.loop_index,
                             event.step_key,
                             event.dedupe_key,
-                            json.dumps(event.payload or {}, ensure_ascii=True, default=str),
+                            json.dumps(
+                                event.payload or {}, ensure_ascii=True, default=str
+                            ),
                             float(event.created_at),
                         ),
                     )
@@ -450,7 +433,9 @@ class PostgresRuntimeStore(RuntimeStore):
                         feedback.session_id,
                         feedback.request_id,
                         feedback.trace_id,
-                        json.dumps(feedback.context or {}, ensure_ascii=True, default=str),
+                        json.dumps(
+                            feedback.context or {}, ensure_ascii=True, default=str
+                        ),
                         float(feedback.created_at),
                     ),
                 )
@@ -586,8 +571,15 @@ class PostgresRuntimeStore(RuntimeStore):
         agents (subagents, cross-agent workflow tasks).
         """
         await self.open()
-        params: list[Any] = [owner_agent_id, owner_agent_id]
-        sql = """
+        # Build the filter conditionally: a bare `%s IS NULL` parameter has no
+        # inferable type in Postgres. The base predicate also keeps the WHERE
+        # clause non-empty when no owner filter is supplied.
+        filters = ["owner_agent_id IS NOT NULL"]
+        params: list[Any] = []
+        if owner_agent_id is not None:
+            filters.append("sessions.owner_agent_id = %s")
+            params.append(owner_agent_id)
+        sql = f"""
             SELECT * FROM (
                 SELECT
                     session_id,
@@ -615,11 +607,11 @@ class PostgresRuntimeStore(RuntimeStore):
                 WHERE session_id IS NOT NULL
                 GROUP BY session_id
             ) sessions
-            WHERE (%s IS NULL OR sessions.owner_agent_id = %s)
+            WHERE {' AND '.join(filters)}
             ORDER BY sessions.latest_event_at DESC, sessions.session_id ASC
         """
         if limit is not None:
-            sql += "\nLIMIT %s"
+            sql += "\n            LIMIT %s"
             params.append(max(1, int(limit)))
         async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
@@ -721,8 +713,7 @@ class PostgresRuntimeStore(RuntimeStore):
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
-                    await cursor.execute(
-                        """
+                    await cursor.execute("""
                         CREATE TABLE IF NOT EXISTS runtime_event_log (
                             event_id BIGSERIAL,
                             request_id TEXT,
@@ -741,110 +732,76 @@ class PostgresRuntimeStore(RuntimeStore):
                             payload JSONB NOT NULL,
                             created_at DOUBLE PRECISION NOT NULL
                         )
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         ADD COLUMN IF NOT EXISTS event_id BIGSERIAL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         ADD COLUMN IF NOT EXISTS host_id TEXT
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         ADD COLUMN IF NOT EXISTS workflow_id TEXT
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         ADD COLUMN IF NOT EXISTS workflow_run_id TEXT
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         DROP CONSTRAINT IF EXISTS runtime_event_log_pkey
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         ALTER COLUMN request_id DROP NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         ALTER TABLE runtime_event_log
                         ALTER COLUMN seq DROP NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_event_event_id
                         ON runtime_event_log(event_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_event_dedupe
                         ON runtime_event_log(request_id, dedupe_key)
                         WHERE request_id IS NOT NULL AND dedupe_key IS NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_event_request_seq
                         ON runtime_event_log(request_id, seq)
                         WHERE request_id IS NOT NULL AND seq IS NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_event_request
                         ON runtime_event_log(request_id, seq)
                         WHERE request_id IS NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_event_app_cursor
                         ON runtime_event_log(app_id, event_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_event_session_cursor
                         ON runtime_event_log(app_id, session_id, event_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_event_trace_cursor
                         ON runtime_event_log(app_id, trace_id, event_id)
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_event_type
                         ON runtime_event_log(event_type)
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_event_host_cursor
                         ON runtime_event_log(app_id, host_id, event_id)
                         WHERE host_id IS NOT NULL
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE TABLE IF NOT EXISTS runtime_feedback (
                             feedback_id BIGSERIAL PRIMARY KEY,
                             feedback_type TEXT NOT NULL,
@@ -857,21 +814,16 @@ class PostgresRuntimeStore(RuntimeStore):
                             context JSONB NOT NULL,
                             created_at DOUBLE PRECISION NOT NULL
                         )
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_feedback_app_created
                         ON runtime_feedback(app_id, created_at)
-                        """
-                    )
-                    await cursor.execute(
-                        """
+                        """)
+                    await cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_runtime_feedback_message_fts
                         ON runtime_feedback
                         USING GIN (to_tsvector('simple', COALESCE(message, '')))
-                        """
-                    )
+                        """)
 
     @staticmethod
     def _dict_to_event(row: dict[str, Any]) -> RuntimeEvent:
@@ -881,9 +833,7 @@ class PostgresRuntimeStore(RuntimeStore):
         return RuntimeEvent(
             event_id=int(row["event_id"]),
             request_id=(
-                str(row["request_id"])
-                if row.get("request_id") is not None
-                else None
+                str(row["request_id"]) if row.get("request_id") is not None else None
             ),
             request_seq=(int(request_seq) if request_seq is not None else None),
             trace_id=row.get("trace_id"),
