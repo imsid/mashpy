@@ -55,8 +55,8 @@ class PostgresRuntimeStore(RuntimeStore):
                 kwargs={"autocommit": True, "row_factory": dict_row},
             )
             await pool.open()
-            self._pool = pool
             await run_migrations(pool)
+            self._pool = pool
 
             self._listener_conn = cast(
                 Any,
