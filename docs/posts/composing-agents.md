@@ -77,16 +77,16 @@ Invoking it submits a normal Mash request to the subagent's runtime through an i
 
 Two details keep this delegation well-behaved:
 
-**Sessions stay separate.** The child request runs in the subagent's own session, derived deterministically from the primary's (`derive_subagent_session_id`). The specialist accumulates its own [memory](memory-and-compaction.md) across delegations, and the primary's conversation stays its own.
+**One session, separate memory.** The child runs under the *primary's* `session_id`: the delegation is a trace within the caller's session, executed by the subagent — there's no per-agent or per-delegation session. The specialist still keeps its own [memory](memory-and-compaction.md) scope (memory is keyed by `app_id`), and its turns are recorded but marked non-replayable, so they never enter the primary's replayed conversation.
 
-**Traces stay connected.** While the child executes, its lifecycle events are mirrored into the parent's trace as `subagent.request.*` and `subagent.agent.trace` events. A client streaming the primary's request watches the delegation happen live, and trace analysis can stitch child traces into the parent's timing breakdown.
+**Traces stay connected.** While the child executes, its lifecycle events are mirrored into the parent's trace as `subagent.request.*` and `subagent.agent.trace` events. Because it shares the session, the child's own trace is recorded there too, tagged with the subagent as the executing agent. A client streaming the primary's request watches the delegation happen live, and trace analysis can stitch child traces into the parent's timing breakdown.
 
 ```mermaid
 flowchart TD
     subgraph pool ["one pool process"]
         H["host: pilot\n(primary + subagent ids)"]
         P["agent: pilot\n(directory + InvokeSubagent, per request)"]
-        A["agent: cli-copilot\nown session, model, memory scope"]
+        A["agent: cli-copilot\nown model, memory scope"]
         B["agent: api-copilot"]
         W["workflow-only agents\n(hidden from delegation)"]
         H -. "snapshot on request" .-> P

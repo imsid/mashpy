@@ -28,6 +28,8 @@ if summary_index is not None:
 
 A **summary checkpoint** is a turn whose content is a generated summary of everything before it. When one exists, context becomes the summary plus the turns after it. The full early history is still in the store, but it stops being loaded, so the session's effective context stays bounded at one summary plus a short tail.
 
+Not every turn is a candidate. Activity that shares the session but isn't part of the conversation — a workflow run or a subagent invocation — is persisted as a **non-replayable** turn and skipped here, so delegated and pipeline work never crowds the primary's context.
+
 ```mermaid
 flowchart LR
     subgraph store ["memory_store (complete)"]
