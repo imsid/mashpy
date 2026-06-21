@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a problem with Mash
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill out the sections
+        below so we can reproduce and fix it quickly.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps or a code snippet that reproduces the problem.
+      placeholder: |
+        1. Define an agent with ...
+        2. Run `mash host serve ...`
+        3. Send a request ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      description: Relevant log output or stack trace. Paste as text, not a screenshot.
+      render: shell
+  - type: input
+    id: mash-version
+    attributes:
+      label: Mash version
+      description: Output of `pip show mashpy` or `mash --version`.
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.11"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14 / Ubuntu 22.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider
+      options:
+        - Anthropic
+        - OpenAI
+        - Gemini
+        - Open-source (OSSCompatibleProvider)
+        - Not applicable
+    validations:
+      required: false

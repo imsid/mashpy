@@ -1,5 +1,10 @@
 # Mash
 
+[![CI](https://github.com/imsid/mashpy/actions/workflows/ci.yml/badge.svg)](https://github.com/imsid/mashpy/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/mashpy.svg)](https://pypi.org/project/mashpy/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mashpy.svg)](https://pypi.org/project/mashpy/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 A Python SDK and host runtime for building self-hosted multi-agent applications.
 
 Mash gives you a Python `AgentSpec` contract for defining agents, a `HostBuilder`
@@ -227,3 +232,13 @@ a `build-mash-agent` skill for interactive agent scaffolding.
 - [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
 - [Package overview](src/mash/README.md) — subsystem boundaries and module guides
 - [Contributing](CONTRIBUTING.md) — development setup, tests, repo structure
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+tests, and the pull request flow, and [SECURITY.md](SECURITY.md) for reporting
+vulnerabilities. Release notes live in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Mash is licensed under the [Apache License 2.0](LICENSE).

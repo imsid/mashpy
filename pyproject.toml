@@ -4,14 +4,14 @@ version = "0.6.12"
 description = "SDK for building hosted multi-agent Mash applications."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Proprietary"}
+license = {text = "Apache-2.0"}
 authors = [{ name = "imsid" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
-  "License :: Other/Proprietary License",
+  "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
 ]
 keywords = ["agents", "cli", "mcp", "llm"]
@@ -40,6 +40,8 @@ dependencies = [
 Homepage = "https://github.com/imsid/mashpy"
 Documentation = "https://github.com/imsid/mashpy#readme"
 Repository = "https://github.com/imsid/mashpy"
+Issues = "https://github.com/imsid/mashpy/issues"
+Changelog = "https://github.com/imsid/mashpy/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mash = "mash.cli.main:main"
