@@ -1,5 +1,79 @@
 # Contributing to Mash
 
+Thanks for your interest in improving Mash. This guide covers how to report
+issues, set up a dev environment, and open a pull request.
+
+## Reporting Issues
+
+- **Bugs and feature requests:** open an issue using the
+  [templates](https://github.com/imsid/mashpy/issues/new/choose).
+- **Questions and ideas:** use
+  [Discussions](https://github.com/imsid/mashpy/discussions).
+- **Security vulnerabilities:** do *not* open a public issue — follow
+  [SECURITY.md](SECURITY.md) to report privately.
+
+## Pull Requests
+
+1. Fork the repo and create a branch off `main`.
+2. Make your change with tests, and keep the PR focused on one thing.
+3. Run the test suite (`uv run --extra dev pytest -q tests/mash`) and make sure
+   it passes.
+4. Update docs / module READMEs if your change affects behavior. **Do not edit
+   `CHANGELOG.md`** — it is generated automatically from commit messages.
+5. Title the PR as a [Conventional Commit](#commit-conventions) (a CI check
+   enforces this) and fill out the template. CI (lint, tests on Python
+   3.10–3.12, build) must pass before review.
+
+PRs are **squash-merged**, and the PR title becomes the commit on `main` — so the
+title is what drives versioning and the changelog. A maintainer (see
+[CODEOWNERS](.github/CODEOWNERS)) is requested for review automatically.
+
+## Commit Conventions
+
+The PR title must follow the
+[Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>(<optional scope>): <description>
+```
+
+Common types and their effect on the next release:
+
+| Type | Use for | Version bump |
+|---|---|---|
+| `feat` | A new feature | minor |
+| `fix` | A bug fix | patch |
+| `perf` | A performance improvement | patch |
+| `docs`, `refactor`, `test`, `build`, `ci`, `chore` | Everything else | none |
+
+A **breaking change** is marked with a `!` (`feat!: drop legacy host API`) or a
+`BREAKING CHANGE:` footer. While Mash is pre-1.0 these bump the minor version;
+after 1.0.0 they bump the major.
+
+Examples:
+
+```
+feat(runtime): add structured output to workflows
+fix(cli): handle missing config file gracefully
+docs: clarify provider setup in README
+feat!: rename AgentSpec.build_llm to build_provider
+```
+
+## Releases
+
+Releases are automated by
+[release-please](https://github.com/googleapis/release-please). As Conventional
+Commits land on `main`, it maintains an open "release PR" that bumps the version
+in `pyproject.toml` and updates `CHANGELOG.md`. A maintainer merges that PR to
+cut the release — release-please tags it and the package is published to PyPI
+automatically. Contributors never bump versions or edit the changelog by hand.
+
+## License of Contributions
+
+Mash is licensed under the [Apache License 2.0](LICENSE). By submitting a
+contribution, you agree that it is licensed under the same terms, per section 5
+of that license.
+
 ## Development Setup
 
 ```bash
