@@ -1,6 +1,6 @@
 ---
 title: Mash
-description: Build self-hosted and model agnostic, multi-agent applications.
+description: Build self-hosted agent applications on frontier and open source models.
 hide:
   - navigation
   - toc
@@ -8,14 +8,16 @@ hide:
 
 # Mash
 
-**Build self-hosted and model agnostic, multi-agent applications.**
+**Build self-hosted agent applications on frontier and open source models.**
 
 [Mash](posts/product-brief.md) is a Python SDK and a host runtime for composing agents.
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
 standardizes interactions between user applications and agents. 
 
-Mash Agents are model agnostic and come with powerful built-in tools 
-including web search, plus skills, memory, observability, pre-built commands and a API/CLI for access.
+It runs on both frontier and open source models. The harness includes web search,
+local and remote (MCP) tools, skills, context and memory management,
+human-in-the-loop (HITL), pre-built commands and workflows, an API/CLI for access,
+observability, and a durable runtime.
 
 **Install:**
 
@@ -180,6 +182,7 @@ mash repl --host assistant
 - [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development with dynamic host composition
 - [**Building dynamic hosts over the API**](posts/building-dynamic-hosts-apis.md): compose agent teams at runtime over plain HTTP
 - [**Deploying a Mash Host**](posts/how-to-deploy.md): laptop, Docker, and cloud
+- [**Release process**](posts/releasing.md): how versioning, changelogs, and releases work
 
 ## Applications
 
