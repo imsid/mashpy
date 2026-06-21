@@ -1,7 +1,8 @@
 # Contributing to Mash
 
 Thanks for your interest in improving Mash. This guide covers how to report
-issues, set up a dev environment, and open a pull request.
+issues, set up a dev environment, and open a pull request. Please read our
+[Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ## Reporting Issues
 

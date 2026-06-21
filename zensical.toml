@@ -38,6 +38,7 @@ nav = [
             { "Building an Agent CLI" = "posts/building-agent-clis.md" },
             { "Building Dynamic Hosts over the API" = "posts/building-dynamic-hosts-apis.md" },
             { "How to Deploy a Mash Host" = "posts/how-to-deploy.md" },
+            { "Releasing Mash" = "posts/releasing.md" },
         ] },
     ] },
 ]
