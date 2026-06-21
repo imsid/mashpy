@@ -419,9 +419,9 @@ class MasherTests(unittest.TestCase):
             runtime_store,
             session_id="s-1",
             trace_id="t-1",
-            event_type="llm.request.complete",
+            event_type="runtime.llm.think.completed",
             created_at=4.0,
-            payload={"input_tokens": 12, "output_tokens": 5},
+            payload={"token_usage": {"input": 12, "output": 5}},
         )
         self._save_trace_log(
             runtime_store,

@@ -434,32 +434,20 @@ async def list_recent_traces(
                     MAX(event_id) AS latest_event_id,
                     COUNT(*) AS event_count,
                     COALESCE(SUM(
-                        COALESCE(
-                            NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric,
-                            NULLIF(payload -> 'token_usage' ->> 'input_tokens', '')::numeric,
-                            NULLIF(payload ->> 'input_tokens', '')::numeric,
-                            0
-                        )
-                        + COALESCE(
-                            NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric,
-                            NULLIF(payload -> 'token_usage' ->> 'output_tokens', '')::numeric,
-                            NULLIF(payload ->> 'output_tokens', '')::numeric,
-                            0
-                        )
+                        CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                            COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
+                            + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                        ELSE 0 END
                     ), 0) AS total_tokens,
                     COALESCE(SUM(
-                        COALESCE(
-                            NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric,
-                            NULLIF(payload -> 'token_usage' ->> 'cache_read_tokens', '')::numeric,
-                            0
-                        )
+                        CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                            COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                        ELSE 0 END
                     ), 0) AS cache_read_tokens,
                     COALESCE(SUM(
-                        COALESCE(
-                            NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric,
-                            NULLIF(payload -> 'token_usage' ->> 'cache_write_tokens', '')::numeric,
-                            0
-                        )
+                        CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                            COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                        ELSE 0 END
                     ), 0) AS cache_write_tokens
                 FROM runtime_event_log
                 WHERE {' AND '.join(filters)}
@@ -495,32 +483,20 @@ async def list_sessions(
                 MAX(created_at) AS latest_event_at,
                 COUNT(DISTINCT trace_id) AS trace_count,
                 COALESCE(SUM(
-                    COALESCE(
-                        NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric,
-                        NULLIF(payload -> 'token_usage' ->> 'input_tokens', '')::numeric,
-                        NULLIF(payload ->> 'input_tokens', '')::numeric,
-                        0
-                    )
-                    + COALESCE(
-                        NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric,
-                        NULLIF(payload -> 'token_usage' ->> 'output_tokens', '')::numeric,
-                        NULLIF(payload ->> 'output_tokens', '')::numeric,
-                        0
-                    )
+                    CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                        COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
+                        + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                    ELSE 0 END
                 ), 0) AS total_tokens,
                 COALESCE(SUM(
-                    COALESCE(
-                        NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric,
-                        NULLIF(payload -> 'token_usage' ->> 'cache_read_tokens', '')::numeric,
-                        0
-                    )
+                    CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                        COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                    ELSE 0 END
                 ), 0) AS cache_read_tokens,
                 COALESCE(SUM(
-                    COALESCE(
-                        NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric,
-                        NULLIF(payload -> 'token_usage' ->> 'cache_write_tokens', '')::numeric,
-                        0
-                    )
+                    CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                        COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                    ELSE 0 END
                 ), 0) AS cache_write_tokens
             FROM runtime_event_log
             WHERE session_id IS NOT NULL
@@ -597,34 +573,24 @@ async def aggregate_usage(
             floor(created_at / %s) * %s AS bucket_start,
             COUNT(DISTINCT trace_id) AS request_count,
             COALESCE(SUM(
-                COALESCE(
-                    NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric,
-                    NULLIF(payload -> 'token_usage' ->> 'input_tokens', '')::numeric,
-                    NULLIF(payload ->> 'input_tokens', '')::numeric,
-                    0
-                )
+                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
+                ELSE 0 END
             ), 0) AS input_tokens,
             COALESCE(SUM(
-                COALESCE(
-                    NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric,
-                    NULLIF(payload -> 'token_usage' ->> 'output_tokens', '')::numeric,
-                    NULLIF(payload ->> 'output_tokens', '')::numeric,
-                    0
-                )
+                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                ELSE 0 END
             ), 0) AS output_tokens,
             COALESCE(SUM(
-                COALESCE(
-                    NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric,
-                    NULLIF(payload -> 'token_usage' ->> 'cache_read_tokens', '')::numeric,
-                    0
-                )
+                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                ELSE 0 END
             ), 0) AS cache_read_tokens,
             COALESCE(SUM(
-                COALESCE(
-                    NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric,
-                    NULLIF(payload -> 'token_usage' ->> 'cache_write_tokens', '')::numeric,
-                    0
-                )
+                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                ELSE 0 END
             ), 0) AS cache_write_tokens,
             COALESCE(SUM(
                 CASE

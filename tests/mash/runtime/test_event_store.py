@@ -427,13 +427,13 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
         # Day 1: one trace, two LLM steps, one failed tool call.
         await self._append(
             trace_id="t-1",
-            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
             created_at=day1,
             payload={"token_usage": {"input": 100, "output": 10}},
         )
         await self._append(
             trace_id="t-1",
-            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
             created_at=day1 + 1.0,
             payload={"token_usage": {"input": 200, "output": 20}},
         )
@@ -447,13 +447,13 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
         # Day 2: two distinct traces, one LLM step each.
         await self._append(
             trace_id="t-2",
-            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
             created_at=day2,
             payload={"token_usage": {"input": 50, "output": 5}},
         )
         await self._append(
             trace_id="t-3",
-            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
             created_at=day2 + 1.0,
             payload={"token_usage": {"input": 70, "output": 7}},
         )
@@ -480,7 +480,7 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
         for trace_id, created_at in (("t-1", day1), ("t-2", day2)):
             await self._append(
                 trace_id=trace_id,
-                event_type=RuntimeEventType.STEP_COMPLETED.value,
+                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
                 created_at=created_at,
                 payload={"token_usage": {"input": 10, "output": 1}},
             )
