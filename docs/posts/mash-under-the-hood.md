@@ -164,7 +164,7 @@ store behind context loading, and the backend API request log. The main tables:
 |---|---|---|
 | `runtime_event_log` | runtime | Append-only, ordered event stream for every request. The runtime replays from it across restarts, and trace analysis and the telemetry views are computed from it. |
 | `runtime_feedback` | runtime | Notes submitted through `/feedback`, read back through the feedback API. |
-| `memory_turns` | memory | One row per conversation turn (user message, agent response, running token total). The history that context loading replays into a request. |
+| `memory_turns` | memory | One row per turn (user message, agent response, running token total). The replayable turns are the conversation history context loading feeds into a request; workflow and subagent turns are stored here too but excluded from replay. |
 | `memory_signals` | memory | Named signals emitted on a turn, stored as values keyed to that turn. |
 | `api_event_log` | api | HTTP request and response log for the backend API: method, path, status, duration, and bodies. |
 
