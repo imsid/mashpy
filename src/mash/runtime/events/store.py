@@ -545,7 +545,21 @@ class PostgresRuntimeStore(RuntimeStore):
                         MIN(created_at) AS started_at,
                         MAX(created_at) AS latest_event_at,
                         MAX(event_id) AS latest_event_id,
-                        COUNT(*) AS event_count
+                        COUNT(*) AS event_count,
+                        COALESCE(SUM(
+                            COALESCE(
+                                NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric,
+                                NULLIF(payload -> 'token_usage' ->> 'input_tokens', '')::numeric,
+                                NULLIF(payload ->> 'input_tokens', '')::numeric,
+                                0
+                            )
+                            + COALESCE(
+                                NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric,
+                                NULLIF(payload -> 'token_usage' ->> 'output_tokens', '')::numeric,
+                                NULLIF(payload ->> 'output_tokens', '')::numeric,
+                                0
+                            )
+                        ), 0) AS total_tokens
                     FROM runtime_event_log
                     WHERE {' AND '.join(filters)}
                     GROUP BY trace_id, session_id
@@ -882,6 +896,7 @@ class PostgresRuntimeStore(RuntimeStore):
                 str(row["workflow_run_id"]) if row.get("workflow_run_id") else None
             ),
             "event_count": int(row["event_count"]),
+            "total_tokens": int(row["total_tokens"] or 0),
             "started_at": float(row["started_at"]),
             "latest_event_at": float(row["latest_event_at"]),
             "latest_event_id": int(row["latest_event_id"]),

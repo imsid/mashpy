@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from mash.skills.registry import SkillRegistry
 from mash.skills.tool import SkillTool
 
-from ..logging import AgentTraceEvent, clear_trace_id, set_trace_id
+from ..logging import AgentTraceEvent, clear_trace_id, set_session_id, set_trace_id
 from ..runtime.events import RuntimeEvent, RuntimeEventType
 from .config import AgentConfig, SystemPrompt
 from .context import (
@@ -159,9 +159,11 @@ class Agent:
         """
         # Generate trace ID for this run
         self._trace_id = str(uuid.uuid4())
-        # Set trace ID in thread-local context for cross-component correlation
+        # Set trace ID + session in context for cross-component correlation
+        # (e.g. MCP events are emitted out-of-band and read both from context).
         if self._event_logger:
             set_trace_id(self._trace_id)
+            set_session_id(self._session_id)
 
         # Reset per-run token usage accumulator
         self._run_token_usage = {"input": 0, "output": 0}
