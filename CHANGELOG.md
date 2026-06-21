@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.7.1](https://github.com/imsid/mashpy/compare/mashpy-v0.7.0...mashpy-v0.7.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* **packaging:** include SQL migration files in wheel ([fd75e51](https://github.com/imsid/mashpy/commit/fd75e51a90130a942240a0a504b186d2bcab3c7a))
+
 ## [0.7.0](https://github.com/imsid/mashpy/compare/mashpy-v0.6.12...mashpy-v0.7.0) (2026-06-21)
 
 
