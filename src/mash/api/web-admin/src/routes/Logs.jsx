@@ -152,7 +152,7 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
   );
 }
 
-const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cache hits', 'Traces'];
+const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cached tokens', 'Traces'];
 
 // Pool-wide session rollup (owned by the primary agent), or scoped to one owner
 // agent. Each session expands to its traces, which may span multiple agents.

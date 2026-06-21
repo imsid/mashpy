@@ -340,9 +340,9 @@ export function TraceDrawer({ open, trace, agentId, onClose }) {
             />
             {(tokens.cache_read_tokens > 0 || tokens.cache_write_tokens > 0) && (
               <StatTile
-                label="Cache hits"
+                label="Cached tokens"
                 value={compactNumber(tokens.cache_read_tokens || 0)}
-                hint={`Tokens served from prompt cache (not re-billed at full input rate). ${tokens.cache_write_tokens ? `${tokens.cache_write_tokens.toLocaleString()} written to cache this trace.` : ''}`}
+                hint={`Tokens served from prompt cache — reduces latency and cost. ${tokens.cache_write_tokens ? `${tokens.cache_write_tokens.toLocaleString()} written to cache this trace.` : ''}`}
               />
             )}
           </div>
