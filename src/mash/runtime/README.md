@@ -54,7 +54,8 @@ The runtime is intentionally split into four layers:
 
 2. **Event sourcing**
    - `events/types.py`
-   - `events/store.py`
+   - `events/protocol.py`
+   - `events/store/` (Postgres backend + migrations)
    - defines the append-only runtime event model and the store interface used for replay/streaming
 
 3. **Workflow durability**
@@ -142,9 +143,12 @@ The event sourcing interface is:
 - [`events/types.py`](./events/types.py)
   - `RuntimeEventType`
   - `RuntimeEvent`
-- [`events/store.py`](./events/store.py)
+- [`events/protocol.py`](./events/protocol.py)
   - `RuntimeStore` protocol
+- [`events/store/`](./events/store/)
   - `PostgresRuntimeStore` implementation
+  - `store/postgres/loaders.py` — all read/write query functions
+  - `store/postgres/migrations/` — ordered SQL migration files + runner
 
 The `RuntimeStore` boundary is intentionally small:
 
@@ -232,8 +236,9 @@ This store owns conversation-oriented state:
 - logs and search-oriented memory data
 
 This is the store used for conversation history and long-lived agent memory behavior.
-By default it uses `MASH_DATABASE_URL` when set, otherwise it falls back
-to the per-agent SQLite `state.db` file under `MASH_DATA_DIR`.
+It requires `MASH_DATABASE_URL` to be set. `build_memory_store()` raises
+`RuntimeError` if the variable is absent; override the method to supply
+a custom store implementation.
 
 Signal definitions are runtime-owned metadata, not persisted rows. Hosted
 runtimes expose those definitions from the same collector used during terminal

@@ -482,21 +482,231 @@ class _TestDBOSRequestEngine:
 
 
 class _TestMemoryStore:
-    """In-memory SQLiteStore stand-in that accepts a database_url constructor."""
+    """Minimal in-memory MemoryStore for tests; accepts a database_url constructor."""
 
     def __init__(self, _database_url: str) -> None:
-        from mash.memory.store import SQLiteStore
-
-        self._delegate = SQLiteStore(":memory:")
+        self._turns: list[dict[str, Any]] = []
+        self._logs: list[dict[str, Any]] = []
 
     async def open(self) -> None:
-        await self._delegate.open()
+        pass
 
     async def close(self) -> None:
-        await self._delegate.close()
+        self._turns.clear()
+        self._logs.clear()
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._delegate, name)
+    async def save_logs(self, logs: list[dict[str, Any]]) -> None:
+        self._logs.extend(logs)
+
+    async def get_logs(
+        self,
+        app_id: str,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int | None = None,
+        after_log_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            r for r in self._logs
+            if r.get("app_id") == app_id
+            and (session_id is None or r.get("session_id") == session_id)
+            and (trace_id is None or r.get("trace_id") == trace_id)
+        ]
+        if limit is not None:
+            rows = rows[-limit:]
+        return rows
+
+    async def get_latest_log_trace(
+        self, app_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        return None
+
+    async def list_recent_log_traces(
+        self, app_id: str, session_id: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def save_turn(
+        self,
+        trace_id: str,
+        session_id: str,
+        app_id: str,
+        user_message: str,
+        agent_response: str,
+        signals: dict[str, Any],
+        session_total_tokens: int,
+        metadata: dict[str, Any] | None = None,
+        *,
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        task_id: str | None = None,
+        replayable: bool = True,
+    ) -> str:
+        turn_id = trace_id
+        self._turns.append(
+            {
+                "turn_id": turn_id,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "app_id": app_id,
+                "user_message": user_message,
+                "agent_response": agent_response,
+                "signals": signals,
+                "session_total_tokens": session_total_tokens,
+                "metadata": metadata or {},
+                "workflow_id": workflow_id,
+                "workflow_run_id": workflow_run_id,
+                "task_id": task_id,
+                "replayable": replayable,
+            }
+        )
+        return turn_id
+
+    async def get_turns(
+        self,
+        session_id: str,
+        app_id: str,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            {
+                "turn_id": t["turn_id"],
+                "user_message": t.get("user_message", ""),
+                "agent_response": t.get("agent_response", ""),
+                "session_total_tokens": t.get("session_total_tokens", 0),
+                "replayable": t.get("replayable", True),
+                "signals": t.get("signals") or {},
+                "metadata": t.get("metadata") or {},
+                "created_at": 0.0,
+            }
+            for t in self._turns
+            if t["session_id"] == session_id and t["app_id"] == app_id
+        ]
+        if limit is not None:
+            rows = rows[-limit:]
+        return rows
+
+    async def list_workflow_turns(
+        self,
+        app_id: str,
+        *,
+        workflow_id: str,
+        workflow_run_id: str | None = None,
+        start_time: float | None = None,
+        end_time: float | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        sort_desc: bool = True,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            t for t in self._turns
+            if t["app_id"] == app_id
+            and t.get("workflow_id") == workflow_id
+            and (workflow_run_id is None or t.get("workflow_run_id") == workflow_run_id)
+        ]
+        if sort_desc:
+            rows = list(reversed(rows))
+        rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    async def get_session_signals(
+        self, session_id: str, app_id: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        rows = [
+            {
+                "turn_id": t["turn_id"],
+                "created_at": 0.0,
+                "signals": t.get("signals") or {},
+            }
+            for t in self._turns
+            if t["session_id"] == session_id and t["app_id"] == app_id
+        ]
+        if limit is not None:
+            rows = rows[-limit:]
+        return rows
+
+    async def list_sessions(self, app_id: str) -> list[dict[str, Any]]:
+        seen: dict[str, dict[str, Any]] = {}
+        for t in self._turns:
+            if t["app_id"] != app_id:
+                continue
+            sid = t["session_id"]
+            if sid not in seen:
+                seen[sid] = {"session_id": sid, "app_id": app_id}
+        return list(seen.values())
+
+    async def get_latest_session(self, app_id: str) -> dict[str, Any] | None:
+        return None
+
+    async def get_latest_trace(
+        self, app_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        traces = await self.list_recent_traces(app_id, session_id, limit=1)
+        return traces[0] if traces else None
+
+    async def list_recent_traces(
+        self, app_id: str, session_id: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        rows = [
+            {
+                "trace_id": t["turn_id"],
+                "session_id": t["session_id"],
+                "user_message": t.get("user_message", ""),
+                "agent_response": t.get("agent_response", ""),
+                "metadata": t.get("metadata") or {},
+                "created_at": 0.0,
+            }
+            for t in self._turns
+            if t["app_id"] == app_id and t["session_id"] == session_id
+        ]
+        return list(reversed(rows))[:max(1, int(limit))]
+
+    async def get_turn_by_ids(
+        self, pairs: list[dict[str, str]], app_id: str
+    ) -> list[dict[str, Any]] | None:
+        return None
+
+    async def keyword_search(
+        self,
+        column: Any,
+        query_term: str,
+        limit: int,
+        session_id: str | None = None,
+        app_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        col = str(column)
+        term = query_term.lower()
+        results = []
+        for t in self._turns:
+            if session_id is not None and t["session_id"] != session_id:
+                continue
+            if app_id is not None and t["app_id"] != app_id:
+                continue
+            text = str(t.get(col, "") or "")
+            if term in text.lower():
+                results.append(
+                    {
+                        "turn_id": t["turn_id"],
+                        "session_id": t["session_id"],
+                        "preview": text,
+                        "score": 1.0,
+                        "created_at": 0.0,
+                    }
+                )
+        return results[:max(0, int(limit))]
+
+    async def semantic_search(
+        self,
+        column: Any,
+        query_term: str,
+        query_embedding: list[float] | None,
+        limit: int,
+        session_id: str | None = None,
+        app_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return []
 
 
 def build_test_stores(

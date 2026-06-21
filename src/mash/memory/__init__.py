@@ -2,12 +2,11 @@
 
 from .search.service import MemorySearchService
 from .search.types import RetrievalConfig, SearchResult
-from .store import MemoryStore, SQLiteStore
+from .store import MemoryStore
 
 __all__ = [
     "MemorySearchService",
     "MemoryStore",
     "RetrievalConfig",
-    "SQLiteStore",
     "SearchResult",
 ]

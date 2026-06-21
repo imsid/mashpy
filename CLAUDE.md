@@ -125,7 +125,7 @@ Optional overrides:
 
 | Method | Default | Purpose |
 |---|---|---|
-| `build_memory_store()` | Auto (Postgres or SQLite) | Custom memory backend |
+| `build_memory_store()` | Postgres (requires `MASH_DATABASE_URL`) | Custom memory backend |
 | `build_mcp_servers()` | `[]` | MCP server connections |
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |

@@ -12,7 +12,7 @@ from mash.mcp.types import MCPServerConfig
 
 from ..core.config import AgentConfig
 from ..core.llm import LLMProvider
-from ..memory.store import MemoryStore, PostgresStore, SQLiteStore
+from ..memory.store import MemoryStore, PostgresStore
 from ..skills.registry import SkillRegistry
 from ..tools.registry import ToolRegistry
 from ..tools.web_search import WebSearchProvider
@@ -45,14 +45,16 @@ class AgentSpec(ABC):
     def build_memory_store(self) -> MemoryStore:
         """Construct the agent memory store.
 
-        By default, Mash provisions:
-        - a Postgres store when `MASH_DATABASE_URL` is set
-        - otherwise a SQLite store at `<data_root>/<agent_id>/state.db`
+        Requires ``MASH_DATABASE_URL`` to be set. Override this method to
+        supply a custom store implementation.
         """
         memory_database_url = resolve_database_url()
-        if memory_database_url:
-            return PostgresStore(memory_database_url)
-        return SQLiteStore(self.get_agent_data_dir() / "state.db")
+        if not memory_database_url:
+            raise RuntimeError(
+                "MASH_DATABASE_URL is required. "
+                "Set it to a Postgres connection string before starting the agent."
+            )
+        return PostgresStore(memory_database_url)
 
     @abstractmethod
     def build_tools(self) -> ToolRegistry:

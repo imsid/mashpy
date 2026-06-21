@@ -14,7 +14,8 @@ from .spans import (
     build_span_tree,
     serialize_span,
 )
-from .store import PostgresRuntimeStore, RuntimeStore
+from .protocol import RuntimeStore
+from .store import PostgresRuntimeStore
 from .trace import (
     RuntimeTrace,
     build_reasoning_trace,
