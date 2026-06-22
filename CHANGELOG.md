@@ -9,6 +9,18 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.8.0](https://github.com/imsid/mashpy/compare/mashpy-v0.7.2...mashpy-v0.8.0) (2026-06-22)
+
+
+### Features
+
+* **gemini:** migrate GeminiProvider to the Interactions API ([#63](https://github.com/imsid/mashpy/issues/63)) ([4bf2512](https://github.com/imsid/mashpy/commit/4bf251224c85dd4ebfbb3782122db1c035817371))
+
+
+### Documentation
+
+* revise internals series posts and replace two-stores with persistence-store ([#60](https://github.com/imsid/mashpy/issues/60)) ([22fc70f](https://github.com/imsid/mashpy/commit/22fc70f9a1f7057a3dddf57edfdfb09d520f7a04))
+
 ## [0.7.2](https://github.com/imsid/mashpy/compare/mashpy-v0.7.1...mashpy-v0.7.2) (2026-06-22)
 
 
