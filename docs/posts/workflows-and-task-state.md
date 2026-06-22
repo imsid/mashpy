@@ -51,7 +51,7 @@ The two payload fields do different jobs:
 - **`workflow_input`** is per-run trigger data, immutable for the run and passed to every task. Which commits to scan, which agent to target.
 - **`task_state`** is the checkpoint: what the last successful run of this task returned. The changelog task above uses it for incremental behavior. It reads `last_run_ts`, processes only what's newer, and returns a fresh timestamp.
 
-Mash never edits task state. Before a task runs, the framework finds the most recent successful DBOS run output for that workflow and hands the task its slice; failed runs leave state untouched. State moves forward only through successful completions, the same principle as [turn persistence](two-stores.md) at workflow scale.
+Mash never edits task state. Before a task runs, the framework finds the most recent successful DBOS run output for that workflow and hands the task its slice; failed runs leave state untouched. State moves forward only through successful completions, the same principle as [turn persistence](persistence-store.md) at workflow scale.
 
 ```mermaid
 flowchart LR

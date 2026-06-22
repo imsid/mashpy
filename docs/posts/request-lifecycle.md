@@ -20,7 +20,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request \
 ```
 
 ```json
-{"data": {"request_id": "7c9e1f0a-…"}}
+{
+  "data": {
+    "request_id": "7c9e1f0a-…",
+    "agent_id": "pilot",
+    "session_id": "s1",
+    "status": "accepted"
+  }
+}
 ```
 
 The answer arrives as a stream of events on `GET /api/v1/agent/pilot/request/{request_id}/events`, ending in a `request.completed` frame that carries the response text. This post follows one request from submission to completion and walks through the events the runtime emits along the way.
@@ -125,16 +132,31 @@ event: agent.trace               ← event_type: runtime.context.loaded
                                    session history was loaded (and compacted, if due)
                                    into the model context
 
+event: agent.trace               ← event_type: runtime.llm.think.started
+                                   think phase began; loop_index=0
+
 event: agent.trace               ← event_type: runtime.llm.think.completed
-                                   one think phase: the model decided to call
-                                   bash("git log --oneline -5"), with token usage
+                                   the model decided to call bash("git log --oneline -5"),
+                                   with token usage
+
+event: agent.trace               ← event_type: runtime.tool.call.started
+                                   tool execution began
 
 event: agent.trace               ← event_type: runtime.tool.call.completed
                                    the tool ran; duration and result preview in payload
 
+event: agent.trace               ← event_type: runtime.step.completed
+                                   the full agent step (think + tool calls) is done;
+                                   loop advances
+
+event: agent.trace               ← event_type: runtime.llm.think.started
+                                   second think phase began; loop_index=1
+
 event: agent.trace               ← event_type: runtime.llm.think.completed
-                                   second think phase: model read the output,
-                                   produced the final answer
+                                   model read the tool output, produced the final answer
+
+event: agent.trace               ← event_type: runtime.step.completed
+                                   final step done; loop exits
 
 event: agent.trace               ← event_type: runtime.turn.persisted
                                    the completed turn was written to conversation

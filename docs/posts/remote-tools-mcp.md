@@ -90,4 +90,4 @@ MCP activity emits structured events alongside everything else in the [event str
 
 Every registered tool, local or remote, is serialized into the `tools` list on each LLM request. The contract that carries that list across three different provider APIs is the subject of the next post.
 
-*Next: [One LLM Contract for Three Providers](one-llm-contract.md).*
+*Next: [One LLM Contract](one-llm-contract.md).*
