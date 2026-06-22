@@ -7,7 +7,8 @@ import os
 import time
 import uuid
 import warnings
-from typing import Any, Dict, List, Optional
+from types import SimpleNamespace
+from typing import Any, AsyncIterator, Dict, List, Optional, cast
 
 try:
     from google import genai
@@ -35,7 +36,7 @@ class GeminiProvider(BaseLLMProvider):
 
     provider_name = "gemini"
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         app_id: str,
         model: str = DEFAULT_GEMINI_MODEL,
@@ -104,10 +105,9 @@ class GeminiProvider(BaseLLMProvider):
                 else:
                     coerced[k] = self._coerce_schema_types_to_uppercase(v)
             return coerced
-        elif isinstance(schema, list):
+        if isinstance(schema, list):
             return [self._coerce_schema_types_to_uppercase(item) for item in schema]
-        else:
-            return schema
+        return schema
 
     def _gemini_instructions(self, system: Any) -> Optional[str]:
         if not system:
@@ -214,7 +214,7 @@ class GeminiProvider(BaseLLMProvider):
             if message.role == "assistant":
                 # Already captured in the previous interaction's steps on the server.
                 continue
-            elif message.role == "tool":
+            if message.role == "tool":
                 for block in message.content:
                     if block.type == "tool_result":
                         call_id = block.data.get("tool_call_id", "")
@@ -238,8 +238,10 @@ class GeminiProvider(BaseLLMProvider):
                     })
         return steps
 
-    def _parse_interaction_response(self, interaction: Any) -> LLMResponse:
-        from ..context import ToolCall
+    def _parse_interaction_response(  # pylint: disable=too-many-locals,too-many-branches
+        self, interaction: Any
+    ) -> LLMResponse:
+        from ..context import ToolCall  # pylint: disable=import-outside-toplevel
 
         steps = interaction.steps or []
 
@@ -314,7 +316,7 @@ class GeminiProvider(BaseLLMProvider):
             provider_response=interaction,
         )
 
-    async def _stream_response(
+    async def _stream_response(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self, request: LLMRequest, kwargs: Dict[str, Any]
     ) -> Any:
         """Stream an interaction and return a plain object shaped like a completed Interaction.
@@ -334,14 +336,15 @@ class GeminiProvider(BaseLLMProvider):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            stream = await self._client.aio.interactions.create(stream=True, **kwargs)
+            raw = await self._client.aio.interactions.create(stream=True, **kwargs)
+        stream = cast(AsyncIterator[Any], raw)
 
         async for event in stream:
             event_type = getattr(event, "event_type", None)
 
             if event_type == "step.start":
                 step = getattr(event, "step", None)
-                if getattr(step, "type", None) == "function_call":
+                if step is not None and getattr(step, "type", None) == "function_call":
                     idx = getattr(event, "index", len(function_calls))
                     function_calls[idx] = {
                         "id": step.id,
@@ -379,32 +382,30 @@ class GeminiProvider(BaseLLMProvider):
         # Build a plain object that _parse_interaction_response can consume.
         steps = []
         if thought_parts:
-            from types import SimpleNamespace as _NS
-            steps.append(_NS(
+            steps.append(SimpleNamespace(
                 type="thought",
-                summary=[_NS(type="text", text="".join(thought_parts))],
+                summary=[SimpleNamespace(type="text", text="".join(thought_parts))],
             ))
         if text_parts:
-            from types import SimpleNamespace as _NS
-            steps.append(_NS(
+            steps.append(SimpleNamespace(
                 type="model_output",
-                content=[_NS(type="text", text="".join(text_parts))],
+                content=[SimpleNamespace(type="text", text="".join(text_parts))],
             ))
         for fc in sorted(function_calls.values(), key=lambda x: x.get("id", "")):
-            from types import SimpleNamespace as _NS
             args_text = "".join(fc["args_fragments"])
             args: Dict[str, Any] = fc["args_initial"]
             if args_text:
                 try:
                     args = json.loads(args_text)
-                except Exception:
+                except Exception:  # pylint: disable=broad-except
                     pass
-            steps.append(_NS(type="function_call", id=fc["id"], name=fc["name"], arguments=args))
+            steps.append(SimpleNamespace(
+                type="function_call", id=fc["id"], name=fc["name"], arguments=args
+            ))
 
         usage = getattr(final_interaction, "usage", None) if final_interaction else None
 
-        from types import SimpleNamespace as _NS
-        return _NS(
+        return SimpleNamespace(
             id=getattr(final_interaction, "id", None),
             status=getattr(final_interaction, "status", "completed"),
             steps=steps,
@@ -414,7 +415,7 @@ class GeminiProvider(BaseLLMProvider):
     async def close(self) -> None:
         pass
 
-    async def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:  # pylint: disable=too-many-locals
         request_start = time.time()
 
         session_key = self._session_id or ""
@@ -455,11 +456,11 @@ class GeminiProvider(BaseLLMProvider):
             if thinking_summaries:
                 generation_config["thinking_summaries"] = thinking_summaries
 
-            kwargs: Dict[str, Any] = dict(
-                model=self.model,
-                input=input_steps,
-                generation_config=generation_config,
-            )
+            kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "input": input_steps,
+                "generation_config": generation_config,
+            }
             if system_instruction:
                 kwargs["system_instruction"] = system_instruction
             if interaction_tools:
