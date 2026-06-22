@@ -13,6 +13,12 @@ issues, set up a dev environment, and open a pull request. Please read our
 - **Security vulnerabilities:** do *not* open a public issue — follow
   [SECURITY.md](SECURITY.md) to report privately.
 
+## Development Flow (Claude Code)
+
+If you use Claude Code, the `/triage` skill covers the full development flow —
+from an informal bug report or feature request through a filed issue and open PR.
+Invoke it with `/triage` and describe the problem; the skill guides the rest.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch off `main`.
