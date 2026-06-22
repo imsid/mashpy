@@ -43,6 +43,7 @@ class GeminiProvider(BaseLLMProvider):
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
         session_id: Optional[str] = None,
+        stateful: bool = False,
     ) -> None:
         super().__init__(
             app_id=app_id,
@@ -71,7 +72,8 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as exc:
             raise RuntimeError("Failed to initialize Gemini client.") from exc
 
-        # Keyed by session_id; previous_interaction_id provides server-side caching.
+        # Stateful mode: chain turns via previous_interaction_id instead of resending full history.
+        self._stateful = stateful
         self._interaction_ids: Dict[str, str] = {}
         self._sent_message_counts: Dict[str, int] = {}
 
@@ -421,7 +423,7 @@ class GeminiProvider(BaseLLMProvider):
         session_key = self._session_id or ""
         prev_id = self._interaction_ids.get(session_key)
         prev_count = self._sent_message_counts.get(session_key, 0)
-        use_chain = request.use_prompt_caching and prev_id is not None
+        use_chain = self._stateful and prev_id is not None
 
         call_id_to_name = self._build_call_id_to_name(request)
 
@@ -483,9 +485,9 @@ class GeminiProvider(BaseLLMProvider):
                     warnings.simplefilter("ignore")
                     raw = await self._client.aio.interactions.create(**kwargs)
 
-            if request.use_prompt_caching and raw.id:
+            if self._stateful and raw.id:
                 self._interaction_ids[session_key] = raw.id
-            self._sent_message_counts[session_key] = len(request.messages)
+                self._sent_message_counts[session_key] = len(request.messages)
 
             response = self._parse_interaction_response(raw)
 

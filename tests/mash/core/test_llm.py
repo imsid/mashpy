@@ -487,11 +487,12 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
-    def _make_provider(self, session_id: str = "s-1") -> GeminiProvider:
+    def _make_provider(self, session_id: str = "s-1", stateful: bool = False) -> GeminiProvider:
         provider = object.__new__(GeminiProvider)
         provider._model = "gemini-3.5-flash"
         provider._app_id = "test"
         provider._session_id = session_id
+        provider._stateful = stateful
         provider._event_logger = None
         provider._trace_id = None
         provider._interaction_ids: dict = {}
@@ -549,7 +550,6 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
             max_tokens=100,
-            use_prompt_caching=True,
         )
         defaults.update(overrides)
         return LLMRequest(**defaults)
@@ -715,8 +715,8 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("previous_interaction_id", call_kwargs)
         self.assertIsInstance(call_kwargs["input"], list)
 
-    async def test_second_send_chains_with_previous_interaction_id(self) -> None:
-        provider = self._make_provider(session_id="s-chain")
+    async def test_stateful_second_send_chains_with_previous_interaction_id(self) -> None:
+        provider = self._make_provider(session_id="s-chain", stateful=True)
         interaction = self._make_interaction(text="response")
         client, mock_create = self._make_client(interaction)
         provider._client = client
@@ -728,8 +728,8 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         second_call_kwargs = mock_create.call_args_list[1].kwargs
         self.assertEqual(second_call_kwargs["previous_interaction_id"], "interaction-abc")
 
-    async def test_second_send_sends_only_delta(self) -> None:
-        provider = self._make_provider(session_id="s-delta")
+    async def test_stateful_second_send_sends_only_delta(self) -> None:
+        provider = self._make_provider(session_id="s-delta", stateful=True)
         interaction = self._make_interaction(text="first response")
         client, mock_create = self._make_client(interaction)
         provider._client = client
@@ -753,13 +753,30 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_input[0]["type"], "user_input")
         self.assertEqual(second_input[0]["content"][0]["text"], "Follow-up")
 
-    async def test_caching_disabled_never_chains(self) -> None:
-        provider = self._make_provider(session_id="s-nocache")
+    async def test_stateless_mode_never_chains(self) -> None:
+        # Default stateless provider must never use previous_interaction_id,
+        # even across multiple sends in the same session.
+        provider = self._make_provider(session_id="s-stateless")
         interaction = self._make_interaction(text="resp")
         client, mock_create = self._make_client(interaction)
         provider._client = client
 
-        request = self._make_request(use_prompt_caching=False)
+        request = self._make_request()
+        await provider.send(request)
+        await provider.send(request)
+
+        for call in mock_create.call_args_list:
+            self.assertNotIn("previous_interaction_id", call.kwargs)
+
+    async def test_stateless_mode_ignores_use_prompt_caching_flag(self) -> None:
+        # GeminiProvider is stateless by default; use_prompt_caching on the
+        # request has no effect — it is an Anthropic-specific concept.
+        provider = self._make_provider(session_id="s-flag")
+        interaction = self._make_interaction(text="resp")
+        client, mock_create = self._make_client(interaction)
+        provider._client = client
+
+        request = self._make_request(use_prompt_caching=True)
         await provider.send(request)
         await provider.send(request)
 
