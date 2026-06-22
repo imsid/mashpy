@@ -1,0 +1,94 @@
+Mash
+Copyright 2024 imsid
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+---
+
+This product includes the following third-party software:
+
+--------------------------------------------------------------------------------
+DBOS Transact
+Copyright (c) 2024 DBOS, Inc.
+License: MIT
+https://github.com/dbos-inc/dbos-transact-py
+--------------------------------------------------------------------------------
+Anthropic Python SDK
+Copyright 2023 Anthropic, PBC.
+License: MIT
+https://github.com/anthropics/anthropic-sdk-python
+--------------------------------------------------------------------------------
+Model Context Protocol Python SDK
+Copyright (c) 2024 Anthropic, PBC
+License: MIT
+https://github.com/modelcontextprotocol/python-sdk
+--------------------------------------------------------------------------------
+FastAPI
+Copyright (c) 2018 Sebastián Ramírez
+License: MIT
+https://github.com/tiangolo/fastapi
+--------------------------------------------------------------------------------
+Starlette
+Copyright © 2018, Encode OSS Ltd.
+License: BSD 3-Clause
+https://github.com/encode/starlette
+--------------------------------------------------------------------------------
+HTTPX
+Copyright © 2019, Encode OSS Ltd.
+License: BSD 3-Clause
+https://github.com/encode/httpx
+--------------------------------------------------------------------------------
+Uvicorn
+Copyright © 2017-present, Encode OSS Ltd.
+License: BSD 3-Clause
+https://github.com/encode/uvicorn
+--------------------------------------------------------------------------------
+Rich
+Copyright (c) 2020 Will McGugan
+License: MIT
+https://github.com/Textualize/rich
+--------------------------------------------------------------------------------
+python-prompt-toolkit
+Copyright (c) 2014, Jonathan Slenders
+License: BSD 3-Clause
+https://github.com/prompt-toolkit/python-prompt-toolkit
+--------------------------------------------------------------------------------
+PyYAML
+Copyright (c) 2017-2021 Ingy döt Net
+Copyright (c) 2006-2016 Kirill Simonov
+License: MIT
+https://github.com/yaml/pyyaml
+--------------------------------------------------------------------------------
+aiosqlite
+Copyright (c) 2022 Amethyst Reese
+License: MIT
+https://github.com/omnilib/aiosqlite
+--------------------------------------------------------------------------------
+tomli
+Copyright (c) 2021 Taneli Hukkinen
+License: MIT
+https://github.com/hukkin/tomli
+--------------------------------------------------------------------------------
+OpenAI Python SDK
+Copyright 2026 OpenAI
+License: Apache 2.0
+https://github.com/openai/openai-python
+--------------------------------------------------------------------------------
+google-genai
+Copyright 2024 Google LLC
+License: Apache 2.0
+https://github.com/googleapis/python-genai
+--------------------------------------------------------------------------------
+Requests
+Copyright 2019 Kenneth Reitz
+License: Apache 2.0
+https://github.com/psf/requests
+--------------------------------------------------------------------------------
+psycopg
+Copyright (c) 2006-present Daniele Varrazzo and the Psycopg Team
+License: GNU Lesser General Public License v3 (LGPL-3.0)
+https://github.com/psycopg/psycopg
+
+NOTE: psycopg is linked dynamically as an installed package and is not
+modified or bundled. Use under LGPL section 4 (combined works).
+--------------------------------------------------------------------------------
