@@ -9,6 +9,19 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.7.2](https://github.com/imsid/mashpy/compare/mashpy-v0.7.1...mashpy-v0.7.2) (2026-06-22)
+
+
+### Bug Fixes
+
+* **mcp:** stop phantom session creation from MCP startup events ([#58](https://github.com/imsid/mashpy/issues/58)) ([1e42175](https://github.com/imsid/mashpy/commit/1e42175fc212549f1dc7227601b1abcd4dc19961))
+* **telemetry:** eliminate token double-counting in session and trace aggregations ([#56](https://github.com/imsid/mashpy/issues/56)) ([5cdfe33](https://github.com/imsid/mashpy/commit/5cdfe33876fef4f0feaf6660414b598c1fd4d1d0))
+
+
+### Documentation
+
+* add /triage skill, NOTICE file, and dev flow note ([#59](https://github.com/imsid/mashpy/issues/59)) ([5a84c76](https://github.com/imsid/mashpy/commit/5a84c767165fcbc61eea0674148ad41808aa5c97))
+
 ## [0.7.1](https://github.com/imsid/mashpy/compare/mashpy-v0.7.0...mashpy-v0.7.1) (2026-06-21)
 
 
