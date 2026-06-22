@@ -162,9 +162,10 @@ mash repl --host assistant
 
 ## Internals
 
-- [**The life of a Mash request**](posts/request-lifecycle.md): follow one message from POST to `request.completed`
-- [**The durable agent loop**](posts/durable-agent-loop.md): checkpoints, retries, and surviving `kill -9`
-- [**Two stores**](posts/two-stores.md): the event log vs. conversation memory
+- [**Life of a Mash request**](posts/request-lifecycle.md): follow one message from POST to `request.completed`
+- [**Durable agent loop**](posts/durable-agent-loop.md): checkpoints, retries, and surviving `kill -9`
+- [**Persistence store**](posts/persistence-store.md): the event log, feedback, and memory tables a request touches
+- [**Host API and CLI**](posts/host-api-and-cli.md): the HTTP surface applications integrate with, and the REPL built on it
 - [**Human-in-the-loop**](posts/human-in-the-loop.md): tool approval and ask-user on one durable mechanism
 - [**Remote tools over MCP**](posts/remote-tools-mcp.md): connecting MCP servers and their tools
 - [**One LLM contract**](posts/one-llm-contract.md): normalized requests, caching, streaming
@@ -173,7 +174,6 @@ mash repl --host assistant
 - [**Memory and compaction**](posts/memory-and-compaction.md): history, summary checkpoints, and signals
 - [**Composing agents under one host**](posts/composing-agents.md): subagents, delegation, shared plumbing
 - [**Workflows**](posts/workflows-and-task-state.md): code authored and dynamic specs for deterministic tasks
-- [**The host API and CLI**](posts/host-api-and-cli.md): the HTTP surface applications integrate with, and the REPL built on it
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 
 ## Guides

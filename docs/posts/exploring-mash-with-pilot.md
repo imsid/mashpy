@@ -67,15 +67,6 @@ shows exactly the team you composed. To change the team, exit and re-run
 `pilot compose` (define-or-replace), or switch with
 `pilot repl --host <other>`.
 
-## A store for Mash
-
-Pilot's catalog is about Mash itself. Personal agents live in
-[mash-pa](https://github.com/imsid/mash-pa), a sibling store with its own
-`pa` CLI: a `morning-brief` over the GitHub MCP server and a `finance-watch`
-over a local ledger, the integration space the product brief sketches. Both
-stores are the same Mash machinery pointed at different catalogs, which is
-the point of a flat pool and host compositions as configuration.
-
 ## The featured app: the guide
 
 `pilot repl --host guide` opens the Mash codebase guide — the composition
@@ -146,6 +137,7 @@ also serves the admin dashboard, with the trace drawer and span tree, at
 | `/changelog [N]`, `/quiz` | the two feature demos |
 | `/status`, `/session`, `/sessions` | connection and session info |
 | `/help`, `/clear`, `/exit` | shell basics |
+| `/feedback <message>` | record a note or bug report for the session |
 
 Pilot's CLI is a thin layer over `MashRemoteShell` and `MashHostClient`:
 argument parsing, the storefront commands, and local persistence for
