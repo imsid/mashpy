@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -74,7 +75,12 @@ class GeminiProvider(BaseLLMProvider):
         self._sent_message_counts: Dict[str, int] = {}
 
     def capabilities(self) -> LLMCapabilities:
-        return LLMCapabilities(structured_output=True)
+        return LLMCapabilities(
+            structured_output=True,
+            streaming=True,
+            reasoning_content=True,
+            reasoning_controls=True,
+        )
 
     def _validate_model(self, model: str) -> None:
         model_lower = model.lower()
@@ -242,7 +248,19 @@ class GeminiProvider(BaseLLMProvider):
 
         for step in response_steps:
             step_type = getattr(step, "type", None)
-            if step_type == "model_output":
+            if step_type == "thought":
+                thought_parts = []
+                for item in getattr(step, "summary", None) or []:
+                    if getattr(item, "type", None) == "text":
+                        thought_parts.append(getattr(item, "text", ""))
+                if thought_parts:
+                    blocks.append(
+                        LLMContentBlock(
+                            type="thinking",
+                            data={"thinking": "".join(thought_parts)},
+                        )
+                    )
+            elif step_type == "model_output":
                 for content in getattr(step, "content", None) or []:
                     if getattr(content, "type", None) == "text":
                         text = getattr(content, "text", "")
@@ -268,11 +286,13 @@ class GeminiProvider(BaseLLMProvider):
         usage = None
         u = getattr(interaction, "usage", None)
         if u is not None:
+            thought_tokens = getattr(u, "total_thought_tokens", None)
             usage = LLMTokenUsage(
                 input_tokens=getattr(u, "total_input_tokens", None),
                 output_tokens=getattr(u, "total_output_tokens", None),
                 total_tokens=getattr(u, "total_tokens", None),
                 cache_read_tokens=getattr(u, "total_cached_tokens", None),
+                metadata={"thought_tokens": thought_tokens} if thought_tokens else {},
             )
 
         return LLMResponse(
@@ -282,6 +302,103 @@ class GeminiProvider(BaseLLMProvider):
             stop_reason=stop_reason,
             usage=usage,
             provider_response=interaction,
+        )
+
+    async def _stream_response(
+        self, request: LLMRequest, kwargs: Dict[str, Any]
+    ) -> Any:
+        """Stream an interaction and return a plain object shaped like a completed Interaction.
+
+        Emits ``llm.response.delta`` events as text arrives. Thought summary
+        deltas are accumulated and returned as a synthetic ``thought`` step
+        alongside any function_call steps so ``_parse_interaction_response``
+        can handle the assembled result uniformly.
+        """
+        text_parts: List[str] = []
+        thought_parts: List[str] = []
+        # keyed by step index → {id, name, args_fragments}
+        function_calls: Dict[int, Dict[str, Any]] = {}
+        final_interaction = None
+
+        deltas = self._delta_stream(request)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            stream = await self._client.aio.interactions.create(stream=True, **kwargs)
+
+        async for event in stream:
+            event_type = getattr(event, "event_type", None)
+
+            if event_type == "step.start":
+                step = getattr(event, "step", None)
+                if getattr(step, "type", None) == "function_call":
+                    idx = getattr(event, "index", len(function_calls))
+                    function_calls[idx] = {
+                        "id": step.id,
+                        "name": step.name,
+                        "args_fragments": [],
+                        # arguments may already be populated on step.start
+                        "args_initial": dict(getattr(step, "arguments", None) or {}),
+                    }
+
+            elif event_type == "step.delta":
+                delta = getattr(event, "delta", None)
+                delta_type = getattr(delta, "type", None)
+                idx = getattr(event, "index", 0)
+
+                if delta_type == "text":
+                    chunk = getattr(delta, "text", "")
+                    text_parts.append(chunk)
+                    await deltas.push(chunk)
+
+                elif delta_type == "thought_summary":
+                    content = getattr(delta, "content", None)
+                    if getattr(content, "type", None) == "text":
+                        thought_parts.append(getattr(content, "text", ""))
+
+                elif delta_type == "arguments_delta":
+                    if idx in function_calls:
+                        fragment = getattr(delta, "arguments", "") or ""
+                        function_calls[idx]["args_fragments"].append(fragment)
+
+            elif event_type == "interaction.completed":
+                final_interaction = getattr(event, "interaction", None)
+
+        await deltas.flush()
+
+        # Build a plain object that _parse_interaction_response can consume.
+        steps = []
+        if thought_parts:
+            from types import SimpleNamespace as _NS
+            steps.append(_NS(
+                type="thought",
+                summary=[_NS(type="text", text="".join(thought_parts))],
+            ))
+        if text_parts:
+            from types import SimpleNamespace as _NS
+            steps.append(_NS(
+                type="model_output",
+                content=[_NS(type="text", text="".join(text_parts))],
+            ))
+        for fc in sorted(function_calls.values(), key=lambda x: x.get("id", "")):
+            from types import SimpleNamespace as _NS
+            args_text = "".join(fc["args_fragments"])
+            args: Dict[str, Any] = fc["args_initial"]
+            if args_text:
+                try:
+                    args = json.loads(args_text)
+                except Exception:
+                    pass
+            steps.append(_NS(type="function_call", id=fc["id"], name=fc["name"], arguments=args))
+
+        usage = getattr(final_interaction, "usage", None) if final_interaction else None
+
+        from types import SimpleNamespace as _NS
+        return _NS(
+            id=getattr(final_interaction, "id", None),
+            status=getattr(final_interaction, "status", "completed"),
+            steps=steps,
+            usage=usage,
         )
 
     async def close(self) -> None:
@@ -317,13 +434,21 @@ class GeminiProvider(BaseLLMProvider):
         )
 
         try:
+            generation_config: Dict[str, Any] = {
+                "temperature": request.temperature,
+                "max_output_tokens": request.max_tokens,
+            }
+            thinking_level = request.provider_options.get("thinking_level")
+            if thinking_level:
+                generation_config["thinking_level"] = thinking_level
+            thinking_summaries = request.provider_options.get("thinking_summaries")
+            if thinking_summaries:
+                generation_config["thinking_summaries"] = thinking_summaries
+
             kwargs: Dict[str, Any] = dict(
                 model=self.model,
                 input=input_steps,
-                generation_config={
-                    "temperature": request.temperature,
-                    "max_output_tokens": request.max_tokens,
-                },
+                generation_config=generation_config,
             )
             if system_instruction:
                 kwargs["system_instruction"] = system_instruction
@@ -340,11 +465,14 @@ class GeminiProvider(BaseLLMProvider):
                     "schema": structured_output,
                 }
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                raw = await self._client.aio.interactions.create(**kwargs)
+            if request.streaming:
+                raw = await self._stream_response(request, kwargs)
+            else:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    raw = await self._client.aio.interactions.create(**kwargs)
 
-            if request.use_prompt_caching:
+            if request.use_prompt_caching and raw.id:
                 self._interaction_ids[session_key] = raw.id
             self._sent_message_counts[session_key] = len(request.messages)
 

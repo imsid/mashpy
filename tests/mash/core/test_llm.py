@@ -492,6 +492,8 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._model = "gemini-3.5-flash"
         provider._app_id = "test"
         provider._session_id = session_id
+        provider._event_logger = None
+        provider._trace_id = None
         provider._interaction_ids: dict = {}
         provider._sent_message_counts: dict = {}
         provider._emit_request_start = AsyncMock()
@@ -796,6 +798,146 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider = object.__new__(GeminiProvider)
         caps = provider.capabilities()
         self.assertTrue(caps.structured_output)
+        self.assertTrue(caps.streaming)
+        self.assertTrue(caps.reasoning_content)
+        self.assertTrue(caps.reasoning_controls)
+
+    def test_parse_interaction_response_thought_step(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        from types import SimpleNamespace as _NS
+        interaction = SimpleNamespace(
+            id="i-1",
+            status="completed",
+            steps=[
+                SimpleNamespace(type="user_input", content=[]),
+                SimpleNamespace(
+                    type="thought",
+                    summary=[SimpleNamespace(type="text", text="I need to think...")],
+                ),
+                SimpleNamespace(
+                    type="model_output",
+                    content=[SimpleNamespace(type="text", text="Here is my answer.")],
+                ),
+            ],
+            usage=SimpleNamespace(
+                total_input_tokens=10, total_output_tokens=5, total_tokens=15,
+                total_cached_tokens=None, total_thought_tokens=50,
+            ),
+        )
+        parsed = provider._parse_interaction_response(interaction)
+
+        self.assertEqual(len(parsed.content_blocks), 2)
+        self.assertEqual(parsed.content_blocks[0].type, "thinking")
+        self.assertEqual(parsed.content_blocks[0].data["thinking"], "I need to think...")
+        self.assertEqual(parsed.content_blocks[1].type, "text")
+        self.assertEqual(parsed.text, "Here is my answer.")
+        self.assertEqual(parsed.usage.metadata["thought_tokens"], 50)
+
+    async def test_stream_response_text(self) -> None:
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(event_type="step.delta", index=0,
+                delta=SimpleNamespace(type="text", text="Hello "))
+            yield SimpleNamespace(event_type="step.delta", index=0,
+                delta=SimpleNamespace(type="text", text="world"))
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-stream-1", status="completed",
+                    usage=SimpleNamespace(
+                        total_input_tokens=10, total_output_tokens=5,
+                        total_tokens=15, total_cached_tokens=None, total_thought_tokens=None,
+                    ),
+                ))
+
+        mock_create = AsyncMock(return_value=_fake_stream())
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(create=mock_create))
+        )
+
+        request = self._make_request(streaming=True)
+        response = await provider.send(request)
+
+        self.assertEqual(response.text, "Hello world")
+        self.assertEqual(response.stop_reason, "end_turn")
+
+    async def test_stream_response_tool_call(self) -> None:
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(
+                event_type="step.start", index=1,
+                step=SimpleNamespace(
+                    type="function_call", id="call-s1", name="search",
+                    arguments={"q": "cats"},
+                ),
+            )
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-stream-2", status="requires_action",
+                    usage=SimpleNamespace(
+                        total_input_tokens=5, total_output_tokens=2,
+                        total_tokens=7, total_cached_tokens=None, total_thought_tokens=None,
+                    ),
+                ))
+
+        mock_create = AsyncMock(return_value=_fake_stream())
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(create=mock_create))
+        )
+
+        request = self._make_request(streaming=True)
+        response = await provider.send(request)
+
+        self.assertEqual(response.stop_reason, "tool_call")
+        self.assertEqual(len(response.tool_calls), 1)
+        self.assertEqual(response.tool_calls[0].name, "search")
+        self.assertEqual(response.tool_calls[0].arguments, {"q": "cats"})
+
+    async def test_stream_response_with_thought(self) -> None:
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(event_type="step.delta", index=0,
+                delta=SimpleNamespace(
+                    type="thought_summary",
+                    content=SimpleNamespace(type="text", text="thinking hard"),
+                ))
+            yield SimpleNamespace(event_type="step.delta", index=1,
+                delta=SimpleNamespace(type="text", text="Done."))
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-stream-3", status="completed",
+                    usage=SimpleNamespace(
+                        total_input_tokens=8, total_output_tokens=3,
+                        total_tokens=11, total_cached_tokens=None, total_thought_tokens=20,
+                    ),
+                ))
+
+        mock_create = AsyncMock(return_value=_fake_stream())
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(create=mock_create))
+        )
+
+        request = self._make_request(streaming=True)
+        response = await provider.send(request)
+
+        self.assertEqual(response.text, "Done.")
+        thinking_block = next(b for b in response.content_blocks if b.type == "thinking")
+        self.assertEqual(thinking_block.data["thinking"], "thinking hard")
+        self.assertEqual(response.usage.metadata["thought_tokens"], 20)
+
+    async def test_thinking_level_wired_into_generation_config(self) -> None:
+        provider = self._make_provider()
+        interaction = self._make_interaction(text="ok")
+        client, mock_create = self._make_client(interaction)
+        provider._client = client
+
+        request = self._make_request(provider_options={"thinking_level": "high"})
+        await provider.send(request)
+
+        gen_config = mock_create.call_args.kwargs["generation_config"]
+        self.assertEqual(gen_config["thinking_level"], "high")
 
 
 class _FakeOSSStream:
