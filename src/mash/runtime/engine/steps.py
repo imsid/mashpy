@@ -243,30 +243,13 @@ async def _persist_turn_payload(
         task_id=task_id,
         replayable=workflow_id is None and not is_subagent,
     )
-    response_payload: dict[str, Any] = {
+    response_payload = {
         "text": response.text,
         "signals": dict(signals or {}),
         "metadata": dict(response_metadata or {}),
     }
     if "structured_output" in response_metadata:
         response_payload["structured_output"] = response_metadata["structured_output"]
-
-    last_assistant = next(
-        (m for m in reversed(response.context.messages) if m.role == "assistant"),
-        None,
-    )
-    if last_assistant and isinstance(last_assistant.content, list):
-        seen: set[str] = set()
-        citations: list[dict[str, Any]] = []
-        for block in last_assistant.content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                for cit in block.get("citations") or []:
-                    url = cit.get("url") or ""
-                    if url and url not in seen:
-                        seen.add(url)
-                        citations.append({"url": url, "title": cit.get("title") or url})
-        if citations:
-            response_payload["citations"] = citations
     return {
         "trace_id": resolved_trace_id,
         "response": response_payload,

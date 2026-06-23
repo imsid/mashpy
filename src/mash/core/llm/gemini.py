@@ -278,25 +278,25 @@ class GeminiProvider(BaseLLMProvider):
                         )
                     )
             elif step_type == "model_output":
+                step_texts: List[str] = []
+                seen_urls: set = set()
+                sources: List[str] = []
                 for content in getattr(step, "content", None) or []:
                     if getattr(content, "type", None) == "text":
-                        text = getattr(content, "text", "")
-                        text_parts.append(text)
-                        raw_annotations = getattr(content, "annotations", None) or []
-                        citations = [
-                            {
-                                "url": getattr(ann, "url", None),
-                                "title": getattr(ann, "title", None),
-                                "start_index": getattr(ann, "start_index", None),
-                                "end_index": getattr(ann, "end_index", None),
-                            }
-                            for ann in raw_annotations
-                            if getattr(ann, "type", None) == "url_citation"
-                        ]
-                        block_data: Dict[str, Any] = {"text": text}
-                        if citations:
-                            block_data["citations"] = citations
-                        blocks.append(LLMContentBlock(type="text", data=block_data))
+                        step_texts.append(getattr(content, "text", ""))
+                        for ann in getattr(content, "annotations", None) or []:
+                            if getattr(ann, "type", None) == "url_citation":
+                                url = getattr(ann, "url", None) or ""
+                                title = getattr(ann, "title", None) or url
+                                if url and url not in seen_urls:
+                                    seen_urls.add(url)
+                                    sources.append(f"- [{title}]({url})")
+                step_text = "".join(step_texts)
+                if sources:
+                    step_text += "\n\n**Sources:**\n" + "\n".join(sources)
+                if step_text:
+                    text_parts.append(step_text)
+                    blocks.append(LLMContentBlock.text(step_text))
             elif step_type in ("google_search_call", "google_search_result"):
                 pass  # server-side grounding; synthesized text appears in model_output
             elif step_type == "function_call":
