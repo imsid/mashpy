@@ -321,12 +321,11 @@ class MashRemoteShell:
         # Skip the terminal render when the answer already streamed live; only
         # render here for non-streaming providers (and dedupe against any
         # legacy preview render above).
-        if (
-            text
-            and text != streamed_response_text
-            and not self.chain_renderer.take_response_streamed()
-        ):
+        response_streamed = self.chain_renderer.take_response_streamed()
+        if text and text != streamed_response_text and not response_streamed:
             ctx.renderer.markdown(text)
+        elif not text and not streamed_response_text and not response_streamed:
+            ctx.renderer.warn("(no response)")
 
     def run(self) -> None:
         repl = REPL(
