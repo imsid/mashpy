@@ -15,6 +15,7 @@ from mash.api.middleware import APILoggingMiddleware
 from mash.api.routes.agent import build_agent_router
 from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
+from mash.api.routes.pool import build_pool_router
 from mash.api.routes.common import (
     APIError,
     AppRuntimeState,
@@ -144,6 +145,7 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
     )
     api.include_router(build_agent_router())
     api.include_router(build_host_router())
+    api.include_router(build_pool_router())
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())
     api.include_router(build_feedback_router())

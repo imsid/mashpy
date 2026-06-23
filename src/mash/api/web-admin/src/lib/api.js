@@ -84,6 +84,10 @@ export const api = {
   health: () => request('/health'),
   listAgents: () => request('/agent'),
   getAgent: (agentId) => request(`/agent/${encodeURIComponent(agentId)}`),
+  listTools: () => request('/tools'),
+  listSkills: () => request('/skills'),
+  listToolInvocations: () => request('/telemetry/tool-invocations'),
+  listSkillInvocations: () => request('/telemetry/skill-invocations'),
 
   // --- Hosts ---
   listHosts: () => request('/hosts'),

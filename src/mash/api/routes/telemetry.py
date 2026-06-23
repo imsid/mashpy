@@ -418,6 +418,30 @@ def build_telemetry_router() -> APIRouter:
             }
         )
 
+    @router.get("/telemetry/tool-invocations")
+    async def get_tool_invocations(
+        request: Request,
+        from_ts: Optional[float] = Query(default=None),
+        to_ts: Optional[float] = Query(default=None),
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+        invocations = await state.pool.aggregate_tool_invocations(from_ts=from_ts, to_ts=to_ts)
+        return success({"invocations": invocations, "from_ts": from_ts, "to_ts": to_ts})
+
+    @router.get("/telemetry/skill-invocations")
+    async def get_skill_invocations(
+        request: Request,
+        from_ts: Optional[float] = Query(default=None),
+        to_ts: Optional[float] = Query(default=None),
+    ) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+        invocations = await state.pool.aggregate_skill_invocations(from_ts=from_ts, to_ts=to_ts)
+        return success({"invocations": invocations, "from_ts": from_ts, "to_ts": to_ts})
+
     @router.get("/telemetry/sessions")
     async def list_sessions(
         request: Request,

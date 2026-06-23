@@ -342,6 +342,82 @@ class AgentPool:
             for host in self._hosts.values()
         ]
 
+    def describe_tools(self) -> list[dict[str, Any]]:
+        seen: dict[str, dict[str, Any]] = {}
+        agents_by_tool: dict[str, list[str]] = {}
+        for agent_id, runtime in self._agents.items():
+            for name in runtime.tools.list_tools():
+                tool = runtime.tools.get(name)
+                if tool is None:
+                    continue
+                if name not in seen:
+                    seen[name] = {
+                        "name": tool.name,
+                        "description": getattr(tool, "description", ""),
+                        "parameters": getattr(tool, "parameters", {}),
+                        "requires_approval": getattr(tool, "requires_approval", False),
+                        "parallel_safe": getattr(tool, "parallel_safe", True),
+                    }
+                agents_by_tool.setdefault(name, []).append(agent_id)
+        return [{"tool": seen[n], "agents": agents_by_tool[n]} for n in seen]
+
+    def describe_skills(self) -> list[dict[str, Any]]:
+        seen: dict[str, dict[str, Any]] = {}
+        agents_by_skill: dict[str, list[str]] = {}
+        for agent_id, runtime in self._agents.items():
+            for skill in runtime.skills.list_skills():
+                if skill.name not in seen:
+                    seen[skill.name] = {
+                        "name": skill.name,
+                        "description": skill.description,
+                        "type": skill.type,
+                        "content": skill.content,
+                    }
+                agents_by_skill.setdefault(skill.name, []).append(agent_id)
+        return [{"skill": seen[n], "agents": agents_by_skill[n]} for n in seen]
+
+    async def aggregate_tool_invocations(
+        self,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._shared_runtime_store is None:
+            return []
+        counts: dict[str, dict[str, Any]] = {}
+        for agent_id in self.list_agents():
+            rows = await self._shared_runtime_store.count_tool_invocations(
+                agent_id, from_ts=from_ts, to_ts=to_ts
+            )
+            for row in rows:
+                tool_name = row["tool_name"]
+                n = row["count"]
+                if tool_name not in counts:
+                    counts[tool_name] = {"total": 0, "by_agent": {}}
+                counts[tool_name]["total"] += n
+                counts[tool_name]["by_agent"][agent_id] = n
+        return [{"tool_name": name, **data} for name, data in counts.items()]
+
+    async def aggregate_skill_invocations(
+        self,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._shared_runtime_store is None:
+            return []
+        counts: dict[str, dict[str, Any]] = {}
+        for agent_id in self.list_agents():
+            rows = await self._shared_runtime_store.count_skill_invocations(
+                agent_id, from_ts=from_ts, to_ts=to_ts
+            )
+            for row in rows:
+                skill_name = row["skill_name"]
+                n = row["count"]
+                if skill_name not in counts:
+                    counts[skill_name] = {"total": 0, "by_agent": {}}
+                counts[skill_name]["total"] += n
+                counts[skill_name]["by_agent"][agent_id] = n
+        return [{"skill_name": name, **data} for name, data in counts.items()]
+
     async def close(self) -> None:
         unregister_workflow_runner(self.runner_id, self)
         for client in self._clients.values():

@@ -88,6 +88,22 @@ class RuntimeStore(Protocol):
         to_ts: float | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    async def count_tool_invocations(
+        self,
+        app_id: str,
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    async def count_skill_invocations(
+        self,
+        app_id: str,
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]: ...
+
     def register_request_waiter(self, request_id: str) -> asyncio.Event: ...
 
     def unregister_request_waiter(

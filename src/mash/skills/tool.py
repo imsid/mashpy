@@ -47,7 +47,7 @@ class SkillTool:
                 "skill_name": skill.name,
                 "skill_md": skill.content,
             }
-            return ToolResult.success(json.dumps(payload, ensure_ascii=True))
+            return ToolResult.success(json.dumps(payload, ensure_ascii=True), skill_name=skill.name)
 
         if not skill.location:
             return ToolResult.error(
@@ -70,7 +70,7 @@ class SkillTool:
             "skill_name": skill.name,
             "skill_md": skill_md,
         }
-        return ToolResult.success(json.dumps(payload, ensure_ascii=True))
+        return ToolResult.success(json.dumps(payload, ensure_ascii=True), skill_name=skill.name)
 
     def to_llm_format(self) -> Dict[str, Any]:
         description = self._build_description()
