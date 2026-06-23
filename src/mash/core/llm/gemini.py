@@ -283,6 +283,8 @@ class GeminiProvider(BaseLLMProvider):
                         text = getattr(content, "text", "")
                         text_parts.append(text)
                         blocks.append(LLMContentBlock.text(text))
+            elif step_type in ("google_search_call", "google_search_result"):
+                pass  # server-side grounding; synthesized text appears in model_output
             elif step_type == "function_call":
                 call_id = step.id
                 arguments = dict(getattr(step, "arguments", None) or {})
@@ -383,6 +385,14 @@ class GeminiProvider(BaseLLMProvider):
                 final_interaction = getattr(event, "interaction", None)
 
         await deltas.flush()
+
+        # If streaming captured no text and no tool calls, fall back to the
+        # real Interaction from interaction.completed. Grounded responses route
+        # model output through google_search_call/google_search_result steps
+        # that don't emit plain text deltas, so text_parts stays empty while
+        # the synthesized model_output lives in final_interaction.steps.
+        if not text_parts and not function_calls and final_interaction is not None:
+            return final_interaction
 
         # Build a plain object that _parse_interaction_response can consume.
         steps = []
