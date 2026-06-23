@@ -489,10 +489,12 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
 class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
     def _make_provider(self, session_id: str = "s-1", stateful: bool = False) -> GeminiProvider:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         provider._model = "gemini-3.5-flash"
         provider._app_id = "test"
         provider._session_id = session_id
         provider._stateful = stateful
+        provider._web_search = False
         provider._event_logger = None
         provider._trace_id = None
         provider._interaction_ids: dict = {}
@@ -558,6 +560,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_gemini_model_validation(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         with self.assertRaises(ValueError):
             provider._validate_model("gemini-2.0-flash")
         with self.assertRaises(ValueError):
@@ -569,6 +572,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_gemini_schema_coercion(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         schema = {
             "type": "object",
             "properties": {
@@ -594,6 +598,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_messages_to_steps_full_history(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         messages = [
             LLMMessage(role="user", content=[LLMContentBlock.text("Hello")]),
             LLMMessage(role="assistant", content=[
@@ -624,6 +629,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_delta_messages_to_steps_skips_assistant(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         new_messages = [
             LLMMessage(role="assistant", content=[
                 LLMContentBlock.tool_call(tool_call_id="call-2", name="bash", arguments={"cmd": "ls"}),
@@ -641,6 +647,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_delta_messages_includes_new_user_turn(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         new_messages = [
             LLMMessage(role="assistant", content=[LLMContentBlock.text("Done.")]),
             LLMMessage(role="user", content=[LLMContentBlock.text("What next?")]),
@@ -653,6 +660,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_build_interaction_tools(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         tools = [
             LLMToolDefinition(
                 name="bash",
@@ -669,6 +677,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_interaction_response_text(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         interaction = self._make_interaction(text="All done.")
         parsed = provider._parse_interaction_response(interaction)
 
@@ -680,6 +689,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_interaction_response_tool_calls(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         interaction = self._make_interaction(
             tool_calls=[{"id": "call-9", "name": "lookup", "arguments": {"q": "sky"}}]
         )
@@ -692,6 +702,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_interaction_cached_tokens(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         interaction = self._make_interaction(
             text="ok",
             usage={"input": 100, "output": 20, "total": 120, "cached": 80},
@@ -813,6 +824,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capabilities_reports_structured_output(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         caps = provider.capabilities()
         self.assertTrue(caps.structured_output)
         self.assertTrue(caps.streaming)
@@ -821,6 +833,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_interaction_response_thought_step(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         from types import SimpleNamespace as _NS
         interaction = SimpleNamespace(
             id="i-1",
@@ -946,6 +959,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_web_search_tools_replaced_with_native_google_search(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         tools = [
             LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
             LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
@@ -967,6 +981,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_only_web_search_tools_adds_native_only(self) -> None:
         provider = object.__new__(GeminiProvider)
+        provider._web_search = False
         tools = [
             LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
             LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
@@ -994,6 +1009,44 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.tool_calls, [])
         sent_tools = mock_create.call_args.kwargs["tools"]
         self.assertEqual(sent_tools, [{"type": "google_search"}])
+
+    # --- web_search constructor flag ---
+
+    def test_web_search_flag_true_no_tools_adds_native_search(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = True
+        result = provider._build_interaction_tools([])
+        self.assertEqual(result, [{"type": "google_search"}])
+
+    def test_web_search_flag_true_with_mcp_tools_deduplicates(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = True
+        tools = [
+            LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
+            LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
+            LLMToolDefinition(name="bash", description="Run bash", parameters_json_schema={"type": "object"}),
+        ]
+        result = provider._build_interaction_tools(tools)
+        native = [t for t in result if t.get("type") == "google_search"]
+        self.assertEqual(len(native), 1)
+        names = [t.get("name") for t in result if t.get("type") == "function"]
+        self.assertNotIn("web_search", names)
+        self.assertNotIn("web_fetch", names)
+        self.assertIn("bash", names)
+
+    def test_web_search_flag_false_unchanged_behavior(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        tools = [
+            LLMToolDefinition(name="bash", description="Run bash", parameters_json_schema={"type": "object"}),
+        ]
+        result = provider._build_interaction_tools(tools)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["type"], "function")
+        self.assertEqual(result[0]["name"], "bash")
+        # no google_search when flag is off and no web tools present
+        native = [t for t in result if t.get("type") == "google_search"]
+        self.assertEqual(native, [])
 
     async def test_thinking_level_wired_into_generation_config(self) -> None:
         provider = self._make_provider()
