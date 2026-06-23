@@ -327,6 +327,19 @@ class MashRemoteShell:
         elif not text and not streamed_response_text and not response_streamed:
             ctx.renderer.warn("(no response)")
 
+        citations = (
+            response_payload.get("citations")
+            if isinstance(response_payload, dict)
+            else None
+        )
+        if citations:
+            lines = ["**Sources:**"]
+            for cit in citations:
+                url = cit.get("url", "")
+                title = cit.get("title") or url
+                lines.append(f"- [{title}]({url})")
+            ctx.renderer.markdown("\n".join(lines))
+
     def run(self) -> None:
         repl = REPL(
             app_id=f"{self.context.agent_id}@remote",
