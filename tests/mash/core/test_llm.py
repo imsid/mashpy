@@ -957,59 +957,6 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(thinking_block.data["thinking"], "thinking hard")
         self.assertEqual(response.usage.metadata["thought_tokens"], 20)
 
-    def test_web_search_tools_replaced_with_native_google_search(self) -> None:
-        provider = object.__new__(GeminiProvider)
-        provider._web_search = False
-        tools = [
-            LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
-            LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
-            LLMToolDefinition(name="bash", description="Run bash", parameters_json_schema={"type": "object"}),
-        ]
-        result = provider._build_interaction_tools(tools)
-
-        # google_search appears exactly once
-        native = [t for t in result if t.get("type") == "google_search"]
-        self.assertEqual(len(native), 1)
-
-        # web_search / web_fetch function declarations are gone
-        names = [t.get("name") for t in result if t.get("type") == "function"]
-        self.assertNotIn("web_search", names)
-        self.assertNotIn("web_fetch", names)
-
-        # other function tools are preserved
-        self.assertIn("bash", names)
-
-    def test_only_web_search_tools_adds_native_only(self) -> None:
-        provider = object.__new__(GeminiProvider)
-        provider._web_search = False
-        tools = [
-            LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
-            LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
-        ]
-        result = provider._build_interaction_tools(tools)
-        self.assertEqual(result, [{"type": "google_search"}])
-
-    async def test_web_search_produces_no_function_call_round_trip(self) -> None:
-        # With native google_search, the model returns text directly — no tool_call
-        # step reaches the agent loop.
-        provider = self._make_provider()
-        interaction = self._make_interaction(text="Paris is the capital of France.")
-        client, mock_create = self._make_client(interaction)
-        provider._client = client
-
-        request = self._make_request(
-            messages=[LLMMessage(role="user", content=[LLMContentBlock.text("What is the capital of France?")])],
-            tools=[
-                LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
-            ],
-        )
-        response = await provider.send(request)
-
-        self.assertEqual(response.stop_reason, "end_turn")
-        self.assertEqual(response.tool_calls, [])
-        sent_tools = mock_create.call_args.kwargs["tools"]
-        self.assertEqual(sent_tools, [{"type": "google_search"}])
-
     # --- web_search constructor flag ---
 
     def test_web_search_flag_true_no_tools_adds_native_search(self) -> None:
@@ -1018,21 +965,15 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         result = provider._build_interaction_tools([])
         self.assertEqual(result, [{"type": "google_search"}])
 
-    def test_web_search_flag_true_with_mcp_tools_deduplicates(self) -> None:
+    def test_web_search_flag_true_with_other_tools_prepends_native_search(self) -> None:
         provider = object.__new__(GeminiProvider)
         provider._web_search = True
         tools = [
-            LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
-            LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
             LLMToolDefinition(name="bash", description="Run bash", parameters_json_schema={"type": "object"}),
         ]
         result = provider._build_interaction_tools(tools)
-        native = [t for t in result if t.get("type") == "google_search"]
-        self.assertEqual(len(native), 1)
-        names = [t.get("name") for t in result if t.get("type") == "function"]
-        self.assertNotIn("web_search", names)
-        self.assertNotIn("web_fetch", names)
-        self.assertIn("bash", names)
+        self.assertEqual(result[0], {"type": "google_search"})
+        self.assertEqual(result[1]["name"], "bash")
 
     def test_web_search_flag_false_unchanged_behavior(self) -> None:
         provider = object.__new__(GeminiProvider)
