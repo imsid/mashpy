@@ -342,6 +342,44 @@ class AgentPool:
             for host in self._hosts.values()
         ]
 
+    def describe_tools(self) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for agent_id, runtime in self._agents.items():
+            for name in runtime.tools.list_tools():
+                tool = runtime.tools.get(name)
+                if tool is None:
+                    continue
+                result.append(
+                    {
+                        "agent_id": agent_id,
+                        "tool": {
+                            "name": tool.name,
+                            "description": getattr(tool, "description", ""),
+                            "parameters": getattr(tool, "parameters", {}),
+                            "requires_approval": getattr(tool, "requires_approval", False),
+                            "parallel_safe": getattr(tool, "parallel_safe", True),
+                        },
+                    }
+                )
+        return result
+
+    def describe_skills(self) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for agent_id, runtime in self._agents.items():
+            for skill in runtime.skills.list_skills():
+                result.append(
+                    {
+                        "agent_id": agent_id,
+                        "skill": {
+                            "name": skill.name,
+                            "description": skill.description,
+                            "type": skill.type,
+                            "content": skill.content,
+                        },
+                    }
+                )
+        return result
+
     async def close(self) -> None:
         unregister_workflow_runner(self.runner_id, self)
         for client in self._clients.values():

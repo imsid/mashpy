@@ -79,6 +79,16 @@ def build_agent_router() -> APIRouter:
             }
         )
 
+    @router.get("/tools")
+    async def list_tools(request: Request) -> dict[str, Any]:
+        state = state_from_request(request)
+        return success({"tools": state.pool.describe_tools()})
+
+    @router.get("/skills")
+    async def list_skills(request: Request) -> dict[str, Any]:
+        state = state_from_request(request)
+        return success({"skills": state.pool.describe_skills()})
+
     @router.get("/agent/{agent_id}")
     async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
         state = state_from_request(request)

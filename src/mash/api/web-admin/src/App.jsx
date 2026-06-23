@@ -2,6 +2,10 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import Shell from './components/Shell.jsx';
 import Overview from './routes/Overview.jsx';
 import Agents from './routes/Agents.jsx';
+import Tools from './routes/Tools.jsx';
+import ToolDetail from './routes/ToolDetail.jsx';
+import Skills from './routes/Skills.jsx';
+import SkillDetail from './routes/SkillDetail.jsx';
 import Workflows from './routes/Workflows.jsx';
 import Hosts from './routes/Hosts.jsx';
 import Logs from './routes/Logs.jsx';
@@ -14,6 +18,10 @@ export default function App() {
       <Route element={<Shell />}>
         <Route index element={<Overview />} />
         <Route path="agents" element={<Agents />} />
+        <Route path="tools" element={<Tools />} />
+        <Route path="tools/:agentId/:toolName" element={<ToolDetail />} />
+        <Route path="skills" element={<Skills />} />
+        <Route path="skills/:agentId/:skillName" element={<SkillDetail />} />
         <Route path="workflows" element={<Workflows />} />
         <Route path="hosts" element={<Hosts />} />
         <Route path="logs" element={<Logs />} />
