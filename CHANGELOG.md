@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.9.1](https://github.com/imsid/mashpy/compare/mashpy-v0.9.0...mashpy-v0.9.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* **gemini:** fall back to real Interaction when streaming produces no text for grounded responses ([#72](https://github.com/imsid/mashpy/issues/72)) ([c954629](https://github.com/imsid/mashpy/commit/c9546298b961eea8d5ee9557ff640763ce36f7a4))
+
 ## [0.9.0](https://github.com/imsid/mashpy/compare/mashpy-v0.8.0...mashpy-v0.9.0) (2026-06-23)
 
 
