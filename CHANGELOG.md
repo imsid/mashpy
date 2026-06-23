@@ -9,6 +9,18 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.10.0](https://github.com/imsid/mashpy/compare/mashpy-v0.9.1...mashpy-v0.10.0) (2026-06-23)
+
+
+### Features
+
+* **admin-ui:** add Tools and Skills tabs with cards and detail views ([#76](https://github.com/imsid/mashpy/issues/76)) ([326099d](https://github.com/imsid/mashpy/commit/326099d1c03aa9979b96ac54e54a085bd304c974))
+
+
+### Documentation
+
+* **admin-ui:** add README and AGENTS guide for the web-admin SPA ([#78](https://github.com/imsid/mashpy/issues/78)) ([ed4e8c8](https://github.com/imsid/mashpy/commit/ed4e8c857cbeb092b273f86ec45031906d8733a1))
+
 ## [0.9.1](https://github.com/imsid/mashpy/compare/mashpy-v0.9.0...mashpy-v0.9.1) (2026-06-23)
 
 
