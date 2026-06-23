@@ -100,6 +100,9 @@ class ChainOfThoughtRenderer:
             return
         if event.event_type == RuntimeEventType.STEP_COMPLETED.value:
             self._on_runtime_step_complete(event)
+            return
+        if ".error" in event.event_type:
+            self._on_runtime_error_event(event)
 
     def render_runtime_trace(
         self,
@@ -127,6 +130,17 @@ class ChainOfThoughtRenderer:
                 trace_label=trace_label,
             )
         self.finish_trace()
+
+    def _on_runtime_error_event(self, event: RuntimeEvent) -> None:
+        """Render a warning line for any event whose type contains '.error'."""
+        payload = event.payload or {}
+        error = payload.get("error") or payload.get("message") or ""
+        server = payload.get("server_name") or payload.get("tool_name") or ""
+        label = f"[{server}] " if server else ""
+        suffix = f": {error}" if error else ""
+        self._console.print(
+            f"  [bold yellow]⚠[/bold yellow]  {label}{event.event_type}{suffix}"
+        )
 
     def _on_runtime_response_delta(
         self,
