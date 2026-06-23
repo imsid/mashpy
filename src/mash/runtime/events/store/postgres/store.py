@@ -242,3 +242,27 @@ class PostgresRuntimeStore(RuntimeStore):
             from_ts=from_ts,
             to_ts=to_ts,
         )
+
+    async def count_tool_invocations(
+        self,
+        app_id: str,
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        await self.open()
+        return await loaders.count_tool_invocations(
+            self._pool, app_id, from_ts=from_ts, to_ts=to_ts
+        )
+
+    async def count_skill_invocations(
+        self,
+        app_id: str,
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        await self.open()
+        return await loaders.count_skill_invocations(
+            self._pool, app_id, from_ts=from_ts, to_ts=to_ts
+        )

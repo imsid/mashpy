@@ -6,9 +6,10 @@ import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 
 export default function ToolDetail() {
-  const { agentId, toolName } = useParams();
+  const { toolName } = useParams();
   const navigate = useNavigate();
-  const state = useApi(() => api.listTools(), []);
+  const toolsState = useApi(() => api.listTools(), []);
+  const countsState = useApi(() => api.listToolInvocations(), []);
 
   return (
     <div>
@@ -18,32 +19,27 @@ export default function ToolDetail() {
         <span className="text-slate-700">{decodeURIComponent(toolName)}</span>
       </div>
 
-      <Async state={state}>
+      <Async state={toolsState}>
         {(data) => {
-          const entry = data.tools?.find(
-            (t) =>
-              t.agent_id === decodeURIComponent(agentId) &&
-              t.tool.name === decodeURIComponent(toolName),
-          );
+          const decoded = decodeURIComponent(toolName);
+          const entry = data.tools?.find((t) => t.tool.name === decoded);
 
           if (!entry) {
             return (
               <div className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-400">
                 Tool not found.{' '}
-                <button
-                  onClick={() => navigate('/tools')}
-                  className="underline hover:text-slate-600"
-                >
+                <button onClick={() => navigate('/tools')} className="underline hover:text-slate-600">
                   Back to tools
                 </button>
               </div>
             );
           }
 
-          const { tool } = entry;
+          const { tool, agents } = entry;
           const params = tool.parameters;
           const properties = params?.properties || {};
           const required = new Set(params?.required || []);
+          const counts = countsState.data?.invocations?.find((i) => i.tool_name === tool.name);
 
           return (
             <div className="max-w-2xl space-y-6">
@@ -52,23 +48,33 @@ export default function ToolDetail() {
                 {tool.description && (
                   <p className="text-sm text-slate-600">{tool.description}</p>
                 )}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-slate-400">Agent</span>
-                    <Link
-                      to={`/logs?agent=${encodeURIComponent(entry.agent_id)}&tab=sessions`}
-                    >
-                      <Mono>{entry.agent_id}</Mono>
-                    </Link>
-                  </div>
-                  {tool.requires_approval && (
-                    <Chip tone="amber">requires approval</Chip>
-                  )}
-                  {tool.parallel_safe === false && (
-                    <Chip tone="slate">sequential</Chip>
-                  )}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {tool.requires_approval && <Chip tone="amber">requires approval</Chip>}
+                  {tool.parallel_safe === false && <Chip tone="slate">sequential</Chip>}
+                  {agents.map((agentId) => (
+                    <div key={agentId} className="flex items-center gap-1.5">
+                      <span className="text-xs text-slate-400">agent</span>
+                      <Link to={`/logs?agent=${encodeURIComponent(agentId)}&tab=sessions`}>
+                        <Mono>{agentId}</Mono>
+                      </Link>
+                    </div>
+                  ))}
                 </div>
               </div>
+
+              {counts && (
+                <div className="rounded-lg border border-slate-200 px-4 py-3">
+                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">Invocations</div>
+                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                    <span className="text-lg font-semibold text-slate-800">{counts.total.toLocaleString()} total</span>
+                    {Object.entries(counts.by_agent).map(([agentId, count]) => (
+                      <span key={agentId} className="text-sm text-slate-500">
+                        {agentId}: {count.toLocaleString()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {Object.keys(properties).length > 0 && (
                 <div>
@@ -84,9 +90,7 @@ export default function ToolDetail() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            {schema.type && (
-                              <Chip tone="indigo">{schema.type}</Chip>
-                            )}
+                            {schema.type && <Chip tone="indigo">{schema.type}</Chip>}
                           </div>
                           {schema.description && (
                             <p className="mt-1 text-sm text-slate-500">{schema.description}</p>

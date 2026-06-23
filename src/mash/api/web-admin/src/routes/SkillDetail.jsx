@@ -8,9 +8,10 @@ import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 
 export default function SkillDetail() {
-  const { agentId, skillName } = useParams();
+  const { skillName } = useParams();
   const navigate = useNavigate();
-  const state = useApi(() => api.listSkills(), []);
+  const skillsState = useApi(() => api.listSkills(), []);
+  const countsState = useApi(() => api.listSkillInvocations(), []);
 
   return (
     <div>
@@ -20,29 +21,24 @@ export default function SkillDetail() {
         <span className="text-slate-700">{decodeURIComponent(skillName)}</span>
       </div>
 
-      <Async state={state}>
+      <Async state={skillsState}>
         {(data) => {
-          const entry = data.skills?.find(
-            (s) =>
-              s.agent_id === decodeURIComponent(agentId) &&
-              s.skill.name === decodeURIComponent(skillName),
-          );
+          const decoded = decodeURIComponent(skillName);
+          const entry = data.skills?.find((s) => s.skill.name === decoded);
 
           if (!entry) {
             return (
               <div className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-400">
                 Skill not found.{' '}
-                <button
-                  onClick={() => navigate('/skills')}
-                  className="underline hover:text-slate-600"
-                >
+                <button onClick={() => navigate('/skills')} className="underline hover:text-slate-600">
                   Back to skills
                 </button>
               </div>
             );
           }
 
-          const { skill } = entry;
+          const { skill, agents } = entry;
+          const counts = countsState.data?.invocations?.find((i) => i.skill_name === skill.name);
 
           return (
             <div className="max-w-2xl space-y-6">
@@ -51,18 +47,32 @@ export default function SkillDetail() {
                 {skill.description && (
                   <p className="text-sm text-slate-600">{skill.description}</p>
                 )}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-slate-400">Agent</span>
-                    <Link
-                      to={`/logs?agent=${encodeURIComponent(entry.agent_id)}&tab=sessions`}
-                    >
-                      <Mono>{entry.agent_id}</Mono>
-                    </Link>
-                  </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <Chip tone="indigo">{skill.type}</Chip>
+                  {agents.map((agentId) => (
+                    <div key={agentId} className="flex items-center gap-1.5">
+                      <span className="text-xs text-slate-400">agent</span>
+                      <Link to={`/logs?agent=${encodeURIComponent(agentId)}&tab=sessions`}>
+                        <Mono>{agentId}</Mono>
+                      </Link>
+                    </div>
+                  ))}
                 </div>
               </div>
+
+              {counts && (
+                <div className="rounded-lg border border-slate-200 px-4 py-3">
+                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">Invocations</div>
+                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                    <span className="text-lg font-semibold text-slate-800">{counts.total.toLocaleString()} total</span>
+                    {Object.entries(counts.by_agent).map(([agentId, count]) => (
+                      <span key={agentId} className="text-sm text-slate-500">
+                        {agentId}: {count.toLocaleString()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {skill.content ? (
                 <div>

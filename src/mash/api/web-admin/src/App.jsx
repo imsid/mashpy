@@ -19,9 +19,9 @@ export default function App() {
         <Route index element={<Overview />} />
         <Route path="agents" element={<Agents />} />
         <Route path="tools" element={<Tools />} />
-        <Route path="tools/:agentId/:toolName" element={<ToolDetail />} />
+        <Route path="tools/:toolName" element={<ToolDetail />} />
         <Route path="skills" element={<Skills />} />
-        <Route path="skills/:agentId/:skillName" element={<SkillDetail />} />
+        <Route path="skills/:skillName" element={<SkillDetail />} />
         <Route path="workflows" element={<Workflows />} />
         <Route path="hosts" element={<Hosts />} />
         <Route path="logs" element={<Logs />} />

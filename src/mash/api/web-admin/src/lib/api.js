@@ -86,6 +86,8 @@ export const api = {
   getAgent: (agentId) => request(`/agent/${encodeURIComponent(agentId)}`),
   listTools: () => request('/tools'),
   listSkills: () => request('/skills'),
+  listToolInvocations: () => request('/telemetry/tool-invocations'),
+  listSkillInvocations: () => request('/telemetry/skill-invocations'),
 
   // --- Hosts ---
   listHosts: () => request('/hosts'),

@@ -609,3 +609,71 @@ async def aggregate_usage(
             await cursor.execute(query, tuple(params))
             rows = await cursor.fetchall()
     return [usage_row_to_bucket(row) for row in rows]
+
+
+async def count_tool_invocations(
+    pool: Any,
+    app_id: str,
+    *,
+    from_ts: float | None = None,
+    to_ts: float | None = None,
+) -> list[dict[str, Any]]:
+    filters = [
+        "app_id = %s",
+        f"event_type = '{RuntimeEventType.TOOL_CALL_COMPLETED.value}'",
+        "payload->>'tool_name' IS NOT NULL",
+    ]
+    params: list[Any] = [app_id]
+    if from_ts is not None:
+        filters.append("created_at >= %s")
+        params.append(float(from_ts))
+    if to_ts is not None:
+        filters.append("created_at < %s")
+        params.append(float(to_ts))
+    query = f"""
+        SELECT payload->>'tool_name' AS tool_name, COUNT(*) AS count
+        FROM runtime_event_log
+        WHERE {' AND '.join(filters)}
+        GROUP BY payload->>'tool_name'
+        ORDER BY count DESC
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+    return [{"tool_name": str(row["tool_name"]), "count": int(row["count"])} for row in rows]
+
+
+async def count_skill_invocations(
+    pool: Any,
+    app_id: str,
+    *,
+    from_ts: float | None = None,
+    to_ts: float | None = None,
+) -> list[dict[str, Any]]:
+    filters = [
+        "app_id = %s",
+        f"event_type = '{RuntimeEventType.TOOL_CALL_COMPLETED.value}'",
+        "payload->>'tool_name' = 'Skill'",
+        "payload->'result'->'metadata'->>'skill_name' IS NOT NULL",
+    ]
+    params: list[Any] = [app_id]
+    if from_ts is not None:
+        filters.append("created_at >= %s")
+        params.append(float(from_ts))
+    if to_ts is not None:
+        filters.append("created_at < %s")
+        params.append(float(to_ts))
+    query = f"""
+        SELECT payload->'result'->'metadata'->>'skill_name' AS skill_name,
+               COUNT(*) AS count
+        FROM runtime_event_log
+        WHERE {' AND '.join(filters)}
+        GROUP BY skill_name
+        ORDER BY count DESC
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+    return [{"skill_name": str(row["skill_name"]), "count": int(row["count"])} for row in rows]
