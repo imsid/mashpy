@@ -327,6 +327,7 @@ class MashRemoteShell:
         elif not text and not streamed_response_text and not response_streamed:
             ctx.renderer.warn("(no response)")
 
+
     def run(self) -> None:
         repl = REPL(
             app_id=f"{self.context.agent_id}@remote",

@@ -278,11 +278,27 @@ class GeminiProvider(BaseLLMProvider):
                         )
                     )
             elif step_type == "model_output":
+                step_texts: List[str] = []
+                seen_urls: set = set()
+                sources: List[str] = []
                 for content in getattr(step, "content", None) or []:
                     if getattr(content, "type", None) == "text":
-                        text = getattr(content, "text", "")
-                        text_parts.append(text)
-                        blocks.append(LLMContentBlock.text(text))
+                        step_texts.append(getattr(content, "text", ""))
+                        for ann in getattr(content, "annotations", None) or []:
+                            if getattr(ann, "type", None) == "url_citation":
+                                url = getattr(ann, "url", None) or ""
+                                title = getattr(ann, "title", None) or url
+                                if url and url not in seen_urls:
+                                    seen_urls.add(url)
+                                    sources.append(f"- [{title}]({url})")
+                step_text = "".join(step_texts)
+                if sources:
+                    step_text += "\n\n**Sources:**\n" + "\n".join(sources)
+                if step_text:
+                    text_parts.append(step_text)
+                    blocks.append(LLMContentBlock.text(step_text))
+            elif step_type in ("google_search_call", "google_search_result"):
+                pass  # server-side grounding; synthesized text appears in model_output
             elif step_type == "function_call":
                 call_id = step.id
                 arguments = dict(getattr(step, "arguments", None) or {})
@@ -383,6 +399,14 @@ class GeminiProvider(BaseLLMProvider):
                 final_interaction = getattr(event, "interaction", None)
 
         await deltas.flush()
+
+        # If streaming captured no text and no tool calls, fall back to the
+        # real Interaction from interaction.completed. Grounded responses route
+        # model output through google_search_call/google_search_result steps
+        # that don't emit plain text deltas, so text_parts stays empty while
+        # the synthesized model_output lives in final_interaction.steps.
+        if not text_parts and not function_calls and final_interaction is not None:
+            return final_interaction
 
         # Build a plain object that _parse_interaction_response can consume.
         steps = []
