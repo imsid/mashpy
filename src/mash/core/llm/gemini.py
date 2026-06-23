@@ -282,7 +282,21 @@ class GeminiProvider(BaseLLMProvider):
                     if getattr(content, "type", None) == "text":
                         text = getattr(content, "text", "")
                         text_parts.append(text)
-                        blocks.append(LLMContentBlock.text(text))
+                        raw_annotations = getattr(content, "annotations", None) or []
+                        citations = [
+                            {
+                                "url": getattr(ann, "url", None),
+                                "title": getattr(ann, "title", None),
+                                "start_index": getattr(ann, "start_index", None),
+                                "end_index": getattr(ann, "end_index", None),
+                            }
+                            for ann in raw_annotations
+                            if getattr(ann, "type", None) == "url_citation"
+                        ]
+                        block_data: Dict[str, Any] = {"text": text}
+                        if citations:
+                            block_data["citations"] = citations
+                        blocks.append(LLMContentBlock(type="text", data=block_data))
             elif step_type in ("google_search_call", "google_search_result"):
                 pass  # server-side grounding; synthesized text appears in model_output
             elif step_type == "function_call":
