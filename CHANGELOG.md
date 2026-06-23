@@ -9,6 +9,19 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.9.0](https://github.com/imsid/mashpy/compare/mashpy-v0.8.0...mashpy-v0.9.0) (2026-06-23)
+
+
+### Features
+
+* **gemini:** add web_search flag to enable native google_search without MCP ([#65](https://github.com/imsid/mashpy/issues/65)) ([c3a0654](https://github.com/imsid/mashpy/commit/c3a06545c3738c7453ceb0cc0d6e65e413cf92fb))
+
+
+### Bug Fixes
+
+* **cli:** surface empty agent responses and MCP/tool errors in the REPL ([#70](https://github.com/imsid/mashpy/issues/70)) ([4daed1e](https://github.com/imsid/mashpy/commit/4daed1e704a02bd7cd313e920236d2df6afe0b49))
+* **mcp:** _normalize_url no longer appends /mcp to paths starting with mcp ([#68](https://github.com/imsid/mashpy/issues/68)) ([3b8517e](https://github.com/imsid/mashpy/commit/3b8517e8a5ae3d78103097e7708ded79a3be28fc))
+
 ## [0.8.0](https://github.com/imsid/mashpy/compare/mashpy-v0.7.2...mashpy-v0.8.0) (2026-06-22)
 
 
