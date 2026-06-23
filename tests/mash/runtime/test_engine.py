@@ -1493,5 +1493,32 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     await runtime.shutdown()
 
 
+class ErrorClassificationTests(unittest.TestCase):
+    """Unit tests for classify_error / is_retryable."""
+
+    def _classify(self, msg: str):
+        from mash.runtime.errors import classify_error
+        return classify_error(RuntimeError(msg))
+
+    def test_500_is_retryable_server_error(self) -> None:
+        result = self._classify("HTTP 500 internal server error")
+        self.assertEqual(result["error_code"], "server_error")
+        self.assertTrue(result["retryable"])
+
+    def test_internal_server_error_string_is_retryable(self) -> None:
+        result = self._classify("internal server error from Google API")
+        self.assertEqual(result["error_code"], "server_error")
+        self.assertTrue(result["retryable"])
+
+    def test_502_still_retryable(self) -> None:
+        result = self._classify("502 bad gateway")
+        self.assertEqual(result["error_code"], "server_error")
+        self.assertTrue(result["retryable"])
+
+    def test_401_is_not_retryable(self) -> None:
+        result = self._classify("401 unauthorized")
+        self.assertFalse(result["retryable"])
+
+
 if __name__ == "__main__":
     unittest.main()

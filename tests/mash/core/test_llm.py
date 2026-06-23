@@ -710,6 +710,23 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         parsed = provider._parse_interaction_response(interaction)
         self.assertEqual(parsed.usage.cache_read_tokens, 80)
 
+    def test_parse_interaction_empty_completed_raises(self) -> None:
+        """status=completed with no model_output or function_call steps is a retryable error."""
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        # _make_interaction with no text and no tool_calls produces only a user_input step
+        interaction = self._make_interaction()
+        with self.assertRaises(RuntimeError, msg="should raise on empty completed interaction"):
+            provider._parse_interaction_response(interaction)
+
+    def test_parse_interaction_incomplete_no_content_does_not_raise(self) -> None:
+        """status=incomplete (max_tokens) with no content should not raise — it maps to max_tokens."""
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        interaction = self._make_interaction(status="incomplete")
+        parsed = provider._parse_interaction_response(interaction)
+        self.assertEqual(parsed.stop_reason, "max_tokens")
+
     # --- send() / session chaining ---
 
     async def test_first_send_uses_full_history(self) -> None:
