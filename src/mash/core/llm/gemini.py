@@ -44,7 +44,15 @@ class GeminiProvider(BaseLLMProvider):
         event_logger: Optional[Any] = None,
         session_id: Optional[str] = None,
         stateful: bool = False,
+        web_search: bool = False,
     ) -> None:
+        """
+        Args:
+            web_search: When True, adds Gemini's native ``google_search`` grounding tool
+                to every request, regardless of whether a ``WebSearchProvider`` / MCP
+                web-search tool is registered. Defaults to False to preserve existing
+                behaviour.
+        """
         super().__init__(
             app_id=app_id,
             model=model,
@@ -74,6 +82,7 @@ class GeminiProvider(BaseLLMProvider):
 
         # Stateful mode: chain turns via previous_interaction_id instead of resending full history.
         self._stateful = stateful
+        self._web_search = web_search
         self._interaction_ids: Dict[str, str] = {}
         self._sent_message_counts: Dict[str, int] = {}
 
@@ -135,27 +144,21 @@ class GeminiProvider(BaseLLMProvider):
                         mapping[call_id] = name
         return mapping
 
-    # Tool names registered by Mash's WebSearchProvider convention.
     _WEB_SEARCH_TOOL_NAMES = frozenset(("web_search", "web_fetch"))
 
     def _build_interaction_tools(self, tools: List[LLMToolDefinition]) -> List[Dict[str, Any]]:
-        if not tools:
-            return []
         result: List[Dict[str, Any]] = []
-        native_search_added = False
+        if self._web_search:
+            result.append({"type": "google_search"})
         for tool in tools:
-            if tool.name in self._WEB_SEARCH_TOOL_NAMES:
-                if not native_search_added:
-                    result.append({"type": "google_search"})
-                    native_search_added = True
-                # Drop the MCP-backed function declaration; google_search runs server-side.
-            else:
-                result.append({
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": self._coerce_schema_types_to_uppercase(tool.parameters_json_schema),
-                })
+            if self._web_search and tool.name in self._WEB_SEARCH_TOOL_NAMES:
+                continue
+            result.append({
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": self._coerce_schema_types_to_uppercase(tool.parameters_json_schema),
+            })
         return result
 
     def _messages_to_steps(
