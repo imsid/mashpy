@@ -105,3 +105,42 @@ class MCPHTTPClientAsyncBridgeTests(unittest.TestCase):
                 client._run_awaitable(_fail())
 
         asyncio.run(_runner())
+
+
+class MCPHTTPClientNormalizeURLTests(unittest.TestCase):
+    def _n(self, url: str) -> str:
+        return MCPHTTPClient.__new__(MCPHTTPClient)._normalize_url(url)
+
+    def test_bare_host_gets_mcp_appended(self) -> None:
+        self.assertEqual(self._n("https://example.com"), "https://example.com/mcp")
+
+    def test_trailing_slash_stripped_then_mcp_appended(self) -> None:
+        self.assertEqual(self._n("https://example.com/"), "https://example.com/mcp")
+
+    def test_plain_mcp_path_unchanged(self) -> None:
+        self.assertEqual(
+            self._n("https://example.com/mcp"), "https://example.com/mcp"
+        )
+
+    def test_mcp_oauth_path_unchanged(self) -> None:
+        # Regression: /mcp-oauth was previously rewritten to /mcp-oauth/mcp
+        self.assertEqual(
+            self._n("https://search.parallel.ai/mcp-oauth"),
+            "https://search.parallel.ai/mcp-oauth",
+        )
+
+    def test_mcp_with_version_suffix_unchanged(self) -> None:
+        self.assertEqual(
+            self._n("https://example.com/mcp-v2"), "https://example.com/mcp-v2"
+        )
+
+    def test_versioned_prefix_path_gets_mcp_appended(self) -> None:
+        self.assertEqual(
+            self._n("https://example.com/v1"), "https://example.com/v1/mcp"
+        )
+
+    def test_mcp_mid_path_unchanged(self) -> None:
+        self.assertEqual(
+            self._n("https://example.com/v1/mcp/tools"),
+            "https://example.com/v1/mcp/tools",
+        )

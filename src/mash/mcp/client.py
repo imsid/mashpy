@@ -86,9 +86,11 @@ class MCPHTTPClient:
 
         path = parts.path or ""
         trimmed_path = path.rstrip("/")
+        last_segment = trimmed_path.rsplit("/", 1)[-1]
         if not trimmed_path:
             normalized_path = "/mcp"
-        elif trimmed_path.endswith("/mcp"):
+        elif last_segment.startswith("mcp"):
+            # Path already names an MCP endpoint (e.g. /mcp, /mcp-oauth, /mcp-v2)
             normalized_path = trimmed_path
         elif "/mcp/" in trimmed_path:
             normalized_path = trimmed_path
