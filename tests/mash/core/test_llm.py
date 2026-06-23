@@ -965,6 +965,21 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         result = provider._build_interaction_tools([])
         self.assertEqual(result, [{"type": "google_search"}])
 
+    def test_web_search_flag_true_drops_mcp_web_tools(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = True
+        tools = [
+            LLMToolDefinition(name="web_search", description="Search", parameters_json_schema={"type": "object"}),
+            LLMToolDefinition(name="web_fetch", description="Fetch", parameters_json_schema={"type": "object"}),
+            LLMToolDefinition(name="bash", description="Run bash", parameters_json_schema={"type": "object"}),
+        ]
+        result = provider._build_interaction_tools(tools)
+        self.assertEqual(result[0], {"type": "google_search"})
+        names = [t.get("name") for t in result if t.get("type") == "function"]
+        self.assertNotIn("web_search", names)
+        self.assertNotIn("web_fetch", names)
+        self.assertIn("bash", names)
+
     def test_web_search_flag_true_with_other_tools_prepends_native_search(self) -> None:
         provider = object.__new__(GeminiProvider)
         provider._web_search = True

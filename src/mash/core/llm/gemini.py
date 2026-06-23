@@ -144,11 +144,15 @@ class GeminiProvider(BaseLLMProvider):
                         mapping[call_id] = name
         return mapping
 
+    _WEB_SEARCH_TOOL_NAMES = frozenset(("web_search", "web_fetch"))
+
     def _build_interaction_tools(self, tools: List[LLMToolDefinition]) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
         if self._web_search:
             result.append({"type": "google_search"})
         for tool in tools:
+            if self._web_search and tool.name in self._WEB_SEARCH_TOOL_NAMES:
+                continue
             result.append({
                 "type": "function",
                 "name": tool.name,
