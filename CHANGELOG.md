@@ -9,6 +9,15 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.11.0](https://github.com/imsid/mashpy/compare/mashpy-v0.10.1...mashpy-v0.11.0) (2026-06-24)
+
+
+### Features
+
+* **api:** expose assistant_blocks through the reasoning trace endpoint ([#87](https://github.com/imsid/mashpy/issues/87)) ([8318331](https://github.com/imsid/mashpy/commit/83183315c505a7953012bdd2716af52a6794b849))
+* **cli:** render response from assistant_blocks rather than response_payload.text ([#84](https://github.com/imsid/mashpy/issues/84)) ([7146b63](https://github.com/imsid/mashpy/commit/7146b63140ec75ca8455c9aca61f397b6e2410e0))
+* **runtime,cli:** first-class structured output for workflow tasks ([d9b550b](https://github.com/imsid/mashpy/commit/d9b550b8cbbb3215d5ee1c05ee739ee84a84f2d0))
+
 ## [0.10.1](https://github.com/imsid/mashpy/compare/mashpy-v0.10.0...mashpy-v0.10.1) (2026-06-24)
 
 
