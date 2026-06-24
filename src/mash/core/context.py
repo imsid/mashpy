@@ -97,6 +97,7 @@ class ToolResult:
     content: str
     is_error: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    structured_output: Dict[str, Any] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format."""

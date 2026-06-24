@@ -400,6 +400,9 @@ async def execute_request_workflow(
                         )
                     call_index = batch_end
 
+                structured_output_request = request_metadata.get(
+                    "structured_output_request"
+                )
                 workflow_state = await DBOS.run_step_async(
                     {"name": f"step.commit.{loop_index}"},
                     commit_request_step,
@@ -408,13 +411,14 @@ async def execute_request_workflow(
                     session_id,
                     trace_id,
                     workflow_state,
+                    structured_output_request,
                 )
 
                 if bool(workflow_state.get("done")):
-                    structured_output_request = request_metadata.get(
-                        "structured_output_request"
-                    )
-                    if isinstance(structured_output_request, dict):
+                    if (
+                        isinstance(structured_output_request, dict)
+                        and workflow_state.get("structured_output") is None
+                    ):
                         workflow_state = await DBOS.run_step_async(
                             {"name": "structured_output.finalize"},
                             finalize_structured_output,

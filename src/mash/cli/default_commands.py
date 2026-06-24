@@ -427,10 +427,16 @@ def register_default_commands(shell) -> None:
                     if event_name == "request.completed":
                         response_payload = payload.get("response")
                         if isinstance(response_payload, dict):
+                            structured_output = response_payload.get("structured_output")
                             text = str(response_payload.get("text") or "")
                         else:
+                            structured_output = None
                             text = str(payload.get("text") or "")
-                        if text and text != streamed_response_text.get(task_id):
+                        if isinstance(structured_output, dict):
+                            shell.render_structured_output(
+                                workflow_id, task_id, task_agent_id, structured_output
+                            )
+                        elif text and text != streamed_response_text.get(task_id):
                             ctx.renderer.markdown(text)
                         continue
 

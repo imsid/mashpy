@@ -68,7 +68,7 @@ def _step_tool_result_payload(
     duration_ms: int,
 ) -> dict[str, Any]:
     result_metadata = dict(result.metadata or {})
-    return {
+    payload: dict[str, Any] = {
         "tool_call_id": tool_call.id,
         "tool_name": tool_call.name,
         "duration_ms": int(duration_ms),
@@ -78,6 +78,47 @@ def _step_tool_result_payload(
             "metadata": result_metadata,
         },
     }
+    if isinstance(result.structured_output, dict):
+        payload["structured_output"] = dict(result.structured_output)
+    return payload
+
+
+def _extract_tool_structured_output(
+    result_payloads: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Collect tool-asserted structured_output from a batch of result payloads.
+
+    Returns None when no tool set it, the single value when exactly one did,
+    and raises RuntimeError when more than one tool in the same batch set it.
+    """
+    found: list[dict[str, Any]] = [
+        dict(rp["structured_output"])
+        for rp in result_payloads
+        if isinstance(rp.get("structured_output"), dict)
+    ]
+    if not found:
+        return None
+    if len(found) > 1:
+        raise RuntimeError(
+            f"multiple tools in the same turn set structured_output "
+            f"({len(found)} found); exactly one tool per finishing turn may assert it"
+        )
+    return found[0]
+
+
+def _validate_tool_structured_output(
+    value: dict[str, Any],
+    schema: dict[str, Any],
+) -> None:
+    """Check that a tool-asserted structured_output dict satisfies the schema's required fields."""
+    if not isinstance(value, dict):
+        raise ValueError("tool structured_output must be a JSON object (dict)")
+    required = schema.get("required") or []
+    missing = [str(k) for k in required if k not in value]
+    if missing:
+        raise ValueError(
+            f"tool structured_output is missing required field(s): {', '.join(missing)}"
+        )
 
 
 def _step_completed_payload(
@@ -606,6 +647,7 @@ async def commit_request_step(
     session_id: str,
     trace_id: str,
     workflow_state: dict[str, Any],
+    structured_output_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
@@ -613,11 +655,12 @@ async def commit_request_step(
         runtime, workflow_state.get("context") or {}
     )
     action_payload = dict(workflow_state.get("action") or {})
+    result_payloads = list(workflow_state.get("result_payloads") or [])
     commit_payload = await _commit_step_payload(
         runtime,
         context=context,
         action_payload=action_payload,
-        result_payloads=list(workflow_state.get("result_payloads") or []),
+        result_payloads=result_payloads,
         session_id=session_id,
         trace_id=trace_id,
         step_index=loop_index,
@@ -653,7 +696,7 @@ async def commit_request_step(
             ),
         ),
     )
-    return {
+    updated: dict[str, Any] = {
         **dict(workflow_state or {}),
         "context": dict(commit_payload.get("context") or {}),
         "loop_index": next_loop_index,
@@ -663,6 +706,12 @@ async def commit_request_step(
         "done": done,
         "step_started_at": None,
     }
+    if done and isinstance(structured_output_request, dict):
+        tool_so = _extract_tool_structured_output(result_payloads)
+        if tool_so is not None:
+            _validate_tool_structured_output(tool_so, structured_output_request)
+            updated["structured_output"] = tool_so
+    return updated
 
 
 async def persist_completed_turn(

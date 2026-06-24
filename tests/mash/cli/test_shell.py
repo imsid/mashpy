@@ -21,6 +21,7 @@ class _FakeClient:
         self.feedback: list[dict[str, Any]] = []
         self.interactions: list[dict[str, Any]] = []
         self.emit_workflow_interaction = False
+        self.workflow_structured_output: dict[str, Any] | None = None
 
     def health(self):
         return {
@@ -291,6 +292,9 @@ class _FakeClient:
                 },
             },
         }
+        completed_response: dict[str, Any] = {"text": response_text}
+        if self.workflow_structured_output is not None:
+            completed_response["structured_output"] = self.workflow_structured_output
         yield {
             "event": "request.completed",
             "data": {
@@ -298,7 +302,7 @@ class _FakeClient:
                 "run_id": "mw:host:changelog:abc",
                 "task_id": task_id,
                 "task_agent_id": task_agent_id,
-                "response": {"text": response_text},
+                "response": completed_response,
             },
         }
         yield {
@@ -959,3 +963,87 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
         self.assertIn("Step 1:", output)
         self.assertIn("$ pwd", output)
         self.assertIn("Agent Execution Complete:", output)
+
+
+class StructuredOutputRenderingTests(unittest.TestCase):
+    """Tests for /workflow run rendering of structured_output."""
+
+    def _build_shell(self) -> MashRemoteShell:
+        return MashRemoteShell(
+            _FakeClient(),
+            ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1"),
+        )
+
+    def test_structured_output_renders_as_json_code_block_by_default(self) -> None:
+        shell = self._build_shell()
+        shell.client.workflow_structured_output = {"digest": "hello world", "score": 0.9}
+        rendered: list[str] = []
+        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        # agent.trace pre-renders the streamed text; request.completed then renders
+        # the structured_output JSON block (not the text again).
+        self.assertEqual(len(rendered), 2)
+        json_block = rendered[1]
+        self.assertIn("```json", json_block)
+        self.assertIn('"digest": "hello world"', json_block)
+        self.assertIn('"score": 0.9', json_block)
+
+    def test_text_not_re_rendered_when_structured_output_present(self) -> None:
+        shell = self._build_shell()
+        shell.client.workflow_structured_output = {"result": "ok"}
+        rendered: list[str] = []
+        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        # Two renders: streamed text (agent.trace) + structured JSON (request.completed).
+        # The text is NOT rendered a second time by request.completed.
+        self.assertEqual(len(rendered), 2)
+        # Second render is JSON, not the repeated text.
+        self.assertIn("```json", rendered[1])
+        self.assertNotIn('{"status":"ok"}', rendered[1])
+
+    def test_text_rendered_when_no_structured_output(self) -> None:
+        shell = self._build_shell()
+        # No structured_output set — default fake client behavior.
+        rendered: list[str] = []
+        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        # Only one render: streamed text via agent.trace. request.completed sees the
+        # same text was already shown and does not repeat it.
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(rendered[0], '{"status":"ok"}')
+
+    def test_registered_renderer_called_instead_of_default(self) -> None:
+        shell = self._build_shell()
+        shell.client.workflow_structured_output = {"summary": "digest ready"}
+        calls: list[tuple] = []
+
+        def my_renderer(task_id: str, agent_id: str, data: dict) -> None:
+            calls.append((task_id, agent_id, data))
+
+        shell.register_structured_output_renderer("changelog", my_renderer)
+        rendered: list[str] = []
+        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        # Custom renderer received the right args.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "scan")      # task_id
+        self.assertEqual(calls[0][1], "worker")    # agent_id
+        self.assertEqual(calls[0][2], {"summary": "digest ready"})
+        # Default markdown was called once (agent.trace streamed text) but NOT for
+        # the structured_output — the custom renderer handled that.
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(rendered[0], '{"status":"ok"}')
+
+    def test_registered_renderer_for_other_workflow_not_called(self) -> None:
+        shell = self._build_shell()
+        shell.client.workflow_structured_output = {"x": 1}
+        calls: list[tuple] = []
+
+        shell.register_structured_output_renderer("other-workflow", lambda *a: calls.append(a))
+        rendered: list[str] = []
+        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
+            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        # Falls back to default JSON render because "changelog" has no registered renderer.
+        self.assertEqual(calls, [])
+        self.assertEqual(len(rendered), 2)
+        self.assertIn("```json", rendered[1])

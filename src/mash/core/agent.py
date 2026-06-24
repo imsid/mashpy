@@ -663,6 +663,7 @@ class Agent:
                 content=result.content,
                 is_error=result.is_error,
                 metadata=result.metadata,
+                structured_output=result.structured_output,
             )
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             # Common errors from tool execution: wrong args, missing keys, etc.

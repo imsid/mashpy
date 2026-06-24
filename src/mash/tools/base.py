@@ -14,6 +14,7 @@ class ToolResult:
     content: str
     is_error: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    structured_output: Dict[str, Any] | None = None
 
     @classmethod
     def success(cls, content: str, **metadata: Any) -> ToolResult:
