@@ -17,7 +17,10 @@ _RETRYABLE_PATTERNS: Sequence[Tuple[Sequence[str], str]] = (
     (("timeout", "timed out", "deadline exceeded"), "timeout"),
     (("connection", "network", "dns", "socket"), "network_error"),
     (
-        ("502", "503", "504", "bad gateway", "service unavailable", "gateway timeout"),
+        (
+            "500", "502", "503", "504",
+            "internal server error", "bad gateway", "service unavailable", "gateway timeout",
+        ),
         "server_error",
     ),
     (("overloaded", "capacity"), "overloaded"),

@@ -259,6 +259,16 @@ class GeminiProvider(BaseLLMProvider):
 
         response_steps = steps[last_input_idx + 1:]
 
+        status = getattr(interaction, "status", None)
+        has_content = any(
+            getattr(s, "type", None) in ("model_output", "function_call")
+            for s in response_steps
+        )
+        if status == "completed" and not has_content:
+            raise RuntimeError(
+                "Gemini returned a completed interaction with no response content"
+            )
+
         text_parts: List[str] = []
         tool_calls: List[Any] = []
         blocks: List[LLMContentBlock] = []
@@ -312,7 +322,6 @@ class GeminiProvider(BaseLLMProvider):
                 )
 
         stop_reason = "tool_call" if tool_calls else "end_turn"
-        status = getattr(interaction, "status", None)
         if not tool_calls and status == "incomplete":
             stop_reason = "max_tokens"
 
