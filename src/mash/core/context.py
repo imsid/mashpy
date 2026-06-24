@@ -184,13 +184,13 @@ class Response:
 
     text: str
     context: Context
+    assistant_blocks: List[Dict[str, Any]] = field(default_factory=list)
     signals: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_context(cls, context: Context) -> Response:
         """Create a response from context."""
-        # Find the last assistant message
         last_assistant_msg = None
         for msg in reversed(context.messages):
             if msg.role == MessageRole.ASSISTANT:
@@ -198,18 +198,24 @@ class Response:
                 break
 
         text = ""
+        blocks: List[Dict[str, Any]] = []
         if last_assistant_msg:
             if isinstance(last_assistant_msg.content, str):
                 text = last_assistant_msg.content
             else:
+                blocks = [
+                    b for b in last_assistant_msg.content
+                    if isinstance(b, dict) and b.get("type") != "tool_call"
+                ]
                 text = "".join(
-                    block.get("text", "")
-                    for block in last_assistant_msg.content
-                    if isinstance(block, dict) and block.get("type") == "text"
+                    b.get("text", "")
+                    for b in blocks
+                    if b.get("type") == "text"
                 ).strip()
         return cls(
             text,
             context,
+            blocks,
             context.signals.copy(),
             context.metadata.copy(),
         )

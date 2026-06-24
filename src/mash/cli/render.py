@@ -32,6 +32,10 @@ class Renderer(Protocol):
         """Render Markdown-formatted text."""
         ...
 
+    def thinking(self, text: str) -> None:
+        """Render a thinking block."""
+        ...
+
     def table(self, headers: List[str], rows: List[List[str]]) -> None:
         """Render a table."""
         ...
@@ -98,6 +102,19 @@ class RichRenderer:
             padding=(0, 1),
         )
         self._console.print(panel)
+
+    def thinking(self, text: str) -> None:
+        """Render a thinking block as a dimmed panel."""
+        if not text.strip():
+            return
+        panel = Panel(
+            text,
+            title="thinking",
+            border_style="dim",
+            box=box.ASCII,
+            padding=(0, 1),
+        )
+        self._console.print(panel, style="dim")
 
     def table(self, headers: List[str], rows: List[List[str]]) -> None:
         """Render a table."""

@@ -248,6 +248,8 @@ async def _persist_turn_payload(
         "signals": dict(signals or {}),
         "metadata": dict(response_metadata or {}),
     }
+    if response.assistant_blocks:
+        response_payload["assistant_blocks"] = list(response.assistant_blocks)
     if "structured_output" in response_metadata:
         response_payload["structured_output"] = response_metadata["structured_output"]
     return {
