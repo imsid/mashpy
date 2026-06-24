@@ -365,7 +365,6 @@ def register_default_commands(shell) -> None:
                 ctx.renderer.info(f"Status: {run.get('status') or ''}")
                 return
 
-            streamed_response_text: dict[str, str] = {}
             try:
                 for event in ctx.client.stream_workflow_run(workflow_id, run_id):
                     event_name = str(event.get("event") or "")
@@ -414,30 +413,24 @@ def register_default_commands(shell) -> None:
                             trace_label=task_label,
                             agent_id=task_agent_id or None,
                         )
-                        if task_agent_id:
-                            streamed_text = shell.extract_streamed_response_text(
-                                payload,
-                                agent_id=task_agent_id,
-                            )
-                            if streamed_text:
-                                streamed_response_text[task_id] = streamed_text
-                                ctx.renderer.markdown(streamed_text)
                         continue
 
                     if event_name == "request.completed":
+                        shell.chain_renderer.finish_trace()
                         response_payload = payload.get("response")
+                        structured_output = None
                         if isinstance(response_payload, dict):
                             structured_output = response_payload.get("structured_output")
-                            text = str(response_payload.get("text") or "")
-                        else:
-                            structured_output = None
-                            text = str(payload.get("text") or "")
                         if isinstance(structured_output, dict):
                             shell.render_structured_output(
                                 workflow_id, task_id, task_agent_id, structured_output
                             )
-                        elif text and text != streamed_response_text.get(task_id):
-                            ctx.renderer.markdown(text)
+                        else:
+                            chain_streamed = shell.chain_renderer.take_streamed_text()
+                            fallback = str(payload.get("text") or "")
+                            shell.render_final_response(
+                                ctx, response_payload, fallback, chain_streamed
+                            )
                         continue
 
                     if event_name == "request.error":

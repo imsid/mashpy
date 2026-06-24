@@ -536,7 +536,9 @@ class MashRemoteShellTests(unittest.TestCase):
             RuntimeEventType.LLM_THINK_COMPLETED.value,
         )
         markdown.assert_called_once_with('{"status":"ok"}')
-        finish_trace.assert_called_once()
+        # finish_trace is called once per task (inside request.completed) and
+        # once more in the finally block after the stream ends.
+        self.assertEqual(finish_trace.call_count, 2)
 
     def test_workflow_run_forwards_input_json(self) -> None:
         shell = self._build_shell()
@@ -613,9 +615,11 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
+        # The legacy per-step preview is gone; only the final text from
+        # request.completed renders.
         self.assertEqual(
             [call.args[0] for call in markdown.call_args_list],
-            ["draft", "echo: hello"],
+            ["echo: hello"],
         )
         self.assertEqual(shell.context.session_ids["primary"], "s-1")
 
@@ -711,9 +715,12 @@ class MashRemoteShellTests(unittest.TestCase):
         shell.client.stream_request = stream_runtime_think
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
+        # The LLM_THINK_COMPLETED event still feeds chain_renderer for trace
+        # rendering, but its assistant_text is no longer previewed as a separate
+        # markdown panel — only the final text from request.completed renders.
         self.assertEqual(
             [call.args[0] for call in markdown.call_args_list],
-            ["streamed from runtime", "final response"],
+            ["final response"],
         )
 
     def test_handle_repl_message_single_render_when_tokens_stream(self) -> None:
@@ -857,6 +864,107 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.handle_repl_message(shell.context, "hello")
         error.assert_called_once_with("    Subagent subagent error: request failed")
 
+    def test_handle_repl_message_renders_assistant_blocks_in_order(self) -> None:
+        shell = self._build_shell()
+
+        def stream_with_blocks(_agent_id: str, _request_id: str):
+            yield {
+                "event": "request.completed",
+                "data": {
+                    "session_id": "s-1",
+                    "response": {
+                        "text": "text block",
+                        "assistant_blocks": [
+                            {"type": "thinking", "thinking": "my reasoning"},
+                            {"type": "text", "text": "text block"},
+                        ],
+                    },
+                },
+            }
+
+        shell.client.stream_request = stream_with_blocks
+        thinking_calls: list[str] = []
+        markdown_calls: list[str] = []
+        with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
+            with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
+                shell.handle_repl_message(shell.context, "hello")
+        self.assertEqual(thinking_calls, ["my reasoning"])
+        self.assertEqual(markdown_calls, ["text block"])
+
+    def test_handle_repl_message_skips_text_block_already_streamed(self) -> None:
+        shell = self._build_shell()
+        answer = "streamed answer"
+
+        def stream_delta_then_blocks(_agent_id: str, _request_id: str):
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "llm.response.delta",
+                    "trace_id": "trace-1",
+                    "payload": {"payload": {"text": answer, "index": 0}},
+                },
+            }
+            yield {
+                "event": "request.completed",
+                "data": {
+                    "session_id": "s-1",
+                    "response": {
+                        "text": answer,
+                        "assistant_blocks": [
+                            {"type": "thinking", "thinking": "deep thought"},
+                            {"type": "text", "text": answer},
+                        ],
+                    },
+                },
+            }
+
+        shell.client.stream_request = stream_delta_then_blocks
+        thinking_calls: list[str] = []
+        markdown_calls: list[str] = []
+        with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
+            with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
+                shell.handle_repl_message(shell.context, "hello")
+        # Thinking block renders even though text streamed live.
+        self.assertEqual(thinking_calls, ["deep thought"])
+        # Text block is skipped — it was already shown via delta streaming.
+        self.assertEqual(markdown_calls, [])
+
+    def test_workflow_run_renders_assistant_blocks_with_thinking(self) -> None:
+        shell = self._build_shell()
+
+        def stream_blocks_workflow(workflow_id: str, run_id: str):
+            yield {
+                "event": "workflow.task.started",
+                "data": {"task_id": "scan", "task_agent_id": "worker"},
+            }
+            yield {
+                "event": "request.completed",
+                "data": {
+                    "task_id": "scan",
+                    "task_agent_id": "worker",
+                    "response": {
+                        "text": "result",
+                        "assistant_blocks": [
+                            {"type": "thinking", "thinking": "task reasoning"},
+                            {"type": "text", "text": "result"},
+                        ],
+                    },
+                },
+            }
+            yield {
+                "event": "workflow.task.completed",
+                "data": {"task_id": "scan", "task_agent_id": "worker"},
+            }
+
+        shell.client.stream_workflow_run = stream_blocks_workflow
+        thinking_calls: list[str] = []
+        markdown_calls: list[str] = []
+        with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
+            with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
+                shell.command_registry.execute(shell.context, "/workflow run changelog manual")
+        self.assertEqual(thinking_calls, ["task reasoning"])
+        self.assertEqual(markdown_calls, ["result"])
+
 
 class ChainOfThoughtRendererTests(unittest.TestCase):
     def test_think_events_use_step_id_for_display_when_step_complete_is_missing(self) -> None:
@@ -980,10 +1088,10 @@ class StructuredOutputRenderingTests(unittest.TestCase):
         rendered: list[str] = []
         with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # agent.trace pre-renders the streamed text; request.completed then renders
-        # the structured_output JSON block (not the text again).
-        self.assertEqual(len(rendered), 2)
-        json_block = rendered[1]
+        # request.completed renders the structured_output JSON block; the
+        # agent.trace preview is gone so there is only one render.
+        self.assertEqual(len(rendered), 1)
+        json_block = rendered[0]
         self.assertIn("```json", json_block)
         self.assertIn('"digest": "hello world"', json_block)
         self.assertIn('"score": 0.9', json_block)
@@ -994,12 +1102,11 @@ class StructuredOutputRenderingTests(unittest.TestCase):
         rendered: list[str] = []
         with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # Two renders: streamed text (agent.trace) + structured JSON (request.completed).
-        # The text is NOT rendered a second time by request.completed.
-        self.assertEqual(len(rendered), 2)
-        # Second render is JSON, not the repeated text.
-        self.assertIn("```json", rendered[1])
-        self.assertNotIn('{"status":"ok"}', rendered[1])
+        # Only the structured JSON block is rendered by request.completed;
+        # the task text is not repeated.
+        self.assertEqual(len(rendered), 1)
+        self.assertIn("```json", rendered[0])
+        self.assertNotIn('{"status":"ok"}', rendered[0])
 
     def test_text_rendered_when_no_structured_output(self) -> None:
         shell = self._build_shell()
@@ -1029,10 +1136,9 @@ class StructuredOutputRenderingTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "scan")      # task_id
         self.assertEqual(calls[0][1], "worker")    # agent_id
         self.assertEqual(calls[0][2], {"summary": "digest ready"})
-        # Default markdown was called once (agent.trace streamed text) but NOT for
-        # the structured_output — the custom renderer handled that.
-        self.assertEqual(len(rendered), 1)
-        self.assertEqual(rendered[0], '{"status":"ok"}')
+        # No default markdown render: no agent.trace preview, and the custom
+        # renderer handled structured_output without calling ctx.renderer.markdown.
+        self.assertEqual(len(rendered), 0)
 
     def test_registered_renderer_for_other_workflow_not_called(self) -> None:
         shell = self._build_shell()
@@ -1045,5 +1151,5 @@ class StructuredOutputRenderingTests(unittest.TestCase):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
         # Falls back to default JSON render because "changelog" has no registered renderer.
         self.assertEqual(calls, [])
-        self.assertEqual(len(rendered), 2)
-        self.assertIn("```json", rendered[1])
+        self.assertEqual(len(rendered), 1)
+        self.assertIn("```json", rendered[0])
