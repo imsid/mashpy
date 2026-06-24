@@ -1750,5 +1750,72 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._client.chat.completions.create.assert_not_called()
 
 
+class EmitRequestErrorTests(unittest.IsolatedAsyncioTestCase):
+    """_emit_request_error always logs and never replaces the caller's exception."""
+
+    def _make_provider(self):
+        from mash.core.llm.base import BaseLLMProvider
+        from mash.core.llm.types import LLMCapabilities
+
+        class _StubProvider(BaseLLMProvider):
+            provider_name = "test"
+            async def send(self, request):  # pragma: no cover
+                raise NotImplementedError
+
+            def capabilities(self):  # pragma: no cover
+                return LLMCapabilities()
+
+        provider = _StubProvider.__new__(_StubProvider)
+        provider._event_logger = None
+        provider._app_id = "test"
+        provider._session_id = "s1"
+        provider._trace_id = None
+        return provider
+
+    async def test_emit_logs_warning_always(self) -> None:
+        provider = self._make_provider()
+        request = LLMRequest(
+            model="m", system="s", messages=[], tools=[], max_tokens=10
+        )
+        with self.assertLogs("mash.core.llm.base", level="WARNING") as log_ctx:
+            await provider._emit_request_error(request, started_at=0.0, error=ValueError("oops"))
+        self.assertTrue(any("oops" in line for line in log_ctx.output))
+
+    async def test_emit_does_not_raise_when_store_fails(self) -> None:
+        provider = self._make_provider()
+        provider._event_logger = SimpleNamespace(
+            emit=AsyncMock(side_effect=RuntimeError("db down"))
+        )
+        request = LLMRequest(
+            model="m", system="s", messages=[], tools=[], max_tokens=10
+        )
+        # Should complete without raising despite store failure
+        with self.assertLogs("mash.core.llm.base", level="WARNING"):
+            await provider._emit_request_error(request, started_at=0.0, error=ValueError("llm error"))
+
+    async def test_emit_store_failure_does_not_replace_original_exception(self) -> None:
+        """Verify the caller's raise is unaffected if _emit_request_error's store write fails."""
+        provider = self._make_provider()
+        provider._event_logger = SimpleNamespace(
+            emit=AsyncMock(side_effect=RuntimeError("db down"))
+        )
+        request = LLMRequest(
+            model="m", system="s", messages=[], tools=[], max_tokens=10
+        )
+        original = ValueError("429 rate limit")
+
+        async def simulate_send():
+            try:
+                raise original
+            except Exception as exc:
+                with self.assertLogs("mash.core.llm.base", level="WARNING"):
+                    await provider._emit_request_error(request, started_at=0.0, error=exc)
+                raise
+
+        with self.assertRaises(ValueError) as ctx:
+            await simulate_send()
+        self.assertIs(ctx.exception, original)
+
+
 if __name__ == "__main__":
     unittest.main()

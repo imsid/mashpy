@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 from ...logging import EventLogger, LLMEvent
 from .types import (
@@ -242,20 +245,28 @@ class BaseLLMProvider(LLMProvider):
         started_at: float,
         error: Exception,
     ) -> None:
+        log.warning(
+            "llm request error [%s/%s]: %s",
+            self.provider_name,
+            self._app_id,
+            error,
+        )
         if self._event_logger is None:
             return
-
-        await self._event_logger.emit(
-            LLMEvent(
-                event_type="llm.request.error",
-                app_id=self._app_id,
-                session_id=self._session_id,
-                provider=self.provider_name,
-                model=request.model,
-                error=str(error),
-                duration_ms=int((time.time() - started_at) * 1000),
-                trace_id=self._trace_id,
-                tools=self._tool_names(request.tools),
-                betas=self._request_betas(request),
+        try:
+            await self._event_logger.emit(
+                LLMEvent(
+                    event_type="llm.request.error",
+                    app_id=self._app_id,
+                    session_id=self._session_id,
+                    provider=self.provider_name,
+                    model=request.model,
+                    error=str(error),
+                    duration_ms=int((time.time() - started_at) * 1000),
+                    trace_id=self._trace_id,
+                    tools=self._tool_names(request.tools),
+                    betas=self._request_betas(request),
+                )
             )
-        )
+        except Exception as store_exc:  # pylint: disable=broad-except
+            log.warning("failed to store llm.request.error event: %s", store_exc)

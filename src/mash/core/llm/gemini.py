@@ -13,9 +13,12 @@ from typing import Any, AsyncIterator, Dict, List, Optional, cast
 try:
     from google import genai
     from google.genai import interactions as _gi_interactions
+    from google.genai.types import HttpOptions, HttpRetryOptions
 except ImportError:
     genai = None
     _gi_interactions = None
+    HttpOptions = None  # type: ignore[assignment,misc]
+    HttpRetryOptions = None  # type: ignore[assignment,misc]
 
 from .base import BaseLLMProvider
 from .types import (
@@ -72,11 +75,14 @@ class GeminiProvider(BaseLLMProvider):
             or os.getenv("GOOGLE_API_KEY", "").strip()
         )
 
+        # Disable the SDK's built-in silent retry loop so all retry decisions
+        # go through retry_transient, where they are logged and observable.
+        _no_sdk_retries = HttpOptions(retry_options=HttpRetryOptions(attempts=1))
         try:
             if resolved_api_key:
-                self._client = genai.Client(api_key=resolved_api_key)
+                self._client = genai.Client(api_key=resolved_api_key, http_options=_no_sdk_retries)
             else:
-                self._client = genai.Client()
+                self._client = genai.Client(http_options=_no_sdk_retries)
         except Exception as exc:
             raise RuntimeError("Failed to initialize Gemini client.") from exc
 
