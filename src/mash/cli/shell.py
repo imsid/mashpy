@@ -316,16 +316,28 @@ class MashRemoteShell:
         response_payload = final_payload.get("response")
         if isinstance(response_payload, dict):
             text = str(response_payload.get("text") or "")
+            assistant_blocks = response_payload.get("assistant_blocks") or []
         else:
             text = str(final_payload.get("text") or "")
+            assistant_blocks = []
         # Skip the terminal render when the answer already streamed live; only
         # render here for non-streaming providers (and dedupe against any
         # legacy preview render above).
         response_streamed = self.chain_renderer.take_response_streamed()
-        if text and text != streamed_response_text and not response_streamed:
-            ctx.renderer.markdown(text)
-        elif not text and not streamed_response_text and not response_streamed:
-            ctx.renderer.warn("(no response)")
+        if not response_streamed:
+            if assistant_blocks:
+                for block in assistant_blocks:
+                    block_type = block.get("type")
+                    if block_type == "thinking":
+                        ctx.renderer.thinking(str(block.get("thinking") or ""))
+                    elif block_type == "text":
+                        block_text = str(block.get("text") or "").strip()
+                        if block_text and block_text != streamed_response_text:
+                            ctx.renderer.markdown(block_text)
+            elif text and text != streamed_response_text:
+                ctx.renderer.markdown(text)
+            elif not text and not streamed_response_text:
+                ctx.renderer.warn("(no response)")
 
 
     def run(self) -> None:
