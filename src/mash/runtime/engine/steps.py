@@ -775,13 +775,11 @@ async def finalize_structured_output(
         runtime,
         workflow_state.get("context") or {},
     )
-    messages = context.get_messages_for_llm()
-    messages.append(
-        LLMMessage(
-            role="user",
-            content=[LLMContentBlock.text(_structured_output_instruction())],
-        )
-    )
+    final_text = Response.from_context(context).text
+    if not final_text:
+        raise RuntimeError("no assistant response found to finalize structured output")
+    prompt = f"The agent produced the following response:\n\n{final_text}\n\n{_structured_output_instruction()}"
+    messages = [LLMMessage(role="user", content=[LLMContentBlock.text(prompt)])]
     llm_request = LLMRequest(
         model=runtime.agent.llm.model,
         system=context.system_prompt,
@@ -789,7 +787,6 @@ async def finalize_structured_output(
         tools=[],
         max_tokens=runtime.agent.config.max_tokens,
         temperature=runtime.agent.config.temperature,
-        use_prompt_caching=False,
         provider_options={"structured_output": dict(structured_output_request)},
     )
     llm = runtime._shared_llm
