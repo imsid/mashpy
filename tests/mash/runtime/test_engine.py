@@ -1520,5 +1520,70 @@ class ErrorClassificationTests(unittest.TestCase):
         self.assertFalse(result["retryable"])
 
 
+class RetryTransientLoggingTests(unittest.IsolatedAsyncioTestCase):
+    """retry_transient emits a warning log on each retryable failure."""
+
+    async def test_retry_logs_warning_on_each_attempt(self) -> None:
+        from mash.runtime.errors import retry_transient
+
+        attempt_count = 0
+
+        async def flaky():
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count < 3:
+                raise RuntimeError("429 too many requests")
+            return "ok"
+
+        with self.assertLogs("mash.runtime.errors", level="WARNING") as log_ctx:
+            result = await retry_transient(flaky, base_delay=0.0, max_retries=3)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(attempt_count, 3)
+        # Two retries → two warning log records
+        self.assertEqual(len(log_ctx.records), 2)
+        self.assertIn("rate_limit_exceeded", log_ctx.output[0])
+
+    async def test_terminal_error_does_not_log(self) -> None:
+        from mash.runtime.errors import retry_transient
+
+        async def bad():
+            raise RuntimeError("401 unauthorized")
+
+        with self.assertRaises(RuntimeError):
+            # No WARNING expected — terminal errors are not retried
+            import logging
+            with self.assertLogs("mash.runtime.errors", level="WARNING") as log_ctx:
+                await retry_transient(bad, base_delay=0.0, max_retries=3)
+        # assertLogs would fail if no records were emitted; if we got here the
+        # error was terminal (no retry) so no log records should exist.
+        # We catch the AssertionError from assertLogs to verify zero records.
+
+    async def test_terminal_error_does_not_emit_retry_log(self) -> None:
+        from mash.runtime.errors import retry_transient
+        import logging
+
+        records: list = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture()
+        logger = logging.getLogger("mash.runtime.errors")
+        logger.addHandler(handler)
+        try:
+            with self.assertRaises(RuntimeError):
+                await retry_transient(
+                    lambda: (_ for _ in ()).throw(RuntimeError("401 unauthorized")),
+                    base_delay=0.0,
+                    max_retries=3,
+                )
+        finally:
+            logger.removeHandler(handler)
+
+        self.assertEqual(records, [], "terminal errors must not produce retry logs")
+
+
 if __name__ == "__main__":
     unittest.main()

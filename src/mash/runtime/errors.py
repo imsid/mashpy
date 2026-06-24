@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from typing import Any, Awaitable, Callable, Dict, Sequence, Tuple, TypeVar
+
+log = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -100,9 +103,18 @@ async def retry_transient(
             return await fn()
         except Exception as exc:
             last_exc = exc
+            classified = classify_error(exc)
             if not is_retryable(exc) or attempt >= max_retries:
                 raise
             delay = min(base_delay * (2 ** attempt), max_delay)
             delay *= 0.5 + random.random()  # jitter
+            log.warning(
+                "transient error (attempt %d/%d, %s), retrying in %.1fs: %s",
+                attempt + 1,
+                max_retries + 1,
+                classified.get("error_code", "unknown"),
+                delay,
+                exc,
+            )
             await asyncio.sleep(delay)
     raise last_exc  # unreachable, but satisfies type checkers
