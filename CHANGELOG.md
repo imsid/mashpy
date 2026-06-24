@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.10.1](https://github.com/imsid/mashpy/compare/mashpy-v0.10.0...mashpy-v0.10.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **gemini:** raise retryable error on empty completed interaction; add 500 to server_error patterns ([#80](https://github.com/imsid/mashpy/issues/80)) ([0a1cca0](https://github.com/imsid/mashpy/commit/0a1cca0e6dde1e1accccc10df45fa28ce87e7c1f))
+
 ## [0.10.0](https://github.com/imsid/mashpy/compare/mashpy-v0.9.1...mashpy-v0.10.0) (2026-06-23)
 
 
