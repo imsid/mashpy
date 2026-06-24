@@ -35,6 +35,7 @@ class ChainOfThoughtRenderer:
         self._response_streaming = False
         self._response_streamed = False
         self._response_buffer = ""
+        self._streamed_text = ""
 
     def enable(self) -> None:
         """Enable rendering."""
@@ -67,6 +68,7 @@ class ChainOfThoughtRenderer:
         self._response_streaming = False
         self._response_streamed = False
         self._response_buffer = ""
+        self._streamed_text = ""
         title = "Agent Execution Started"
         if label:
             title = f"{label} Execution Started"
@@ -166,6 +168,7 @@ class ChainOfThoughtRenderer:
             self._response_streaming = True
             self._response_streamed = True
         self._response_buffer += text
+        self._streamed_text += text
         self._flush_response_markdown(final=False)
 
     @staticmethod
@@ -222,6 +225,17 @@ class ChainOfThoughtRenderer:
         streamed = self._response_streamed
         self._response_streamed = False
         return streamed
+
+    def take_streamed_text(self) -> str:
+        """Return all text shown via delta streaming, resetting the accumulator.
+
+        Callers use the returned text to skip re-rendering blocks that were
+        already shown live, while still rendering blocks (e.g. thinking) that
+        never appear as text deltas.
+        """
+        text = self._streamed_text
+        self._streamed_text = ""
+        return text
 
     def _on_runtime_think_complete(
         self,

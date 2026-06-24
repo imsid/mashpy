@@ -82,6 +82,48 @@ class MashRemoteShell:
         """
         self._structured_output_renderers[workflow_id] = fn
 
+    def render_final_response(
+        self,
+        ctx: CLIContext,
+        response_payload: Any,
+        fallback_text: str,
+        streamed_text: str,
+    ) -> None:
+        """Render the assistant's final turn from assistant_blocks or text.
+
+        Skips any text block whose content was already shown live via delta
+        streaming (streamed_text). Thinking blocks always render — they never
+        appear as text deltas. Falls back to fallback_text when response_payload
+        carries no blocks.
+        """
+        if isinstance(response_payload, dict):
+            assistant_blocks = response_payload.get("assistant_blocks") or []
+            text = str(response_payload.get("text") or "")
+        else:
+            assistant_blocks = []
+            text = fallback_text
+
+        rendered = False
+        if assistant_blocks:
+            for block in assistant_blocks:
+                block_type = block.get("type")
+                if block_type == "thinking":
+                    content = str(block.get("thinking") or "").strip()
+                    if content:
+                        ctx.renderer.thinking(content)
+                        rendered = True
+                elif block_type == "text":
+                    block_text = str(block.get("text") or "").strip()
+                    if block_text and block_text != streamed_text:
+                        ctx.renderer.markdown(block_text)
+                        rendered = True
+        elif text and text != streamed_text:
+            ctx.renderer.markdown(text)
+            rendered = True
+
+        if not rendered and not streamed_text:
+            ctx.renderer.warn("(no response)")
+
     def render_structured_output(
         self,
         workflow_id: str,
@@ -300,7 +342,6 @@ class MashRemoteShell:
             )
         ctx.last_request_id = request_id or None
         final_payload: dict[str, Any] | None = None
-        streamed_response_text: str | None = None
         try:
             for event in self.client.stream_request(ctx.agent_id, request_id):
                 event_name = str(event.get("event") or "")
@@ -310,16 +351,6 @@ class MashRemoteShell:
 
                 if event_name == "agent.trace":
                     self._render_trace_event(payload)
-                    streamed_text = self._extract_streamed_response_text(
-                        payload,
-                        agent_id=ctx.agent_id,
-                    )
-                    if streamed_text and not self.chain_renderer.response_streamed():
-                        # Legacy per-step preview render, used only when the
-                        # provider does not stream tokens. When tokens stream
-                        # live, the answer is already shown formatted in place.
-                        streamed_response_text = streamed_text
-                        ctx.renderer.markdown(streamed_text)
                     continue
 
                 if event_name == "request.interaction.create":
@@ -348,31 +379,10 @@ class MashRemoteShell:
             ctx.session_id = final_session_id
             ctx.session_ids[ctx.agent_id] = final_session_id
 
-        response_payload = final_payload.get("response")
-        if isinstance(response_payload, dict):
-            text = str(response_payload.get("text") or "")
-            assistant_blocks = response_payload.get("assistant_blocks") or []
-        else:
-            text = str(final_payload.get("text") or "")
-            assistant_blocks = []
-        # Skip the terminal render when the answer already streamed live; only
-        # render here for non-streaming providers (and dedupe against any
-        # legacy preview render above).
-        response_streamed = self.chain_renderer.take_response_streamed()
-        if not response_streamed:
-            if assistant_blocks:
-                for block in assistant_blocks:
-                    block_type = block.get("type")
-                    if block_type == "thinking":
-                        ctx.renderer.thinking(str(block.get("thinking") or ""))
-                    elif block_type == "text":
-                        block_text = str(block.get("text") or "").strip()
-                        if block_text and block_text != streamed_response_text:
-                            ctx.renderer.markdown(block_text)
-            elif text and text != streamed_response_text:
-                ctx.renderer.markdown(text)
-            elif not text and not streamed_response_text:
-                ctx.renderer.warn("(no response)")
+        chain_streamed = self.chain_renderer.take_streamed_text()
+        response_obj = final_payload.get("response")
+        fallback = str(final_payload.get("text") or "")
+        self.render_final_response(ctx, response_obj, fallback, chain_streamed)
 
 
     def run(self) -> None:
