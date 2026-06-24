@@ -291,7 +291,11 @@ validation).
   - `trace_id`
 - Returns:
   - `status`
-  - `steps`
+  - `assistant_blocks` — structured content blocks from the terminal response (same shape as `response_payload.assistant_blocks` on `request.completed`); empty list when the provider does not emit blocks
+  - `steps` — each step includes:
+    - `assistant_text` — flat text extracted from the LLM response for this step
+    - `assistant_blocks` — structured content blocks for this step, including `thinking` blocks from extended-thinking models; empty list when absent
+    - `tool_calls`, `token_usage`, `think_duration_ms`, `act_duration_ms`, `total_duration_ms`
   - `summary`
   - `source`
   - `agent_id`
