@@ -9,6 +9,18 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.12.0](https://github.com/imsid/mashpy/compare/mashpy-v0.11.0...mashpy-v0.12.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** unify assistant_blocks rendering across REPL and workflow paths ([#93](https://github.com/imsid/mashpy/issues/93)) ([8ebe3f1](https://github.com/imsid/mashpy/commit/8ebe3f16f0cf27efa85a065adc50e2b29138633e))
+
+
+### Bug Fixes
+
+* **runtime:** scope finalize_structured_output to the final assistant turn ([#90](https://github.com/imsid/mashpy/issues/90)) ([e177ff0](https://github.com/imsid/mashpy/commit/e177ff0a2bea49c2c4352daf1dd3bda53556f1a7))
+
 ## [0.11.0](https://github.com/imsid/mashpy/compare/mashpy-v0.10.1...mashpy-v0.11.0) (2026-06-24)
 
 
