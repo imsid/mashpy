@@ -22,6 +22,7 @@ class RuntimeTrace:
     status: str
     user_message: str
     assistant_response: str
+    assistant_blocks: list[dict[str, Any]]
     tools_called: list[str]
     tool_call_count: int
     tool_error_count: int
@@ -48,6 +49,7 @@ class RuntimeTrace:
 
         trace = {
             "status": self.status,
+            "assistant_blocks": self.assistant_blocks,
             "steps": self.reasoning_steps,
             "summary": {
                 "total_steps": len(self.reasoning_steps),
@@ -115,6 +117,7 @@ def build_runtime_trace(events: list[RuntimeEvent]) -> RuntimeTrace:
         status=reasoning_status,
         user_message=_extract_user_message(serialized),
         assistant_response=_extract_assistant_response(serialized),
+        assistant_blocks=_extract_assistant_blocks(serialized),
         tools_called=_tools_called(serialized),
         tool_call_count=len(tool_events),
         tool_error_count=len([event for event in tool_events if _is_failed_event(event)]),
@@ -236,12 +239,15 @@ def _reasoning_step_from_runtime_event(
         _tool_call_entry(tool_call)
         for tool_call in _tool_calls_detail(payload)
     ]
+    raw_blocks = payload.get("assistant_blocks")
+    assistant_blocks = list(raw_blocks) if isinstance(raw_blocks, list) else []
     return {
         "step": display_step,
         "step_index": int(event.loop_index) if event.loop_index is not None else None,
         "action_type": action_type,
         "title": _reasoning_title(action_type, tool_calls_detail),
         "assistant_text": _clean_text(payload.get("assistant_text")),
+        "assistant_blocks": assistant_blocks,
         "tool_calls": tool_calls_detail,
         "token_usage": _dict_value(payload.get("token_usage")),
         "think_duration_ms": _as_int(payload.get("duration_ms")),
@@ -429,6 +435,18 @@ def _extract_assistant_response(events: list[dict[str, Any]]) -> str:
         if isinstance(raw, str) and raw:
             return raw
     return ""
+
+
+def _extract_assistant_blocks(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for event in reversed(events):
+        if event.get("event_type") != RuntimeEventType.REQUEST_COMPLETED.value:
+            continue
+        response = (event.get("payload") or {}).get("response")
+        if isinstance(response, dict):
+            blocks = response.get("assistant_blocks")
+            if isinstance(blocks, list) and blocks:
+                return list(blocks)
+    return []
 
 
 def _sum_token_usage(events: list[dict[str, Any]]) -> dict[str, int]:
