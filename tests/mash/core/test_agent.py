@@ -809,5 +809,122 @@ class ParallelToolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.tool_call_id for r in results], ["c1", "c2", "c3"])
 
 
+class _PhasedLLMProvider(LLMProvider):
+    """Returns a response with phase and reasoning_tokens for testing propagation."""
+
+    def __init__(self, phase: Optional[str] = None, reasoning_tokens: Optional[int] = None) -> None:
+        self._phase = phase
+        self._reasoning_tokens = reasoning_tokens
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        provider_metadata = {}
+        if self._phase:
+            provider_metadata["phase"] = self._phase
+        usage = LLMTokenUsage(
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            reasoning_tokens=self._reasoning_tokens,
+        )
+        return LLMResponse(
+            text="I'll call the tool.",
+            tool_calls=[ToolCall(id="call-1", name="noop", arguments={})],
+            content_blocks=[
+                LLMContentBlock.text("I'll call the tool."),
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-1", name="noop", arguments={}
+                ),
+            ],
+            stop_reason="tool_call",
+            usage=usage,
+            provider_metadata=provider_metadata,
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for phase and reasoning_tokens propagation added in #94."""
+
+    def _build_agent(self, llm: LLMProvider) -> Agent:
+        async def noop(_args) -> ToolResult:
+            return ToolResult.success("ok")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="noop",
+                description="no-op",
+                parameters={"type": "object", "properties": {}},
+                _executor=noop,
+            )
+        )
+        return Agent(
+            llm=llm,
+            tools=tools,
+            skills=SkillRegistry(),
+            config=AgentConfig(
+                app_id="test",
+                system_prompt="You are a test agent.",
+                max_steps=2,
+            ),
+        )
+
+    async def test_phase_from_provider_metadata_stored_in_context_message(
+        self,
+    ) -> None:
+        agent = self._build_agent(_PhasedLLMProvider(phase="commentary"))
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("do the thing")
+
+        await agent.plan_step(context)
+
+        assistant_messages = [
+            msg for msg in context.messages if msg.role.value == "assistant"
+        ]
+        self.assertTrue(assistant_messages)
+        self.assertEqual(assistant_messages[-1].metadata.get("phase"), "commentary")
+
+    async def test_no_phase_metadata_when_provider_metadata_has_no_phase(
+        self,
+    ) -> None:
+        agent = self._build_agent(_PhasedLLMProvider(phase=None))
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("do the thing")
+
+        await agent.plan_step(context)
+
+        assistant_messages = [
+            msg for msg in context.messages if msg.role.value == "assistant"
+        ]
+        self.assertNotIn("phase", assistant_messages[-1].metadata)
+
+    async def test_reasoning_tokens_included_in_step_token_usage(self) -> None:
+        agent = self._build_agent(_PhasedLLMProvider(reasoning_tokens=380))
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("do the thing")
+
+        plan = await agent.plan_step(context)
+
+        self.assertEqual(plan.token_usage.get("reasoning"), 380)
+
+    async def test_reasoning_tokens_absent_from_token_usage_when_none(self) -> None:
+        agent = self._build_agent(_PhasedLLMProvider(reasoning_tokens=None))
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("do the thing")
+
+        plan = await agent.plan_step(context)
+
+        self.assertNotIn("reasoning", plan.token_usage)
+
+
 if __name__ == "__main__":
     unittest.main()
