@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
-
-log = logging.getLogger(__name__)
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from ...logging import EventLogger, LLMEvent
 from .types import (
@@ -17,6 +15,8 @@ from .types import (
     LLMTokenUsage,
     LLMToolDefinition,
 )
+
+log = logging.getLogger(__name__)
 
 
 # Coalescing thresholds for streamed response deltas. Deltas are flushed into a
@@ -38,14 +38,12 @@ class _DeltaStream:
 
     def __init__(
         self,
-        provider: "BaseLLMProvider",
-        request: LLMRequest,
+        emit: Callable[[str, int], Awaitable[None]],
         *,
         max_chars: int = DEFAULT_DELTA_MAX_CHARS,
         max_interval: float = DEFAULT_DELTA_MAX_INTERVAL,
     ) -> None:
-        self._provider = provider
-        self._request = request
+        self._emit = emit
         self._max_chars = max_chars
         self._max_interval = max_interval
         self._buffer = ""
@@ -63,9 +61,7 @@ class _DeltaStream:
     async def flush(self) -> None:
         if not self._buffer:
             return
-        await self._provider._emit_response_delta(
-            self._request, text=self._buffer, index=self._index
-        )
+        await self._emit(self._buffer, self._index)
         self._index += 1
         self._buffer = ""
         self._last_flush = time.monotonic()
@@ -155,7 +151,7 @@ class BaseLLMProvider(LLMProvider):
         self,
         request: LLMRequest,
         *,
-        payload: Dict[str, Any] = {},
+        payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self._event_logger is None:
             return
@@ -169,7 +165,7 @@ class BaseLLMProvider(LLMProvider):
                 model=request.model,
                 trace_id=self._trace_id,
                 tools=self._tool_names(request.tools),
-                payload=payload,
+                payload=payload or {},
                 betas=self._request_betas(request),
             )
         )
@@ -208,7 +204,9 @@ class BaseLLMProvider(LLMProvider):
 
     def _delta_stream(self, request: LLMRequest) -> _DeltaStream:
         """Create a coalescing delta stream for a streamed request."""
-        return _DeltaStream(self, request)
+        async def _emit(text: str, index: int) -> None:
+            await self._emit_response_delta(request, text=text, index=index)
+        return _DeltaStream(_emit)
 
     async def _emit_response_delta(
         self,

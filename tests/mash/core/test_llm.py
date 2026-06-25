@@ -463,27 +463,18 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.text, "partial answer")
 
     async def test_delta_stream_coalesces_by_size_and_flushes_remainder(self) -> None:
-        provider = SimpleNamespace(_emit_response_delta=AsyncMock())
-        request = LLMRequest(
-            model="claude-sonnet-4-5",
-            system="s",
-            messages=[],
-            tools=[],
-            max_tokens=10,
-        )
-        stream = _DeltaStream(provider, request, max_chars=80, max_interval=99.0)
+        emit = AsyncMock()
+        stream = _DeltaStream(emit, max_chars=80, max_interval=99.0)
 
         await stream.push("a" * 50)  # under threshold, buffered
         await stream.push("b" * 50)  # crosses 80 chars -> flush index 0
         await stream.push("c" * 10)  # under threshold, buffered
         await stream.flush()         # trailing remainder -> flush index 1
 
-        calls = provider._emit_response_delta.await_args_list
+        calls = emit.await_args_list
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0].kwargs["index"], 0)
-        self.assertEqual(calls[0].kwargs["text"], "a" * 50 + "b" * 50)
-        self.assertEqual(calls[1].kwargs["index"], 1)
-        self.assertEqual(calls[1].kwargs["text"], "c" * 10)
+        self.assertEqual(calls[0].args, ("a" * 50 + "b" * 50, 0))
+        self.assertEqual(calls[1].args, ("c" * 10, 1))
 
 
 class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
