@@ -367,6 +367,8 @@ class Agent:
                 token_usage["cache_read"] = response.usage.cache_read_tokens
             if response.usage.cache_write_tokens is not None:
                 token_usage["cache_write"] = response.usage.cache_write_tokens
+            if response.usage.reasoning_tokens is not None:
+                token_usage["reasoning"] = response.usage.reasoning_tokens
         if token_usage:
             input_tokens = token_usage.get("input")
             output_tokens = token_usage.get("output")
@@ -749,8 +751,9 @@ class Agent:
 
         # Store the assistant's response in context
         if blocks:
-            # Store as content blocks for proper format
-            context.add_message(MessageRole.ASSISTANT, blocks)
+            phase = response.provider_metadata.get("phase")
+            msg_kwargs: Dict[str, Any] = {"phase": phase} if phase else {}
+            context.add_message(MessageRole.ASSISTANT, blocks, **msg_kwargs)
 
         # Determine action type
         if tool_calls:

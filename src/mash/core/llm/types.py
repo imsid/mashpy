@@ -41,6 +41,19 @@ class LLMContentBlock:
         )
 
     @classmethod
+    def reasoning(
+        cls,
+        *,
+        item_id: str,
+        summary: List[Dict[str, Any]],
+        encrypted_content: Optional[str] = None,
+    ) -> "LLMContentBlock":
+        data: Dict[str, Any] = {"id": item_id, "summary": summary}
+        if encrypted_content is not None:
+            data["encrypted_content"] = encrypted_content
+        return cls(type="reasoning", data=data)
+
+    @classmethod
     def tool_result(
         cls,
         *,
@@ -107,6 +120,7 @@ class LLMTokenUsage:
     total_tokens: Optional[int] = None
     cache_read_tokens: Optional[int] = None
     cache_write_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -185,6 +199,16 @@ def coerce_content_blocks(content: str | List[Dict[str, Any]]) -> List[LLMConten
                 "tool_call_id": payload.get("tool_call_id", payload.get("tool_use_id")),
                 "content": payload.get("content", ""),
                 "is_error": payload.get("is_error", False),
+            }
+        elif block_type == "reasoning":
+            payload = {
+                "id": payload.get("id", ""),
+                "summary": payload.get("summary", []),
+                **(
+                    {"encrypted_content": payload["encrypted_content"]}
+                    if "encrypted_content" in payload
+                    else {}
+                ),
             }
 
         blocks.append(LLMContentBlock(type=block_type, data=payload))

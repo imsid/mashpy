@@ -333,7 +333,9 @@ class ChainOfThoughtRenderer:
         if token_usage:
             input_tok = token_usage.get("input", 0)
             output_tok = token_usage.get("output", 0)
-            token_str = f" [dim]({input_tok}+{output_tok} tokens)[/dim]"
+            reasoning_tok = token_usage.get("reasoning")
+            reasoning_str = f", {reasoning_tok} reasoning" if reasoning_tok else ""
+            token_str = f" [dim]({input_tok}+{output_tok} tokens{reasoning_str})[/dim]"
 
         display_step = step.get("display_step")
         if not isinstance(display_step, int) or display_step <= 0:
@@ -451,7 +453,9 @@ class ChainOfThoughtRenderer:
         if token_usage:
             input_tok = token_usage.get("input", 0)
             output_tok = token_usage.get("output", 0)
-            token_str = f" [dim]({input_tok}+{output_tok} tokens)[/dim]"
+            reasoning_tok = token_usage.get("reasoning")
+            reasoning_str = f", {reasoning_tok} reasoning" if reasoning_tok else ""
+            token_str = f" [dim]({input_tok}+{output_tok} tokens{reasoning_str})[/dim]"
 
         self._console.print(
             f"    [magenta]│[/magenta] [cyan]→[/cyan] Step {counter}: {desc}{token_str} "
