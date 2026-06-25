@@ -8,8 +8,6 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-log = logging.getLogger(__name__)
-
 from openai import AsyncOpenAI
 
 from .base import BaseLLMProvider
@@ -23,6 +21,8 @@ from .types import (
 )
 from .utils import block_value
 
+log = logging.getLogger(__name__)
+
 DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
 
@@ -31,7 +31,7 @@ class OpenAIProvider(BaseLLMProvider):
 
     provider_name = "openai"
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         app_id: str,
         model: str = DEFAULT_OPENAI_MODEL,
@@ -79,7 +79,7 @@ class OpenAIProvider(BaseLLMProvider):
             deltas = self._delta_stream(request)
             async for event in stream:
                 if getattr(event, "type", None) == "response.output_text.delta":
-                    await deltas.push(event.delta)
+                    await deltas.push(getattr(event, "delta", ""))
             await deltas.flush()
             return await stream.get_final_response()
 
@@ -257,8 +257,8 @@ class OpenAIProvider(BaseLLMProvider):
                     )
         return items
 
-    def _parse_openai_response(self, response: Any) -> LLMResponse:
-        from ..context import ToolCall
+    def _parse_openai_response(self, response: Any) -> LLMResponse:  # pylint: disable=too-many-locals
+        from ..context import ToolCall  # pylint: disable=import-outside-toplevel
 
         output = getattr(response, "output", None) or []
         tool_calls: List[ToolCall] = []
