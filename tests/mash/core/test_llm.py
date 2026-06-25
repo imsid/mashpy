@@ -1817,5 +1817,683 @@ class EmitRequestErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(ctx.exception, original)
 
 
+class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for Anthropic extended thinking (reasoning) support."""
+
+    # --- _parse_anthropic_response with thinking blocks ---
+
+    def test_parser_captures_thinking_block_as_content_block(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="step-by-step reasoning", signature="sig_abc"),
+                SimpleNamespace(type="text", text="The answer is 42."),
+            ],
+            stop_reason="end_turn",
+            usage=None,
+        )
+
+        parsed = provider._parse_anthropic_response(response)
+
+        thinking_blocks = [b for b in parsed.content_blocks if b.type == "thinking"]
+        self.assertEqual(len(thinking_blocks), 1)
+        self.assertIn("thinking", thinking_blocks[0].data)
+
+    def test_parser_thinking_content_does_not_leak_into_text(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="internal monologue", signature="sig_1"),
+                SimpleNamespace(type="text", text="Visible reply."),
+            ],
+            stop_reason="end_turn",
+            usage=None,
+        )
+
+        parsed = provider._parse_anthropic_response(response)
+
+        self.assertEqual(parsed.text, "Visible reply.")
+        self.assertNotIn("internal monologue", parsed.text)
+
+    def test_parser_interleaved_thinking_text_tool_use(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="I should search.", signature="sig_2"),
+                SimpleNamespace(type="text", text="Let me look that up."),
+                SimpleNamespace(type="tool_use", id="tu-1", name="search", input={"q": "test"}),
+            ],
+            stop_reason="tool_use",
+            usage=None,
+        )
+
+        parsed = provider._parse_anthropic_response(response)
+
+        self.assertEqual(len(parsed.content_blocks), 3)
+        self.assertEqual(parsed.content_blocks[0].type, "thinking")
+        self.assertEqual(parsed.content_blocks[1].type, "text")
+        self.assertEqual(parsed.content_blocks[2].type, "tool_call")
+        self.assertEqual(parsed.text, "Let me look that up.")
+        self.assertEqual(len(parsed.tool_calls), 1)
+        self.assertEqual(parsed.tool_calls[0].name, "search")
+        # Anthropic API returns "tool_use" (not "tool_call") as the stop reason.
+        self.assertEqual(parsed.stop_reason, "tool_use")
+
+    def test_parser_thinking_only_response_has_empty_text(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="Hmm.", signature="sig_3"),
+            ],
+            stop_reason="end_turn",
+            usage=None,
+        )
+
+        parsed = provider._parse_anthropic_response(response)
+
+        self.assertEqual(parsed.text, "")
+        self.assertEqual(len(parsed.content_blocks), 1)
+        self.assertEqual(parsed.content_blocks[0].type, "thinking")
+
+    def test_parser_stop_reason_preserved_with_thinking_blocks(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="reasoning", signature="sig_4"),
+                SimpleNamespace(type="text", text="partial"),
+            ],
+            stop_reason="max_tokens",
+            usage=None,
+        )
+
+        parsed = provider._parse_anthropic_response(response)
+
+        self.assertEqual(parsed.stop_reason, "max_tokens")
+
+    # --- _anthropic_messages: thinking blocks dropped on replay ---
+
+    def test_messages_drops_thinking_blocks_when_building_next_request(self) -> None:
+        # Anthropic manages extended thinking state server-side via betas;
+        # thinking blocks are not passed back in conversation history.
+        provider = object.__new__(AnthropicProvider)
+        request = LLMRequest(
+            model="claude-sonnet-4-6",
+            system="You are helpful.",
+            messages=[
+                LLMMessage(
+                    role="assistant",
+                    content=[
+                        LLMContentBlock(type="thinking", data={"thinking": "I'll search.", "signature": "sig_5"}),
+                        LLMContentBlock.text("Let me look that up."),
+                        LLMContentBlock.tool_call(
+                            tool_call_id="tu-1", name="search", arguments={"q": "test"}
+                        ),
+                    ],
+                ),
+                LLMMessage(
+                    role="tool",
+                    content=[
+                        LLMContentBlock.tool_result(tool_call_id="tu-1", content="results")
+                    ],
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        messages = provider._anthropic_messages(request)
+
+        # thinking block should not appear in any translated message
+        for msg in messages:
+            for block in msg.get("content", []):
+                self.assertNotEqual(block.get("type"), "thinking")
+
+        # text and tool_use blocks are preserved
+        assistant_msg = next(m for m in messages if m["role"] == "assistant")
+        block_types = [b["type"] for b in assistant_msg["content"]]
+        self.assertIn("text", block_types)
+        self.assertIn("tool_use", block_types)
+
+    # --- _anthropic_usage: reasoning_tokens stays None ---
+
+    def test_usage_reasoning_tokens_is_none(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        usage = SimpleNamespace(
+            input_tokens=100,
+            output_tokens=50,
+            cache_creation_input_tokens=None,
+            cache_read_input_tokens=None,
+        )
+
+        result = provider._anthropic_usage(usage)
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(result.reasoning_tokens)
+        self.assertEqual(result.input_tokens, 100)
+        self.assertEqual(result.output_tokens, 50)
+
+    # --- extended thinking wiring: betas and thinking param ---
+
+    async def test_send_routes_to_beta_endpoint_when_betas_present(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        provider._model = "claude-sonnet-4-6"
+        provider._app_id = "test"
+        beta_create = AsyncMock()
+        provider._client = SimpleNamespace(
+            messages=SimpleNamespace(create=AsyncMock()),
+            beta=SimpleNamespace(
+                messages=SimpleNamespace(create=beta_create, stream=Mock())
+            ),
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_anthropic_response = Mock(
+            return_value=SimpleNamespace(text="ok", tool_calls=[], provider_metadata={})
+        )
+        request = LLMRequest(
+            model="claude-sonnet-4-6",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=1000,
+            provider_options={"betas": ["interleaved-thinking-2025-05-14"]},
+        )
+
+        await provider.send(request)
+
+        beta_create.assert_awaited_once()
+        provider._client.messages.create.assert_not_called()
+        call_kwargs = beta_create.call_args.kwargs
+        self.assertEqual(call_kwargs["betas"], ["interleaved-thinking-2025-05-14"])
+
+    async def test_send_passes_thinking_param_to_api(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        provider._model = "claude-sonnet-4-6"
+        provider._app_id = "test"
+        beta_create = AsyncMock()
+        provider._client = SimpleNamespace(
+            messages=SimpleNamespace(create=AsyncMock()),
+            beta=SimpleNamespace(
+                messages=SimpleNamespace(create=beta_create, stream=Mock())
+            ),
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_anthropic_response = Mock(
+            return_value=SimpleNamespace(text="ok", tool_calls=[], provider_metadata={})
+        )
+        request = LLMRequest(
+            model="claude-sonnet-4-6",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=16000,
+            provider_options={
+                "betas": ["interleaved-thinking-2025-05-14"],
+                "thinking": {"type": "enabled", "budget_tokens": 10000},
+            },
+        )
+
+        await provider.send(request)
+
+        call_kwargs = beta_create.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["thinking"],
+            {"type": "enabled", "budget_tokens": 10000},
+        )
+
+    async def test_send_uses_standard_endpoint_without_betas(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        provider._model = "claude-sonnet-4-6"
+        provider._app_id = "test"
+        standard_create = AsyncMock()
+        provider._client = SimpleNamespace(
+            messages=SimpleNamespace(create=standard_create),
+            beta=SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(), stream=Mock())),
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_anthropic_response = Mock(
+            return_value=SimpleNamespace(text="ok", tool_calls=[], provider_metadata={})
+        )
+        request = LLMRequest(
+            model="claude-sonnet-4-6",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        await provider.send(request)
+
+        standard_create.assert_awaited_once()
+        provider._client.beta.messages.create.assert_not_called()
+
+
+class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for OpenAI reasoning model support added in #94."""
+
+    # --- LLMContentBlock.reasoning() factory ---
+
+    def test_reasoning_block_factory_basic(self) -> None:
+        summary = [{"type": "summary_text", "text": "I thought about it."}]
+        block = LLMContentBlock.reasoning(item_id="rs_abc", summary=summary)
+        self.assertEqual(block.type, "reasoning")
+        self.assertEqual(block.data["id"], "rs_abc")
+        self.assertEqual(block.data["summary"], summary)
+        self.assertNotIn("encrypted_content", block.data)
+
+    def test_reasoning_block_factory_with_encrypted_content(self) -> None:
+        block = LLMContentBlock.reasoning(
+            item_id="rs_xyz",
+            summary=[],
+            encrypted_content="enc_tok_abc123",
+        )
+        self.assertEqual(block.data["encrypted_content"], "enc_tok_abc123")
+
+    def test_reasoning_block_round_trips_through_coerce_content_blocks(self) -> None:
+        from mash.core.llm.types import coerce_content_blocks
+
+        summary = [{"type": "summary_text", "text": "step 1"}]
+        original = LLMContentBlock.reasoning(
+            item_id="rs_1", summary=summary, encrypted_content="tok"
+        )
+        serialized = [original.to_dict()]
+        restored = coerce_content_blocks(serialized)
+
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0].type, "reasoning")
+        self.assertEqual(restored[0].data["id"], "rs_1")
+        self.assertEqual(restored[0].data["summary"], summary)
+        self.assertEqual(restored[0].data["encrypted_content"], "tok")
+
+    def test_reasoning_block_round_trip_without_encrypted_content(self) -> None:
+        from mash.core.llm.types import coerce_content_blocks
+
+        original = LLMContentBlock.reasoning(item_id="rs_2", summary=[])
+        restored = coerce_content_blocks([original.to_dict()])
+        self.assertNotIn("encrypted_content", restored[0].data)
+
+    # --- LLMTokenUsage.reasoning_tokens ---
+
+    def test_llm_token_usage_reasoning_tokens_defaults_to_none(self) -> None:
+        from mash.core.llm.types import LLMTokenUsage
+        usage = LLMTokenUsage(input_tokens=10, output_tokens=5, total_tokens=15)
+        self.assertIsNone(usage.reasoning_tokens)
+
+    def test_llm_token_usage_reasoning_tokens_can_be_set(self) -> None:
+        from mash.core.llm.types import LLMTokenUsage
+        usage = LLMTokenUsage(
+            input_tokens=100, output_tokens=500, total_tokens=600, reasoning_tokens=480
+        )
+        self.assertEqual(usage.reasoning_tokens, 480)
+
+    # --- _parse_openai_response ---
+
+    def test_parser_captures_reasoning_item_as_content_block(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        summary = [{"type": "summary_text", "text": "Thinking step."}]
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_abc",
+                    summary=summary,
+                ),
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Answer.")],
+                ),
+            ],
+            status="completed",
+            usage=None,
+            incomplete_details=None,
+        )
+
+        parsed = provider._parse_openai_response(response)
+
+        reasoning_blocks = [b for b in parsed.content_blocks if b.type == "reasoning"]
+        self.assertEqual(len(reasoning_blocks), 1)
+        self.assertEqual(reasoning_blocks[0].data["id"], "rs_abc")
+        self.assertEqual(reasoning_blocks[0].data["summary"], summary)
+        self.assertEqual(parsed.text, "Answer.")
+
+    def test_parser_captures_phase_from_message_item(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    phase="commentary",
+                    content=[SimpleNamespace(type="output_text", text="I'll look that up.")],
+                ),
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_1",
+                    id="call_1",
+                    name="search",
+                    arguments="{}",
+                ),
+            ],
+            status="completed",
+            usage=None,
+            incomplete_details=None,
+        )
+
+        parsed = provider._parse_openai_response(response)
+
+        self.assertEqual(parsed.provider_metadata.get("phase"), "commentary")
+
+    def test_parser_phase_absent_when_message_has_no_phase(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Done.")],
+                ),
+            ],
+            status="completed",
+            usage=None,
+            incomplete_details=None,
+        )
+
+        parsed = provider._parse_openai_response(response)
+
+        self.assertNotIn("phase", parsed.provider_metadata)
+
+    def test_parser_preserves_encrypted_content_on_reasoning_block(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_enc",
+                    summary=[],
+                    encrypted_content="enc_tok_xyz",
+                ),
+            ],
+            status="completed",
+            usage=None,
+            incomplete_details=None,
+        )
+
+        parsed = provider._parse_openai_response(response)
+
+        block = parsed.content_blocks[0]
+        self.assertEqual(block.data["encrypted_content"], "enc_tok_xyz")
+
+    # --- _openai_usage ---
+
+    def test_usage_extracts_reasoning_tokens(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        usage = SimpleNamespace(
+            input_tokens=100,
+            output_tokens=600,
+            total_tokens=700,
+            input_tokens_details=None,
+            output_tokens_details=SimpleNamespace(reasoning_tokens=480),
+        )
+
+        result = provider._openai_usage(usage)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.reasoning_tokens, 480)
+        self.assertEqual(result.output_tokens, 600)
+
+    def test_usage_reasoning_tokens_none_when_output_details_missing(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        usage = SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            input_tokens_details=None,
+            output_tokens_details=None,
+        )
+
+        result = provider._openai_usage(usage)
+
+        self.assertIsNone(result.reasoning_tokens)
+
+    # --- _openai_input ---
+
+    def test_input_replays_reasoning_block_before_function_call(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        summary = [{"type": "summary_text", "text": "I'll call the tool."}]
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="You are helpful.",
+            messages=[
+                LLMMessage(
+                    role="assistant",
+                    content=[
+                        LLMContentBlock.reasoning(item_id="rs_1", summary=summary),
+                        LLMContentBlock.tool_call(
+                            tool_call_id="call_1", name="search", arguments={"q": "test"}
+                        ),
+                    ],
+                ),
+                LLMMessage(
+                    role="tool",
+                    content=[
+                        LLMContentBlock.tool_result(
+                            tool_call_id="call_1", content="result text"
+                        )
+                    ],
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        items = provider._openai_input(request)
+
+        types = [item["type"] for item in items]
+        self.assertEqual(types, ["reasoning", "function_call", "function_call_output"])
+        reasoning_item = items[0]
+        self.assertEqual(reasoning_item["id"], "rs_1")
+        self.assertEqual(reasoning_item["summary"], summary)
+
+    def test_input_includes_encrypted_content_when_present(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[
+                LLMMessage(
+                    role="assistant",
+                    content=[
+                        LLMContentBlock.reasoning(
+                            item_id="rs_enc",
+                            summary=[],
+                            encrypted_content="enc_tok_abc",
+                        ),
+                    ],
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        items = provider._openai_input(request)
+
+        self.assertEqual(items[0]["encrypted_content"], "enc_tok_abc")
+
+    def test_input_omits_encrypted_content_when_absent(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[
+                LLMMessage(
+                    role="assistant",
+                    content=[LLMContentBlock.reasoning(item_id="rs_1", summary=[])],
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        items = provider._openai_input(request)
+
+        self.assertNotIn("encrypted_content", items[0])
+
+    def test_input_preserves_phase_on_assistant_message(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[
+                LLMMessage(
+                    role="assistant",
+                    content=[LLMContentBlock.text("I'll look that up.")],
+                    metadata={"phase": "commentary"},
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        items = provider._openai_input(request)
+
+        msg_items = [i for i in items if i["type"] == "message"]
+        self.assertEqual(len(msg_items), 1)
+        self.assertEqual(msg_items[0]["phase"], "commentary")
+
+    def test_input_does_not_add_phase_to_user_messages(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[
+                LLMMessage(
+                    role="user",
+                    content=[LLMContentBlock.text("Hello")],
+                    metadata={"phase": "commentary"},
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        items = provider._openai_input(request)
+
+        self.assertNotIn("phase", items[0])
+
+    def test_input_omits_phase_from_assistant_message_when_not_set(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[
+                LLMMessage(
+                    role="assistant",
+                    content=[LLMContentBlock.text("Done.")],
+                ),
+            ],
+            tools=[],
+            max_tokens=1000,
+        )
+
+        items = provider._openai_input(request)
+
+        self.assertNotIn("phase", items[0])
+
+    # --- send() warning for low max_output_tokens ---
+
+    async def test_send_warns_when_reasoning_enabled_and_max_output_tokens_low(
+        self,
+    ) -> None:
+        provider = object.__new__(OpenAIProvider)
+        provider._model = "gpt-5.5"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock())
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_openai_response = Mock(
+            return_value=SimpleNamespace(
+                text="ok", tool_calls=[], provider_metadata={},
+                usage=None, content_blocks=[],
+            )
+        )
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=4096,
+            provider_options={"reasoning": {"effort": "medium"}},
+        )
+
+        with self.assertLogs("mash.core.llm.openai", level="WARNING") as log_ctx:
+            await provider.send(request)
+
+        self.assertTrue(
+            any("25,000" in line for line in log_ctx.output),
+            "Expected warning about 25,000 token minimum",
+        )
+
+    async def test_send_no_warning_when_reasoning_absent(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        provider._model = "gpt-5.5"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock())
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_openai_response = Mock(
+            return_value=SimpleNamespace(
+                text="ok", tool_calls=[], provider_metadata={},
+                usage=None, content_blocks=[],
+            )
+        )
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=4096,
+        )
+
+        with self.assertNoLogs("mash.core.llm.openai", level="WARNING"):
+            await provider.send(request)
+
+    async def test_send_no_warning_when_max_tokens_sufficient(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        provider._model = "gpt-5.5"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock())
+        )
+        provider._emit_request_start = AsyncMock()
+        provider._emit_request_complete = AsyncMock()
+        provider._emit_request_error = AsyncMock()
+        provider._parse_openai_response = Mock(
+            return_value=SimpleNamespace(
+                text="ok", tool_calls=[], provider_metadata={},
+                usage=None, content_blocks=[],
+            )
+        )
+        request = LLMRequest(
+            model="gpt-5.5",
+            system="s",
+            messages=[],
+            tools=[],
+            max_tokens=32000,
+            provider_options={"reasoning": {"effort": "medium"}},
+        )
+
+        with self.assertNoLogs("mash.core.llm.openai", level="WARNING"):
+            await provider.send(request)
+
+
 if __name__ == "__main__":
     unittest.main()
