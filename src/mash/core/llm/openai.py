@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 from openai import AsyncOpenAI
 
@@ -125,6 +128,16 @@ class OpenAIProvider(BaseLLMProvider):
                 continue
             params[key] = value
 
+        if "reasoning" in params:
+            max_out = params.get("max_output_tokens") or 0
+            if max_out < 25_000:
+                log.warning(
+                    "max_output_tokens=%d is low for a reasoning model; OpenAI recommends "
+                    "reserving at least 25,000 tokens for reasoning + output. "
+                    "Increase AgentConfig.max_tokens to avoid incomplete responses.",
+                    max_out,
+                )
+
         await self._emit_request_start(
             request,
             payload={"input": params["input"], "tools": params.get("tools", [])},
@@ -204,16 +217,28 @@ class OpenAIProvider(BaseLLMProvider):
                 if block.type == "text"
             ]
             if text_content:
-                items.append(
-                    {
-                        "type": "message",
-                        "role": message.role,
-                        "content": text_content,
-                    }
-                )
+                msg_item: Dict[str, Any] = {
+                    "type": "message",
+                    "role": message.role,
+                    "content": text_content,
+                }
+                if message.role == "assistant":
+                    phase = message.metadata.get("phase")
+                    if phase:
+                        msg_item["phase"] = phase
+                items.append(msg_item)
 
             for block in message.content:
-                if block.type == "tool_call":
+                if block.type == "reasoning":
+                    reasoning_item: Dict[str, Any] = {
+                        "type": "reasoning",
+                        "id": block.data.get("id", ""),
+                        "summary": block.data.get("summary", []),
+                    }
+                    if "encrypted_content" in block.data:
+                        reasoning_item["encrypted_content"] = block.data["encrypted_content"]
+                    items.append(reasoning_item)
+                elif block.type == "tool_call":
                     items.append(
                         {
                             "type": "function_call",
@@ -239,10 +264,25 @@ class OpenAIProvider(BaseLLMProvider):
         tool_calls: List[ToolCall] = []
         text_parts: List[str] = []
         blocks: List[LLMContentBlock] = []
+        phase: Optional[str] = None
 
         for item in output:
             item_type = block_value(item, "type")
-            if item_type == "message":
+            if item_type == "reasoning":
+                item_id = str(block_value(item, "id") or "")
+                summary = list(block_value(item, "summary") or [])
+                encrypted = block_value(item, "encrypted_content")
+                blocks.append(
+                    LLMContentBlock.reasoning(
+                        item_id=item_id,
+                        summary=summary,
+                        encrypted_content=str(encrypted) if encrypted is not None else None,
+                    )
+                )
+            elif item_type == "message":
+                item_phase = block_value(item, "phase")
+                if item_phase:
+                    phase = str(item_phase)
                 for content_item in block_value(item, "content") or []:
                     if block_value(content_item, "type") != "output_text":
                         continue
@@ -265,6 +305,11 @@ class OpenAIProvider(BaseLLMProvider):
                 )
 
         status = getattr(response, "status", None)
+        provider_metadata: Dict[str, Any] = {}
+        if status:
+            provider_metadata["status"] = status
+        if phase:
+            provider_metadata["phase"] = phase
         return LLMResponse(
             text="".join(text_parts).strip(),
             tool_calls=tool_calls,
@@ -274,7 +319,7 @@ class OpenAIProvider(BaseLLMProvider):
             ),
             usage=self._openai_usage(getattr(response, "usage", None)),
             provider_response=response,
-            provider_metadata={"status": status} if status else {},
+            provider_metadata=provider_metadata,
         )
 
     def _parse_openai_arguments(self, raw_arguments: Any) -> Dict[str, Any]:
@@ -305,12 +350,15 @@ class OpenAIProvider(BaseLLMProvider):
             return None
 
         input_details = getattr(usage, "input_tokens_details", None)
+        output_details = getattr(usage, "output_tokens_details", None)
         cache_read_tokens = block_value(input_details, "cached_tokens")
         cache_write_tokens = block_value(input_details, "cache_creation_tokens")
+        reasoning_tokens = block_value(output_details, "reasoning_tokens")
         return LLMTokenUsage(
             input_tokens=getattr(usage, "input_tokens", None),
             output_tokens=getattr(usage, "output_tokens", None),
             total_tokens=getattr(usage, "total_tokens", None),
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=int(reasoning_tokens) if reasoning_tokens is not None else None,
         )
