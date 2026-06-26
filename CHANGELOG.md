@@ -9,6 +9,24 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.13.0](https://github.com/imsid/mashpy/compare/mashpy-v0.12.0...mashpy-v0.13.0) (2026-06-26)
+
+
+### Features
+
+* **llm:** full reasoning model support for OpenAI provider ([#95](https://github.com/imsid/mashpy/issues/95)) ([377d089](https://github.com/imsid/mashpy/commit/377d0899505cab346ce602a46344372515093639))
+
+
+### Bug Fixes
+
+* **llm:** resolve pylint, ruff, and pyright errors in base and openai providers ([#98](https://github.com/imsid/mashpy/issues/98)) ([3f7703a](https://github.com/imsid/mashpy/commit/3f7703a363cedf0c9897c72306f254e94dea3298))
+
+
+### Documentation
+
+* add core concepts page to Start Here ([#99](https://github.com/imsid/mashpy/issues/99)) ([4e00f85](https://github.com/imsid/mashpy/commit/4e00f85198f5a95c0711f18c3b3004e2c6a5ac5b))
+* **concepts:** convert concept labels to subheaders ([#100](https://github.com/imsid/mashpy/issues/100)) ([f71d1ee](https://github.com/imsid/mashpy/commit/f71d1ee4fee5d1de607ff442a3fa3d1b4c625eb8))
+
 ## [0.12.0](https://github.com/imsid/mashpy/compare/mashpy-v0.11.0...mashpy-v0.12.0) (2026-06-24)
 
 
