@@ -156,6 +156,7 @@ mash repl --host assistant
 
 ## Start here
 
+- [**Core concepts**](posts/concepts.md): the building blocks behind every agent system
 - [**Product brief**](posts/product-brief.md): the pitch, why applications and agents needs a standard
 - [**Mash under the hood**](posts/mash-under-the-hood.md): what Mash provides and where it fits
 - [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md): the host-to-agent boundary
@@ -169,10 +170,10 @@ mash repl --host assistant
 - [**Human-in-the-loop**](posts/human-in-the-loop.md): tool approval and ask-user on one durable mechanism
 - [**Remote tools over MCP**](posts/remote-tools-mcp.md): connecting MCP servers and their tools
 - [**One LLM contract**](posts/one-llm-contract.md): normalized requests, caching, streaming
-- [**Open-source models over Chat Completions**](posts/oss-models.md): running Gemma, Qwen, and DeepSeek on the same harness, self-hosted or hosted
-- [**Skills: instructions on demand**](posts/skills-on-demand.md): markdown bundles loaded through one meta-tool
+- [**Open-source models**](posts/oss-models.md): running Gemma, Qwen, and DeepSeek on the same harness, self-hosted or hosted
+- [**Skills: Instructions on demand**](posts/skills-on-demand.md): markdown bundles loaded through one meta-tool
 - [**Memory and compaction**](posts/memory-and-compaction.md): history, summary checkpoints, and signals
-- [**Composing agents under one host**](posts/composing-agents.md): subagents, delegation, shared plumbing
+- [**Composing agents**](posts/composing-agents.md): subagents, delegation, shared plumbing
 - [**Workflows**](posts/workflows-and-task-state.md): code authored and dynamic specs for deterministic tasks
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 
