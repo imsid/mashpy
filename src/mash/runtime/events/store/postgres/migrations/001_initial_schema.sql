@@ -1,6 +1,6 @@
 -- Initial schema for the Mash runtime event store.
--- host_id columns were added in 002_add_host_id.sql so this baseline
--- stays idempotent against databases created before that column existed.
+-- This is the authoritative baseline; all prior one-off ALTER TABLE
+-- statements are baked into the column definitions below.
 
 CREATE TABLE IF NOT EXISTS runtime_event_log (
     event_id       BIGSERIAL,
@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS runtime_event_log (
     app_id         TEXT NOT NULL,
     agent_id       TEXT NOT NULL,
     session_id     TEXT,
+    host_id        TEXT,
     workflow_id    TEXT,
     workflow_run_id TEXT,
     seq            INTEGER,
@@ -47,11 +48,16 @@ CREATE INDEX IF NOT EXISTS idx_runtime_event_trace_cursor
 CREATE INDEX IF NOT EXISTS idx_runtime_event_type
     ON runtime_event_log(event_type);
 
+CREATE INDEX IF NOT EXISTS idx_runtime_event_host_cursor
+    ON runtime_event_log(app_id, host_id, event_id)
+    WHERE host_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS runtime_feedback (
     feedback_id   BIGSERIAL PRIMARY KEY,
     feedback_type TEXT NOT NULL,
     message       TEXT NOT NULL,
     app_id        TEXT NOT NULL,
+    host_id       TEXT,
     session_id    TEXT,
     request_id    TEXT,
     trace_id      TEXT,
