@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Case Study: Moma — Node.js App, Mash Agent Backend</title>
+<style>
+  :root {
+    --bg: #f8f9fc;
+    --surface: #ffffff;
+    --surface2: #f0f2f8;
+    --border: #dde1ef;
+    --text: #1a1d2e;
+    --muted: #6b72a0;
+    --accent-blue: #3b6fd4;
+    --accent-green: #0f9e6a;
+    --accent-orange: #c27c0a;
+    --accent-purple: #7c4dcc;
+    --code-bg: #f3f4f8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    font-size: 16px;
+  }
+
+  .page {
+    max-width: 740px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+
+  /* Header */
+  .post-header {
+    margin-bottom: 56px;
+    padding-bottom: 36px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .post-meta {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .post-meta-tag {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    background: rgba(15,158,106,0.08);
+    color: var(--accent-green);
+    border: 1px solid rgba(15,158,106,0.25);
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+
+  .post-header h1 {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.6px;
+    line-height: 1.2;
+    margin-bottom: 18px;
+  }
+
+  .post-header .lede {
+    font-size: 18px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* Body */
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 52px 0 18px;
+    letter-spacing: -0.3px;
+  }
+
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--text);
+  }
+
+  p { margin-bottom: 18px; }
+  p:last-child { margin-bottom: 0; }
+
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  strong { font-weight: 600; }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    color: #2a2f4a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px;
+    overflow-x: auto;
+    margin: 20px 0 28px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    color: #2a2f4a;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  .kw  { color: #7c4dcc; }
+  .fn  { color: #3b6fd4; }
+  .str { color: #0f7a55; }
+  .cm  { color: #9098bb; font-style: italic; }
+  .key { color: #b45309; }
+  .val { color: #c2186b; }
+
+  /* Callout */
+  .callout {
+    border-left: 3px solid var(--accent-green);
+    background: rgba(15,158,106,0.05);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 20px;
+    margin: 28px 0;
+    font-size: 15px;
+    color: #444f6a;
+    line-height: 1.65;
+  }
+
+  .callout strong { color: var(--accent-green); }
+
+  /* Arch diagram */
+  .arch {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 32px;
+    margin: 24px 0 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .arch-layer {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    background: var(--surface);
+  }
+
+  .arch-layer-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .arch-layer-blue   .arch-layer-label { color: var(--accent-blue); }
+  .arch-layer-orange .arch-layer-label { color: var(--accent-orange); }
+  .arch-layer-green  .arch-layer-label { color: var(--accent-green); }
+
+  .arch-layer-blue   { border-color: rgba(59,111,212,0.3);  background: rgba(59,111,212,0.03); }
+  .arch-layer-orange { border-color: rgba(194,124,10,0.3);  background: rgba(194,124,10,0.03); }
+  .arch-layer-green  { border-color: rgba(15,158,106,0.3);  background: rgba(15,158,106,0.03); }
+
+  .arch-layer-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  .arch-layer-sub {
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  .arch-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0;
+    gap: 0;
+  }
+
+  .arch-connector-label {
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 14px;
+  }
+
+  /* Step list */
+  .steps {
+    margin: 20px 0 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .step {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
+  .step-num {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .step-text {
+    font-size: 15px;
+    color: var(--text);
+    line-height: 1.65;
+  }
+
+  /* Responsibility table */
+  .resp-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0 32px;
+    font-size: 14px;
+  }
+
+  .resp-table th {
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 2px solid var(--border);
+    background: var(--surface);
+  }
+
+  .resp-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .resp-table tr:last-child td { border-bottom: none; }
+  .resp-table tr:hover td { background: rgba(0,0,0,0.015); }
+
+  .resp-table td:nth-child(2),
+  .resp-table td:nth-child(3) { text-align: center; font-size: 15px; }
+
+  .check-moma { color: var(--accent-orange); }
+  .check-mash { color: var(--accent-green); }
+  .dash       { color: var(--border); }
+
+  ul {
+    padding-left: 22px;
+    margin: 12px 0 20px;
+    color: #555e8a;
+  }
+
+  ul li { margin-bottom: 8px; }
+  ul li strong { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="post-header">
+    <div class="post-meta">
+      <span class="post-meta-tag">Case study</span>
+      <span>June 2026</span>
+    </div>
+    <h1>Moma: a Node.js app backed by a Mash agent host</h1>
+    <p class="lede">Moma is an AI companion app for older adults. Its frontend and application logic are a Node.js service on Vercel; its AI workloads run in a separate Python service built with Mash. Here's how the two fit together.</p>
+  </div>
+
+  <h2>What Moma does</h2>
+  <p>Moma surfaces two AI-driven features. A <strong>Deep Dive</strong> generates a personalized article each day on a topic drawn from the user's interest profile — researched, written, and structured by an agent. A <strong>Chat</strong> lets the user have a conversation about anything at their own pace, with a warm and patient tone tuned for someone new to AI.</p>
+  <p>Both features required the same underlying infrastructure: a place for session history to live, a way to get structured output back from a model, a streaming event model so the browser doesn't hang waiting for a long LLM call. The question was where that infrastructure lived and who owned it.</p>
+
+  <h2>Separating the app layer from the agent layer</h2>
+  <p>Moma's Node.js codebase handles the things a web app is already good at: auth, database reads and writes, topic selection, media enrichment (Wikipedia images, YouTube videos). It does not call any LLM directly. All AI work goes to a separate Python service — the Mash host — over HTTP.</p>
+
+  <div class="arch">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-label">Browser</div>
+      <div class="arch-layer-title">Client — vanilla JS</div>
+      <div class="arch-layer-sub">chat-widget.js · index.html</div>
+    </div>
+    <div class="arch-connector">
+      <span class="arch-connector-label">HTTPS</span>
+    </div>
+    <div class="arch-layer arch-layer-orange">
+      <div class="arch-layer-label">Moma — Node.js / Vercel</div>
+      <div class="arch-layer-title">Application layer</div>
+      <div class="arch-layer-sub">Auth · database · topic selection · media enrichment · HTTP API</div>
+    </div>
+    <div class="arch-connector">
+      <span class="arch-connector-label">HTTP + SSE · Bearer token</span>
+    </div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-label">Mash host — Python / Google Cloud Run</div>
+      <div class="arch-layer-title">Agent runtime layer</div>
+      <div class="arch-layer-sub">Agent registry · session management · structured output · durable state</div>
+    </div>
+  </div>
+
+  <p>The two services deploy independently and scale independently. Moma auto-deploys on every push to <code>main</code>. The Mash host has its own GitHub Actions pipeline that triggers only when files under <code>agents/</code> change — building a Docker image, pushing to GCR, and deploying to Cloud Run. A UI change doesn't touch the agent container; a new agent doesn't redeploy Vercel.</p>
+
+  <h2>One integration point</h2>
+  <p>All of Moma's communication with the Mash host goes through a single file: <code>lib/mash.js</code>. It implements two functions — <code>askAgent()</code> and <code>runWorkflow()</code> — each following the same submit-then-poll-SSE pattern.</p>
+
+  <p>The H2A protocol underneath both is plain HTTP and Server-Sent Events. Submit a request, get back a <code>request_id</code> or <code>run_id</code>, then stream events until <code>request.completed</code>. Any HTTP client in any language can consume a Mash host. The <code>mash connect</code> CLI speaks the same protocol — so during development, the same chat agent Moma calls in production is reachable directly from a terminal.</p>
+
+  <h3>Chat: agent request</h3>
+  <p><code>api/chat.js</code> calls <code>askAgent()</code>. It posts the user's latest message to the host with a session ID, and receives back a text response.</p>
+
+  <pre><code><span class="cm">// 1. Submit</span>
+<span class="key">POST</span> /api/v1/agent/chat/request
+{ <span class="str">"message"</span>: <span class="str">"What is AI?"</span>, <span class="str">"session_id"</span>: <span class="str">"moma-chat-alice-2026-06-28"</span> }
+→ 202  { data: { request_id: <span class="str">"r_abc"</span> } }
+
+<span class="cm">// 2. Stream</span>
+<span class="key">GET</span>  /api/v1/agent/chat/request/r_abc/events
+→ event: agent.trace
+→ event: request.completed
+  data: { response: { text: <span class="str">"Here's a simple explanation…"</span> } }
+
+<span class="cm">// 3. Return to browser</span>
+{ reply: <span class="str">"Here's a simple explanation…"</span> }</code></pre>
+
+  <p>The session ID is the only thing Moma needs to maintain across turns. It sends one message at a time — no full <code>messages</code> array, no history management. The Mash host holds the conversation history server-side, keyed to that session ID.</p>
+
+  <h3>Deep Dive: workflow run</h3>
+  <p><code>api/deepdive.js</code> calls <code>runWorkflow()</code>. It submits structured inputs — a topic seed, recent article titles, and web grounding from a prior search — and receives back a fully typed, schema-validated article object.</p>
+
+  <pre><code><span class="cm">// 1. Submit inputs</span>
+<span class="key">POST</span> /api/v1/workflow/deepdive/run
+{ <span class="str">"input"</span>: { <span class="str">"seed"</span>: <span class="str">"The Mughal Empire"</span>, <span class="str">"recentTitles"</span>: [...], <span class="str">"grounding"</span>: <span class="str">"…"</span> } }
+→ 202  { data: { run_id: <span class="str">"run_xyz"</span> } }
+
+<span class="cm">// 2. Stream</span>
+<span class="key">GET</span>  /api/v1/workflow/deepdive/runs/run_xyz/events
+→ event: request.completed
+  data: { response: { structured_output: { title: <span class="str">"…"</span>, sections: [...] } } }
+
+<span class="cm">// 3. Enrich and persist</span>
+→ fetch Wikipedia image + YouTube video
+→ INSERT deep_dives, deep_dive_sections, user_deep_dives</code></pre>
+
+  <p>The Deep Dive agent runs with <code>claude-sonnet-4-6</code> and a <code>deepdive</code> skill — a named bundle of web search and article-authoring instructions. Its system prompt is one line: <em>Run the deepdive skill.</em> The skill's own instructions drive the behavior. The Pydantic <code>DeepDiveOutput</code> model is the single source of truth for the response schema; Mash enforces it at runtime, and <code>api/deepdive.js</code> receives the validated object without constructing a prompt or defining a schema on the JS side.</p>
+
+  <h2>The Mash host: two agents, one pool</h2>
+  <p>The host registers a <code>ChatAgent</code> and a <code>deepdive</code> workflow backed by <code>DeepDiveAgent</code>. Both are wired in <code>agents/host/spec.py</code>:</p>
+
+  <pre><code><span class="kw">class</span> <span class="fn">ChatAgent</span>(AgentSpec):
+    <span class="kw">def</span> <span class="fn">get_agent_id</span>(self):       <span class="kw">return</span> <span class="str">"chat"</span>
+    <span class="kw">def</span> <span class="fn">build_llm</span>(self):          <span class="kw">return</span> AnthropicProvider(app_id=<span class="str">"chat"</span>, model=<span class="str">"claude-haiku-4-5-20251001"</span>)
+    <span class="kw">def</span> <span class="fn">build_agent_config</span>(self): <span class="kw">return</span> AgentConfig(app_id=<span class="str">"chat"</span>, system_prompt=SYSTEM_PROMPT, max_tokens=<span class="val">500</span>)
+    <span class="kw">def</span> <span class="fn">build_tools</span>(self):        <span class="kw">return</span> ToolRegistry()
+    <span class="kw">def</span> <span class="fn">build_skills</span>(self):       <span class="kw">return</span> SkillRegistry()
+
+<span class="kw">def</span> <span class="fn">build_pool</span>():
+    builder = <span class="fn">HostBuilder</span>()
+    builder.agent(<span class="fn">ChatAgent</span>(), metadata=CHAT_METADATA)
+    builder.workflow(<span class="fn">WorkflowSpec</span>(
+        workflow_id=<span class="str">"deepdive"</span>,
+        tasks=[<span class="fn">TaskSpec</span>(task_id=<span class="str">"generate"</span>, agent_spec=<span class="fn">DeepDiveAgent</span>(),
+               structured_output=DEEPDIVE_STRUCTURED_OUTPUT)],
+        task_message=<span class="fn">WorkflowTaskMessageSpec</span>(skill_name=<span class="str">"deepdive"</span>),
+    ))
+    <span class="kw">return</span> builder.build()
+
+<span class="fn">run_host</span>(<span class="fn">build_pool</span>())  <span class="cm"># starts FastAPI server</span></code></pre>
+
+  <p>The host runs in a Docker container on Cloud Run, started with <code>mash host serve</code>. Mash auto-migrates its own schema on startup — session history, durable request events, and agent traces all live in a <code>moma_mash</code> database on shared Cloud SQL. Moma's own database (<code>moma</code>) sits on the same instance and is managed separately.</p>
+
+  <h2>What each layer owns</h2>
+
+  <table class="resp-table">
+    <thead>
+      <tr>
+        <th>Concern</th>
+        <th>Moma (Node / Vercel)</th>
+        <th>Mash host (Python / Cloud Run)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Auth and session cookies</td>              <td class="check-moma">✓</td><td class="dash">—</td></tr>
+      <tr><td>User data, topics, history</td>            <td class="check-moma">✓</td><td class="dash">—</td></tr>
+      <tr><td>Today's dive cache check</td>              <td class="check-moma">✓</td><td class="dash">—</td></tr>
+      <tr><td>Topic selection</td>                       <td class="check-moma">✓</td><td class="dash">—</td></tr>
+      <tr><td>Wikipedia image + YouTube fetch</td>       <td class="check-moma">✓</td><td class="dash">—</td></tr>
+      <tr><td>Database writes (dives, sections)</td>     <td class="check-moma">✓</td><td class="dash">—</td></tr>
+      <tr><td>LLM calls</td>                             <td class="dash">—</td><td class="check-mash">✓</td></tr>
+      <tr><td>System prompts</td>                        <td class="dash">—</td><td class="check-mash">✓</td></tr>
+      <tr><td>Output schema and validation</td>          <td class="dash">—</td><td class="check-mash">✓</td></tr>
+      <tr><td>Conversation history</td>                  <td class="dash">—</td><td class="check-mash">✓ (keyed by session_id)</td></tr>
+      <tr><td>Web search (deepdive skill)</td>           <td class="dash">—</td><td class="check-mash">✓</td></tr>
+      <tr><td>Model selection per agent</td>             <td class="dash">—</td><td class="check-mash">✓</td></tr>
+      <tr><td>Durability and retry</td>                  <td class="dash">—</td><td class="check-mash">✓</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Deployment and scaling</h2>
+  <p>Moma deploys on Vercel as a serverless Node.js application. Every push to <code>main</code> triggers an automatic redeploy; feature branches get Vercel preview URLs automatically. Vercel scales at the function level and is completely unaware of the Mash host.</p>
+  <p>The Mash host is a Dockerized FastAPI service on Google Cloud Run, started with <code>mash host serve</code>:</p>
+
+  <pre><code><span class="cm"># agents/Dockerfile</span>
+CMD [<span class="str">"sh"</span>, <span class="str">"-c"</span>, <span class="str">"mash host serve \
+  --host-app host.spec:build_pool \
+  --host ${MASH_API_HOST} \
+  --port ${MASH_API_PORT} \
+  ${MASH_API_KEY:+--api-key \"$MASH_API_KEY\"}"</span>]</code></pre>
+
+  <p>Cloud Run keeps one container warm at all times (<code>--min-instances 1</code>) to avoid cold-start latency on the first request of the day. It scales on request volume to the Mash host, independently of how many Vercel function invocations are happening.</p>
+  <p>The two services have separate CI/CD pipelines. Moma's pipeline fires on any push. The Mash host pipeline triggers only when files under <code>agents/</code> change:</p>
+
+  <pre><code><span class="cm"># .github/workflows/deploy-agents.yml</span>
+on:
+  push:
+    branches: [main]
+    paths: [<span class="str">agents/**</span>]   <span class="cm"># only fires when agents/ changes</span></code></pre>
+
+  <p>Both databases live on the same Cloud SQL instance. Moma manages its own schema via migration files. The Mash host runs its own schema migrations on startup — session history, durable request events, and agent traces are in a separate <code>moma_mash</code> database that Mash owns entirely.</p>
+
+  <h2>Adding a new agent</h2>
+  <p>Because the host owns the agent runtime, adding a capability is entirely self-contained in the <code>agents/</code> directory. Moma's Node code doesn't change.</p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">Create <code>agents/host/catalog/my_agent.py</code> — subclass <code>AgentSpec</code>, declare the model, system prompt, tools, and skills.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text">Register it in <code>agents/host/spec.py</code>: one line, <code>builder.agent(MyAgent(), metadata=METADATA)</code>.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">Merge to <code>main</code>. GitHub Actions rebuilds and redeploys the Cloud Run container.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-text">Call it from any Moma route: <code>await askAgent('my_agent', message, sessionId)</code>.</div>
+    </div>
+  </div>
+
+  <p>Session history, durability, streaming, and structured output come from the host. The new agent file contains only what's specific to that agent's behavior.</p>
+
+  <div class="callout">
+    The <code>mash connect</code> CLI speaks the same H2A protocol as Moma's Node backend. During development, <code>mash connect --api-base-url http://127.0.0.1:8000 --agent chat</code> opens an interactive REPL against the local container — the same session management, streaming, and history that Moma's production users see.
+  </div>
+
+</div>
+</body>
+</html>
