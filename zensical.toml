@@ -19,6 +19,7 @@ nav = [
             { "Mash Under the Hood" = "posts/mash-under-the-hood.md" },
             { "Host-to-Agent Protocol (H2A)" = "rfcs/host-to-agent-protocol.md" },
             { "Case Study: Moma" = "posts/case-study-moma.html" },
+            { "Case Study: Pilot" = "posts/case-study-pilot.html" },
         ] },
         { "Internals" = [
             { "The Life of a Mash Request" = "posts/request-lifecycle.md" },

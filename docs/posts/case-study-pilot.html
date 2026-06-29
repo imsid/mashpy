@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Case Study: Pilot — A Self-Hosted App Store Built with Mash</title>
+<style>
+  :root {
+    --bg: #f8f9fc;
+    --surface: #ffffff;
+    --surface2: #f0f2f8;
+    --border: #dde1ef;
+    --text: #1a1d2e;
+    --muted: #6b72a0;
+    --accent-blue: #3b6fd4;
+    --accent-green: #0f9e6a;
+    --accent-orange: #c27c0a;
+    --accent-purple: #7c4dcc;
+    --code-bg: #f3f4f8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    font-size: 16px;
+  }
+
+  .page {
+    max-width: 740px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+
+  /* Header */
+  .post-header {
+    margin-bottom: 56px;
+    padding-bottom: 36px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .post-meta {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .post-meta-tag {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    background: rgba(15,158,106,0.08);
+    color: var(--accent-green);
+    border: 1px solid rgba(15,158,106,0.25);
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+
+  .post-header h1 {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.6px;
+    line-height: 1.2;
+    margin-bottom: 18px;
+  }
+
+  .post-header .lede {
+    font-size: 18px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* Body */
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 52px 0 18px;
+    letter-spacing: -0.3px;
+  }
+
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--text);
+  }
+
+  p { margin-bottom: 18px; }
+  p:last-child { margin-bottom: 0; }
+
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  strong { font-weight: 600; }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    color: #2a2f4a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px;
+    overflow-x: auto;
+    margin: 20px 0 28px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    color: #2a2f4a;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  .kw  { color: #7c4dcc; }
+  .fn  { color: #3b6fd4; }
+  .str { color: #0f7a55; }
+  .cm  { color: #9098bb; font-style: italic; }
+  .key { color: #b45309; }
+  .val { color: #c2186b; }
+
+  /* Callout */
+  .callout {
+    border-left: 3px solid var(--accent-green);
+    background: rgba(15,158,106,0.05);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 20px;
+    margin: 28px 0;
+    font-size: 15px;
+    color: #444f6a;
+    line-height: 1.65;
+  }
+
+  .callout strong { color: var(--accent-green); }
+
+  /* Arch diagram */
+  .arch {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 32px;
+    margin: 24px 0 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .arch-layer {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    background: var(--surface);
+  }
+
+  .arch-layer-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .arch-layer-blue   .arch-layer-label { color: var(--accent-blue); }
+  .arch-layer-orange .arch-layer-label { color: var(--accent-orange); }
+  .arch-layer-green  .arch-layer-label { color: var(--accent-green); }
+  .arch-layer-purple .arch-layer-label { color: var(--accent-purple); }
+
+  .arch-layer-blue   { border-color: rgba(59,111,212,0.3);  background: rgba(59,111,212,0.03); }
+  .arch-layer-orange { border-color: rgba(194,124,10,0.3);  background: rgba(194,124,10,0.03); }
+  .arch-layer-green  { border-color: rgba(15,158,106,0.3);  background: rgba(15,158,106,0.03); }
+  .arch-layer-purple { border-color: rgba(124,77,204,0.3);  background: rgba(124,77,204,0.03); }
+
+  .arch-layer-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  .arch-layer-sub {
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  .arch-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0;
+    gap: 0;
+  }
+
+  .arch-connector-label {
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 14px;
+  }
+
+  /* Step list */
+  .steps {
+    margin: 20px 0 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .step {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
+  .step-num {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .step-text {
+    font-size: 15px;
+    color: var(--text);
+    line-height: 1.65;
+  }
+
+  /* Feature table */
+  .resp-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0 32px;
+    font-size: 14px;
+  }
+
+  .resp-table th {
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 2px solid var(--border);
+    background: var(--surface);
+  }
+
+  .resp-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .resp-table tr:last-child td { border-bottom: none; }
+  .resp-table tr:hover td { background: rgba(0,0,0,0.015); }
+
+  .tag {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 12px;
+    white-space: nowrap;
+  }
+  .tag-blue   { background: rgba(59,111,212,0.08);  color: var(--accent-blue);   border: 1px solid rgba(59,111,212,0.2); }
+  .tag-green  { background: rgba(15,158,106,0.08);  color: var(--accent-green);  border: 1px solid rgba(15,158,106,0.2); }
+  .tag-orange { background: rgba(194,124,10,0.08);  color: var(--accent-orange); border: 1px solid rgba(194,124,10,0.2); }
+  .tag-purple { background: rgba(124,77,204,0.08);  color: var(--accent-purple); border: 1px solid rgba(124,77,204,0.2); }
+
+  ul {
+    padding-left: 22px;
+    margin: 12px 0 20px;
+    color: #555e8a;
+  }
+
+  ul li { margin-bottom: 8px; }
+  ul li strong { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="post-header">
+    <div class="post-meta">
+      <span class="post-meta-tag">Case study</span>
+      <span>June 2026</span>
+    </div>
+    <h1>Pilot: a self-hosted app store built with Mash</h1>
+    <p class="lede">Pilot is the reference application for the Mash SDK. The pool is the catalog, agents are the listings, host compositions are the installed apps, and a terminal CLI is the storefront. Here's how it's built.</p>
+  </div>
+
+  <h2>What Pilot does</h2>
+  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a multi-agent guide to the Mash codebase: one primary agent plus six module-scoped copilots, each loaded with the documentation and source for its slice of the repo. The user composes which agents work together, then enters the REPL.</p>
+  <p>It also serves as the application behind the Mash documentation series, so every framework feature — delegation, dynamic host composition, durable workflows, skills, human-in-the-loop approval, MCP, traces — is observable in a real running system.</p>
+
+  <h2>The catalog</h2>
+  <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs two callables: a spec factory that constructs an <code>AgentSpec</code> (accepting <code>workspace_root</code>) and a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
+
+  <pre><code><span class="cm"># pilot/catalog/__init__.py</span>
+<span class="kw">from</span> dataclasses <span class="kw">import</span> dataclass
+
+@dataclass(frozen=<span class="kw">True</span>)
+<span class="kw">class</span> <span class="fn">CatalogEntry</span>:
+    agent_id: str
+    create_spec: Callable[..., AgentSpec]   <span class="cm"># accepts workspace_root=...</span>
+    build_metadata: Callable[[], AgentMetadata]
+
+CATALOG: tuple[CatalogEntry, ...] = (
+    CatalogEntry(<span class="str">"pilot"</span>,            pilot.create_spec,             pilot.build_metadata),
+    CatalogEntry(<span class="str">"cli-copilot"</span>,      cli.create_cli_copilot_spec,   cli.build_cli_metadata),
+    CatalogEntry(<span class="str">"api-copilot"</span>,      api.create_api_copilot_spec,   api.build_api_metadata),
+    CatalogEntry(<span class="str">"mcp-copilot"</span>,      mcp.create_mcp_copilot_spec,   mcp.build_mcp_metadata),
+    CatalogEntry(<span class="str">"runtime-copilot"</span>,  runtime.create_runtime_copilot_spec, runtime.build_runtime_metadata),
+    CatalogEntry(<span class="str">"workflow-copilot"</span>, workflow.create_workflow_copilot_spec, workflow.build_workflow_metadata),
+    CatalogEntry(<span class="str">"admin-copilot"</span>,    admin.create_admin_copilot_spec, admin.build_admin_metadata),
+    CatalogEntry(<span class="str">"quiz-me"</span>,          quiz.create_spec,              quiz.build_metadata),
+)</code></pre>
+
+  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, enables the built-in Masher, and returns the pool. The quiz workflow is registered on the pool after it's built. No host compositions are defined in code.</p>
+
+  <pre><code><span class="cm"># pilot/spec.py</span>
+<span class="kw">def</span> <span class="fn">build_pool</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> AgentPool:
+    builder = <span class="fn">HostBuilder</span>()
+    <span class="kw">for</span> entry <span class="kw">in</span> CATALOG:
+        builder.agent(
+            entry.create_spec(workspace_root=ws), metadata=entry.build_metadata()
+        )
+    builder.enable_masher()
+    pool = builder.build()
+    pool.register_workflow(<span class="fn">build_quiz_workflow_spec</span>())
+    <span class="kw">return</span> pool</code></pre>
+
+  <p>Host compositions belong to the CLI's config file (<code>~/.pilot/hosts.json</code>), not to the deployment. The pool is flat. Which agents work together is user configuration.</p>
+
+  <h2>The guide family</h2>
+  <p>Seven of the eight catalog agents form the guide family. The <code>pilot</code> agent is the primary: it covers the shared and cross-cutting modules (<code>core</code>, <code>tools</code>, <code>skills</code>, <code>logging</code>, <code>memory</code>) and delegates to module-scoped copilots for everything else.</p>
+
+  <table class="resp-table">
+    <thead>
+      <tr>
+        <th>Agent</th>
+        <th>Scope</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>pilot</code></td><td>Shared/cross-cutting: <code>core</code>, <code>tools</code>, <code>skills</code>, <code>logging</code>, <code>memory</code></td></tr>
+      <tr><td><code>cli-copilot</code></td><td><code>src/mash/cli</code> — commands, REPL, terminal rendering</td></tr>
+      <tr><td><code>api-copilot</code></td><td><code>src/mash/api</code> — HTTP routes, FastAPI, admin dashboard</td></tr>
+      <tr><td><code>mcp-copilot</code></td><td><code>src/mash/mcp</code> — MCP client/server, transport, tool adaptation</td></tr>
+      <tr><td><code>runtime-copilot</code></td><td><code>src/mash/runtime</code> — request lifecycle, event sourcing, durability</td></tr>
+      <tr><td><code>workflow-copilot</code></td><td><code>src/mash/workflows</code> — DBOS orchestration, task state, run status</td></tr>
+      <tr><td><code>admin-copilot</code></td><td><code>src/mash/api/routes/admin</code> — admin dashboard routes and assets</td></tr>
+    </tbody>
+  </table>
+
+  <p>Each copilot is a subclass of <code>CopilotAgentSpec</code>. The shared base loads the relevant <code>README.md</code> and <code>AGENTS.md</code> files from its <code>doc_roots</code> into the system prompt with Anthropic prompt caching. Copilots run with <code>conversation_history_turns=0</code> and <code>temperature=0.2</code> — they receive a single delegated question, answer it with bash if needed, and return.</p>
+
+  <pre><code><span class="cm"># pilot/catalog/_base.py — shared copilot config</span>
+<span class="kw">def</span> <span class="fn">_build_copilot_config</span>(self, agent_id: str) -> AgentConfig:
+    <span class="kw">return</span> <span class="fn">AgentConfig</span>(
+        app_id=agent_id,
+        system_prompt=self.build_system_prompt(),  <span class="cm"># prompt-cached doc blocks</span>
+        skills_enabled=<span class="kw">False</span>,
+        conversation_history_turns=<span class="val">0</span>,
+        max_steps=<span class="val">50</span>,
+        temperature=<span class="val">0.2</span>,
+    )</code></pre>
+
+  <p>The <code>AgentMetadata</code> each copilot registers lists its <code>capabilities</code> and <code>usage_guidance</code>. The primary reads that metadata when routing a delegated question — the same metadata that appears in <code>pilot browse</code> listings. The storefront and the delegation directory are the same data.</p>
+
+  <h2>The pilot agent</h2>
+  <p>The <code>pilot</code> primary carries more tools than the copilots. It registers a <code>BashTool</code> scoped to the workspace, an <code>UpdateDocsTool</code> that requires user approval, and an <code>AskUserTool</code>. It also optionally connects to a GitHub MCP server when <code>GITHUB_MCP_PAT</code> is set, with a two-tool allowlist (<code>list_commits</code> and <code>get_commit</code>) used by <code>/changelog</code>.</p>
+
+  <div class="arch">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-label">pilot (primary)</div>
+      <div class="arch-layer-title">Tools: bash · update_docs · ask_user · GitHub MCP (optional)</div>
+      <div class="arch-layer-sub">Skills: build-mash-agent · changelog (dynamic)</div>
+    </div>
+    <div class="arch-connector">
+      <span class="arch-connector-label">InvokeSubagent</span>
+    </div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-label">Copilots (subagents)</div>
+      <div class="arch-layer-title">cli · api · mcp · runtime · workflow · admin</div>
+      <div class="arch-layer-sub">Tools: bash (read-only workspace access)</div>
+    </div>
+  </div>
+
+  <p>The <code>update_docs</code> tool has <code>requires_approval = True</code>, which causes the runtime to pause and surface an approval event before the tool runs. In the REPL this appears as an interactive prompt; over the API it emits a <code>request.waiting</code> event that the client polls. The user approves or rejects; the runtime resumes or aborts. This is the human-in-the-loop flow exercised live.</p>
+
+  <h2>Workflows</h2>
+  <p>Pilot ships two workflows. <code>pilot-quiz</code> is registered at pool build time. <code>pilot-changelog</code> is dynamic — the REPL command <code>/changelog [N]</code> publishes both the skill and the workflow definition to the server at the moment it runs.</p>
+
+  <h3>pilot-quiz</h3>
+  <p><code>build_quiz_workflow_spec()</code> returns a <code>WorkflowSpec</code> with a single task backed by the <code>quiz-me</code> agent. After <code>build_pool()</code>, the pool registers the workflow: <code>pool.register_workflow(build_quiz_workflow_spec())</code>. A host config that includes <code>"workflows": ["pilot-quiz"]</code> makes the <code>/quiz</code> REPL command available to anyone who enters that host.</p>
+
+  <h3>pilot-changelog (dynamic)</h3>
+  <p><code>/changelog [N]</code> publishes a skill (<code>workflow:pilot-changelog:v1</code>) and a workflow definition to the server over the control API before running the workflow. The workflow itself is a single-task run backed by the <code>pilot</code> agent. Its structured output schema specifies the fields the REPL renders: <code>title</code>, <code>commits_scanned</code>, <code>items</code>, and <code>markdown</code>.</p>
+
+  <pre><code><span class="cm"># The changelog structured output schema</span>
+CHANGELOG_STRUCTURED_OUTPUT = {
+    <span class="str">"title"</span>: <span class="str">"PilotChangelogWorkflowOutput"</span>,
+    <span class="str">"type"</span>: <span class="str">"object"</span>,
+    <span class="str">"properties"</span>: {
+        <span class="str">"title"</span>:           {<span class="str">"type"</span>: <span class="str">"string"</span>},
+        <span class="str">"commits_scanned"</span>: {<span class="str">"type"</span>: <span class="str">"integer"</span>},
+        <span class="str">"items"</span>:           {<span class="str">"type"</span>: <span class="str">"array"</span>, <span class="str">"items"</span>: {<span class="str">"type"</span>: <span class="str">"string"</span>}},
+        <span class="str">"markdown"</span>:        {<span class="str">"type"</span>: <span class="str">"string"</span>},
+    },
+    <span class="str">"required"</span>: [<span class="str">"title"</span>, <span class="str">"commits_scanned"</span>, <span class="str">"items"</span>, <span class="str">"markdown"</span>],
+}</code></pre>
+
+  <h2>Every piece exercises a Mash feature</h2>
+
+  <table class="resp-table">
+    <thead>
+      <tr>
+        <th>What you see in Pilot</th>
+        <th>Mash feature</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>pilot browse</code> — catalog listings</td>
+        <td><code>AgentMetadata</code> as the store listing</td>
+      </tr>
+      <tr>
+        <td><code>pilot compose</code> + re-publish on connect</td>
+        <td>Dynamic host composition; hosts as data</td>
+      </tr>
+      <tr>
+        <td>Copilot routing in the <code>guide</code> host</td>
+        <td><code>InvokeSubagent</code> + metadata as the delegation directory</td>
+      </tr>
+      <tr>
+        <td>Approval pause on <code>update_docs</code></td>
+        <td>Durable human-in-the-loop: <code>requires_approval = True</code></td>
+      </tr>
+      <tr>
+        <td><code>/changelog [N]</code></td>
+        <td>Dynamic skills and workflows, published at runtime</td>
+      </tr>
+      <tr>
+        <td><code>/quiz</code></td>
+        <td>Workflows registered on the pool; attached to hosts by config</td>
+      </tr>
+      <tr>
+        <td>Structured changelog output</td>
+        <td>Pydantic-validated structured output from a workflow task</td>
+      </tr>
+      <tr>
+        <td><code>/trace [N]</code></td>
+        <td>Trace analysis: timing breakdowns, per-tool stats</td>
+      </tr>
+      <tr>
+        <td>GitHub commit tools in the guide</td>
+        <td>Remote tools over MCP with a per-agent tool allowlist</td>
+      </tr>
+      <tr>
+        <td>Prompt-cached copilot doc blocks</td>
+        <td>Anthropic prompt caching via <code>cache_control</code> content blocks</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Deployment</h2>
+  <p>Pilot ships as a single Docker container with an embedded Postgres database. The container runs <code>mash host serve --host-app pilot.spec:build_pool</code>. One volume keeps the database, agent ledger, and session history across restarts.</p>
+
+  <pre><code>docker run -d --name pilot -p 8000:8000 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v pilot-data:/var/lib/pilot \
+  ghcr.io/imsid/mash-pilot:latest</code></pre>
+
+  <p>Add <code>-e GITHUB_MCP_PAT=ghp_...</code> to enable the GitHub MCP tools used by <code>/changelog</code>. Set <code>MASH_DATABASE_URL</code> to bring an external Postgres instead of the embedded one — this is the only change the Docker Compose development setup makes. The CLI installs separately and points at any running store by URL.</p>
+
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
+pilot browse                  <span class="cm"># see the catalog</span>
+pilot repl --host guide       <span class="cm"># enter the default composition</span></code></pre>
+
+  <p>The admin dashboard is available at <code>/admin</code> on the running host. It shows the pool, active host compositions, and agent traces with a span tree drawer.</p>
+
+  <h2>Adding an agent to the catalog</h2>
+  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. Everything else — pool registration, store listing, delegation routing, session management, streaming — comes from the host.</p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">Create <code>pilot/catalog/agents/my_agent/spec.py</code>. Subclass <code>AgentSpec</code> (or <code>CopilotAgentSpec</code> for a module-scoped guide) and implement <code>get_agent_id()</code>, <code>build_tools()</code>, <code>build_llm()</code>, and <code>build_agent_config()</code>. Add a <code>build_metadata()</code> function returning <code>AgentMetadata</code>.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text">Add a <code>CatalogEntry</code> to <code>CATALOG</code> in <code>pilot/catalog/__init__.py</code>: one tuple of <code>(agent_id, create_spec, build_metadata)</code>.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">Merge to <code>main</code> and redeploy the container. The agent appears in <code>pilot browse</code> immediately.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-text">Compose it into a host: <code>pilot compose my-host --primary pilot --subagents my-agent</code>. Enter: <code>pilot repl --host my-host</code>.</div>
+    </div>
+  </div>
+
+  <div class="callout">
+    The stock <code>mash</code> CLI speaks the same protocol as <code>pilot</code>. <code>mash connect --api-base-url http://127.0.0.1:8000 --agent cli-copilot</code> opens a direct REPL against any catalog agent, bypassing the store CLI entirely — useful for debugging a new agent before composing it into a host.
+  </div>
+
+</div>
+</body>
+</html>
