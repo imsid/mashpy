@@ -9,6 +9,24 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.14.0](https://github.com/imsid/mashpy/compare/mashpy-v0.13.0...mashpy-v0.14.0) (2026-06-29)
+
+
+### Features
+
+* **pilot:** merge mash-pilot into mashpy as src/pilot ([#105](https://github.com/imsid/mashpy/issues/105)) ([c615c00](https://github.com/imsid/mashpy/commit/c615c0094c561d3809b3e4cf848caa8d099e4f1f))
+
+
+### Documentation
+
+* add Moma and Pilot case study posts ([#103](https://github.com/imsid/mashpy/issues/103)) ([fbcafb9](https://github.com/imsid/mashpy/commit/fbcafb97282bfdcb1b58ee55fa683be5f8d94944))
+* add Moma case study post ([#101](https://github.com/imsid/mashpy/issues/101)) ([9ef5f72](https://github.com/imsid/mashpy/commit/9ef5f723ea494db5ffdbca925a69380d3d804aec))
+
+
+### Refactors
+
+* **pilot:** slim spec.py to catalog loop, restore admin+quiz, update docs ([#106](https://github.com/imsid/mashpy/issues/106)) ([36f4250](https://github.com/imsid/mashpy/commit/36f42503fd1c542599a2110beb61f7c552f54451))
+
 ## [0.13.0](https://github.com/imsid/mashpy/compare/mashpy-v0.12.0...mashpy-v0.13.0) (2026-06-26)
 
 
