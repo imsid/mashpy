@@ -37,6 +37,9 @@ jobs:
       - name: Run framework tests
         run: uv run pytest tests/mash
 
+      - name: Run pilot tests
+        run: uv run pytest tests/pilot
+
       - name: Build artifacts
         run: uv build
 
