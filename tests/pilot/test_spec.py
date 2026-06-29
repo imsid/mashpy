@@ -463,9 +463,11 @@ def test_prompts_remain_compact_and_principle_driven() -> None:
     assert "runtime-serving behavior" not in primary_prompt.lower()
     assert "open-ended exploration" not in cli_prompt.lower()
     assert "Treat cached docs as the primary source of truth" in cli_prompt
-    assert "CopilotIndexState" not in Path("/Users/sid/Projects/mashpy/src/pilot/spec.py").read_text()
-    assert "IndexScope" not in Path("/Users/sid/Projects/mashpy/src/pilot/spec.py").read_text()
-    assert "code_index" not in Path("/Users/sid/Projects/mashpy/src/pilot/spec.py").read_text()
+    import pilot.spec as _pilot_spec_module
+    pilot_spec_src = Path(_pilot_spec_module.__file__).read_text()
+    assert "CopilotIndexState" not in pilot_spec_src
+    assert "IndexScope" not in pilot_spec_src
+    assert "code_index" not in pilot_spec_src
 
 
 def test_copilot_configs_limit_history_and_steps() -> None:
