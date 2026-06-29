@@ -205,13 +205,6 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         }
 
                         primary = host.get_agent(PILOT_AGENT_ID)
-                        assert primary.get_subagent_ids() == [
-                            API_COPILOT_AGENT_ID,
-                            CLI_COPILOT_AGENT_ID,
-                            MCP_COPILOT_AGENT_ID,
-                            RUNTIME_COPILOT_AGENT_ID,
-                            WORKFLOW_COPILOT_AGENT_ID,
-                        ]
                         assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)

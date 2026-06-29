@@ -131,21 +131,6 @@ class AgentRuntime:
     def get_pool(self) -> SubagentPoolAccess | None:
         return self._pool
 
-    def get_subagent_ids(self) -> list[str]:
-        """Return the ordered subagent ids for the host where this agent is primary.
-
-        Looks up the pool's host registry and returns the subagents from the
-        first host that names this agent as primary. Returns an empty list when
-        no such host is defined or when this agent is not attached to a pool.
-        """
-        pool = self.get_pool()
-        if pool is None or not hasattr(pool, "list_hosts"):
-            return []
-        for host in pool.list_hosts():
-            if host.primary == self.app_id:
-                return list(host.subagents)
-        return []
-
     async def get_session_info(
         self,
         session_id: str | None = None,
