@@ -10,9 +10,9 @@ tags:
 
 # Exploring Mash with Pilot
 
-[Pilot](https://github.com/imsid/mash-pilot) is the reference user
-application for the seam the [product brief](product-brief.md) describes: a
-self-hosted **app store for agents**, built with Mash itself. The repo is a
+Pilot is the reference user application for the seam the [product brief](product-brief.md)
+describes: a self-hosted **app store for agents**, built with Mash itself. It lives in the
+mashpy repo at [`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/) — the
 catalog of agents, a deployment is your store, host compositions are your
 installed apps, and a terminal CLI is the storefront. It's also the
 application behind this documentation series, so the delegation, dynamic
@@ -27,9 +27,9 @@ A Pilot deployment is one container (Postgres embedded) plus the CLI:
 docker run -d --name pilot -p 8000:8000 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -v pilot-data:/var/lib/pilot \
-  ghcr.io/imsid/mash-pilot:latest
+  ghcr.io/imsid/mashpy-pilot:latest
 
-curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 pilot browse
 ```
 
@@ -81,6 +81,7 @@ entry in the host config file:
 | `mcp-copilot` | `src/mash/mcp`: MCP client/server, transport, tool adaptation |
 | `runtime-copilot` | `src/mash/runtime`: request lifecycle, event sourcing, durability |
 | `workflow-copilot` | `src/mash/workflows`: DBOS orchestration, task state, run status |
+| `admin-copilot` | admin dashboard UI: tabs, fields, endpoints |
 
 ```text
 > Summarize how HostBuilder composes the agent pool, hosts, and workflows.

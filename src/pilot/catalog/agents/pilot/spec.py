@@ -19,12 +19,12 @@ from mash.tools.registry import ToolRegistry
 
 from ....prompt import build_base_prompt, build_repo_context
 from ....tools import UpdateDocsTool
+from ... import _base as _catalog_base
 from ..._base import (
     APP_NAME,
     PILOT_SKILLS_DIR,
     build_bash_tool,
     build_default_llm,
-    scope_doc_paths,
 )
 from ..admin import ADMIN_COPILOT_AGENT_ID
 from ..api import API_COPILOT_AGENT_ID
@@ -47,6 +47,7 @@ PILOT_DOC_ROOTS = (
 PILOT_EXTRA_DOC_PATHS = (
     "README.md",
     "src/mash/README.md",
+    "src/mash/AGENTS.md",
     "docs/posts/product-brief.md",
     "docs/posts/building-agent-clis.md",
     "docs/posts/building-dynamic-hosts-apis.md",
@@ -129,13 +130,16 @@ class PilotSpec(AgentSpec):
                 "cache_control": {"type": "ephemeral"},
             }
         ]
+        all_cached = _catalog_base._cached_docs_for_scope(
+            self.workspace_root,
+            doc_roots=PILOT_DOC_ROOTS,
+            extra_doc_paths=PILOT_EXTRA_DOC_PATHS,
+        )
+        # RFC docs prime the cache but are delivered via skills, not DOC entries.
+        rendered_cached = [d for d in all_cached if "/rfcs/" not in d]
         repo_context = build_repo_context(
             repo=str(self.workspace_root),
-            cached_files=scope_doc_paths(
-                self.workspace_root,
-                doc_roots=PILOT_DOC_ROOTS,
-                extra_doc_paths=PILOT_EXTRA_DOC_PATHS,
-            ),
+            cached_files=rendered_cached,
         )
         if repo_context:
             blocks.append(

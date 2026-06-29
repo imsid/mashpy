@@ -23,7 +23,9 @@ from mash.agents.masher import (
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.tools.bash import BashTool
+from pilot.catalog.workflows.quiz import QUIZ_WORKFLOW_ID
 from pilot.spec import (
+    ADMIN_COPILOT_AGENT_ID,
     API_COPILOT_AGENT_ID,
     APP_NAME,
     CLI_COPILOT_AGENT_ID,
@@ -31,6 +33,7 @@ from pilot.spec import (
     PILOT_AGENT_ID,
     RUNTIME_COPILOT_AGENT_ID,
     WORKFLOW_COPILOT_AGENT_ID,
+    AdminCopilotSpec,
     ApiCopilotSpec,
     CliCopilotSpec,
     McpCopilotSpec,
@@ -62,7 +65,7 @@ def test_primary_and_subagent_prompts_are_app_specific() -> None:
     workspace_root = Path("/tmp/mashpy")
 
     with patch(
-        "pilot.spec._cached_docs_for_scope",
+        "pilot.catalog._base._cached_docs_for_scope",
         side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
             workspace_root,
             doc_roots=kwargs.get("doc_roots", ()),
@@ -177,7 +180,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch("pilot.spec._cached_docs_for_scope", return_value=[])
+                    patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
                 )
 
                 async def _run() -> None:
@@ -189,6 +192,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             item["agent_id"]: item for item in host.describe_agents()
                         }
                         assert sorted(described.keys()) == [
+                            ADMIN_COPILOT_AGENT_ID,
                             API_COPILOT_AGENT_ID,
                             CLI_COPILOT_AGENT_ID,
                             MCP_COPILOT_AGENT_ID,
@@ -202,6 +206,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         } == {
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                            QUIZ_WORKFLOW_ID,
                         }
 
                         primary = host.get_agent(PILOT_AGENT_ID)
@@ -210,6 +215,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert RUNTIME_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert WORKFLOW_COPILOT_AGENT_ID in str(primary.system_prompt)
+                        assert ADMIN_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert "masher" not in str(primary.system_prompt)
                     finally:
                         await host.close()
@@ -260,7 +266,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch("pilot.spec._cached_docs_for_scope", return_value=[])
+                    patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
                 )
 
                 async def _run() -> None:
@@ -337,7 +343,7 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch("pilot.spec._cached_docs_for_scope", return_value=[])
+                    patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
                 )
                 shutdown = stack.enter_context(
                     patch.object(BashTool, "shutdown", autospec=True)
@@ -358,7 +364,7 @@ def test_build_system_prompt_uses_cached_docs_helper() -> None:
     workspace_root = Path("/tmp/mashpy")
 
     with patch(
-        "pilot.spec._cached_docs_for_scope",
+        "pilot.catalog._base._cached_docs_for_scope",
         side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
             workspace_root,
             doc_roots=kwargs.get("doc_roots", ()),
@@ -380,7 +386,7 @@ def test_build_system_prompt_uses_cached_docs_helper() -> None:
 def test_missing_cached_docs_do_not_break_prompt_building() -> None:
     workspace_root = Path("/tmp/mashpy")
 
-    with patch("pilot.spec._cached_docs_for_scope", return_value=[]):
+    with patch("pilot.catalog._base._cached_docs_for_scope", return_value=[]):
         prompt = PilotSpec(workspace_root).build_system_prompt()
 
     assert APP_NAME in str(prompt)
@@ -409,7 +415,7 @@ def test_scope_prompt_blocks_include_cached_docs_only() -> None:
     workspace_root = Path("/tmp/mashpy")
 
     with patch(
-        "pilot.spec._cached_docs_for_scope",
+        "pilot.catalog._base._cached_docs_for_scope",
         side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
             workspace_root,
             doc_roots=kwargs.get("doc_roots", ()),
@@ -441,7 +447,7 @@ def test_prompts_remain_compact_and_principle_driven() -> None:
     workspace_root = Path("/tmp/mashpy")
 
     with patch(
-        "pilot.spec._cached_docs_for_scope",
+        "pilot.catalog._base._cached_docs_for_scope",
         side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
             workspace_root,
             doc_roots=kwargs.get("doc_roots", ()),
@@ -466,7 +472,7 @@ def test_prompts_remain_compact_and_principle_driven() -> None:
 def test_copilot_configs_limit_history_and_steps() -> None:
     workspace_root = Path("/tmp/mashpy")
 
-    with patch("pilot.spec._cached_docs_for_scope", return_value=[]):
+    with patch("pilot.catalog._base._cached_docs_for_scope", return_value=[]):
         cli_config = CliCopilotSpec(workspace_root).build_agent_config()
         api_config = ApiCopilotSpec(workspace_root).build_agent_config()
         mcp_config = McpCopilotSpec(workspace_root).build_agent_config()
@@ -494,7 +500,7 @@ def test_missing_docs_do_not_break_prompt_building() -> None:
     workspace_root = Path("/tmp/mashpy")
 
     with patch(
-        "pilot.spec._cached_docs_for_scope",
+        "pilot.catalog._base._cached_docs_for_scope",
         side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
             workspace_root,
             doc_roots=kwargs.get("doc_roots", ()),

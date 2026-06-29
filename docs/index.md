@@ -187,6 +187,6 @@ mash repl --host assistant
 
 ## Applications
 
-- [**Pilot CLI**](https://github.com/imsid/mash-pilot) - a multi-agent CLI guide to build and deploy Mash agents.
+- [**Pilot CLI**](https://github.com/imsid/mashpy/src/pilot) - a multi-agent CLI guide to build and deploy Mash agents.
 - [**PA CLI**](https://github.com/imsid/mash-pa) - a self-hosted store of personal agents that help run your day.
 - [**Crew**](https://github.com/imsid/crew) - a self-hosted crew of role-based agents for analytics and product work, with a CLI and a web UI.

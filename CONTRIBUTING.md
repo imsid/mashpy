@@ -190,9 +190,9 @@ Agents live under `src/pilot/catalog/agents/<name>/`. Each package needs a
 3. **Register it.** Add a `CatalogEntry` to `CATALOG` in
    `src/pilot/catalog/__init__.py`.
 
-4. **Add a spec class to `src/pilot/spec.py`.** Define the spec class inline
-   (not just imported) so `pilot.spec._cached_docs_for_scope` patches work in
-   tests.
+4. **Export from `src/pilot/spec.py`.** Add a re-export for the new spec class
+   (import from `catalog.agents.<name>.spec` and add to `__all__`) so test
+   files that import from `pilot.spec` can find it.
 
 5. **Degrade gracefully.** Gate optional capabilities (MCP servers,
    credentials) inside the spec method; always register the agent regardless of
