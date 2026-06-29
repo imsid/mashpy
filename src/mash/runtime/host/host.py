@@ -16,6 +16,7 @@ from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
 
 from ..client import AgentClientLike, InProcessAgentClient
 from ..events import PostgresRuntimeStore, RuntimeStore
+from mash.tools.subagent import InvokeSubagentTool
 from ..service import AgentRuntime
 from ..spec import AgentSpec
 from .subagents import AgentMetadata
@@ -285,6 +286,41 @@ class AgentPool:
             for agent_id, runtime in self._agents.items():
                 await runtime.open()
                 self._clients[agent_id] = InProcessAgentClient(runtime)
+
+            # For each defined host, inject InvokeSubagent into the primary's
+            # tool registry so it is available from pool startup (not just at
+            # request time). This lets callers inspect tools without submitting
+            # a request.
+            for host in self._hosts.values():
+                primary_runtime = self._agents.get(host.primary)
+                if primary_runtime is None or not host.subagents:
+                    continue
+                allowed = set(host.subagents)
+
+                def _make_client_resolver(
+                    _pool: "AgentPool", _allowed: frozenset[str]
+                ):
+                    def _resolver(agent_id: str) -> Any:
+                        if agent_id not in _allowed:
+                            raise ValueError(
+                                f"subagent '{agent_id}' is not in host '{host.host_id}'"
+                            )
+                        return _pool.get_client(agent_id)
+
+                    return _resolver
+
+                if "InvokeSubagent" in primary_runtime.agent.tools:
+                    primary_runtime.agent.tools.unregister("InvokeSubagent")
+                primary_runtime.agent.tools.register(
+                    InvokeSubagentTool(
+                        client_resolver=_make_client_resolver(
+                            self, frozenset(allowed)
+                        ),
+                        primary_app_id=primary_runtime.app_id,
+                        primary_session_id=primary_runtime.session_id,
+                        event_logger=primary_runtime.get_event_logger(),
+                    )
+                )
         except Exception:
             await self.close()
             raise

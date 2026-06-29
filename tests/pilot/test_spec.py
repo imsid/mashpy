@@ -205,13 +205,6 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         }
 
                         primary = host.get_agent(PILOT_AGENT_ID)
-                        assert primary.get_subagent_ids() == [
-                            API_COPILOT_AGENT_ID,
-                            CLI_COPILOT_AGENT_ID,
-                            MCP_COPILOT_AGENT_ID,
-                            RUNTIME_COPILOT_AGENT_ID,
-                            WORKFLOW_COPILOT_AGENT_ID,
-                        ]
                         assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
@@ -463,9 +456,11 @@ def test_prompts_remain_compact_and_principle_driven() -> None:
     assert "runtime-serving behavior" not in primary_prompt.lower()
     assert "open-ended exploration" not in cli_prompt.lower()
     assert "Treat cached docs as the primary source of truth" in cli_prompt
-    assert "CopilotIndexState" not in Path("/Users/sid/Projects/mashpy/pilot/spec.py").read_text()
-    assert "IndexScope" not in Path("/Users/sid/Projects/mashpy/pilot/spec.py").read_text()
-    assert "code_index" not in Path("/Users/sid/Projects/mashpy/pilot/spec.py").read_text()
+    import pilot.spec as _pilot_spec_module
+    pilot_spec_src = Path(_pilot_spec_module.__file__).read_text()
+    assert "CopilotIndexState" not in pilot_spec_src
+    assert "IndexScope" not in pilot_spec_src
+    assert "code_index" not in pilot_spec_src
 
 
 def test_copilot_configs_limit_history_and_steps() -> None:

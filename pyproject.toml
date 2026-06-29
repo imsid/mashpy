@@ -28,6 +28,7 @@ dependencies = [
   "psycopg[binary]>=3.2.0",
   "psycopg_pool>=3.2.0",
   "prompt_toolkit>=3.0.36",
+  "python-dotenv>=1.0.0",
   "PyYAML>=6.0.2",
   "requests>=2.31.0",
   "rich>=13.7.1",
@@ -45,10 +46,12 @@ Changelog = "https://github.com/imsid/mashpy/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mash = "mash.cli.main:main"
+pilot = "pilot.cli:main"
 
 [project.optional-dependencies]
 dev = [
   "build>=1.2.2",
+  "pyinstaller>=6.0",
   "pytest>=8.3.0",
   "twine>=6.1.0",
 ]
@@ -59,7 +62,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["mash*"]
+include = ["mash*", "pilot*"]
 exclude = ["apps*", "tests*"]
 
 [tool.setuptools.package-data]
@@ -71,3 +74,4 @@ exclude = ["apps*", "tests*"]
 ]
 "mash.runtime.events.store.postgres.migrations" = ["*.sql"]
 "mash.memory.store.backends.postgres.migrations" = ["*.sql"]
+"pilot" = ["skills/*/SKILL.md"]

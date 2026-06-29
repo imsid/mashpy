@@ -208,20 +208,67 @@ mash repl --host assistant
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
 | **WorkflowSpec** | Ordered task chains with structured output, orchestrated by DBOS |
 
-## Example: Mash Pilot
+## Mash Pilot
 
-[Mash Pilot](https://github.com/imsid/mash-pilot) is a full example host app
-built on the Mash SDK. It demonstrates multi-agent composition, custom REPL
-commands, workflows, and deployment. Use it as a reference when building your
-own host.
+Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
+shipped in this repo at [`src/pilot/`](src/pilot/). Its agents specialize in
+Mash's own modules — so instead of reading docs or grepping the source, you ask
+Pilot and it answers from the actual source tree.
+
+```text
+> Summarize how HostBuilder registers pooled agents and host compositions.
+> Trace how an accepted request moves through AgentRuntime and RequestEngine.
+> When is request.waiting emitted, and what does it mean for a busy session?
+```
+
+**Quick start:**
+
+```bash
+# 1. Start the host — one container, embedded Postgres, Mash source included
+docker run -d --name pilot -p 8000:8000 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v pilot-data:/var/lib/pilot \
+  ghcr.io/imsid/mashpy-pilot:latest
+
+# 2. Install the CLI and ask
+curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+pilot repl --host guide
+```
+
+Add `-e GITHUB_MCP_PAT=ghp_...` to enable the guide's commit-inspection tools.
+The `pilot-data` volume keeps the database durable across restarts.
+
+**The guide team** — one agent per module:
+
+| Agent | Owns |
+|-------|------|
+| `pilot` | Shared/cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
+| `cli-copilot` | `src/mash/cli` — commands, REPL, terminal rendering |
+| `api-copilot` | `src/mash/api` — HTTP routes, FastAPI |
+| `mcp-copilot` | `src/mash/mcp` — MCP client/server, transport, tool adaptation |
+| `runtime-copilot` | `src/mash/runtime` — request lifecycle, event sourcing, durability |
+| `workflow-copilot` | `src/mash/workflows` — DBOS orchestration, task state, run status |
+
+**Scaffolding your own app:** the guide carries a `build-mash-agent` skill so
+it goes beyond explaining Mash to scaffolding your application:
+
+```text
+> Build me a support agent with a knowledge base search tool and human approval for refunds.
+> Scaffold a multi-agent code reviewer with separate agents for security, style, and correctness.
+> I need an agent that connects to my MCP server at localhost:3000 and uses Gemini.
+```
+
+Use `pilot serve` from a source install to run your own host, or point the CLI
+at any Mash deployment with `--api-base-url`. See [`src/pilot/`](src/pilot/) as
+a reference when structuring your own multi-agent app.
 
 ## Build with a Coding Agent
 
 This repo includes [`CLAUDE.md`](CLAUDE.md) so coding agents like Claude Code,
 Codex, and Cursor can scaffold a Mash-powered agent from a natural language
 prompt. Copy it into your project or point your agent at this repo to get
-started. The [Pilot](https://github.com/imsid/mash-pilot) agent also includes
-a `build-mash-agent` skill for interactive agent scaffolding.
+started. The Pilot guide (above) also carries a `build-mash-agent` skill for
+interactive scaffolding from the REPL.
 
 ## Documentation
 

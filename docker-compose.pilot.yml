@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: mash_pilot
+      POSTGRES_USER: mash
+      POSTGRES_PASSWORD: mash
+    ports:
+      # Published for the local dev loop (`docker compose up -d db` +
+      # `pilot serve` on the host machine); the pilot service uses the
+      # internal network either way.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mash -d mash_pilot"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  pilot:
+    image: ghcr.io/imsid/mash-pilot:latest
+    build: .
+    env_file: .env
+    environment:
+      MASH_DATABASE_URL: postgresql://mash:mash@db:5432/mash_pilot
+    ports:
+      - "8000:8000"
+    volumes:
+      - pilotdata:/var/lib/pilot
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  pilotdata:
