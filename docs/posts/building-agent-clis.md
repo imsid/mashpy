@@ -486,8 +486,8 @@ my-cli --api-base-url http://localhost:8000
 
 ## Full Example: Pilot CLI
 
-The [Mash Pilot](https://github.com/imsid/mash-pilot) project is a
-real-world example that follows this pattern. Its structure:
+The Pilot project, at [`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/)
+in the mashpy repo, is a real-world example that follows this pattern. Its structure:
 
 ```
 pilot/

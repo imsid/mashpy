@@ -398,7 +398,7 @@ on a schedule.
 Mash exposes agents over HTTP, supports streaming responses, and includes a CLI
 and REPL, so the same platform covers local development, integration into
 product surfaces, and operating the system in a controlled environment. See
-[Pilot Agent](https://github.com/imsid/mash-pilot/blob/main/README.md) for an
+[`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/) for an
 implementation.
 
 The standard session: serve the pool, save the connection, compose a host,

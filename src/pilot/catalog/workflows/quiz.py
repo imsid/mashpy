@@ -185,14 +185,15 @@ def build_metadata() -> AgentMetadata:
     )
 
 
-def build_quiz_workflow_spec() -> WorkflowSpec:
+def build_quiz_workflow_spec(workspace_root: Path | None = None) -> WorkflowSpec:
     """The pilot-quiz definition: one task executed by the pooled quiz agent."""
+    resolved = (workspace_root or Path(".")).resolve()
     return WorkflowSpec(
         workflow_id=QUIZ_WORKFLOW_ID,
         tasks=[
             TaskSpec(
                 task_id=QUIZ_TASK_ID,
-                agent_id=QUIZ_AGENT_ID,
+                agent_spec=QuizAgentSpec(resolved),
             )
         ],
         metadata={"source": "pilot", "kind": "quiz"},

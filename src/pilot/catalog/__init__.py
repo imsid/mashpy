@@ -20,7 +20,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from mash.runtime import AgentMetadata, AgentSpec  # noqa: E402
 
-from .agents import api, cli, mcp, pilot, runtime, workflow  # noqa: E402
+from .agents import admin, api, cli, mcp, pilot, runtime, workflow  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,11 @@ CATALOG: tuple[CatalogEntry, ...] = (
         workflow.WORKFLOW_COPILOT_AGENT_ID,
         workflow.create_workflow_copilot_spec,
         workflow.build_workflow_metadata,
+    ),
+    CatalogEntry(
+        admin.ADMIN_COPILOT_AGENT_ID,
+        admin.create_admin_copilot_spec,
+        admin.build_admin_metadata,
     ),
 )
 

@@ -48,6 +48,24 @@ def build_default_llm(agent_id: str) -> LLMProvider:
     )
 
 
+def _cached_docs_for_scope(
+    workspace_root: Path,
+    *,
+    doc_roots: Sequence[str] = (),
+    extra_doc_paths: Sequence[str] = (),
+) -> list[str]:
+    """Collect cached doc paths for a scope.
+
+    Single indirection point patched by tests to inject fake doc paths
+    without touching the filesystem.
+    """
+    return scope_doc_paths(
+        workspace_root,
+        doc_roots=doc_roots,
+        extra_doc_paths=extra_doc_paths,
+    )
+
+
 def scope_doc_paths(
     workspace_root: Path,
     *,
@@ -142,7 +160,7 @@ class CopilotAgentSpec(AgentSpec, abc.ABC):
         ]
         repo_context = build_repo_context(
             repo=str(self.workspace_root),
-            cached_files=scope_doc_paths(
+            cached_files=_cached_docs_for_scope(
                 self.workspace_root,
                 doc_roots=doc_roots,
             ),
@@ -163,6 +181,6 @@ class CopilotAgentSpec(AgentSpec, abc.ABC):
             system_prompt=self.build_system_prompt(),
             skills_enabled=False,
             conversation_history_turns=0,
-            max_steps=50,
+            max_steps=10,
             temperature=0.2,
         )
