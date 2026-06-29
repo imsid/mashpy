@@ -143,6 +143,10 @@ cp .env.example .env
 set it. Optionally add `GITHUB_MCP_PAT` (a GitHub personal access token with
 `repo` scope) to enable the guide's commit-inspection tools.
 
+**Tip:** shell environment variables take precedence over `.env`. If `mash`
+connects to the wrong database, check whether `MASH_DATABASE_URL` is set in
+your shell (`echo $MASH_DATABASE_URL`) and unset it if so.
+
 Start the host:
 
 ```bash
