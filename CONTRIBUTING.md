@@ -75,6 +75,11 @@ in `pyproject.toml` and updates `CHANGELOG.md`. A maintainer merges that PR to
 cut the release — release-please tags it and the package is published to PyPI
 automatically. Contributors never bump versions or edit the changelog by hand.
 
+The same `v*` tag also triggers the Pilot release workflows: standalone CLI
+binaries for macOS and Linux are uploaded to the GitHub Release, and a
+multi-arch Docker image is pushed to GHCR. See [Pilot release process](#pilot-release-process)
+for details.
+
 ## License of Contributions
 
 Mash is licensed under the [Apache License 2.0](LICENSE). By submitting a
@@ -105,11 +110,125 @@ Test directories mirror the source layout:
 | API | `tests/mash/api` |
 | CLI / REPL | `tests/mash/cli` |
 | Workflows | `tests/mash/workflows` |
+| Pilot | `tests/pilot` |
 
 Before submitting broad changes, run the full suite:
 
 ```bash
 uv run --extra dev pytest -q tests/mash
+uv run --extra dev pytest -q tests/pilot
+```
+
+## Pilot
+
+Pilot lives in `src/pilot/` and is the primary dogfood for the SDK. Every mash
+change runs against the pilot test suite in CI, and you can run it locally
+during development to see how SDK changes affect a real multi-agent host.
+
+### Running Pilot locally
+
+**Prerequisites:** Docker (for Postgres), an Anthropic or OpenAI API key.
+
+```bash
+# Start Postgres (the docker-compose.pilot.yml service)
+docker compose -f docker-compose.pilot.yml up -d db
+
+# Copy and fill in the env file
+cp .env.example .env
+# set ANTHROPIC_API_KEY (or OPENAI_API_KEY) and MASH_DATABASE_URL:
+#   MASH_DATABASE_URL=postgresql://mash:mash@127.0.0.1:5433/mash_pilot
+```
+
+`PILOT_WORKSPACE_ROOT` defaults to the repo root automatically — no need to
+set it. Optionally add `GITHUB_MCP_PAT` (a GitHub personal access token with
+`repo` scope) to enable the guide's commit-inspection tools.
+
+Start the host:
+
+```bash
+mash host serve --host-app pilot.spec:build_pool --port 8000
+```
+
+In another terminal:
+
+```bash
+pilot browse               # list the pool and configured hosts
+pilot repl --host guide    # enter the default multi-agent composition
+```
+
+`pilot` defaults to `http://127.0.0.1:8000`, so no extra flags are needed.
+
+### Dogfooding while working on the SDK
+
+When you change something in `src/mash/`, run the pilot tests first to catch
+regressions in a real application before the mash suite:
+
+```bash
+uv run --extra dev pytest -q tests/pilot
+```
+
+You can also start the pilot host and talk to it directly — it answers from
+your live working tree, so you get immediate feedback on whether the agents
+still behave correctly after your change.
+
+### Adding an agent to the Pilot catalog
+
+Agents live under `src/pilot/catalog/agents/<name>/`. Each package needs a
+`spec.py` and an `__init__.py`. Follow these steps:
+
+1. **Create the package.** The `cli` copilot is the smallest complete example.
+   Implement the standard `AgentSpec` methods (`get_agent_id`, `build_tools`,
+   `build_skills`, `build_llm`, `build_agent_config`).
+
+2. **Write the metadata carefully.** `AgentMetadata.usage_guidance` is what
+   the primary reads when routing — vague guidance produces vague delegation.
+
+3. **Register it.** Add a `CatalogEntry` to `CATALOG` in
+   `src/pilot/catalog/__init__.py`.
+
+4. **Add a spec class to `src/pilot/spec.py`.** Define the spec class inline
+   (not just imported) so `pilot.spec._cached_docs_for_scope` patches work in
+   tests.
+
+5. **Degrade gracefully.** Gate optional capabilities (MCP servers,
+   credentials) inside the spec method; always register the agent regardless of
+   configuration.
+
+6. **Add skills as package data.** Drop markdown files in `src/pilot/skills/`
+   and add a glob to `[tool.setuptools.package-data]` in `pyproject.toml` so
+   they're included in the wheel and Docker image.
+
+### Pilot release process
+
+Pilot artifacts are built from the **same `v*` tag** that release-please
+creates for the mashpy package — no separate tag or version bump required.
+
+Two workflows fire on every `v*` push:
+
+| Workflow | Output |
+|----------|--------|
+| `release-pilot.yml` | `pilot` standalone binaries for macOS arm64 and Linux x86_64, uploaded to the GitHub Release |
+| `docker-pilot.yml` | Multi-arch image (`linux/amd64`, `linux/arm64`) pushed to `ghcr.io/imsid/mashpy-pilot:latest` and `:<version>` |
+
+The `install.sh` in the repo root always fetches the latest binary release
+from `imsid/mashpy`. Users install with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+```
+
+**First-time setup:** after the first push, set the `mashpy-pilot` GHCR
+package to public in **repo Settings → Packages** so `docker pull` works
+without authentication.
+
+**Re-tagging a release** (e.g., after fixing the build config):
+
+```bash
+git tag -d v0.x.0
+git push origin :refs/tags/v0.x.0
+gh release delete v0.x.0 --yes
+git tag v0.x.0
+git push origin v0.x.0
 ```
 
 ## Admin UI Development
@@ -140,9 +259,12 @@ resolves them locally.
 
 ```text
 src/mash/          Mash package: SDK, runtime, API, CLI, workflows
-tests/             Test suites (mirrors src/ layout)
+src/pilot/         Pilot multi-agent app: catalog, CLI, specs, skills
+tests/mash/        Mash test suite (mirrors src/mash/ layout)
+tests/pilot/       Pilot test suite
 docs/              Product brief, deployment guide, RFCs
 Dockerfile         Base image for Mash host deployments
+Dockerfile.pilot   Image for the Pilot host
 ```
 
 ## Subsystem Documentation
