@@ -177,6 +177,9 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     )
                 )
                 stack.enter_context(
+                    patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
@@ -263,6 +266,9 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     )
                 )
                 stack.enter_context(
+                    patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
@@ -338,6 +344,9 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                         "build_llm",
                         return_value=_FakeLLMProvider(),
                     )
+                )
+                stack.enter_context(
+                    patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
