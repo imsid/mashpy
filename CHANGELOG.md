@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.14.1](https://github.com/imsid/mashpy/compare/mashpy-v0.14.0...mashpy-v0.14.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **pilot:** mock AdminCopilotSpec.build_llm in integration tests ([#107](https://github.com/imsid/mashpy/issues/107)) ([cdc38a2](https://github.com/imsid/mashpy/commit/cdc38a2f7b4288591bb1c2e82220728c0c846e8e))
+
 ## [0.14.0](https://github.com/imsid/mashpy/compare/mashpy-v0.13.0...mashpy-v0.14.0) (2026-06-29)
 
 
