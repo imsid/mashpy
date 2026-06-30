@@ -3,7 +3,12 @@ name: Release Pilot Binaries
 on:
   push:
     tags:
-      - "v*"
+      - "mashpy-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. mashpy-v0.14.1)"
+        required: true
 
 permissions:
   contents: write
