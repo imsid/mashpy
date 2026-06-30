@@ -179,7 +179,7 @@ mash compose assistant --primary concierge --subagents research
 mash repl --host assistant
 ```
 
-## Start here
+## Learn More
 
 - [**Core concepts**](posts/concepts.md): the building blocks behind every agent system
 - [**Product brief**](posts/product-brief.md): the pitch, why applications and agents needs a standard
