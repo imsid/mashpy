@@ -21,8 +21,9 @@ observability, and a durable runtime.
 
 **Try it now with Pilot:**
 
-[Pilot](https://github.com/imsid/mash-pilot) is a ready-made Mash agent that answers
-questions about the Mash codebase. One container, no code to write — good for getting
+[Pilot](https://github.com/imsid/mash-pilot) is a ready-made Mash host runtime composed
+of multiple agents that answer questions about the Mash codebase and guide you through
+building your own agent application. One container, no code to write — good for getting
 a feel for the runtime before building your own.
 
 ```bash
