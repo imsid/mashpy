@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
@@ -15,9 +14,13 @@ from .migrations import run_migrations
 try:  # pragma: no cover - environment dependent
     import psycopg
     from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
 except ImportError:  # pragma: no cover - exercised only without optional deps
     psycopg = None
     dict_row = None
+    AsyncConnectionPool = None  # type: ignore[assignment]
+
+import asyncio
 
 
 class PostgresStore(MemoryStore):
@@ -28,41 +31,38 @@ class PostgresStore(MemoryStore):
         if not resolved:
             raise ValueError("database_url is required")
         self._database_url = resolved
-        self._conn: Any = None
+        self._pool: Any = None
         self._open_lock = asyncio.Lock()
-        self._lock = asyncio.Lock()
 
     async def open(self) -> None:
-        """Open the Postgres connection and run pending migrations lazily."""
-        if self._conn is not None:
+        """Open the connection pool and run pending migrations lazily."""
+        if self._pool is not None:
             return
-        if psycopg is None or dict_row is None:  # pragma: no cover - env dependent
+        if psycopg is None or dict_row is None or AsyncConnectionPool is None:  # pragma: no cover - env dependent
             raise RuntimeError(
-                "psycopg is required for PostgresStore. Install mashpy with PostgreSQL dependencies."
+                "psycopg and psycopg_pool are required for PostgresStore. Install mashpy with PostgreSQL dependencies."
             )
         async with self._open_lock:
-            if self._conn is not None:
+            if self._pool is not None:
                 return
-            conn = cast(
-                Any,
-                await psycopg.AsyncConnection.connect(self._database_url),
+            pool = AsyncConnectionPool(
+                self._database_url,
+                min_size=1,
+                max_size=5,
+                open=False,
+                kwargs={"autocommit": True, "row_factory": dict_row},
             )
-            conn.row_factory = dict_row
-            await conn.set_autocommit(True)
-            self._conn = conn
-            await run_migrations(self._conn)
+            await pool.open()
+            self._pool = pool
+            async with self._pool.connection() as conn:
+                await run_migrations(conn)
 
     async def close(self) -> None:
-        """Close the Postgres connection."""
-        if self._conn is None:
+        """Close the connection pool."""
+        if self._pool is None:
             return
-        await self._conn.close()
-        self._conn = None
-
-    def _get_conn(self) -> Any:
-        if self._conn is None:
-            raise RuntimeError("PostgresStore is not open")
-        return self._conn
+        await self._pool.close()
+        self._pool = None
 
     async def save_logs(self, logs: List[Dict[str, Any]]) -> None:
         if not logs:
@@ -84,8 +84,7 @@ class PostgresStore(MemoryStore):
                 )
             )
 
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
                     await cursor.executemany(
@@ -154,8 +153,8 @@ class PostgresStore(MemoryStore):
                 params.append(normalized_limit)
             reverse_results = False
 
-        async with self._lock:
-            rows = await self._fetchall_unlocked(sql, params)
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, params)
 
         if reverse_results:
             rows = list(reversed(rows))
@@ -196,8 +195,9 @@ class PostgresStore(MemoryStore):
     ) -> List[Dict[str, Any]]:
         normalized_limit = max(1, int(limit))
         await self.open()
-        async with self._lock:
-            rows = await self._fetchall_unlocked(
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
                 """
                 SELECT
                     trace_id,
@@ -250,8 +250,7 @@ class PostgresStore(MemoryStore):
         metadata_json = json.dumps(metadata or {}, default=str)
 
         await self.open()
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
                     await cursor.execute(
@@ -320,9 +319,10 @@ class PostgresStore(MemoryStore):
     ) -> List[Dict[str, Any]]:
         await self.open()
         params: list[Any] = [session_id, app_id]
-        async with self._lock:
+        async with self._pool.connection() as conn:
             if limit is None:
-                rows = await self._fetchall_unlocked(
+                rows = await self._fetchall(
+                    conn,
                     """
                     SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
@@ -332,7 +332,8 @@ class PostgresStore(MemoryStore):
                     params,
                 )
             else:
-                rows = await self._fetchall_unlocked(
+                rows = await self._fetchall(
+                    conn,
                     """
                     SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
@@ -345,7 +346,7 @@ class PostgresStore(MemoryStore):
                 rows = list(reversed(rows))
 
             trace_ids = [str(row["trace_id"]) for row in rows]
-            signals_by_trace = await self._get_signals_for_trace_ids_unlocked(trace_ids)
+            signals_by_trace = await self._get_signals_for_trace_ids(conn, trace_ids)
 
         turns: List[Dict[str, Any]] = []
         for row in rows:
@@ -415,8 +416,8 @@ class PostgresStore(MemoryStore):
             params.append(normalized_offset)
 
         await self.open()
-        async with self._lock:
-            rows = await self._fetchall_unlocked(sql, params)
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, params)
 
         turns: List[Dict[str, Any]] = []
         for row in rows:
@@ -450,9 +451,10 @@ class PostgresStore(MemoryStore):
     ) -> List[Dict[str, Any]]:
         await self.open()
         params: list[Any] = [session_id, app_id]
-        async with self._lock:
+        async with self._pool.connection() as conn:
             if limit is None:
-                rows = await self._fetchall_unlocked(
+                rows = await self._fetchall(
+                    conn,
                     """
                     SELECT trace_id, created_at
                     FROM memory_turns
@@ -462,7 +464,8 @@ class PostgresStore(MemoryStore):
                     params,
                 )
             else:
-                rows = await self._fetchall_unlocked(
+                rows = await self._fetchall(
+                    conn,
                     """
                     SELECT trace_id, created_at
                     FROM memory_turns
@@ -475,7 +478,7 @@ class PostgresStore(MemoryStore):
                 rows = list(reversed(rows))
 
             trace_ids = [str(row["trace_id"]) for row in rows]
-            signals_by_trace = await self._get_signals_for_trace_ids_unlocked(trace_ids)
+            signals_by_trace = await self._get_signals_for_trace_ids(conn, trace_ids)
 
         return [
             {
@@ -488,8 +491,9 @@ class PostgresStore(MemoryStore):
 
     async def list_sessions(self, app_id: str) -> List[Dict[str, Any]]:
         await self.open()
-        async with self._lock:
-            rows = await self._fetchall_unlocked(
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
                 """
                 SELECT
                     session_id,
@@ -538,8 +542,9 @@ class PostgresStore(MemoryStore):
     ) -> List[Dict[str, Any]]:
         normalized_limit = max(1, int(limit))
         await self.open()
-        async with self._lock:
-            rows = await self._fetchall_unlocked(
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
                 """
                 SELECT
                     trace_id,
@@ -620,8 +625,8 @@ class PostgresStore(MemoryStore):
             ORDER BY r.ord ASC
         """
 
-        async with self._lock:
-            rows = await self._fetchall_unlocked(sql, params)
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, params)
 
         if not rows:
             return None
@@ -685,8 +690,8 @@ class PostgresStore(MemoryStore):
         """
         params.append(normalized_limit)
 
-        async with self._lock:
-            rows = await self._fetchall_unlocked(sql, params)
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, params)
 
         return [
             {
@@ -710,25 +715,27 @@ class PostgresStore(MemoryStore):
         del column, query_term, query_embedding, limit, session_id, app_id
         raise NotImplementedError("PostgresStore.semantic_search is not implemented yet")
 
-    async def _fetchall_unlocked(
-        self,
+    @staticmethod
+    async def _fetchall(
+        conn: Any,
         sql: str,
         params: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
-        conn = self._get_conn()
         async with conn.cursor() as cursor:
             await cursor.execute(sql, tuple(params))
             return list(await cursor.fetchall())
 
-    async def _get_signals_for_trace_ids_unlocked(
-        self,
+    @staticmethod
+    async def _get_signals_for_trace_ids(
+        conn: Any,
         trace_ids: Iterable[str],
     ) -> Dict[str, Dict[str, Any]]:
         normalized_trace_ids = [str(t) for t in trace_ids if str(t)]
         if not normalized_trace_ids:
             return {}
 
-        rows = await self._fetchall_unlocked(
+        rows = await PostgresStore._fetchall(
+            conn,
             """
             SELECT trace_id, signal_name, signal_value
             FROM memory_signals
@@ -741,7 +748,7 @@ class PostgresStore(MemoryStore):
         for row in rows:
             trace_id = str(row["trace_id"])
             signals = signals_by_trace.setdefault(trace_id, {})
-            signals[str(row["signal_name"])] = self._load_json_value(
+            signals[str(row["signal_name"])] = PostgresStore._load_json_value(
                 row["signal_value"]
             )
         return signals_by_trace

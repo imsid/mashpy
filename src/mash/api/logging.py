@@ -12,9 +12,11 @@ from typing import Any, AsyncIterator, Optional, Protocol
 try:  # pragma: no cover - optional dependency at import time
     import psycopg
     from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
 except ImportError:  # pragma: no cover - exercised only without optional deps
     psycopg = None
     dict_row = None
+    AsyncConnectionPool = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +88,8 @@ class PostgresAPIEventStore(APIEventStore):
         if not resolved:
             raise ValueError("database_url is required")
         self._database_url = resolved
-        self._conn: Any = None
+        self._pool: Any = None
         self._open_lock = asyncio.Lock()
-        self._lock = asyncio.Lock()
         self._memory_store: _InMemoryAPIEventStore | None = (
             _InMemoryAPIEventStore() if resolved == "postgresql://test/runtime" else None
         )
@@ -97,38 +98,40 @@ class PostgresAPIEventStore(APIEventStore):
         if self._memory_store is not None:
             await self._memory_store.open()
             return
-        if self._conn is not None:
+        if self._pool is not None:
             return
-        if psycopg is None or dict_row is None:  # pragma: no cover - env dependent
+        if psycopg is None or dict_row is None or AsyncConnectionPool is None:  # pragma: no cover - env dependent
             raise RuntimeError(
-                "psycopg is required for PostgresAPIEventStore. Install mashpy with PostgreSQL runtime dependencies."
+                "psycopg and psycopg_pool are required for PostgresAPIEventStore. Install mashpy with PostgreSQL runtime dependencies."
             )
         async with self._open_lock:
-            if self._conn is not None:
+            if self._pool is not None:
                 return
-            conn = await psycopg.AsyncConnection.connect(
+            pool = AsyncConnectionPool(
                 self._database_url,
-                row_factory=dict_row,
+                min_size=1,
+                max_size=5,
+                open=False,
+                kwargs={"autocommit": True, "row_factory": dict_row},
             )
-            await conn.set_autocommit(True)
-            self._conn = conn
+            await pool.open()
+            self._pool = pool
             await self._init_schema()
 
     async def close(self) -> None:
         if self._memory_store is not None:
             await self._memory_store.close()
             return
-        if self._conn is None:
+        if self._pool is None:
             return
-        await self._conn.close()
-        self._conn = None
+        await self._pool.close()
+        self._pool = None
 
     async def append_event(self, event: APIEvent) -> APIEvent:
         if self._memory_store is not None:
             return await self._memory_store.append_event(event)
         await self.open()
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
@@ -167,7 +170,6 @@ class PostgresAPIEventStore(APIEventStore):
         if self._memory_store is not None:
             return await self._memory_store.list_events(filters)
         await self.open()
-        conn = self._get_conn()
         clauses, params = _filter_clauses(filters)
         params.append(max(1, int(filters.limit)))
         query = f"""
@@ -179,15 +181,14 @@ class PostgresAPIEventStore(APIEventStore):
             ORDER BY api_event_id DESC
             LIMIT %s
         """
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(query, tuple(params))
                 rows = await cursor.fetchall()
         return [self._row_to_event(row) for row in rows]
 
     async def _init_schema(self) -> None:
-        conn = self._get_conn()
-        async with self._lock:
+        async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
                     await cursor.execute(
@@ -251,11 +252,6 @@ class PostgresAPIEventStore(APIEventStore):
                         ON api_event_log(created_at)
                         """
                     )
-
-    def _get_conn(self) -> Any:
-        if self._conn is None:
-            raise RuntimeError("PostgresAPIEventStore is not open")
-        return self._conn
 
     @staticmethod
     def _row_to_event(row: dict[str, Any]) -> APIEvent:
