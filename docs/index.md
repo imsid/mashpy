@@ -19,6 +19,30 @@ local and remote (MCP) tools, skills, context and memory management,
 human-in-the-loop (HITL), pre-built commands and workflows, an API/CLI for access,
 observability, and a durable runtime.
 
+**Try it now with Pilot:**
+
+[Pilot](https://github.com/imsid/mash-pilot) is a ready-made Mash agent that answers
+questions about the Mash codebase. One container, no code to write — good for getting
+a feel for the runtime before building your own.
+
+```bash
+# 1. Start the host (embedded Postgres, Mash source included)
+docker run -d --name pilot -p 8000:8000 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v pilot-data:/var/lib/pilot \
+  ghcr.io/imsid/mash-pilot:latest
+
+# 2. Install the CLI and start asking
+curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
+pilot repl --host guide
+```
+
+Add `-e OPENAI_API_KEY=sk-...` instead if you prefer OpenAI. The `pilot-data` volume
+keeps your database durable across restarts. Once you're ready to build your own agent,
+keep reading.
+
+---
+
 **Install:**
 
 ```bash
