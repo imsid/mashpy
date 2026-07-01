@@ -37,14 +37,14 @@ function ToolCard({ entry, invocations }) {
     >
       <div>
         <div className="flex items-start justify-between gap-2">
-          <h3 className="font-display text-base font-semibold">{tool.name}</h3>
+          <h3 className="min-w-0 truncate font-display text-base font-semibold">{tool.name}</h3>
           <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
             {tool.requires_approval && <Chip tone="amber">approval</Chip>}
             {tool.parallel_safe === false && <Chip tone="slate">sequential</Chip>}
           </div>
         </div>
         {tool.description ? (
-          <p className="mt-1 text-sm text-slate-600">{tool.description}</p>
+          <p className="mt-1 line-clamp-4 text-sm text-slate-600">{tool.description}</p>
         ) : (
           <p className="mt-1 text-sm italic text-slate-400">No description.</p>
         )}

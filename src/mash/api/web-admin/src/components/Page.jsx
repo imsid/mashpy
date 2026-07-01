@@ -18,7 +18,7 @@ import { Link } from 'react-router-dom';
 // on hover, deepens its shadow, and exposes a focus ring for keyboard users.
 export function Card({ children, className = '', to, onClick }) {
   const interactive = Boolean(to || onClick);
-  const base = 'rounded-lg border border-slate-200 bg-white';
+  const base = 'rounded-lg border border-slate-200 bg-white overflow-hidden';
   const motion = interactive
     ? 'group block text-left transition duration-200 ease-out hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-200/70 active:translate-y-0 active:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900/10 focus-visible:ring-offset-2'
     : '';
