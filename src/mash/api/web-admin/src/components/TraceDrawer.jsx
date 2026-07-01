@@ -6,6 +6,7 @@ import { JsonBlock, Disclosure } from './Json.jsx';
 import { Markdown } from './Markdown.jsx';
 import { TextInput, Select, Button } from './Form.jsx';
 import { Loading, ErrorState } from './State.jsx';
+import { CopyId, CopyButton } from './CopyId.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { reconstructMessages, previewText } from '../lib/conversation.js';
@@ -133,7 +134,12 @@ function MessageDetail({ message }) {
   if (message.role === 'assistant') {
     return (
       <div className="space-y-3">
-        {message.text ? <Markdown>{message.text}</Markdown> : null}
+        {message.text ? (
+          <div className="group relative">
+            <Markdown>{message.text}</Markdown>
+            <CopyButton value={message.text} className="absolute right-0 top-0 opacity-0 group-hover:opacity-100" />
+          </div>
+        ) : null}
         {message.toolCalls?.length ? (
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -156,7 +162,12 @@ function MessageDetail({ message }) {
     );
   }
   // user / system
-  return <Markdown>{message.text}</Markdown>;
+  return (
+    <div className="group relative">
+      <Markdown>{message.text}</Markdown>
+      <CopyTextButton text={message.text} />
+    </div>
+  );
 }
 
 function MessagesInspector({ messages }) {
@@ -302,8 +313,28 @@ export function TraceDrawer({ open, trace, agentId, onClose }) {
     <Drawer
       open={open}
       onClose={onClose}
-      title={traceId ? `Trace ${traceId}` : 'Trace'}
-      subtitle={`${agentId}${sessionId ? ` · session ${sessionId}` : ''}`}
+      title={
+        traceId ? (
+          <span className="flex items-center gap-1.5">
+            <span>Trace</span>
+            <CopyId value={traceId} />
+          </span>
+        ) : (
+          'Trace'
+        )
+      }
+      subtitle={
+        <span className="flex items-center gap-1.5">
+          <span>{agentId}</span>
+          {sessionId ? (
+            <>
+              <span className="text-slate-300">·</span>
+              <span>session</span>
+              <CopyId value={sessionId} />
+            </>
+          ) : null}
+        </span>
+      }
     >
       {analysisState.loading && !analysis ? <Loading /> : null}
       {analysisState.error ? (

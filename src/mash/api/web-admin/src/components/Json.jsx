@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { CopyButton } from './CopyId.jsx';
 
 function stringify(value) {
   if (typeof value === 'string') {
@@ -17,12 +18,16 @@ function stringify(value) {
 }
 
 export function JsonBlock({ value, className = '' }) {
+  const text = stringify(value);
   return (
-    <pre
-      className={`max-h-96 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-relaxed text-slate-800 ${className}`}
-    >
-      {stringify(value)}
-    </pre>
+    <div className={`group relative ${className}`}>
+      <pre className="max-h-96 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-relaxed text-slate-800">
+        {text}
+      </pre>
+      <div className="absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <CopyButton getValue={() => text} className="hover:bg-slate-200" />
+      </div>
+    </div>
   );
 }
 
