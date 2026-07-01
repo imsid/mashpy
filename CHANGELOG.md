@@ -9,6 +9,28 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.15.0](https://github.com/imsid/mashpy/compare/mashpy-v0.14.1...mashpy-v0.15.0) (2026-07-01)
+
+
+### Features
+
+* **admin-ui:** add copy-to-clipboard to message content, raw events, and trace/session IDs ([#120](https://github.com/imsid/mashpy/issues/120)) ([95456ff](https://github.com/imsid/mashpy/commit/95456ff8d5ef4a41e6ed248ad58bcdd5858aec9e))
+
+
+### Bug Fixes
+
+* **admin-ui:** truncate overflowing tool names and clamp long descriptions in tool cards ([#118](https://github.com/imsid/mashpy/issues/118)) ([dbd0237](https://github.com/imsid/mashpy/commit/dbd023720289337e3e61ea1fa4ac194ee101d54f))
+* **api:** replace bare connection with AsyncConnectionPool in PostgresAPIEventStore ([#116](https://github.com/imsid/mashpy/issues/116)) ([f9dc28f](https://github.com/imsid/mashpy/commit/f9dc28f8a5fc3d49dfbe8faa182e68ab81d3a927))
+* **ci:** match mashpy-v* tag pattern in docker-pilot and release-pilot ([#109](https://github.com/imsid/mashpy/issues/109)) ([6a6a0d0](https://github.com/imsid/mashpy/commit/6a6a0d03fcf9892fe61c5e8034a9c6ff6deba811))
+* **ci:** pass explicit tag_name to gh-release on workflow_dispatch ([#111](https://github.com/imsid/mashpy/issues/111)) ([7ecad1a](https://github.com/imsid/mashpy/commit/7ecad1aedb36608282f3965e00d93639ae2c1f26))
+
+
+### Documentation
+
+* **index:** add Pilot quickstart as zero-code try-it-now path ([#112](https://github.com/imsid/mashpy/issues/112)) ([4f7e821](https://github.com/imsid/mashpy/commit/4f7e8218527519f1d445d18421633b26e2fc4ef6))
+* **index:** clarify Pilot as a multi-agent host runtime ([#113](https://github.com/imsid/mashpy/issues/113)) ([00c4288](https://github.com/imsid/mashpy/commit/00c4288586dc4504c4bab44dfb8531deee33679d))
+* **index:** rename "Start here" to "Learn More" ([#114](https://github.com/imsid/mashpy/issues/114)) ([584da66](https://github.com/imsid/mashpy/commit/584da6698a3d19a4640afcda4a77db9c53980a81))
+
 ## [0.14.1](https://github.com/imsid/mashpy/compare/mashpy-v0.14.0...mashpy-v0.14.1) (2026-06-30)
 
 
