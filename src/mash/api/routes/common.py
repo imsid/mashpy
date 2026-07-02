@@ -43,6 +43,7 @@ class APIError(RuntimeError):
 class AppRuntimeState:
     pool: AgentPool
     api_event_store: Any
+    eval_service: Any
     api_key: Optional[str]
     observability_enabled: bool
     default_events_limit: int
@@ -223,6 +224,17 @@ def get_agent(request: Request, agent_id: str):
 def get_workflow_service(request: Request):
     state = state_from_request(request)
     return state.pool.get_workflow_service()
+
+
+def get_eval_service(request: Request):
+    state = state_from_request(request)
+    if state.eval_service is None:
+        raise APIError(
+            code="EVALS_NOT_AVAILABLE",
+            message="evals require MASH_DATABASE_URL to be configured",
+            status_code=503,
+        )
+    return state.eval_service
 
 
 def telemetry_event_source() -> str:

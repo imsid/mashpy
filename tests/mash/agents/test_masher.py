@@ -258,7 +258,7 @@ class MasherTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     sorted(skill.name for skill in skills.list_skills()),
-                    ["online-eval-curation", "trace-digest-workflow"],
+                    ["gen-synthetic-evals", "online-eval-curation", "score-evals", "trace-digest-workflow"],
                 )
                 prompt = spec.build_agent_config().system_prompt
                 self.assertIn("event_type", prompt)

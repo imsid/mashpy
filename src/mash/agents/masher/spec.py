@@ -8,16 +8,15 @@ from typing import TYPE_CHECKING
 
 from mash.core.config import AgentConfig
 from mash.core.llm import (
+    DEFAULT_GEMINI_MODEL,
     AnthropicProvider,
+    GeminiProvider,
     LLMProvider,
     OpenAIProvider,
-    GeminiProvider,
     OSSCompatibleProvider,
-    DEFAULT_GEMINI_MODEL,
 )
 from mash.runtime.host.subagents import AgentMetadata
 from mash.runtime.spec import AgentSpec
-from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 from mash.workflows import TaskSpec, WorkflowSpec
@@ -36,6 +35,10 @@ MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
 MASHER_TRACE_DIGEST_TASK_ID = "digest-traces"
 MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
 MASHER_ONLINE_EVAL_TASK_ID = "curate-online-evals"
+MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID = "gen-synthetic-evals"
+MASHER_GEN_SYNTHETIC_EVALS_TASK_ID = "generate-evals"
+MASHER_SCORE_EVALS_WORKFLOW_ID = "score-evals"
+MASHER_SCORE_EVALS_TASK_ID = "score-evals"
 
 
 def _select_masher_provider_kind() -> str | None:
@@ -45,7 +48,10 @@ def _select_masher_provider_kind() -> str | None:
     two cannot drift. OSS is selected on OSS_BASE_URL alone; build_llm() then
     enforces MASHER_OSS_MODEL.
     """
-    if os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip():
+    if (
+        os.getenv("GEMINI_API_KEY", "").strip()
+        or os.getenv("GOOGLE_API_KEY", "").strip()
+    ):
         return "gemini"
     if os.getenv("OPENAI_API_KEY", "").strip():
         return "openai"
@@ -54,6 +60,7 @@ def _select_masher_provider_kind() -> str | None:
     if os.getenv("OSS_BASE_URL", "").strip():
         return "oss"
     return None
+
 
 MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT = {
     "title": "MasherTraceDigestWorkflowOutput",
@@ -79,6 +86,30 @@ MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT = {
     "required": ["json_text"],
     "additionalProperties": False,
 }
+MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT = {
+    "title": "MasherGenSyntheticEvalsWorkflowOutput",
+    "type": "object",
+    "properties": {
+        "json_text": {
+            "type": "string",
+            "description": "A serialized JSON object string containing eval_id, host_id, dataset_id, rubric_id, and row_count.",
+        }
+    },
+    "required": ["json_text"],
+    "additionalProperties": False,
+}
+MASHER_SCORE_EVALS_STRUCTURED_OUTPUT = {
+    "title": "MasherScoreEvalsWorkflowOutput",
+    "type": "object",
+    "properties": {
+        "json_text": {
+            "type": "string",
+            "description": "A serialized JSON object string containing experiment_id, eval_id, status, scored_count, and mean_score.",
+        }
+    },
+    "required": ["json_text"],
+    "additionalProperties": False,
+}
 
 _PROMPT = """You are Masher, Mash's built-in workflow-only worker.
 
@@ -99,6 +130,8 @@ Structured event schema:
 Workflow skill routing:
 - workflow_id=masher-trace-digest, task_id=digest-traces -> skill=trace-digest-workflow
 - workflow_id=masher-online-eval-curation, task_id=curate-online-evals -> skill=online-eval-curation
+- workflow_id=gen-synthetic-evals, task_id=generate-evals -> skill=gen-synthetic-evals
+- workflow_id=score-evals, task_id=score-evals -> skill=score-evals
 
 Routing rules:
 - Match both workflow_id and task_id exactly.
@@ -153,24 +186,8 @@ class MasherAgentSpec(AgentSpec):
     def build_skills(self) -> SkillRegistry:
         skills = SkillRegistry()
         skills_root = Path(__file__).resolve().parent / "skills"
-        trace_digest_skill_dir = skills_root / "trace-digest-workflow"
-        online_eval_skill_dir = skills_root / "online-eval-curation"
-        skills.register(
-            Skill(
-                type="custom",
-                name="trace-digest-workflow",
-                description="Run Masher's diagnostic trace digest workflow.",
-                location=str(trace_digest_skill_dir),
-            )
-        )
-        skills.register(
-            Skill(
-                type="custom",
-                name="online-eval-curation",
-                description="Build normalized online eval JSONL rows from Mash trace events.",
-                location=str(online_eval_skill_dir),
-            )
-        )
+        for skill in skills.get_custom_skills(skills_root):
+            skills.register(skill)
         return skills
 
     @staticmethod
@@ -195,7 +212,8 @@ class MasherAgentSpec(AgentSpec):
             return GeminiProvider(
                 app_id=MASHER_AGENT_ID,
                 model=os.getenv(
-                    "MASHER_GEMINI_MODEL", os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+                    "MASHER_GEMINI_MODEL",
+                    os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
                 ),
             )
         if kind == "openai":
@@ -239,8 +257,7 @@ class MasherAgentSpec(AgentSpec):
         return AgentConfig(
             app_id=MASHER_AGENT_ID,
             system_prompt=_PROMPT,
-            skills_enabled=True,
-            max_steps=6,
+            max_steps=20,
         )
 
     def enable_runtime_tools(self) -> bool:
@@ -272,6 +289,26 @@ def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSp
                 )
             ],
         ),
+        WorkflowSpec(
+            workflow_id=MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+            tasks=[
+                TaskSpec(
+                    task_id=MASHER_GEN_SYNTHETIC_EVALS_TASK_ID,
+                    agent_spec=masher_spec,
+                    structured_output=MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT,
+                )
+            ],
+        ),
+        WorkflowSpec(
+            workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
+            tasks=[
+                TaskSpec(
+                    task_id=MASHER_SCORE_EVALS_TASK_ID,
+                    agent_spec=masher_spec,
+                    structured_output=MASHER_SCORE_EVALS_STRUCTURED_OUTPUT,
+                )
+            ],
+        ),
     ]
 
 
@@ -282,9 +319,15 @@ def create_masher_agent_spec() -> MasherAgentSpec:
 
 __all__ = [
     "MASHER_AGENT_ID",
+    "MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT",
+    "MASHER_GEN_SYNTHETIC_EVALS_TASK_ID",
+    "MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID",
     "MASHER_ONLINE_EVAL_TASK_ID",
     "MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT",
     "MASHER_ONLINE_EVAL_WORKFLOW_ID",
+    "MASHER_SCORE_EVALS_STRUCTURED_OUTPUT",
+    "MASHER_SCORE_EVALS_TASK_ID",
+    "MASHER_SCORE_EVALS_WORKFLOW_ID",
     "MASHER_TRACE_DIGEST_TASK_ID",
     "MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT",
     "MASHER_TRACE_DIGEST_WORKFLOW_ID",

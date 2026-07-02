@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from mash.api.logging import PostgresAPIEventStore
 from mash.api.middleware import APILoggingMiddleware
 from mash.api.routes.agent import build_agent_router
+from mash.api.routes.evals import build_evals_router
 from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.pool import build_pool_router
@@ -25,6 +26,8 @@ from mash.api.routes.common import (
 )
 from mash.api.routes.telemetry import build_telemetry_router
 from mash.api.routes.workflow import build_workflow_router
+from mash.agents.masher.spec import MASHER_AGENT_ID
+from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, AgentPool
 from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
 
@@ -43,13 +46,20 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
             resolved_config.resolved_runtime_database_url()
         )
         await pool.start()
-        api_event_store = PostgresAPIEventStore(
-            resolved_config.resolved_runtime_database_url() or ""
-        )
+        database_url = resolved_config.resolved_runtime_database_url() or ""
+        api_event_store = PostgresAPIEventStore(database_url)
         await api_event_store.open()
+        eval_service: EvalService | None = None
+        if database_url:
+            eval_store = PostgresEvalStore(database_url)
+            eval_service = EvalService(eval_store)
+            masher_spec = pool.get_registered_agent_spec(MASHER_AGENT_ID)
+            if masher_spec is not None and hasattr(masher_spec, "runtime_context"):
+                masher_spec.runtime_context.bind_eval_service(eval_service)
         application.state.runtime_state = AppRuntimeState(
             pool=pool,
             api_event_store=api_event_store,
+            eval_service=eval_service,
             api_key=resolved_config.resolved_api_key(),
             observability_enabled=resolved_config.enable_observability,
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
@@ -60,6 +70,8 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
         finally:
             state = getattr(application.state, "runtime_state", None)
             if state is not None:
+                if state.eval_service is not None:
+                    await state.eval_service._store.close()
                 await state.api_event_store.close()
                 await state.pool.close()
             application.state.runtime_state = None
@@ -149,6 +161,7 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())
     api.include_router(build_feedback_router())
+    api.include_router(build_evals_router())
     app.include_router(api)
 
     @app.get("/")

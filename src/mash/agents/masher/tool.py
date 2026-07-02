@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict
 
+from typing import TYPE_CHECKING
+
 from ...runtime.events import (
     RuntimeTrace,
     RuntimeEvent,
@@ -19,6 +21,9 @@ from ...runtime.events import (
 )
 from ...tools.base import FunctionTool, ToolResult
 
+if TYPE_CHECKING:
+    from ...evals.service import EvalService
+
 
 @dataclass
 class MasherRuntimeContext:
@@ -27,9 +32,13 @@ class MasherRuntimeContext:
     runtime_store: RuntimeStore | None = None
     trace_digest_jsonl_path: Path | None = None
     online_eval_jsonl_path: Path | None = None
+    eval_service: "EvalService | None" = None
 
     def bind_runtime_store(self, runtime_store: RuntimeStore) -> None:
         self.runtime_store = runtime_store
+
+    def bind_eval_service(self, eval_service: "EvalService") -> None:
+        self.eval_service = eval_service
 
     def configure_artifacts(self, data_root: Path) -> None:
         masher_root = data_root / "masher"
@@ -40,6 +49,11 @@ class MasherRuntimeContext:
         if self.runtime_store is None:
             raise RuntimeError("Masher runtime store is not bound")
         return self.runtime_store
+
+    def require_eval_service(self) -> "EvalService":
+        if self.eval_service is None:
+            raise RuntimeError("Masher eval service is not bound")
+        return self.eval_service
 
     def require_trace_digest_jsonl_path(self) -> Path:
         if self.trace_digest_jsonl_path is None:
