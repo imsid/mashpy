@@ -127,33 +127,21 @@ during development to see how SDK changes affect a real multi-agent host.
 
 ### Running Pilot locally
 
-**Prerequisites:** Docker (for Postgres), an Anthropic or OpenAI API key.
+**Prerequisites:** Docker, an Anthropic or OpenAI API key.
 
-```bash
-# Start Postgres (the docker-compose.pilot.yml service)
-docker compose -f docker-compose.pilot.yml up -d db
+Create `.env` in the repo root with your API key:
 
-# Copy and fill in the env file
-cp .env.example .env
-# set ANTHROPIC_API_KEY (or OPENAI_API_KEY) and MASH_DATABASE_URL:
-#   MASH_DATABASE_URL=postgresql://mash:mash@127.0.0.1:5433/mash_pilot
+```
+ANTHROPIC_API_KEY=sk-...
 ```
 
-`PILOT_WORKSPACE_ROOT` defaults to the repo root automatically — no need to
-set it. Optionally add `GITHUB_MCP_PAT` (a GitHub personal access token with
-`repo` scope) to enable the guide's commit-inspection tools.
-
-**Tip:** shell environment variables take precedence over `.env`. If `mash`
-connects to the wrong database, check whether `MASH_DATABASE_URL` is set in
-your shell (`echo $MASH_DATABASE_URL`) and unset it if so.
-
-Start the host:
+Then bring everything up:
 
 ```bash
-mash host serve --host-app pilot.spec:build_pool --port 8000
+docker compose -f docker-compose.pilot.yml up -d
 ```
 
-In another terminal:
+This starts Postgres and the Pilot host together. Once healthy:
 
 ```bash
 pilot browse               # list the pool and configured hosts
@@ -161,6 +149,9 @@ pilot repl --host guide    # enter the default multi-agent composition
 ```
 
 `pilot` defaults to `http://127.0.0.1:8000`, so no extra flags are needed.
+The admin UI is available at http://localhost:8000/admin.
+Optionally add `GITHUB_MCP_PAT` (a GitHub personal access token with `repo`
+scope) to `.env` to enable the guide's commit-inspection tools.
 
 ### Dogfooding while working on the SDK
 

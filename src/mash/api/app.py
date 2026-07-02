@@ -52,6 +52,7 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
         eval_service: EvalService | None = None
         if database_url:
             eval_store = PostgresEvalStore(database_url)
+            await eval_store.open()
             eval_service = EvalService(eval_store)
             masher_spec = pool.get_registered_agent_spec(MASHER_AGENT_ID)
             if masher_spec is not None and hasattr(masher_spec, "runtime_context"):

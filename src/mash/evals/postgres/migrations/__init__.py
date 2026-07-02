@@ -14,12 +14,12 @@ async def run_migrations(pool: Any) -> None:
         async with conn.transaction():
             async with conn.cursor() as cursor:
                 await cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS _mash_migrations (
+                    CREATE TABLE IF NOT EXISTS _mash_eval_migrations (
                         name       TEXT PRIMARY KEY,
                         applied_at DOUBLE PRECISION NOT NULL
                     )
                 """)
-                await cursor.execute("SELECT name FROM _mash_migrations")
+                await cursor.execute("SELECT name FROM _mash_eval_migrations")
                 applied = {row["name"] for row in await cursor.fetchall()}
 
     for migration_file in sorted(_MIGRATION_DIR.glob("*.sql")):
@@ -30,6 +30,6 @@ async def run_migrations(pool: Any) -> None:
                 async with conn.cursor() as cursor:
                     await cursor.execute(migration_file.read_text())
                     await cursor.execute(
-                        "INSERT INTO _mash_migrations (name, applied_at) VALUES (%s, %s)",
+                        "INSERT INTO _mash_eval_migrations (name, applied_at) VALUES (%s, %s)",
                         (migration_file.name, time.time()),
                     )

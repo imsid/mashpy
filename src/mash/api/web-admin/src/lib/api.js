@@ -123,4 +123,29 @@ export const api = {
 
   // --- Feedback ---
   listFeedback: (params) => request('/feedback', { params }),
+
+  // --- Evals ---
+  listEvals: (params) => request('/evals', { params }),
+  getEval: (evalId) => request(`/evals/${encodeURIComponent(evalId)}`),
+  deleteEval: (evalId) =>
+    request(`/evals/${encodeURIComponent(evalId)}`, { method: 'DELETE' }),
+  updateRubric: (evalId, body) =>
+    request(`/evals/${encodeURIComponent(evalId)}/rubric`, { method: 'PUT', body }),
+  listExperiments: (evalId, params) =>
+    request(`/evals/${encodeURIComponent(evalId)}/experiments`, { params }),
+  getExperiment: (evalId, experimentId) =>
+    request(
+      `/evals/${encodeURIComponent(evalId)}/experiments/${encodeURIComponent(experimentId)}`,
+    ),
+  listRuns: (evalId, experimentId, params) =>
+    request(
+      `/evals/${encodeURIComponent(evalId)}/experiments/${encodeURIComponent(experimentId)}/runs`,
+      { params },
+    ),
+
+  // --- Workflow execution (for evals) ---
+  runWorkflow: (workflowId, body) =>
+    request(`/workflow/${encodeURIComponent(workflowId)}/run`, { method: 'POST', body }),
+  getWorkflowRun: (workflowId, runId) =>
+    request(`/workflow/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`),
 };
