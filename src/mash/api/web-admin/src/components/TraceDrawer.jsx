@@ -165,7 +165,7 @@ function MessageDetail({ message }) {
   return (
     <div className="group relative">
       <Markdown>{message.text}</Markdown>
-      <CopyTextButton text={message.text} />
+      <CopyButton value={message.text} className="absolute right-0 top-0 opacity-0 group-hover:opacity-100" />
     </div>
   );
 }
