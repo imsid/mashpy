@@ -579,7 +579,7 @@
                 "help": "Required shared Postgres database URL for Mash runtime, memory, and API tables.",
                 "positional": false,
                 "required": false,
-                "default": "postgresql://postgres:postgres@127.0.0.1:5432/mash_runtime",
+                "default": null,
                 "choices": null
               },
               {

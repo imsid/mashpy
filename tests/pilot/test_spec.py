@@ -17,7 +17,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 from mash.agents import MasherAgentSpec
 from mash.agents.masher import (
+    MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
+    MASHER_SCORE_EVALS_WORKFLOW_ID,
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
 )
 from mash.core.llm import LLMProvider
@@ -207,7 +209,9 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             workflow.workflow_id
                             for workflow in host.get_workflow_registry().list()
                         } == {
+                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_SCORE_EVALS_WORKFLOW_ID,
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             QUIZ_WORKFLOW_ID,
                         }
@@ -297,6 +301,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         assert "bash" in workflow_agent.agent.tools
                         assert sorted(masher.agent.tools.list_tools()) == [
                             "Skill",
+                            "run_gen_synthetic_evals_workflow",
                             "run_online_eval_curation_workflow",
                             "run_trace_digest_workflow",
                         ]

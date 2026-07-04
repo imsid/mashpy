@@ -4,7 +4,7 @@ import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
-import { Button, Field, Select, TextArea } from '../components/Form.jsx';
+import { Button, Field, Select, TextArea, TextInput } from '../components/Form.jsx';
 import { Table } from '../components/Table.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
@@ -21,6 +21,7 @@ function statusTone(status) {
 function GenerateDrawer({ open, onClose, hosts, onDone }) {
   const [hostId, setHostId] = useState('');
   const [guidance, setGuidance] = useState('');
+  const [rowCount, setRowCount] = useState('20');
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
 
@@ -43,10 +44,19 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
+    const parsedRowCount = parseInt(rowCount, 10);
+    if (!Number.isInteger(parsedRowCount) || parsedRowCount < 1 || parsedRowCount > 100) {
+      setError('Rows must be a whole number between 1 and 100.');
+      return;
+    }
     setJob(null);
     try {
       const run = await api.runWorkflow('gen-synthetic-evals', {
-        input: { host_id: resolvedHost, user_guidance: guidance.trim() },
+        input: {
+          host_id: resolvedHost,
+          user_guidance: guidance.trim(),
+          row_count: parsedRowCount,
+        },
       });
       setJob({ runId: run.run_id, status: run.status });
     } catch (err) {
@@ -99,6 +109,15 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
                 </option>
               ))}
             </Select>
+          </Field>
+          <Field label="Rows" hint="Number of dataset rows to generate (1–100).">
+            <TextInput
+              type="number"
+              min={1}
+              max={100}
+              value={rowCount}
+              onChange={(e) => setRowCount(e.target.value)}
+            />
           </Field>
           <Field label="Guidance" hint="Describe what kinds of scenarios to generate.">
             <TextArea

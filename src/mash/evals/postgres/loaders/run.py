@@ -33,6 +33,14 @@ def _parse_scores(raw: Any) -> dict[str, CriterionScore]:
     }
 
 
+def _parse_metrics(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return dict(raw)
+
+
 def row_to_run(row: dict[str, Any]) -> ExperimentRun:
     weighted_score = row.get("weighted_score")
     return ExperimentRun(
@@ -44,6 +52,9 @@ def row_to_run(row: dict[str, Any]) -> ExperimentRun:
         weighted_score=float(weighted_score) if weighted_score is not None else None,
         scores=_parse_scores(row.get("scores")),
         created_at=_parse_dt(row["created_at"]),
+        session_id=str(row["session_id"]) if row.get("session_id") is not None else None,
+        error=str(row["error"]) if row.get("error") is not None else None,
+        metrics=_parse_metrics(row.get("metrics")),
     )
 
 
@@ -63,12 +74,15 @@ async def upsert_run(pool: Any, run: ExperimentRun) -> ExperimentRun:
                 """
                 INSERT INTO eval_experiment_run
                     (run_id, experiment_id, row_id, input, actual_output,
-                     weighted_score, scores)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                     weighted_score, scores, session_id, error, metrics)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb)
                 ON CONFLICT (run_id) DO UPDATE SET
                     actual_output  = EXCLUDED.actual_output,
                     weighted_score = EXCLUDED.weighted_score,
-                    scores         = EXCLUDED.scores
+                    scores         = EXCLUDED.scores,
+                    session_id     = EXCLUDED.session_id,
+                    error          = EXCLUDED.error,
+                    metrics        = EXCLUDED.metrics
                 RETURNING *
                 """,
                 (
@@ -79,6 +93,9 @@ async def upsert_run(pool: Any, run: ExperimentRun) -> ExperimentRun:
                     run.actual_output,
                     run.weighted_score,
                     json.dumps(scores_raw),
+                    run.session_id,
+                    run.error,
+                    json.dumps(run.metrics) if run.metrics is not None else None,
                 ),
             )
             return row_to_run(await cursor.fetchone())

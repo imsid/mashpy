@@ -16,6 +16,7 @@ from mash.runtime.requests import append_runtime_event
 from mash.runtime.structured_output import normalize_structured_output_schema
 
 from .spec import WorkflowSpec, WorkflowTaskMessageSpec
+from .strategy import WorkflowExecutionContext, WorkflowStrategy
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import AgentPool
@@ -108,6 +109,9 @@ def require_runner(runner_id: str) -> "AgentPool":
 
 def register_workflow(dbos_class: Any) -> None:
     if _STATE.registered_workflow is not None:
+        # Generic workflow already registered; still give strategies a chance to
+        # register (idempotent) in case a pool's workflows appeared afterward.
+        _register_strategies(dbos_class)
         return
     _, queue_class, _, _, _ = _load_dbos_api()
     _STATE.queue = queue_class(_QUEUE_NAME, concurrency=8)
@@ -128,6 +132,22 @@ def register_workflow(dbos_class: Any) -> None:
         )
 
     _STATE.registered_workflow = dbos_class.workflow(name=_WORKFLOW_NAME)(_workflow)
+    _register_strategies(dbos_class)
+
+
+def _register_strategies(dbos_class: Any) -> None:
+    """Let each registered workflow's strategy register its DBOS objects.
+
+    Runs before ``DBOS.launch()`` (register_workflow is called from
+    ``ensure_dbos_ready`` prior to launch). Driven by the strategies the pools'
+    ``WorkflowSpec``s already carry, so this module never imports any concrete
+    strategy. Strategy ``register`` implementations must be idempotent.
+    """
+    for pool in list(_STATE.runner_registry.values()):
+        for workflow in pool.get_workflow_registry().list():
+            strategy = workflow.strategy
+            if strategy is not None:
+                strategy.register(dbos_class)
 
 
 async def start_workflow_run(
@@ -193,57 +213,79 @@ async def execute_registered_workflow(
     workflow_input: dict[str, Any] | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    dbos_class, _, _, _, _ = _load_dbos_api()
     pool = require_runner(runner_id)
     workflow = pool.get_workflow_registry().get(workflow_id)
-    task_requests: dict[str, str] = {}
-    task_states: dict[str, dict[str, Any]] = {}
-    normalized_workflow_input = _normalize_workflow_input(workflow_input)
+    ctx = WorkflowExecutionContext(
+        runner_id=runner_id,
+        workflow=workflow,
+        run_id=run_id,
+        workflow_input=_normalize_workflow_input(workflow_input),
+        session_id=session_id,
+    )
+    strategy = workflow.strategy or _SEQUENTIAL_STRATEGY
+    return await strategy.run(ctx)
 
-    for task in workflow.tasks:
-        previous_state = await load_previous_task_state(
-            runner_id=runner_id,
-            workflow_id=workflow.workflow_id,
-            task_id=task.task_id,
-            current_run_id=run_id,
-        )
-        # Starting a task request through the normal in-process client would
-        # enqueue a child DBOS workflow from inside this host workflow. DBOS can
-        # reject that, so workflow tasks enter the request workflow body inline.
-        request_id = await _post_task_request(
-            runner_id,
-            workflow.workflow_id,
-            run_id,
-            task.task_id,
-            task.agent_id,
-            normalized_workflow_input,
-            previous_state,
-            workflow.task_message,
-            task.structured_output,
-            session_id=session_id,
-        )
-        payload = await dbos_class.run_step_async(
-            {"name": f"{task.task_id}.request.await"},
-            _collect_terminal_payload,
-            runner_id,
-            task.agent_id,
-            request_id,
-        )
-        next_state = await dbos_class.run_step_async(
-            {"name": f"{task.task_id}.state.extract"},
-            _extract_task_state,
-            payload,
-        )
-        task_requests[task.task_id] = request_id
-        task_states[task.task_id] = next_state
 
-    return {
-        "workflow_id": workflow.workflow_id,
-        "run_id": run_id,
-        "completed_at": time.time(),
-        "task_requests": task_requests,
-        "task_states": task_states,
-    }
+class SequentialTaskStrategy(WorkflowStrategy):
+    """Default strategy: run the workflow's ordered tasks one after another."""
+
+    async def run(self, ctx: WorkflowExecutionContext) -> dict[str, Any]:
+        dbos_class, _, _, _, _ = _load_dbos_api()
+        workflow = ctx.workflow
+        runner_id = ctx.runner_id
+        run_id = ctx.run_id
+        session_id = ctx.session_id
+        normalized_workflow_input = ctx.workflow_input
+        task_requests: dict[str, str] = {}
+        task_states: dict[str, dict[str, Any]] = {}
+
+        for task in workflow.tasks:
+            previous_state = await load_previous_task_state(
+                runner_id=runner_id,
+                workflow_id=workflow.workflow_id,
+                task_id=task.task_id,
+                current_run_id=run_id,
+            )
+            # Starting a task request through the normal in-process client would
+            # enqueue a child DBOS workflow from inside this host workflow. DBOS can
+            # reject that, so workflow tasks enter the request workflow body inline.
+            request_id = await _post_task_request(
+                runner_id,
+                workflow.workflow_id,
+                run_id,
+                task.task_id,
+                task.agent_id,
+                normalized_workflow_input,
+                previous_state,
+                workflow.task_message,
+                task.structured_output,
+                session_id=session_id,
+            )
+            payload = await dbos_class.run_step_async(
+                {"name": f"{task.task_id}.request.await"},
+                _collect_terminal_payload,
+                runner_id,
+                task.agent_id,
+                request_id,
+            )
+            next_state = await dbos_class.run_step_async(
+                {"name": f"{task.task_id}.state.extract"},
+                _extract_task_state,
+                payload,
+            )
+            task_requests[task.task_id] = request_id
+            task_states[task.task_id] = next_state
+
+        return {
+            "workflow_id": workflow.workflow_id,
+            "run_id": run_id,
+            "completed_at": time.time(),
+            "task_requests": task_requests,
+            "task_states": task_states,
+        }
+
+
+_SEQUENTIAL_STRATEGY = SequentialTaskStrategy()
 
 
 async def load_previous_task_state(
@@ -330,6 +372,51 @@ async def _post_task_request(
     )
 
 
+async def post_inline_agent_request(
+    runner_id: str,
+    *,
+    agent_id: str,
+    message: str,
+    structured_output: dict[str, Any] | None,
+    workflow_id: str,
+    workflow_run_id: str,
+    task_id: str,
+    session_id: str,
+    host_snapshot: dict[str, Any] | None = None,
+) -> str:
+    """Start one agent request inline from within a workflow and return its id.
+
+    Reused by custom strategies (e.g. eval scoring) to run a host request or a
+    judge request as a child of the orchestrating workflow. Pair with
+    ``collect_terminal_payload`` inside a DBOS step to await the result.
+    """
+    pool = require_runner(runner_id)
+    runtime = _resolve_inline_runtime(pool, agent_id)
+    normalized = (
+        normalize_structured_output_schema(structured_output)
+        if isinstance(structured_output, dict)
+        else _WORKFLOW_TASK_STRUCTURED_OUTPUT
+    )
+    if runtime is not None:
+        return await _execute_inline_task_request(
+            runtime,
+            agent_id=agent_id,
+            message=message,
+            session_id=session_id,
+            structured_output=normalized,
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
+            task_id=task_id,
+            host_snapshot=host_snapshot,
+        )
+    client = pool.get_client(agent_id)
+    return await client.post_request(
+        message,
+        session_id=session_id,
+        structured_output=normalized,
+    )
+
+
 def _resolve_inline_runtime(pool: "AgentPool", agent_id: str) -> Any | None:
     get_agent = getattr(pool, "get_agent", None)
     if not callable(get_agent):
@@ -350,6 +437,7 @@ async def _execute_inline_task_request(
     workflow_id: str,
     workflow_run_id: str,
     task_id: str,
+    host_snapshot: dict[str, Any] | None = None,
 ) -> str:
     request_id = str(
         uuid.uuid5(
@@ -357,12 +445,16 @@ async def _execute_inline_task_request(
             f"mash.workflow.task:{agent_id}:{workflow_run_id}:{task_id}",
         )
     )
-    request_metadata = {
+    request_metadata: dict[str, Any] = {
         "structured_output_request": dict(structured_output),
         "workflow_id": workflow_id,
         "workflow_run_id": workflow_run_id,
         "task_id": task_id,
     }
+    if host_snapshot is not None:
+        # Mirrors runtime.requests.submit_request: run the request against the
+        # given host composition (its subagents), not just the bare agent.
+        request_metadata["host"] = dict(host_snapshot)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -417,6 +509,11 @@ async def _collect_terminal_payload(
                 raise RuntimeError(str(message or "workflow task failed"))
             raise RuntimeError("workflow task failed")
     raise RuntimeError("workflow task stream ended without a terminal event")
+
+
+# Public alias so strategies await request results through the same terminal
+# collector the sequential engine uses.
+collect_terminal_payload = _collect_terminal_payload
 
 
 def _extract_task_state(payload: dict[str, Any]) -> dict[str, Any]:
@@ -482,13 +579,21 @@ class WorkflowDeduplicatedError(RuntimeError):
         super().__init__("workflow run was deduplicated")
 
 
+# Public accessor so strategies in other packages can reach the DBOS API through
+# the same centralized loader (error handling, capability check) the engine uses.
+load_dbos_api = _load_dbos_api
+
+
 __all__ = [
     "WorkflowDeduplicatedError",
+    "collect_terminal_payload",
     "execute_registered_workflow",
     "get_workflow_status",
+    "load_dbos_api",
     "load_previous_task_state",
     "make_runner_id",
     "make_run_id",
+    "post_inline_agent_request",
     "register_runner",
     "register_workflow",
     "require_runner",

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
@@ -149,6 +150,50 @@ class AgentPool:
             "primary": host.primary,
             "subagents": list(host.subagents),
         }
+
+    def snapshot_host_agent_specs(self, host_id: str) -> dict[str, dict[str, Any]]:
+        """Capture the current AgentSpec of every agent in a host.
+
+        Used by eval scoring to record on the experiment what was actually
+        evaluated. Best-effort: an agent whose spec can't be built (e.g. missing
+        provider credentials) contributes an empty entry rather than failing the
+        whole snapshot.
+        """
+        host = self.get_host(host_id)
+        agent_ids = [host.primary, *host.subagents]
+        return {agent_id: self._snapshot_agent_spec(agent_id) for agent_id in agent_ids}
+
+    def _snapshot_agent_spec(self, agent_id: str) -> dict[str, Any]:
+        spec = self.get_registered_agent_spec(agent_id)
+        if spec is None:
+            return {}
+        snapshot: dict[str, Any] = {"agent_id": agent_id}
+        try:
+            config = spec.build_agent_config()
+            system_prompt = config.system_prompt
+            snapshot["system_prompt"] = (
+                system_prompt
+                if isinstance(system_prompt, str)
+                else json.dumps(system_prompt, ensure_ascii=True, sort_keys=True)
+            )
+            snapshot["max_steps"] = config.max_steps
+            snapshot["max_tokens"] = config.max_tokens
+            snapshot["temperature"] = config.temperature
+        except Exception:  # pragma: no cover - defensive
+            pass
+        try:
+            snapshot["tools"] = sorted(spec.build_tools().list_tools())
+        except Exception:  # pragma: no cover - defensive
+            pass
+        try:
+            snapshot["skills"] = sorted(s.name for s in spec.build_skills().list_skills())
+        except Exception:  # pragma: no cover - defensive
+            pass
+        try:
+            snapshot["model"] = getattr(spec.build_llm(), "model", None)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return snapshot
 
     async def submit_host_request(
         self,
@@ -336,6 +381,10 @@ class AgentPool:
         if agent is None:
             raise ValueError(f"agent '{agent_id}' is not registered")
         return agent
+
+    def get_runtime_store(self) -> RuntimeStore | None:
+        """Shared runtime event store, or None if observability is disabled."""
+        return self._shared_runtime_store
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry

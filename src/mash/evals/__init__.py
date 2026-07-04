@@ -1,5 +1,4 @@
 from .models import (
-    AgentSpecDelta,
     CriterionScore,
     DatasetRow,
     Eval,
@@ -9,13 +8,19 @@ from .models import (
     ScoringRubric,
 )
 from .postgres import PostgresEvalStore
-from .service import EvalNotFoundError, EvalService, ExperimentNotFoundError
+from .service import (
+    EvalLockedError,
+    EvalNotFoundError,
+    EvalService,
+    ExperimentNotFoundError,
+    diff_agent_specs,
+)
 
 __all__ = [
-    "AgentSpecDelta",
     "CriterionScore",
     "DatasetRow",
     "Eval",
+    "EvalLockedError",
     "EvalNotFoundError",
     "EvalService",
     "Experiment",
@@ -24,4 +29,5 @@ __all__ = [
     "PostgresEvalStore",
     "ScoringCriterion",
     "ScoringRubric",
+    "diff_agent_specs",
 ]

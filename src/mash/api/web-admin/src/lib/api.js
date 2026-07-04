@@ -92,6 +92,8 @@ export const api = {
   // --- Hosts ---
   listHosts: () => request('/hosts'),
   getHost: (hostId) => request(`/hosts/${encodeURIComponent(hostId)}`),
+  getHostSnapshot: (hostId) =>
+    request(`/hosts/${encodeURIComponent(hostId)}/snapshot`),
   defineHost: (hostId, body) =>
     request(`/hosts/${encodeURIComponent(hostId)}`, { method: 'PUT', body }),
   submitHostRequest: (hostId, body) =>
@@ -137,6 +139,10 @@ export const api = {
     request(
       `/evals/${encodeURIComponent(evalId)}/experiments/${encodeURIComponent(experimentId)}`,
     ),
+  compareExperiments: (evalId, baselineId, controlId) =>
+    request(`/evals/${encodeURIComponent(evalId)}/experiments/compare`, {
+      params: { baseline: baselineId, control: controlId },
+    }),
   listRuns: (evalId, experimentId, params) =>
     request(
       `/evals/${encodeURIComponent(evalId)}/experiments/${encodeURIComponent(experimentId)}/runs`,

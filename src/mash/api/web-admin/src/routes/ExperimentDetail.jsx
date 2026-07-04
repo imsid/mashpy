@@ -1,8 +1,12 @@
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Table } from '../components/Table.jsx';
+import { Drawer } from '../components/Drawer.jsx';
+import { Markdown } from '../components/Markdown.jsx';
+import { CopyId } from '../components/CopyId.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { formatIso } from '../lib/format.js';
@@ -82,40 +86,185 @@ function AggregateCard({ aggregate }) {
   );
 }
 
-function DeltaSection({ delta }) {
-  if (!delta?.length) return null;
+function Stat({ label, value }) {
+  return (
+    <div>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="mt-0.5 tabular-nums text-sm font-medium text-slate-700">{value}</div>
+    </div>
+  );
+}
+
+function OperationalCard({ operational }) {
+  const hasMetrics = operational?.row_count > 0;
+  return (
+    <Card className="mb-5 p-4">
+      <div className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">
+        Operational
+      </div>
+      {hasMetrics ? (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          <Stat
+            label="Mean latency"
+            value={
+              operational.mean_latency_ms != null
+                ? `${(operational.mean_latency_ms / 1000).toFixed(1)}s`
+                : '—'
+            }
+          />
+          <Stat label="Mean steps / row" value={operational.mean_steps ?? '—'} />
+          <Stat
+            label="Tokens (in / out)"
+            value={`${(operational.total_tokens?.input ?? 0).toLocaleString()} / ${(operational.total_tokens?.output ?? 0).toLocaleString()}`}
+          />
+          <Stat label="LLM calls" value={operational.total_llm_calls ?? 0} />
+          <Stat label="Tool calls" value={operational.total_tool_calls ?? 0} />
+          <Stat label="Subagent steps" value={operational.total_subagent_steps ?? 0} />
+        </div>
+      ) : (
+        <p className="text-sm text-slate-400">
+          No operational metrics on this experiment's runs.
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function SnapshotSection({ experiment }) {
+  const composition = experiment?.host_composition || {};
+  const snapshot = experiment?.agent_spec_snapshot || {};
+  const agents = [composition.primary, ...(composition.subagents || [])].filter(Boolean);
+  const agentIds = agents.length ? agents : Object.keys(snapshot);
+  if (!agentIds.length) return null;
   return (
     <Card className="mb-5 p-4">
       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
-        Agent changes vs baseline
+        Host snapshot at run start
       </div>
       <div className="space-y-2">
-        {delta.map((d) => (
-          <div key={d.agent_id} className="flex flex-wrap items-start gap-2 text-sm">
-            <Chip tone="indigo">{d.agent_id}</Chip>
-            {d.system_prompt_changed ? <Chip tone="amber">prompt changed</Chip> : null}
-            {d.llm_model_changed ? <Chip tone="amber">model changed</Chip> : null}
-            {d.tools_added?.map((t) => (
-              <Chip key={`+${t}`} tone="emerald">+{t}</Chip>
-            ))}
-            {d.tools_removed?.map((t) => (
-              <Chip key={`-${t}`} tone="rose">-{t}</Chip>
-            ))}
-            {d.mcp_servers_added?.map((s) => (
-              <Chip key={`mcp+${s}`} tone="emerald">+mcp:{s}</Chip>
-            ))}
-            {d.mcp_servers_removed?.map((s) => (
-              <Chip key={`mcp-${s}`} tone="rose">-mcp:{s}</Chip>
-            ))}
-          </div>
-        ))}
+        {agentIds.map((agentId) => {
+          const spec = snapshot[agentId] || {};
+          return (
+            <div key={agentId} className="flex flex-wrap items-center gap-2 text-sm">
+              <Chip tone="indigo">{agentId}</Chip>
+              {agentId === composition.primary ? <Chip>primary</Chip> : null}
+              {spec.model ? <Chip tone="slate">{spec.model}</Chip> : null}
+              {spec.tools?.length ? (
+                <span className="text-xs text-slate-400">
+                  {spec.tools.length} tool{spec.tools.length !== 1 ? 's' : ''}
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </Card>
   );
 }
 
+function Section({ title, children }) {
+  return (
+    <div>
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function RunDrawer({ run, onClose }) {
+  return (
+    <Drawer open={!!run} onClose={onClose} title="Run result" subtitle={run?.row_id}>
+      {run ? (
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center gap-3">
+            {run.weighted_score != null ? (
+              <ScoreBar score={run.weighted_score} />
+            ) : (
+              <Chip tone="rose">not scored</Chip>
+            )}
+            {run.session_id ? (
+              <Link
+                to={`/logs?tab=sessions&session=${encodeURIComponent(run.session_id)}`}
+                className="text-xs text-indigo-600 underline"
+              >
+                View session log ↗
+              </Link>
+            ) : null}
+          </div>
+
+          {run.scores && Object.keys(run.scores).length ? (
+            <Section title="Criteria">
+              <div className="space-y-2">
+                {Object.entries(run.scores).map(([name, cs]) => (
+                  <div key={name} className="rounded-md border border-slate-200 p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-slate-700">{name}</span>
+                      <span className="tabular-nums text-sm text-slate-600">{cs.score}</span>
+                    </div>
+                    {cs.rationale ? (
+                      <p className="mt-1 text-xs leading-relaxed text-slate-500">{cs.rationale}</p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </Section>
+          ) : null}
+
+          {run.metrics ? (
+            <Section title="Metrics">
+              <div className="grid grid-cols-2 gap-3 rounded-md border border-slate-200 p-3 sm:grid-cols-3">
+                <Stat
+                  label="Latency"
+                  value={
+                    run.metrics.latency_ms != null
+                      ? `${(run.metrics.latency_ms / 1000).toFixed(1)}s`
+                      : '—'
+                  }
+                />
+                <Stat label="Steps" value={run.metrics.steps ?? 0} />
+                <Stat label="LLM calls" value={run.metrics.llm_calls ?? 0} />
+                <Stat label="Tool calls" value={run.metrics.tool_calls ?? 0} />
+                <Stat
+                  label="Tokens (in / out)"
+                  value={`${(run.metrics.tokens?.input ?? 0).toLocaleString()} / ${(run.metrics.tokens?.output ?? 0).toLocaleString()}`}
+                />
+                <Stat label="Subagent steps" value={run.metrics.num_subagent_steps ?? 0} />
+              </div>
+            </Section>
+          ) : null}
+
+          <Section title="Input">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <Markdown>{run.input}</Markdown>
+            </div>
+          </Section>
+
+          <Section title="Output">
+            {run.actual_output ? (
+              <div className="rounded-md border border-slate-200 p-3">
+                <Markdown>{run.actual_output}</Markdown>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">No output produced.</p>
+            )}
+          </Section>
+
+          {run.session_id ? (
+            <Section title="Session">
+              <CopyId value={run.session_id} />
+            </Section>
+          ) : null}
+        </div>
+      ) : null}
+    </Drawer>
+  );
+}
+
 function RunsTable({ evalId, experimentId }) {
   const state = useApi(() => api.listRuns(evalId, experimentId), [evalId, experimentId]);
+  const [selected, setSelected] = useState(null);
   const runs = state.data?.runs || [];
 
   if (state.loading && !state.data) return null;
@@ -174,7 +323,18 @@ function RunsTable({ evalId, experimentId }) {
     })),
   ];
 
-  return <Table columns={columns} rows={runs} getRowKey={(r) => r.run_id} />;
+  return (
+    <>
+      <Table
+        columns={columns}
+        rows={runs}
+        getRowKey={(r) => r.run_id}
+        onRowClick={setSelected}
+        activeKey={selected?.run_id}
+      />
+      <RunDrawer run={selected} onClose={() => setSelected(null)} />
+    </>
+  );
 }
 
 export default function ExperimentDetail() {
@@ -223,8 +383,9 @@ export default function ExperimentDetail() {
               }
             />
 
-            <DeltaSection delta={experiment?.agent_spec_delta} />
+            <SnapshotSection experiment={experiment} />
             <AggregateCard aggregate={aggregate} />
+            <OperationalCard operational={aggregate?.operational} />
 
             <div className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">
               Run results

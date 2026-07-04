@@ -128,6 +128,17 @@ class PostgresRuntimeStore(RuntimeStore):
             self._pool, request_id, after_seq=after_seq
         )
 
+    async def list_session_events(
+        self,
+        session_id: str,
+        *,
+        event_types: list[str] | None = None,
+    ) -> list[RuntimeEvent]:
+        await self.open()
+        return await loaders.list_session_events(
+            self._pool, session_id, event_types=event_types
+        )
+
     async def list_events(
         self,
         app_id: str,

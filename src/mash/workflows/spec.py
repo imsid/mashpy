@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mash.runtime.spec import AgentSpec
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .strategy import WorkflowStrategy
 
 
 @dataclass(frozen=True, init=False)
@@ -67,9 +70,17 @@ class WorkflowTaskMessageSpec:
 
 @dataclass(frozen=True)
 class WorkflowSpec:
-    """One workflow composed of ordered tasks."""
+    """One workflow composed of ordered tasks.
+
+    ``strategy`` selects how the workflow executes. When ``None`` (the default)
+    the engine runs the ordered ``tasks`` sequentially. A workflow that needs a
+    different execution shape (e.g. durable fan-out over its inputs) supplies a
+    ``WorkflowStrategy`` that owns both its DBOS registration and its run body,
+    keeping the generic engine agnostic to any one workflow.
+    """
 
     workflow_id: str
     tasks: list[TaskSpec]
     metadata: dict[str, Any] = field(default_factory=dict)
     task_message: WorkflowTaskMessageSpec | None = None
+    strategy: "WorkflowStrategy | None" = None

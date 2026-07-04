@@ -68,6 +68,30 @@ def build_host_router() -> APIRouter:
             ) from exc
         return success(described)
 
+    @router.get("/hosts/{host_id}/snapshot")
+    async def get_host_snapshot(request: Request, host_id: str) -> dict[str, Any]:
+        """Live host composition and per-agent spec state.
+
+        This is exactly what an eval experiment records at run start, so the
+        admin UI can show what is about to be evaluated before running.
+        """
+        state = state_from_request(request)
+        resolved_host_id = _resolve_host_id(host_id)
+        try:
+            host = state.pool.get_host(resolved_host_id)
+        except ValueError as exc:
+            raise APIError(
+                code="HOST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(
+            {
+                "host_composition": state.pool.snapshot_for(host),
+                "agent_spec_snapshot": state.pool.snapshot_host_agent_specs(
+                    resolved_host_id
+                ),
+            }
+        )
+
     @router.post("/hosts/{host_id}/request")
     async def submit_host_request(
         request: Request, host_id: str, body: HostSubmitRequest

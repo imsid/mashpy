@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,12 +14,6 @@ from ...models import Eval
 
 
 def row_to_eval(row: dict[str, Any]) -> Eval:
-    host_composition = row["host_composition"]
-    if isinstance(host_composition, str):
-        host_composition = json.loads(host_composition)
-    agent_spec_baseline = row["agent_spec_baseline"]
-    if isinstance(agent_spec_baseline, str):
-        agent_spec_baseline = json.loads(agent_spec_baseline)
     created_at = row["created_at"]
     if not isinstance(created_at, datetime):
         created_at = datetime.fromisoformat(str(created_at))
@@ -28,8 +21,6 @@ def row_to_eval(row: dict[str, Any]) -> Eval:
         eval_id=str(row["eval_id"]),
         host_id=str(row["host_id"]),
         user_guidance=str(row.get("user_guidance") or ""),
-        host_composition=host_composition,
-        agent_spec_baseline=agent_spec_baseline,
         dataset_id=str(row["dataset_id"]),
         rubric_id=str(row["rubric_id"]),
         created_at=created_at.replace(tzinfo=timezone.utc)
@@ -49,8 +40,6 @@ async def insert_eval(
     eval_id: str,
     host_id: str,
     user_guidance: str,
-    host_composition: dict[str, Any],
-    agent_spec_baseline: dict[str, Any],
     dataset_id: str,
     rubric_id: str,
 ) -> Eval:
@@ -59,20 +48,11 @@ async def insert_eval(
             await cursor.execute(
                 """
                 INSERT INTO eval
-                    (eval_id, host_id, user_guidance, host_composition,
-                     agent_spec_baseline, dataset_id, rubric_id)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                    (eval_id, host_id, user_guidance, dataset_id, rubric_id)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING *
                 """,
-                (
-                    eval_id,
-                    host_id,
-                    user_guidance,
-                    json.dumps(host_composition),
-                    json.dumps(agent_spec_baseline),
-                    dataset_id,
-                    rubric_id,
-                ),
+                (eval_id, host_id, user_guidance, dataset_id, rubric_id),
             )
             return row_to_eval(await cursor.fetchone())
 

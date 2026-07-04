@@ -21,7 +21,9 @@ from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 from mash.workflows import TaskSpec, WorkflowSpec
 
+from .score_runner import ScoreEvalsStrategy
 from .tool import (
+    GenSyntheticEvalsWorkflowTool,
     MasherRuntimeContext,
     OnlineEvalCurationWorkflowTool,
     TraceDigestWorkflowTool,
@@ -131,7 +133,6 @@ Workflow skill routing:
 - workflow_id=masher-trace-digest, task_id=digest-traces -> skill=trace-digest-workflow
 - workflow_id=masher-online-eval-curation, task_id=curate-online-evals -> skill=online-eval-curation
 - workflow_id=gen-synthetic-evals, task_id=generate-evals -> skill=gen-synthetic-evals
-- workflow_id=score-evals, task_id=score-evals -> skill=score-evals
 
 Routing rules:
 - Match both workflow_id and task_id exactly.
@@ -181,6 +182,14 @@ class MasherAgentSpec(AgentSpec):
                 context=self.runtime_context,
             )
         )
+        tools.register(
+            GenSyntheticEvalsWorkflowTool(
+                context=self.runtime_context,
+            )
+        )
+        # score-evals no longer routes through a Masher persistence tool; the
+        # ScoreEvalsStrategy orchestrates loading, host execution, judging, and
+        # persistence directly (see score_runner.ScoreEvalsStrategy).
         return tools
 
     def build_skills(self) -> SkillRegistry:
@@ -301,6 +310,8 @@ def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSp
         ),
         WorkflowSpec(
             workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
+            # The task entry keeps the spec valid and pins the judge agent; the
+            # strategy (not the sequential task loop) drives execution.
             tasks=[
                 TaskSpec(
                     task_id=MASHER_SCORE_EVALS_TASK_ID,
@@ -308,6 +319,7 @@ def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSp
                     structured_output=MASHER_SCORE_EVALS_STRUCTURED_OUTPUT,
                 )
             ],
+            strategy=ScoreEvalsStrategy(context=masher_spec.runtime_context),
         ),
     ]
 

@@ -13,6 +13,7 @@ import Feedback from './routes/Feedback.jsx';
 import Evals from './routes/Evals.jsx';
 import EvalDetail from './routes/EvalDetail.jsx';
 import ExperimentDetail from './routes/ExperimentDetail.jsx';
+import ExperimentCompare from './routes/ExperimentCompare.jsx';
 import Reference from './routes/Reference.jsx';
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="feedback" element={<Feedback />} />
         <Route path="evals" element={<Evals />} />
         <Route path="evals/:evalId" element={<EvalDetail />} />
+        <Route path="evals/:evalId/compare" element={<ExperimentCompare />} />
         <Route path="evals/:evalId/experiments/:experimentId" element={<ExperimentDetail />} />
         <Route path="reference" element={<Reference />} />
         <Route path="*" element={<Navigate to="/" replace />} />

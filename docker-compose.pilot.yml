@@ -16,7 +16,10 @@
 #   pilot compose guide --primary pilot --subagents admin,api,cli,mcp,runtime,workflow
 #   pilot repl --host guide
 #
-# When catalog or SDK changes need to be picked up, rebuild:
+# The local repo is bind-mounted into the container and installed editable, so
+# code changes are picked up with a restart (no rebuild):
+#   docker compose -f docker-compose.pilot.yml restart pilot
+# Rebuild only when dependencies change:
 #   docker compose -f docker-compose.pilot.yml build pilot
 
 services:
@@ -48,6 +51,9 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
+      # Live-mount the local repo over the built tree so the editable install
+      # imports live source. Edit locally, then `restart pilot` — no rebuild.
+      - .:/opt/mash
       - pilotdata:/var/lib/pilot
     depends_on:
       db:

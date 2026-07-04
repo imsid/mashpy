@@ -153,6 +153,20 @@ The admin UI is available at http://localhost:8000/admin.
 Optionally add `GITHUB_MCP_PAT` (a GitHub personal access token with `repo`
 scope) to `.env` to enable the guide's commit-inspection tools.
 
+The repo root is bind-mounted into the container and installed editable
+(`pip install -e .`), so the host imports your live working tree — no commit
+needed. After editing anything under `src/`, restart the host to reload it:
+
+```bash
+docker compose -f docker-compose.pilot.yml restart pilot
+```
+
+Rebuild only when dependencies change:
+
+```bash
+docker compose -f docker-compose.pilot.yml build pilot
+```
+
 ### Dogfooding while working on the SDK
 
 When you change something in `src/mash/`, run the pilot tests first to catch
@@ -162,9 +176,10 @@ regressions in a real application before the mash suite:
 uv run --extra dev pytest -q tests/pilot
 ```
 
-You can also start the pilot host and talk to it directly — it answers from
-your live working tree, so you get immediate feedback on whether the agents
-still behave correctly after your change.
+You can also start the pilot host and talk to it directly. Because the repo is
+mounted and installed editable, the host runs your live working tree — restart
+it (`docker compose -f docker-compose.pilot.yml restart pilot`) after a change
+to get immediate feedback on whether the agents still behave correctly.
 
 ### Adding an agent to the Pilot catalog
 

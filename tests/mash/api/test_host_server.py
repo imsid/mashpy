@@ -212,6 +212,25 @@ def test_host_routes_define_inspect_and_list() -> None:
             assert invalid.json()["error"]["code"] == "INVALID_HOST"
 
 
+def test_host_snapshot_route_returns_live_composition_and_specs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            response = client.get("/api/v1/hosts/assistant/snapshot")
+            assert response.status_code == 200
+            payload = response.json()["data"]
+            assert payload["host_composition"] == {
+                "host_id": "assistant",
+                "primary": "primary",
+                "subagents": ["research"],
+            }
+            assert set(payload["agent_spec_snapshot"]) == {"primary", "research"}
+
+            missing = client.get("/api/v1/hosts/unknown/snapshot")
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
+
+
 def test_workflow_list_host_filter() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

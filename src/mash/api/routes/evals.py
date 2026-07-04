@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from mash.evals.service import (
+    EvalLockedError,
     EvalNotFoundError,
     ExperimentNotFoundError,
     eval_to_dict,
@@ -81,15 +82,22 @@ def build_evals_router() -> APIRouter:
     ) -> dict[str, Any]:
         svc = get_eval_service(request)
         try:
-            detail = await svc.get_eval_detail(eval_id)
+            updated = await svc.update_rubric(eval_id, criteria=body.criteria)
         except EvalNotFoundError:
             raise APIError(
                 code="EVAL_NOT_FOUND",
                 message=f"eval '{eval_id}' not found",
                 status_code=404,
             )
-        rubric_id = detail["rubric"]["rubric_id"]
-        updated = await svc.update_rubric(rubric_id, criteria=body.criteria)
+        except EvalLockedError:
+            raise APIError(
+                code="EVAL_LOCKED",
+                message=(
+                    f"eval '{eval_id}' has experiments and can no longer change; "
+                    "generate a new eval to measure something different"
+                ),
+                status_code=409,
+            )
         return success({"rubric": rubric_to_dict(updated)})
 
     # ------------------------------------------------------------------
@@ -112,6 +120,26 @@ def build_evals_router() -> APIRouter:
             "experiments": [experiment_to_dict(e) for e in experiments],
             "total": len(experiments),
         })
+
+    @router.get("/evals/{eval_id}/experiments/compare")
+    async def compare_experiments(
+        request: Request,
+        eval_id: str,
+        baseline: str = Query(),
+        control: str = Query(),
+    ) -> dict[str, Any]:
+        svc = get_eval_service(request)
+        try:
+            comparison = await svc.compare_experiments(
+                eval_id, baseline_id=baseline, control_id=control
+            )
+        except ExperimentNotFoundError as exc:
+            raise APIError(
+                code="EXPERIMENT_NOT_FOUND",
+                message=f"experiment '{exc}' not found for eval '{eval_id}'",
+                status_code=404,
+            )
+        return success(comparison)
 
     @router.get("/evals/{eval_id}/experiments/{experiment_id}")
     async def get_experiment(
@@ -162,4 +190,7 @@ def _run_to_dict(r: Any) -> dict[str, Any]:
             for name, cs in r.scores.items()
         },
         "created_at": r.created_at.isoformat(),
+        "session_id": r.session_id,
+        "error": r.error,
+        "metrics": r.metrics,
     }

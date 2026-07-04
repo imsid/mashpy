@@ -40,30 +40,19 @@ class Eval:
     eval_id: str
     host_id: str
     user_guidance: str
-    host_composition: dict[str, Any]
-    agent_spec_baseline: dict[str, Any]
     dataset_id: str
     rubric_id: str
     created_at: datetime
 
 
 @dataclass(frozen=True)
-class AgentSpecDelta:
-    agent_id: str
-    system_prompt_changed: bool
-    tools_added: tuple[str, ...]
-    tools_removed: tuple[str, ...]
-    llm_model_changed: bool
-    mcp_servers_added: tuple[str, ...]
-    mcp_servers_removed: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class Experiment:
     experiment_id: str
     eval_id: str
+    # Live host composition and per-agent spec state captured at run start —
+    # a record of what was actually evaluated, not configuration.
+    host_composition: dict[str, Any]
     agent_spec_snapshot: dict[str, Any]
-    agent_spec_delta: tuple[AgentSpecDelta, ...]
     status: str
     created_at: datetime
     completed_at: datetime | None
@@ -85,3 +74,11 @@ class ExperimentRun:
     weighted_score: float | None
     scores: dict[str, CriterionScore]
     created_at: datetime
+    # Session the row was executed under on the host under test; links to Logs.
+    session_id: str | None = None
+    # Failure reason when the row could not be scored (host request errored,
+    # judge failed, etc.); None on a scored row.
+    error: str | None = None
+    # Operational metrics (tokens, steps, tool calls, latency, subagent
+    # breakdown) aggregated from the host session; see evals.metrics.RowMetrics.
+    metrics: dict[str, Any] | None = None

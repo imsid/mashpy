@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from ...models import AgentSpecDelta, Experiment
+from ...models import Experiment
 
 
 # ---------------------------------------------------------------------------
@@ -22,35 +22,19 @@ def _parse_dt(value: Any) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
-def _parse_delta(raw: Any) -> tuple[AgentSpecDelta, ...]:
+def _parse_json_object(raw: Any) -> dict[str, Any]:
     if isinstance(raw, str):
         raw = json.loads(raw)
-    if not raw:
-        return ()
-    return tuple(
-        AgentSpecDelta(
-            agent_id=str(d["agent_id"]),
-            system_prompt_changed=bool(d.get("system_prompt_changed", False)),
-            tools_added=tuple(d.get("tools_added") or []),
-            tools_removed=tuple(d.get("tools_removed") or []),
-            llm_model_changed=bool(d.get("llm_model_changed", False)),
-            mcp_servers_added=tuple(d.get("mcp_servers_added") or []),
-            mcp_servers_removed=tuple(d.get("mcp_servers_removed") or []),
-        )
-        for d in raw
-    )
+    return raw if isinstance(raw, dict) else {}
 
 
 def row_to_experiment(row: dict[str, Any]) -> Experiment:
-    snapshot = row.get("agent_spec_snapshot") or {}
-    if isinstance(snapshot, str):
-        snapshot = json.loads(snapshot)
     completed_at = row.get("completed_at")
     return Experiment(
         experiment_id=str(row["experiment_id"]),
         eval_id=str(row["eval_id"]),
-        agent_spec_snapshot=snapshot,
-        agent_spec_delta=_parse_delta(row.get("agent_spec_delta")),
+        host_composition=_parse_json_object(row.get("host_composition")),
+        agent_spec_snapshot=_parse_json_object(row.get("agent_spec_snapshot")),
         status=str(row["status"]),
         created_at=_parse_dt(row["created_at"]),
         completed_at=_parse_dt(completed_at) if completed_at is not None else None,
@@ -67,23 +51,23 @@ async def insert_experiment(
     *,
     experiment_id: str,
     eval_id: str,
+    host_composition: dict[str, Any],
     agent_spec_snapshot: dict[str, Any],
-    agent_spec_delta: list[dict[str, Any]],
 ) -> Experiment:
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
                 INSERT INTO eval_experiment
-                    (experiment_id, eval_id, agent_spec_snapshot, agent_spec_delta)
+                    (experiment_id, eval_id, host_composition, agent_spec_snapshot)
                 VALUES (%s, %s, %s::jsonb, %s::jsonb)
                 RETURNING *
                 """,
                 (
                     experiment_id,
                     eval_id,
+                    json.dumps(host_composition),
                     json.dumps(agent_spec_snapshot),
-                    json.dumps(agent_spec_delta),
                 ),
             )
             return row_to_experiment(await cursor.fetchone())
