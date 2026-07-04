@@ -230,23 +230,32 @@ class ScoreEvalsStrategy(WorkflowStrategy):
         )["experiment_id"]
 
         # 3) Fan out one durable child workflow per row over the row queue.
+        # The first row runs alone to warm the provider prompt cache: every row
+        # sends the same host-agent prompt prefix, and a provider cache entry
+        # only becomes readable after the request writing it starts responding,
+        # so a cold concurrent fan-out makes each in-flight row pay the full
+        # cache write for the shared prefix. Serializing row 0 turns that into
+        # one write plus cheap cache reads for the rest.
+        scored_rows: list[dict[str, Any]] = []
         handles = []
         for index, row in enumerate(rows):
             child_id = f"{run_id}:row:{index}"
             with set_workflow_id(child_id):
-                handles.append(
-                    await _STATE.queue.enqueue_async(
-                        _STATE.workflow,
-                        ctx.runner_id,
-                        run_id,
-                        host_id,
-                        host_snapshot,
-                        host.primary,
-                        row,
-                        rubric,
-                    )
+                handle = await _STATE.queue.enqueue_async(
+                    _STATE.workflow,
+                    ctx.runner_id,
+                    run_id,
+                    host_id,
+                    host_snapshot,
+                    host.primary,
+                    row,
+                    rubric,
                 )
-        scored_rows = [await handle.get_result() for handle in handles]
+            if index == 0:
+                scored_rows.append(await handle.get_result())
+            else:
+                handles.append(handle)
+        scored_rows.extend([await handle.get_result() for handle in handles])
 
         # 4) Persist runs and finalize the experiment (single memoized step).
         # Deterministic run_id keyed by (experiment, row) so a partial retry
