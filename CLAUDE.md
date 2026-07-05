@@ -499,6 +499,7 @@ on a specific subsystem:
 - [Skills](https://github.com/imsid/mashpy/blob/main/src/mash/skills/README.md)
 - [LLM providers](https://github.com/imsid/mashpy/blob/main/src/mash/core/llm/README.md)
 - [Workflows](https://github.com/imsid/mashpy/blob/main/src/mash/workflows/README.md)
+- [Evals](https://github.com/imsid/mashpy/blob/main/src/mash/evals/README.md)
 - [API server](https://github.com/imsid/mashpy/blob/main/src/mash/api/README.md)
 - [CLI](https://github.com/imsid/mashpy/blob/main/src/mash/cli/README.md)
 - [Memory](https://github.com/imsid/mashpy/blob/main/src/mash/memory/README.md)
