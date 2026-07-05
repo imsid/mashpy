@@ -1,6 +1,6 @@
 # General concepts
 
-An agentic platform is to augment a language model with tools, memory, and instructions to work through a task across multiple steps. Each component below plays a specific role in that system.
+An agentic platform is a system to augment a language model with tools, memory, and instructions to work through a task across multiple steps. Each component below plays a specific role in that system.
 
 ### Model
 
