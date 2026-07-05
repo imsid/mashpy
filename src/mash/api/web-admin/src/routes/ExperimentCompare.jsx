@@ -190,6 +190,8 @@ function RunSideSection({ label, run, score }) {
           {run?.session_id ? (
             <Link
               to={`/logs?tab=sessions&session=${encodeURIComponent(run.session_id)}`}
+              target="_blank"
+              rel="noopener noreferrer"
               className="text-xs text-indigo-600 underline"
             >
               View session log ↗

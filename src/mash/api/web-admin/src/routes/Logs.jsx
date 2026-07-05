@@ -75,6 +75,20 @@ const TRACE_COLUMNS = [
     align: 'right',
     render: (r) => compactNumber(r.total_tokens || 0),
   },
+  {
+    key: 'cache_read_tokens',
+    header: 'Cache read',
+    align: 'right',
+    render: (r) =>
+      r.cache_read_tokens ? compactNumber(r.cache_read_tokens) : <span className="text-slate-300">—</span>,
+  },
+  {
+    key: 'cache_write_tokens',
+    header: 'Cache write',
+    align: 'right',
+    render: (r) =>
+      r.cache_write_tokens ? compactNumber(r.cache_write_tokens) : <span className="text-slate-300">—</span>,
+  },
   { key: 'event_count', header: 'Events', align: 'right' },
 ];
 
@@ -120,9 +134,15 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
         </td>
         <td
           className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500"
-          title={session.cache_read_tokens ? `${session.cache_read_tokens.toLocaleString()} tokens served from cache · ${(session.cache_read_tokens || 0) + (session.cache_write_tokens || 0)} total cache tokens` : undefined}
+          title={session.cache_read_tokens ? `${session.cache_read_tokens.toLocaleString()} tokens served from cache` : undefined}
         >
           {session.cache_read_tokens ? compactNumber(session.cache_read_tokens) : <span className="text-slate-300">—</span>}
+        </td>
+        <td
+          className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500"
+          title={session.cache_write_tokens ? `${session.cache_write_tokens.toLocaleString()} tokens written to cache` : undefined}
+        >
+          {session.cache_write_tokens ? compactNumber(session.cache_write_tokens) : <span className="text-slate-300">—</span>}
         </td>
         <td className="px-2 py-2.5 pr-4 text-right align-top tabular-nums text-slate-500">
           {session.trace_count}
@@ -152,14 +172,20 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
   );
 }
 
-const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cached tokens', 'Traces'];
+const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cache read', 'Cache write', 'Traces'];
 
-// Pool-wide session rollup (owned by the primary agent), or scoped to one owner
-// agent. Each session expands to its traces, which may span multiple agents.
-function SessionsTab({ agentId, initialSession }) {
+// Pool-wide session rollup, or scoped to sessions where the selected agent
+// participated (as primary or subagent) and/or the selected workflow ran.
+// Each session expands to its traces, which may span multiple agents.
+function SessionsTab({ agentId, workflowId, initialSession }) {
   const state = useApi(
-    () => api.listSessionRollups({ agent_id: agentId || undefined, limit: 500 }),
-    [agentId],
+    () =>
+      api.listSessionRollups({
+        agent_id: agentId || undefined,
+        workflow_id: workflowId || undefined,
+        limit: 500,
+      }),
+    [agentId, workflowId],
   );
 
   const [expanded, setExpanded] = useState(initialSession || null);
@@ -239,7 +265,15 @@ function SessionsTab({ agentId, initialSession }) {
             ? data.sessions.filter((s) => s.session_id.toLowerCase().includes(q))
             : data.sessions;
           if (!sessions.length) return <Empty>No sessions match that filter.</Empty>;
+          const total = data.total ?? data.sessions.length;
+          const truncated = total > data.sessions.length;
           return (
+            <>
+            <div className="mb-2 text-xs text-slate-400">
+              {q
+                ? `${sessions.length} of ${total} session${total === 1 ? '' : 's'}`
+                : `${total} session${total === 1 ? '' : 's'}${truncated ? ` · showing latest ${data.sessions.length}` : ''}`}
+            </div>
             <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
               <table className="min-w-full text-sm">
                 <thead>
@@ -273,6 +307,7 @@ function SessionsTab({ agentId, initialSession }) {
                 </tbody>
               </table>
             </div>
+            </>
           );
         }}
       </Async>
@@ -444,10 +479,13 @@ export default function Logs() {
   const [params, setParams] = useSearchParams();
   const agentsState = useApi(() => api.listAgents(), []);
   const agents = agentsState.data?.agents || [];
+  const workflowsState = useApi(() => api.listWorkflows(), []);
+  const workflows = workflowsState.data?.workflows || [];
 
   const tab = params.get('tab') || 'sessions';
   // Empty agent = pool-wide (all agents), matching Overview's aggregate counts.
   const agentId = params.get('agent') || '';
+  const workflowId = params.get('workflow') || '';
 
   const update = (next) => {
     const merged = new URLSearchParams(params);
@@ -479,6 +517,21 @@ export default function Logs() {
             </Select>
           </div>
         </label>
+        {tab === 'sessions' ? (
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-slate-600">Workflow</span>
+            <div className="w-56">
+              <Select value={workflowId} onChange={(e) => update({ workflow: e.target.value })}>
+                <option value="">All workflows</option>
+                {workflows.map((w) => (
+                  <option key={w.workflow_id} value={w.workflow_id}>
+                    {w.metadata?.display_name || w.workflow_id}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </label>
+        ) : null}
       </div>
 
       <div className="mb-4 flex gap-1 border-b border-slate-200">
@@ -498,7 +551,11 @@ export default function Logs() {
       </div>
 
       {tab === 'sessions' ? (
-        <SessionsTab agentId={agentId} initialSession={params.get('session') || ''} />
+        <SessionsTab
+          agentId={agentId}
+          workflowId={workflowId}
+          initialSession={params.get('session') || ''}
+        />
       ) : null}
       {tab === 'api' ? <ApiAccessTab /> : null}
       {tab === 'cli' ? <CliTab agentId={agentId} agents={agents} /> : null}

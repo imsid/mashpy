@@ -101,6 +101,7 @@ export const api = {
 
   // --- Logs / telemetry ---
   listSessionRollups: (params) => request('/telemetry/sessions', { params }),
+  workflowActivity: () => request('/telemetry/workflows'),
   listTraces: (params) => request('/telemetry/traces', { params }),
   traceAnalysis: (params) => request('/telemetry/trace/analysis', { params }),
   listEvents: (params) => request('/telemetry/events', { params }),

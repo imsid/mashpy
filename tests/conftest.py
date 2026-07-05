@@ -260,9 +260,10 @@ class _TestRuntimeStore:
     async def list_sessions(
         self,
         *,
-        owner_agent_id: str | None = None,
+        agent_id: str | None = None,
+        workflow_id: str | None = None,
         limit: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         async with self._lock:
             events = list(self._events)
         by_session: dict[str, list[RuntimeEvent]] = {}
@@ -276,13 +277,20 @@ class _TestRuntimeStore:
         for session_id, session_events in by_session.items():
             ordered = sorted(session_events, key=lambda e: (e.created_at, e.event_id))
             owner = next((e.agent_id for e in ordered if e.agent_id), None)
-            if owner_agent_id is not None and owner != owner_agent_id:
+            agent_ids = sorted({e.agent_id for e in ordered if e.agent_id})
+            workflow_ids = sorted({e.workflow_id for e in ordered if e.workflow_id})
+            # Participant semantics: match any agent that logged in the session.
+            if agent_id is not None and agent_id not in agent_ids:
+                continue
+            if workflow_id is not None and workflow_id not in workflow_ids:
                 continue
             trace_ids = {e.trace_id for e in ordered if e.trace_id is not None}
             sessions.append(
                 {
                     "session_id": session_id,
                     "owner_agent_id": owner,
+                    "agent_ids": agent_ids,
+                    "workflow_ids": workflow_ids,
                     "host_id": next((e.host_id for e in ordered if e.host_id), None),
                     "started_at": float(ordered[0].created_at),
                     "latest_event_at": float(ordered[-1].created_at),
@@ -291,9 +299,32 @@ class _TestRuntimeStore:
                 }
             )
         sessions.sort(key=lambda s: (s["latest_event_at"], s["session_id"]), reverse=True)
+        total = len(sessions)
         if limit is not None:
             sessions = sessions[: max(1, int(limit))]
-        return sessions
+        return {"sessions": sessions, "total": total}
+
+    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]:
+        async with self._lock:
+            events = list(self._events)
+        by_workflow: dict[str, list[RuntimeEvent]] = {}
+        for event in events:
+            if event.workflow_id is None:
+                continue
+            by_workflow.setdefault(event.workflow_id, []).append(event)
+        activity = []
+        for workflow_id, wf_events in by_workflow.items():
+            activity.append(
+                {
+                    "workflow_id": workflow_id,
+                    "run_count": len({e.workflow_run_id for e in wf_events if e.workflow_run_id}),
+                    "session_count": len({e.session_id for e in wf_events if e.session_id}),
+                    "last_run_at": max(float(e.created_at) for e in wf_events),
+                    "total_tokens": sum(_event_tokens(e) for e in wf_events),
+                }
+            )
+        activity.sort(key=lambda a: a["last_run_at"], reverse=True)
+        return activity
 
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()

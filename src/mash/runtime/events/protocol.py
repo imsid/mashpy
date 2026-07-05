@@ -80,9 +80,12 @@ class RuntimeStore(Protocol):
     async def list_sessions(
         self,
         *,
-        owner_agent_id: str | None = None,
+        agent_id: str | None = None,
+        workflow_id: str | None = None,
         limit: int,
-    ) -> list[dict[str, Any]]: ...
+    ) -> dict[str, Any]: ...
+
+    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]: ...
 
     async def aggregate_usage(
         self,
