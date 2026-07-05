@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 
 from mash.core.database import resolve_database_url
 from mash.workflows import WorkflowSpec
@@ -68,6 +69,7 @@ class HostBuilder:
                 metadata=registered.metadata,
                 agent_id=registered.agent_id,
             )
+        masher_workflow_ids: list[str] = []
         if self._masher_enabled:
             (
                 masher_agent_id,
@@ -81,10 +83,18 @@ class HostBuilder:
                 pool.register_workflow_agent(masher_spec, agent_id=masher_agent_id)
                 for workflow in build_masher_workflow_specs(masher_spec):
                     pool.register_workflow(workflow)
+                    masher_workflow_ids.append(workflow.workflow_id)
         for workflow in self._workflows:
             pool.register_workflow(workflow)
         # Hosts are defined last so workflow-id validation sees every
-        # registered workflow.
+        # registered workflow. Masher workflows attach to every built host —
+        # they run pool-wide, and attaching keeps them visible in host
+        # compositions — appended after any explicitly attached workflows.
+        # Conditional on masher actually registering, so keyless deployments
+        # still define hosts cleanly.
         for host in self._hosts:
+            merged = dict.fromkeys((*host.workflows, *masher_workflow_ids))
+            if len(merged) > len(host.workflows):
+                host = replace(host, workflows=tuple(merged))
             pool.define_host(host)
         return pool
