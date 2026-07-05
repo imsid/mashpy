@@ -10,14 +10,15 @@ hide:
 
 **Build self-hosted agent applications on frontier and open source models.**
 
-[Mash](posts/product-brief.md) is a Python SDK and a host runtime for composing agents.
+[Mash](posts/product-brief.md) is a Python SDK and a host runtime for building,
+composing, and evaluating agents.
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
 standardizes interactions between user applications and agents. 
 
 It runs on both frontier and open source models. The harness includes web search,
 local and remote (MCP) tools, skills, context and memory management,
-human-in-the-loop (HITL), pre-built commands and workflows, an API/CLI for access,
-observability, and a durable runtime.
+human-in-the-loop (HITL), pre-built commands and workflows, synthetic evals,
+an API/CLI for access, observability, and a durable runtime.
 
 **Try it now with Pilot:**
 
@@ -181,7 +182,7 @@ mash repl --host assistant
 
 ## Learn More
 
-- [**Core concepts**](posts/concepts.md): the building blocks behind every agent system
+- [**General concepts**](posts/concepts.md): the building blocks behind every agentic platform
 - [**Product brief**](posts/product-brief.md): the pitch, why applications and agents needs a standard
 - [**Mash under the hood**](posts/mash-under-the-hood.md): what Mash provides and where it fits
 - [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md): the host-to-agent boundary
@@ -201,6 +202,7 @@ mash repl --host assistant
 - [**Composing agents**](posts/composing-agents.md): subagents, delegation, shared plumbing
 - [**Workflows**](posts/workflows-and-task-state.md): code authored and dynamic specs for deterministic tasks
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
+- [**Synthetic evals**](posts/synthetic-evals.md): generated datasets and rubrics, experiments over the live host, read-time comparison
 
 ## Guides
 
@@ -209,6 +211,10 @@ mash repl --host assistant
 - [**Building dynamic hosts over the API**](posts/building-dynamic-hosts-apis.md): compose agent teams at runtime over plain HTTP
 - [**Deploying a Mash Host**](posts/how-to-deploy.md): laptop, Docker, and cloud
 - [**Release process**](posts/releasing.md): how versioning, changelogs, and releases work
+
+## Learnings
+
+- [**Prompt caching and the token meter**](posts/prompt-caching-token-meter.md): what an eval fan-out pays on a cold cache, read from real scoring runs
 
 ## Applications
 

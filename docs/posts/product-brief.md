@@ -121,11 +121,38 @@ the agent that handles the hard reasoning runs on a frontier model, in the same
 process, behind the same host. You match the model to the task and the budget,
 and the harness underneath is identical.
 
+## Evals
+
+The host is the unit of deploy, and it is also the unit of evaluation. A user
+request lands on the composition: the primary agent, the delegation choices it
+makes, the tools and subagents behind it. Mash evals run against the host
+rather than any single agent, so what gets measured is the path the
+application actually takes and the response the user actually receives.
+
+Synthetic evals ship in the SDK and runtime. A built-in workflow reads the
+host's declared capabilities and the developer's guidance, then generates a
+dataset of test scenarios and a weighted scoring rubric before the first user
+ever sends a message. Each scoring run is an experiment: it snapshots the live
+composition and agent specs, runs every dataset row through the host, and
+records the results.
+
+Every experiment measures two kinds of signal. Deterministic quantitative
+metrics come from each row's runtime events: latency, tokens, steps, tool
+calls, per-subagent breakdowns. Qualitative criteria are non-deterministic and
+scored by Masher, the built-in LLM judge, against the rubric: task completion,
+subagent coordination, response quality, each with a rationale. Comparing two
+experiments answers three questions in one view: what changed in the agent
+specs, how quality moved per criterion and per row, and what the change costs
+in tokens and latency. See [Synthetic evals](synthetic-evals.md) for the full
+design.
+
 ## Where to go next
 - [**Getting started**](../index.md): install, define agents, and run your first host
 - [**Mash Under the Hood**](mash-under-the-hood.md): what Mash provides, one
   host over many agents, the durable harness, observability, and the
   self-hosted interfaces
+- [**Synthetic Evals**](synthetic-evals.md): generated datasets and rubrics,
+  experiments over the live host, read-time comparison
 - [**H2A Protocol RFC**](../rfcs/host-to-agent-protocol.md): the full
   protocol specification
 - [**Building an agent CLI**](building-agent-clis.md): custom CLI development with dynamic host composition
