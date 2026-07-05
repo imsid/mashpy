@@ -8,6 +8,13 @@ by default; call `HostBuilder.enable_masher(False)` to opt out. Masher is hidden
 from public agent listings and from primary-agent `InvokeSubagent` delegation,
 but workflow tasks can still call it through the host runtime client.
 
+When Masher registers, its workflows are also attached to every host the
+builder defines, appended after any workflows the host attached explicitly —
+so host compositions (the Hosts admin tab, `GET /workflow?host=...`) show
+them. When Masher is skipped (keyless deployment), host compositions are left
+exactly as declared. Hosts defined dynamically after `build()` are not
+touched.
+
 Because Masher is registered by default, it is built at pool startup and needs an
 LLM provider. `build_llm()` resolves the first configured of `GEMINI_API_KEY` /
 `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, then an OSS endpoint via

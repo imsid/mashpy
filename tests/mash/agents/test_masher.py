@@ -30,10 +30,11 @@ from mash.runtime.events import build_runtime_trace, build_span_tree, analyze_tr
 from mash.core.agent import Agent
 from mash.core.llm import LLMProvider, OSSCompatibleProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
-from mash.runtime import AgentSpec, HostBuilder
+from mash.runtime import AgentSpec, Host, HostBuilder
 from mash.testing.runtime_fixtures import metadata
 from mash.runtime.events.types import RuntimeEvent
 from mash.testing.runtime_fixtures import build_spec
+from mash.workflows import TaskSpec, WorkflowSpec
 
 
 class _FakeLLMProvider(LLMProvider):
@@ -708,6 +709,63 @@ class MasherTests(unittest.TestCase):
                     )
                 finally:
                     asyncio.run(host.close())
+
+    def test_builder_enable_masher_attaches_workflows_to_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
+                clear=True,
+            ):
+                explicit = WorkflowSpec(
+                    workflow_id="custom-chain",
+                    tasks=[
+                        TaskSpec(
+                            task_id="step-1",
+                            agent_spec=build_spec(
+                                agent_id="chain-worker", response_text="ok"
+                            ),
+                        )
+                    ],
+                )
+                pool = (
+                    HostBuilder()
+                    .agent(self._primary_spec(), metadata=metadata())
+                    .workflow(explicit)
+                    .host(
+                        Host(
+                            host_id="main",
+                            primary="primary",
+                            workflows=("custom-chain",),
+                        )
+                    )
+                    .enable_masher()
+                    .build()
+                )
+                try:
+                    attached = pool.get_host("main").workflows
+                    # Explicit attachments come first and are preserved.
+                    self.assertEqual(attached[0], "custom-chain")
+                    self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, attached)
+                    self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, attached)
+                    self.assertEqual(len(attached), len(set(attached)))
+                finally:
+                    asyncio.run(pool.close())
+
+    def test_builder_keyless_masher_leaves_host_workflows_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
+                pool = (
+                    HostBuilder()
+                    .agent(self._primary_spec(), metadata=metadata())
+                    .host(Host(host_id="main", primary="primary"))
+                    .enable_masher()
+                    .build()
+                )
+                try:
+                    self.assertEqual(pool.get_host("main").workflows, ())
+                finally:
+                    asyncio.run(pool.close())
 
 
 class _FakeEval:
