@@ -9,6 +9,24 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.16.0](https://github.com/imsid/mashpy/compare/mashpy-v0.15.0...mashpy-v0.16.0) (2026-07-05)
+
+
+### Features
+
+* **admin-ui:** cache breakdowns, participant/workflow log filters, workflow activity ([#129](https://github.com/imsid/mashpy/issues/129)) ([3a18d70](https://github.com/imsid/mashpy/commit/3a18d70e251bfaaf0801f1e77b935175c6eeaf3a))
+* **admin-ui:** group sidebar nav into Deployment and Activity sections ([#126](https://github.com/imsid/mashpy/issues/126)) ([3760262](https://github.com/imsid/mashpy/commit/376026296391cca7d1564f522395fbd120de9edd))
+* **evals:** synthetic evals — datasets, rubrics, experiments, scoring ([#124](https://github.com/imsid/mashpy/issues/124)) ([145b41f](https://github.com/imsid/mashpy/commit/145b41f9807777822efb4f2b50535f65b73e7452))
+* **runtime:** attach masher workflows to built hosts when masher registers ([#128](https://github.com/imsid/mashpy/issues/128)) ([04a2671](https://github.com/imsid/mashpy/commit/04a267145e66397f49cfcdd35b950b9fb352f758))
+
+
+### Documentation
+
+* cover synthetic evals in the root README ([#131](https://github.com/imsid/mashpy/issues/131)) ([730af54](https://github.com/imsid/mashpy/commit/730af5479ce2738f84d31fb6de5482b6b0134b81))
+* cover the evals subsystem in the module READMEs ([#132](https://github.com/imsid/mashpy/issues/132)) ([e6290b2](https://github.com/imsid/mashpy/commit/e6290b21187736e7f0e42d083890080a79aa1e14))
+* position evals across the blog and publish the synthetic evals post ([#125](https://github.com/imsid/mashpy/issues/125)) ([fe282b9](https://github.com/imsid/mashpy/commit/fe282b998cfa49795ae66a4a691c1219068e41c1))
+* **review:** add synthetic evals design doc ([#121](https://github.com/imsid/mashpy/issues/121)) ([42e096b](https://github.com/imsid/mashpy/commit/42e096bb303ac66374da61d27905e87c8671a64b))
+
 ## [0.15.0](https://github.com/imsid/mashpy/compare/mashpy-v0.14.1...mashpy-v0.15.0) (2026-07-01)
 
 
