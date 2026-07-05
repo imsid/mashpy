@@ -14,8 +14,9 @@ from ..models import (
     ScoringCriterion,
     ScoringRubric,
 )
+from mash.storage.migrations import run_migrations
+
 from . import loaders
-from .migrations import run_migrations
 
 try:
     from psycopg.rows import dict_row

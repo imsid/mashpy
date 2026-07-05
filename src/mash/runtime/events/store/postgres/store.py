@@ -6,10 +6,11 @@ import asyncio
 from collections import defaultdict
 from typing import Any, cast
 
+from mash.storage.migrations import run_migrations
+
 from ...protocol import RuntimeStore
 from ...types import FeedbackRecord, RuntimeEvent
 from . import loaders
-from .migrations import run_migrations
 
 try:
     import psycopg

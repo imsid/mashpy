@@ -6,10 +6,11 @@ import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from mash.storage.migrations import run_migrations
+
 from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
 from ...protocol import MemoryStore
-from .migrations import run_migrations
 
 try:  # pragma: no cover - environment dependent
     import psycopg
@@ -54,8 +55,7 @@ class PostgresStore(MemoryStore):
             )
             await pool.open()
             self._pool = pool
-            async with self._pool.connection() as conn:
-                await run_migrations(conn)
+            await run_migrations(pool)
 
     async def close(self) -> None:
         """Close the connection pool."""
