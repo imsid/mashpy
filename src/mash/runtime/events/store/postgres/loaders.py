@@ -505,20 +505,31 @@ async def list_recent_traces(
 async def list_sessions(
     pool: Any,
     *,
-    owner_agent_id: str | None = None,
+    agent_id: str | None = None,
+    workflow_id: str | None = None,
     limit: int | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
+    # agent_id matches sessions the agent participated in (any event it
+    # logged), not just sessions it owns — subagent runs count. workflow_id
+    # matches sessions where any event ran under that workflow.
     filters = ["owner_agent_id IS NOT NULL"]
     params: list[Any] = []
-    if owner_agent_id is not None:
-        filters.append("sessions.owner_agent_id = %s")
-        params.append(owner_agent_id)
+    if agent_id is not None:
+        filters.append("%s = ANY(sessions.agent_ids)")
+        params.append(agent_id)
+    if workflow_id is not None:
+        filters.append("%s = ANY(sessions.workflow_ids)")
+        params.append(workflow_id)
     sql = f"""
-        SELECT * FROM (
+        SELECT *, COUNT(*) OVER () AS total_count FROM (
             SELECT
                 session_id,
                 (ARRAY_AGG(agent_id ORDER BY created_at ASC, event_id ASC))[1]
                     AS owner_agent_id,
+                ARRAY_AGG(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL)
+                    AS agent_ids,
+                ARRAY_AGG(DISTINCT workflow_id) FILTER (WHERE workflow_id IS NOT NULL)
+                    AS workflow_ids,
                 MAX(host_id) AS host_id,
                 MIN(created_at) AS started_at,
                 MAX(created_at) AS latest_event_at,
@@ -553,12 +564,14 @@ async def list_sessions(
         async with conn.cursor() as cursor:
             await cursor.execute(sql, tuple(params))
             rows = await cursor.fetchall()
-    return [
+    sessions = [
         {
             "session_id": str(row["session_id"]),
             "owner_agent_id": (
                 str(row["owner_agent_id"]) if row.get("owner_agent_id") else None
             ),
+            "agent_ids": [str(a) for a in (row.get("agent_ids") or [])],
+            "workflow_ids": [str(w) for w in (row.get("workflow_ids") or [])],
             "host_id": str(row["host_id"]) if row.get("host_id") else None,
             "started_at": float(row["started_at"]),
             "latest_event_at": float(row["latest_event_at"]),
@@ -566,6 +579,45 @@ async def list_sessions(
             "total_tokens": int(row["total_tokens"] or 0),
             "cache_read_tokens": int(row["cache_read_tokens"] or 0),
             "cache_write_tokens": int(row["cache_write_tokens"] or 0),
+        }
+        for row in rows
+    ]
+    total = int(rows[0]["total_count"]) if rows else 0
+    return {"sessions": sessions, "total": total}
+
+
+async def aggregate_workflow_activity(pool: Any) -> list[dict[str, Any]]:
+    # Per-workflow runtime rollup across the shared event log: how often each
+    # registered (or historical) workflow ran, when it last ran, and what it
+    # cost. Keyed by workflow_id; runs are distinct workflow_run_ids.
+    sql = """
+        SELECT
+            workflow_id,
+            COUNT(DISTINCT workflow_run_id) AS run_count,
+            COUNT(DISTINCT session_id) AS session_count,
+            MAX(created_at) AS last_run_at,
+            COALESCE(SUM(
+                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
+                    + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                ELSE 0 END
+            ), 0) AS total_tokens
+        FROM runtime_event_log
+        WHERE workflow_id IS NOT NULL
+        GROUP BY workflow_id
+        ORDER BY MAX(created_at) DESC
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(sql)
+            rows = await cursor.fetchall()
+    return [
+        {
+            "workflow_id": str(row["workflow_id"]),
+            "run_count": int(row["run_count"] or 0),
+            "session_count": int(row["session_count"] or 0),
+            "last_run_at": float(row["last_run_at"]),
+            "total_tokens": int(row["total_tokens"] or 0),
         }
         for row in rows
     ]
