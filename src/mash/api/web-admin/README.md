@@ -32,19 +32,23 @@ feeds it, without duplicating component source. For HTTP route internals see
 
 ## Tabs
 
-Nav order is defined in `components/Shell.jsx`. Each tab is a route component in
-`src/routes/`.
+Nav order is defined in `components/Shell.jsx`. The sidebar is grouped into
+**Deployment** (Agents, Workflows, Hosts, Tools, Skills — the pool and its
+compositions) and **Activity** (Logs, Feedback, Evals — what the deployment
+did), with Overview on top and Reference below a divider. Each tab is a route
+component in `src/routes/`.
 
 | Tab | Route | Surfaces | API (`api.*` in `lib/api.js`) → endpoint |
 | --- | --- | --- | --- |
 | Overview | `/` (`Overview.jsx`) | Per-agent usage/cost and recent-session rollups across the pool; summary cards and charts. | `listAgents` → `GET /agent`; per agent `usage` → `GET /telemetry/usage`, `listSessions` → `GET /agent/{id}/sessions` |
 | Agents | `/agents` (`Agents.jsx`) | The pooled agents and hosts in the deployment. | `listAgents` → `GET /agent` |
-| Tools | `/tools` (`Tools.jsx`), `/tools/:toolName` (`ToolDetail.jsx`) | Tool catalog as cards with invocation counts; detail view per tool. | `listTools` → `GET /tools`; `listToolInvocations` → `GET /telemetry/tool-invocations` |
-| Skills | `/skills` (`Skills.jsx`), `/skills/:skillName` (`SkillDetail.jsx`) | Skill catalog as cards with invocation counts; detail view per skill. | `listSkills` → `GET /skills`; `listSkillInvocations` → `GET /telemetry/skill-invocations` |
 | Workflows | `/workflows` (`Workflows.jsx`) | Registered workflow definitions. | `listWorkflows` → `GET /workflow` |
 | Hosts | `/hosts` (`Hosts.jsx`) | Host compositions; create/edit a host (`PUT`) and submit a test request to its primary. | `listHosts` → `GET /hosts`, `listAgents` → `GET /agent`; `defineHost` → `PUT /hosts/{id}`; `submitHostRequest` → `POST /hosts/{id}/request` |
+| Tools | `/tools` (`Tools.jsx`), `/tools/:toolName` (`ToolDetail.jsx`) | Tool catalog as cards with invocation counts; detail view per tool. | `listTools` → `GET /tools`; `listToolInvocations` → `GET /telemetry/tool-invocations` |
+| Skills | `/skills` (`Skills.jsx`), `/skills/:skillName` (`SkillDetail.jsx`) | Skill catalog as cards with invocation counts; detail view per skill. | `listSkills` → `GET /skills`; `listSkillInvocations` → `GET /telemetry/skill-invocations` |
 | Logs | `/logs` (`Logs.jsx`) | Two views: session rollups with their traces (token/cache breakdown), and the raw HTTP API event log with request/response detail in a drawer. | `listSessionRollups` → `GET /telemetry/sessions`; `listTraces` → `GET /telemetry/traces`; `listApiEvents` → `GET /telemetry/api/events` |
 | Feedback | `/feedback` (`Feedback.jsx`) | Submitted feedback, filterable by agent and free-text query. | `listFeedback` → `GET /feedback`; `listAgents` → `GET /agent` |
+| Evals | `/evals` (`Evals.jsx`), `/evals/:evalId` (`EvalDetail.jsx`), `/evals/:evalId/experiments/:experimentId` (`ExperimentDetail.jsx`), `/evals/:evalId/compare` (`ExperimentCompare.jsx`) | Synthetic eval datasets and rubrics; experiments with per-run scores, detail and side-by-side compare views. | `listEvals` → `GET /evals`; `getEval` → `GET /evals/{id}`; `listExperiments` → `GET /evals/{id}/experiments`; run/compare views under the same prefix |
 | Reference | `/reference` (`Reference.jsx`) | Generated API reference from the live OpenAPI schema, plus the bundled CLI reference (`src/cli.json`). | `openapi` → `GET /openapi.json` |
 
 Notes:
