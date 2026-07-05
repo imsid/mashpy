@@ -1,3 +1,27 @@
+# Local dogfooding compose file.
+#
+# Setup (once):
+#   cp .env.example .env
+#   # Edit .env: set ANTHROPIC_API_KEY (or OPENAI_API_KEY)
+#
+# Run:
+#   docker compose -f docker-compose.pilot.yml up -d
+#
+# What this starts:
+#   db    — Postgres 17, published on 127.0.0.1:5433
+#   pilot — Mash host running pilot.spec:build_pool, published on 127.0.0.1:8000
+#
+# Once healthy, use the pilot CLI:
+#   pilot browse
+#   pilot compose guide --primary pilot --subagents admin,api,cli,mcp,runtime,workflow
+#   pilot repl --host guide
+#
+# The local repo is bind-mounted into the container and installed editable, so
+# code changes are picked up with a restart (no rebuild):
+#   docker compose -f docker-compose.pilot.yml restart pilot
+# Rebuild only when dependencies change:
+#   docker compose -f docker-compose.pilot.yml build pilot
+
 services:
   db:
     image: postgres:17-alpine
@@ -6,9 +30,6 @@ services:
       POSTGRES_USER: mash
       POSTGRES_PASSWORD: mash
     ports:
-      # Published for the local dev loop (`docker compose up -d db` +
-      # `pilot serve` on the host machine); the pilot service uses the
-      # internal network either way.
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -20,14 +41,19 @@ services:
     restart: unless-stopped
 
   pilot:
-    image: ghcr.io/imsid/mash-pilot:latest
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.pilot
     env_file: .env
     environment:
+      # Override the host-machine DB URL from .env with the internal network address.
       MASH_DATABASE_URL: postgresql://mash:mash@db:5432/mash_pilot
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
+      # Live-mount the local repo over the built tree so the editable install
+      # imports live source. Edit locally, then `restart pilot` — no rebuild.
+      - .:/opt/mash
       - pilotdata:/var/lib/pilot
     depends_on:
       db:

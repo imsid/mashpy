@@ -72,6 +72,5 @@ exclude = ["apps*", "tests*"]
   "skills/*/references/**/*",
   "skills/*/assets/**/*",
 ]
-"mash.runtime.events.store.postgres.migrations" = ["*.sql"]
-"mash.memory.store.backends.postgres.migrations" = ["*.sql"]
+"mash.storage.migrations" = ["*.sql"]
 "pilot" = ["skills/*/SKILL.md"]

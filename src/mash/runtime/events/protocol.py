@@ -24,6 +24,13 @@ class RuntimeStore(Protocol):
         after_seq: int = 0,
     ) -> list[RuntimeEvent]: ...
 
+    async def list_session_events(
+        self,
+        session_id: str,
+        *,
+        event_types: list[str] | None = None,
+    ) -> list[RuntimeEvent]: ...
+
     async def list_events(
         self,
         app_id: str,

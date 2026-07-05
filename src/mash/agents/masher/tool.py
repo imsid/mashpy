@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict
 
+from typing import TYPE_CHECKING
+
 from ...runtime.events import (
     RuntimeTrace,
     RuntimeEvent,
@@ -19,6 +21,9 @@ from ...runtime.events import (
 )
 from ...tools.base import FunctionTool, ToolResult
 
+if TYPE_CHECKING:
+    from ...evals.service import EvalService
+
 
 @dataclass
 class MasherRuntimeContext:
@@ -27,9 +32,13 @@ class MasherRuntimeContext:
     runtime_store: RuntimeStore | None = None
     trace_digest_jsonl_path: Path | None = None
     online_eval_jsonl_path: Path | None = None
+    eval_service: "EvalService | None" = None
 
     def bind_runtime_store(self, runtime_store: RuntimeStore) -> None:
         self.runtime_store = runtime_store
+
+    def bind_eval_service(self, eval_service: "EvalService") -> None:
+        self.eval_service = eval_service
 
     def configure_artifacts(self, data_root: Path) -> None:
         masher_root = data_root / "masher"
@@ -40,6 +49,11 @@ class MasherRuntimeContext:
         if self.runtime_store is None:
             raise RuntimeError("Masher runtime store is not bound")
         return self.runtime_store
+
+    def require_eval_service(self) -> "EvalService":
+        if self.eval_service is None:
+            raise RuntimeError("Masher eval service is not bound")
+        return self.eval_service
 
     def require_trace_digest_jsonl_path(self) -> Path:
         if self.trace_digest_jsonl_path is None:
@@ -364,6 +378,110 @@ class OnlineEvalCurationWorkflowTool(FunctionTool):
         return ToolResult.success(json.dumps(next_state, ensure_ascii=True), **next_state)
 
 
+class GenSyntheticEvalsWorkflowTool(FunctionTool):
+    """Persist a Masher-generated synthetic eval dataset and rubric.
+
+    Masher (the LLM) does the generation; this tool only validates the model's
+    output and hands it to the eval service. It never calls an LLM itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        context: MasherRuntimeContext,
+    ) -> None:
+        self._context = context
+        FunctionTool.__init__(
+            self,
+            name="run_gen_synthetic_evals_workflow",
+            description=(
+                "Persist a generated synthetic eval as a dataset and scoring "
+                "rubric for a host. Supply the dataset rows and rubric you "
+                "generated from the host's declared capabilities."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "host_id": {
+                        "type": "string",
+                        "description": "The host the eval covers.",
+                    },
+                    "user_guidance": {
+                        "type": "string",
+                        "description": "Guidance from workflow_input, verbatim.",
+                    },
+                    "row_count": {
+                        "type": "integer",
+                        "description": (
+                            "Requested dataset size from workflow_input.row_count "
+                            "(default 20, max 100). dataset_rows must contain "
+                            "exactly this many rows."
+                        ),
+                    },
+                    "dataset_rows": {
+                        "type": "array",
+                        "description": (
+                            "Exactly row_count generated test-case rows. Each row: "
+                            "input, scenario_description, sampling_category, "
+                            "expected_behavior, target_agents."
+                        ),
+                        "items": {"type": "object"},
+                    },
+                    "rubric": {
+                        "type": "object",
+                        "description": (
+                            "Scoring rubric with global_scoring_prompt and criteria "
+                            "(weights summing to 1.0)."
+                        ),
+                    },
+                },
+                "required": ["host_id", "dataset_rows", "rubric"],
+            },
+            _executor=self._execute,
+        )
+
+    async def _execute(self, args: Dict[str, Any]) -> ToolResult:
+        host_id = _required_text(args, "host_id")
+        if isinstance(host_id, ToolResult):
+            return host_id
+
+        row_count = _normalize_row_count(args.get("row_count"))
+        if isinstance(row_count, ToolResult):
+            return row_count
+
+        rows = _normalize_dataset_rows(args.get("dataset_rows"))
+        if isinstance(rows, ToolResult):
+            return rows
+        if len(rows) != row_count:
+            return ToolResult.error(
+                f"dataset_rows must contain exactly {row_count} rows (got {len(rows)}); "
+                "generate the missing rows and call the tool again"
+            )
+
+        rubric = _normalize_rubric(args.get("rubric"))
+        if isinstance(rubric, ToolResult):
+            return rubric
+
+        user_guidance = args.get("user_guidance")
+        user_guidance = user_guidance.strip() if isinstance(user_guidance, str) else ""
+
+        service = self._context.require_eval_service()
+        eval_ = await service.persist_eval(
+            host_id=host_id,
+            user_guidance=user_guidance,
+            dataset_rows=rows,
+            rubric=rubric,
+        )
+        payload = {
+            "eval_id": eval_.eval_id,
+            "host_id": eval_.host_id,
+            "dataset_id": eval_.dataset_id,
+            "rubric_id": eval_.rubric_id,
+            "row_count": len(rows),
+        }
+        return ToolResult.success(json.dumps(payload, ensure_ascii=True), **payload)
+
+
 async def _stitch_subagent_traces(
     store: RuntimeStore,
     analysis: TraceAnalysis,
@@ -633,7 +751,118 @@ def _required_text(
     return ToolResult.error(f"workflow_input.{key} is required")
 
 
+_SAMPLING_CATEGORIES = frozenset(
+    {
+        "random",
+        "multi_tool",
+        "multi_agent",
+        "high_tokens",
+        "long_running",
+        "short_running",
+    }
+)
+_MAX_DATASET_ROWS = 100
+_DEFAULT_DATASET_ROWS = 20
+_ROW_TEXT_FIELDS = ("input", "scenario_description", "expected_behavior")
+_WEIGHT_SUM_TOLERANCE = 1e-6
+
+
+def _normalize_row_count(value: Any) -> int | ToolResult:
+    """Requested dataset size; defaults when omitted so it is always enforced."""
+    if value is None:
+        return _DEFAULT_DATASET_ROWS
+    try:
+        row_count = int(value)
+    except (TypeError, ValueError):
+        return ToolResult.error("row_count must be an integer")
+    if not 1 <= row_count <= _MAX_DATASET_ROWS:
+        return ToolResult.error(
+            f"row_count must be between 1 and {_MAX_DATASET_ROWS} (got {row_count})"
+        )
+    return row_count
+
+
+def _normalize_dataset_rows(value: Any) -> list[dict[str, Any]] | ToolResult:
+    if not isinstance(value, list) or not value:
+        return ToolResult.error("dataset_rows must be a non-empty array")
+    if len(value) > _MAX_DATASET_ROWS:
+        return ToolResult.error(
+            f"dataset_rows must contain at most {_MAX_DATASET_ROWS} rows"
+        )
+    rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            return ToolResult.error(f"dataset_rows[{index}] must be an object")
+        row: dict[str, Any] = {}
+        for field in _ROW_TEXT_FIELDS:
+            text = raw.get(field)
+            if not isinstance(text, str) or not text.strip():
+                return ToolResult.error(
+                    f"dataset_rows[{index}].{field} is required"
+                )
+            row[field] = text.strip()
+        category = raw.get("sampling_category")
+        if not isinstance(category, str) or category.strip() not in _SAMPLING_CATEGORIES:
+            return ToolResult.error(
+                f"dataset_rows[{index}].sampling_category must be one of "
+                f"{sorted(_SAMPLING_CATEGORIES)}"
+            )
+        row["sampling_category"] = category.strip()
+        targets = raw.get("target_agents") or []
+        if not isinstance(targets, list) or not all(
+            isinstance(item, str) for item in targets
+        ):
+            return ToolResult.error(
+                f"dataset_rows[{index}].target_agents must be an array of strings"
+            )
+        row["target_agents"] = [item.strip() for item in targets if item.strip()]
+        rows.append(row)
+    return rows
+
+
+def _normalize_rubric(value: Any) -> dict[str, Any] | ToolResult:
+    if not isinstance(value, dict):
+        return ToolResult.error("rubric must be an object")
+    raw_criteria = value.get("criteria")
+    if not isinstance(raw_criteria, list) or not raw_criteria:
+        return ToolResult.error("rubric.criteria must be a non-empty array")
+    criteria: list[dict[str, Any]] = []
+    weight_sum = 0.0
+    for index, raw in enumerate(raw_criteria):
+        if not isinstance(raw, dict):
+            return ToolResult.error(f"rubric.criteria[{index}] must be an object")
+        criterion: dict[str, Any] = {}
+        for field in ("name", "description", "scoring_prompt"):
+            text = raw.get(field)
+            if not isinstance(text, str) or not text.strip():
+                return ToolResult.error(f"rubric.criteria[{index}].{field} is required")
+            criterion[field] = text.strip()
+        try:
+            weight = float(raw.get("weight", ""))
+        except (TypeError, ValueError):
+            return ToolResult.error(
+                f"rubric.criteria[{index}].weight must be a number"
+            )
+        criterion["weight"] = weight
+        weight_sum += weight
+        criterion["scale_min"] = int(raw.get("scale_min", 1))
+        criterion["scale_max"] = int(raw.get("scale_max", 5))
+        criteria.append(criterion)
+    if abs(weight_sum - 1.0) > _WEIGHT_SUM_TOLERANCE:
+        return ToolResult.error(
+            f"rubric.criteria weights must sum to 1.0 (got {weight_sum})"
+        )
+    global_prompt = value.get("global_scoring_prompt")
+    return {
+        "global_scoring_prompt": (
+            global_prompt.strip() if isinstance(global_prompt, str) else ""
+        ),
+        "criteria": criteria,
+    }
+
+
 __all__ = [
+    "GenSyntheticEvalsWorkflowTool",
     "MasherRuntimeContext",
     "OnlineEvalCurationWorkflowTool",
     "TraceDigestWorkflowTool",

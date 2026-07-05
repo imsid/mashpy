@@ -2,7 +2,7 @@
 
 Status: Draft
 
-Last Updated: 2026-07-02
+Last Updated: 2026-07-04
 
 ## What We Are Solving
 
@@ -14,7 +14,7 @@ Synthetic evals are also useful beyond cold start. As a host evolves, there will
 
 This is not a substitute for evaluating against live traces, which carry their own value — real distribution, real user intent, real failure modes. Synthetic and live evals are complementary. This document covers synthetic evals only.
 
-The system lives entirely inside Mash — as workflow specs within the masher agent — with no external eval infrastructure required.
+The system lives entirely inside Mash. Generation runs as a masher workflow; scoring runs as a durable workflow strategy that uses masher only as an LLM judge. Evals persist to a dedicated Postgres store that ships with Mash. No external eval infrastructure is required.
 
 ---
 
@@ -32,97 +32,118 @@ Host: travel-assistant
 
 ### AgentSpec
 
-An AgentSpec is the implementation of one agent: its system prompt, tools, LLM model, and MCP servers. AgentSpecs evolve — developers change system prompts, add or remove tools. The host composition (who is in the host and in what role) stays the same; the AgentSpec of each member can change independently.
+An AgentSpec is the implementation of one agent: its system prompt, tools, LLM model, and MCP servers. AgentSpecs evolve — developers change system prompts, add or remove tools, swap models. The host composition can evolve too: a subagent gets added, another gets retired. Each experiment records the state of both at the moment it ran.
 
 ### Dataset
 
-A dataset is a set of up to 100 synthetic test cases generated for a specific host composition. Each row describes one scenario: what the user input is, which capability it exercises, which agents should be involved, and what good behavior looks like. The dataset is not a list of expected outputs — it is a structured description of intent that the scoring rubric operates against.
+A dataset is a set of synthetic test cases generated for a host. Its size is an explicit input to generation — the developer asks for a specific number of rows (default 20, max 100) and gets exactly that many. Each row describes one scenario: what the user input is, which capability it exercises, which agents should be involved, and what good behavior looks like. The dataset is not a list of expected outputs — it is a structured description of intent that the scoring rubric operates against.
 
 ### Scoring Rubric
 
-A rubric is a set of weighted criteria derived from the host's declared capabilities and the developer's guidance. Each criterion has a name, a description of what it measures, a weight, and a specific scoring prompt for the LLM judge. The rubric is the stable reference for what "good" means for this host — it does not change between experiments.
+A rubric is a set of weighted criteria derived from the host's declared capabilities and the developer's guidance. Each criterion has a name, a description of what it measures, a weight, and a specific scoring prompt for the LLM judge. The rubric is the stable reference for what "good" means for this host — every experiment on an eval is scored against the same rubric.
 
-### eval_id
+### Eval
 
-An eval bundles three things together under one ID: the dataset, a snapshot of the host composition, and a snapshot of the AgentSpec of every agent in that composition at the time the eval was created. This frozen AgentSpec state is the baseline — the "before" against which future experiments are compared.
+An eval is the test definition: a dataset and a scoring rubric, bundled under one ID. It records which host it was generated for, but it carries no snapshot of that host's state — the eval defines *what to measure*, not *what is being measured*.
 
-An eval is created by running the `gen-synthetic-evals` workflow. Each run produces a new eval_id.
+An eval is created by running the `gen-synthetic-evals` workflow. After generation the developer can adjust it — rebalance rubric weights, tune criteria — up until the first experiment is created. From that point the eval is locked: experiments are only comparable if they ran the exact same dataset against the exact same rubric, so once results exist against an eval, the eval can never change. To measure something different, generate a new eval.
 
-### experiment_id
+### Experiment
 
-An experiment is one execution of a dataset against the host, with scoring. When score-evals runs, it loads the dataset and rubric from the eval, snapshots the current AgentSpec of every agent in the frozen composition, computes the delta from the eval baseline, runs every dataset input through the host, and scores the outputs. The result — including the AgentSpec snapshot, the delta, per-row scores, and an aggregate — is persisted under a new experiment_id.
+An experiment is one execution of an eval against the host as it exists right now. Creating and running an experiment are one action: the system snapshots the live host composition and the AgentSpec of every agent in it, then runs every dataset input through the host and scores each output with an LLM judge. Rows run in parallel, each under its own host session, and each row also captures operational metrics — tokens, steps, tool calls, latency — folded from that session's runtime events.
 
-An eval_id can have many experiment_ids. Each experiment_id represents the system's state at one point in time.
+An experiment runs exactly once. Its snapshot is not configuration — it is a record of what was actually evaluated. There is no baseline stored anywhere: an eval can have many experiments, each capturing the system's state at one point in time, and any two of them can be compared. The delta between two experiments — which prompts changed, which tools were added, how scores and costs moved — is computed at read time from their snapshots and their runs, never stored.
 
 ---
 
 ## How the Concepts Relate
 
 ```
-Host
- └── composition (frozen in eval_id)
-      ├── primary AgentSpec   ─┐
-      └── subagent AgentSpecs ─┴── baseline snapshot (frozen in eval_id)
-                                    └── current snapshot (captured per experiment_id)
-                                         └── delta (baseline → current)
-
-eval_id
- ├── host_composition (frozen)
- ├── agent_spec_baseline (frozen)
- ├── dataset (up to 100 rows)
+eval_id                                   the test definition
+ ├── host_id (which host it was generated for)
+ ├── dataset (row_count rows; default 20, max 100)
  └── scoring_rubric
+      (editable until the first experiment; locked after)
 
-experiment_id
+experiment_id                             one execution, run once
  ├── eval_id (FK)
- ├── agent_spec_snapshot (current)
- ├── agent_spec_delta (diff from baseline)
+ ├── host_composition (snapshot of the live host at run start)
+ ├── agent_spec_snapshot (per-agent spec state at run start)
+ ├── status (pending → completed | failed)
  └── experiment_runs (one per dataset row)
       ├── row_id (FK → dataset)
+      ├── session_id (host session the row ran under → Logs)
       ├── actual_output
-      ├── weighted_score
-      └── scores (per criterion: score + rationale)
+      ├── weighted_score (null if the row errored)
+      ├── error (failure reason, null on success)
+      ├── scores (per criterion: score + rationale)
+      └── metrics (operational: tokens, steps, tool calls, latency)
+
+comparison (read time only, nothing stored)
+ └── experiment A vs experiment B
+      ├── agent_spec_delta (diff of the two snapshots)
+      ├── score delta (aggregate + per criterion + per row)
+      └── operational delta (tokens, calls, latency)
 ```
 
 The key invariants:
 
-- The host composition (who is in the host) is fixed per eval_id. score-evals always routes inputs through the same primary and subagents the dataset was designed for.
-- The rubric is fixed per eval_id. Scores across experiments are always measured on the same criteria.
-- The AgentSpec can change freely between experiments. The delta captures exactly what changed.
+- The dataset and rubric are fixed per eval_id once the first experiment exists. Every experiment on an eval ran the same inputs and was scored on the same criteria — that is what makes them comparable.
+- An experiment always runs against the live host: whatever composition and AgentSpecs are deployed when it starts. The snapshot records exactly that state.
+- Nothing derived is stored. Deltas between experiments, score aggregates, and operational rollups are all computed at read time.
+
+The intended loop: define an eval, run an experiment against the current host state, change something — a system prompt, a tool, a model — run another experiment on the same eval, and compare the two.
 
 ---
 
 ## Structural Design
 
-### Workflows
+Both flows are registered as `WorkflowSpec` definitions on the masher agent, but they execute differently. Generation is a masher workflow task backed by a SKILL. Scoring is a workflow strategy that drives its own execution in code and calls masher only to judge.
 
-Both workflows live inside the masher agent as `WorkflowSpec` definitions.
+### Generation: `gen-synthetic-evals`
 
-**`gen-synthetic-evals`**
+Triggered from the admin UI Evals tab with a target host, optional user guidance, and a row count (default 20, max 100). This is a single masher task, `generate-evals`, backed by the `gen-synthetic-evals` SKILL. Masher reads the host's declared capabilities, generates the dataset and rubric, then calls a persistence tool to write them.
 
-Triggered from the admin UI Evals tab. Takes user guidance as its initial input message.
-
-| Task | What It Does |
+| Step | What It Does |
 |---|---|
-| `snapshot-composition` | Reads the target host's current composition and AgentSpec state |
-| `generate-dataset` | SKILL-backed: generates up to 100 synthetic inputs from composition + user guidance |
-| `generate-rubric` | SKILL-backed: derives scoring criteria from host capabilities + user guidance |
-| `persist-eval` | Writes dataset, rubric, composition snapshot, AgentSpec baseline to Postgres; returns eval_id |
+| generate (SKILL) | Masher reads the host composition and generates exactly `row_count` synthetic rows plus a weighted rubric |
+| persist (tool) | `run_gen_synthetic_evals_workflow` validates the rows and rubric, writes dataset, rubric, and eval to Postgres, and returns eval_id |
 
-**`score-evals`**
+The persistence tool does no LLM work and takes no snapshots. It validates the generated rows and rubric — including that the dataset has exactly the requested number of rows, so the size is deterministic rather than the model's judgment — and hands everything to the eval store.
 
-Triggered from the admin UI with an eval_id as input.
+### Scoring: `score-evals`
 
-| Task | What It Does |
+Triggered from the admin UI with an eval_id. Each trigger creates and runs one new experiment. Scoring does not run as a sequential chain of masher tasks. It runs as a `WorkflowStrategy` — `ScoreEvalsStrategy` — that orchestrates in deterministic code and calls masher only as the per-row judge. The workflow spec keeps a single task entry to pin the judge agent and its output contract; the strategy replaces the generic task loop.
+
+| Stage | What It Does |
 |---|---|
-| `load-eval` | Reads dataset, rubric, frozen composition, and AgentSpec baseline from eval_id |
-| `snapshot-agent-specs` | Captures current AgentSpec for each agent in the frozen composition; computes delta |
-| `run-inputs` | Submits each dataset row to the host; collects outputs (parallelized, bounded by `max_parallel_tools`) |
-| `score-outputs` | LLM-as-judge scores each (input, output) pair against rubric criteria |
-| `persist-experiment` | Writes results, AgentSpec snapshot, delta to Postgres; returns experiment_id |
+| load | Reads dataset rows, rubric, and host_id for the eval_id |
+| create | Snapshots the live host composition and the current AgentSpec of every agent in it, then writes the experiment row with status `pending`, so `created_at` marks the start of scoring |
+| score rows | Fans out one durable child workflow per dataset row over a dedicated DBOS queue (`mash.eval.rows`, concurrency 8) |
+| finalize | Persists one run per row, stamps `completed_at`, and sets status to `completed` (or `failed` if no row scored) |
+
+Each per-row child workflow runs the row input through the live host — full composition, under a session id unique to that row — judges the output with masher, and folds the row's session events into operational metrics. Child workflow ids and run ids are deterministic, keyed by experiment and row, so a partial retry upserts rather than duplicating. A row that errors records its failure reason and a null score; it does not fail the experiment. The experiment is `completed` if any row scored, and `failed` only if none did.
+
+The first `score-evals` run against an eval also locks it: from then on the rubric can no longer be edited.
+
+### Judge
+
+Scoring is the only LLM step in `score-evals`. For each row the strategy builds a self-contained judge message — the rubric criteria with their scales and weights, the test input, and the agent output — and calls masher with a structured-output contract. Masher returns a per-criterion score and rationale. The strategy recomputes `weighted_score` from the rubric weights and the returned scores; it does not trust the model's own arithmetic. Because criterion names are dynamic and cannot be expressed as a closed provider schema, the judge returns a `json_text` string that the strategy parses and validates.
+
+### Comparison
+
+Comparison is a read-time operation over two experiments of the same eval. Nothing about a comparison is persisted. Given a baseline experiment and a control experiment, the API:
+
+- diffs the two `agent_spec_snapshot`s into a per-agent delta (system prompt changed, tools added/removed, model changed, MCP servers added/removed), reusing the same diff that would apply to any two snapshots;
+- computes both score aggregates — mean and per-criterion breakdown — from each experiment's runs and returns them side by side;
+- computes both operational rollups the same way;
+- pairs runs by `row_id` and returns per-row score deltas, so the UI can rank rows by movement and surface which inputs drove the change.
+
+Because deltas are computed rather than stored, any experiment can serve as the baseline for any other experiment on the same eval.
 
 ### SKILL
 
-The generation SKILL provides masher with detailed instructions for how to read a host composition and produce a high-quality dataset and rubric. It covers: how to infer scenario diversity from declared capabilities, how to generate inputs that exercise multi-agent routing, how to construct rubric criteria that match the host's purpose, and how to weight criteria. The SKILL is the only place generation logic lives — changing it changes generation behavior without touching workflow code.
+Generation has one SKILL, `gen-synthetic-evals`. It gives masher the instructions for reading a host composition and producing a high-quality dataset and rubric: how to infer scenario diversity from declared capabilities, how to spread rows across sampling categories, how to generate inputs that exercise multi-agent routing, and how to construct and weight rubric criteria. Changing the SKILL changes generation behavior without touching workflow code. Scoring has no SKILL — its judge prompt is built in code from the rubric.
 
 ---
 
@@ -150,23 +171,21 @@ The generation SKILL provides masher with detailed instructions for how to read 
 ```python
 {
     "rubric_id": str,               # UUID
+    "global_scoring_prompt": str,   # overall context given to the LLM judge
     "criteria": [
         {
             "name": str,            # e.g. "task_completion"
             "description": str,     # what this criterion measures
             "weight": float,        # importance weight, sums to 1.0 across criteria
             "scoring_prompt": str,  # specific judge prompt for this criterion
-            "scale": {
-                "min": 1,
-                "max": 5,
-            },
+            "scale_min": int,       # default 1
+            "scale_max": int,       # default 5
         }
     ],
-    "global_scoring_prompt": str,   # overall context given to the LLM judge
 }
 ```
 
-Typical criteria for a multi-agent host: `task_completion`, `subagent_coordination`, `tool_selection_accuracy`, `response_quality`, `factual_grounding`. Weights reflect the host's purpose — a research host weights `factual_grounding` higher; a booking host weights `task_completion`. Weights must sum to 1.0 and are editable by the developer after generation.
+Typical criteria for a multi-agent host: `task_completion`, `subagent_coordination`, `tool_selection_accuracy`, `response_quality`, `factual_grounding`. Weights reflect the host's purpose — a research host weights `factual_grounding` higher; a booking host weights `task_completion`. Weights must sum to 1.0 and are editable by the developer after generation, until the eval's first experiment locks them.
 
 ### Eval
 
@@ -174,24 +193,14 @@ Typical criteria for a multi-agent host: `task_completion`, `subagent_coordinati
 {
     "eval_id": str,                     # UUID
     "created_at": datetime,
-    "host_id": str,
+    "host_id": str,                     # host the eval was generated for
     "user_guidance": str,               # developer's seed guidance
-    "host_composition": {               # frozen structural snapshot
-        "primary": str,                 # agent_id
-        "subagents": list[str],         # agent_ids
-    },
-    "agent_spec_baseline": {            # frozen AgentSpec state per agent
-        "<agent_id>": {
-            "system_prompt": str,
-            "tools": list[str],
-            "llm_model": str,
-            "mcp_servers": list[str],
-        }
-    },
     "dataset_id": str,                  # FK → dataset
     "rubric_id": str,                   # FK → rubric
 }
 ```
+
+The eval carries no host or AgentSpec snapshot. Whether an eval is locked is derived: an eval with at least one experiment is locked.
 
 ### Experiment
 
@@ -199,25 +208,27 @@ Typical criteria for a multi-agent host: `task_completion`, `subagent_coordinati
 {
     "experiment_id": str,               # UUID
     "eval_id": str,                     # FK → eval
-    "created_at": datetime,
-    "agent_spec_snapshot": {            # AgentSpec state at run time, same shape as baseline
-        "<agent_id>": { ... }
+    "created_at": datetime,             # stamped when scoring starts
+    "completed_at": datetime | None,    # stamped when scoring finishes
+    "status": str,                      # pending | completed | failed
+    "host_composition": {               # live composition at run start
+        "primary": str,                 # agent_id
+        "subagents": list[str],         # agent_ids
     },
-    "agent_spec_delta": {               # what changed from eval baseline to this run
+    "agent_spec_snapshot": {            # AgentSpec state at run start
         "<agent_id>": {
-            "system_prompt_changed": bool,
-            "tools_added": list[str],
-            "tools_removed": list[str],
-            "llm_model_changed": bool,
-            "mcp_servers_added": list[str],
-            "mcp_servers_removed": list[str],
+            "system_prompt": str,
+            "tools": list[str],
+            "llm_model": str,
+            "mcp_servers": list[str],
         }
     },
-    "status": str,                      # pending | running | complete | failed
 }
 ```
 
-Aggregate scores are not stored on the experiment. They are computed on the fly from `experiment_runs` when the developer selects experiments to compare, using the rubric weights in effect for that eval.
+`created_at` marks the start of scoring and `completed_at` the end, so their difference is the experiment's wall-clock duration.
+
+Nothing derived is stored on the experiment. The score aggregate — mean and per-criterion breakdown, using the rubric weights of the eval — and the operational aggregate — token, step, tool-call, and latency rollups — are computed on the fly from `experiment_runs` when the developer opens or compares experiments. The delta between two experiments is likewise computed at comparison time from their snapshots.
 
 ### ExperimentRun
 
@@ -225,22 +236,59 @@ One row per dataset row per experiment. This is the leaf-level record — all sc
 
 ```python
 {
-    "run_id": str,                      # UUID
+    "run_id": str,                      # deterministic per (experiment, row)
     "experiment_id": str,               # FK → experiment
     "row_id": str,                      # FK → dataset row
     "input": str,                       # denormalized from dataset row for query convenience
-    "actual_output": str,               # full agent response
-    "weighted_score": float,            # sum(score * weight) across criteria for this row
+    "session_id": str | None,           # host session the row ran under; links to Logs
+    "actual_output": str | None,        # full agent response; null if the row errored
+    "weighted_score": float | None,     # sum(score * weight) across criteria; null if unscored
+    "error": str | None,                # failure reason when the row could not be scored
     "scores": {
         "<criterion_name>": {
-            "score": float,             # 1–5
+            "score": int,               # on the criterion's scale (default 1–5)
             "rationale": str,           # judge's explanation
         }
     },
+    "metrics": dict | None,             # operational metrics for this row (see below)
 }
 ```
 
-`weighted_score` per run is pre-computed at score time (it is a deterministic function of `scores` and rubric weights). Experiment-level aggregates — mean, per-criterion breakdown — are derived from `weighted_score` and per-criterion scores across all `experiment_runs` for a given `experiment_id` at query time.
+`weighted_score` per run is computed at score time from `scores` and the rubric weights. Experiment-level score aggregates — mean, per-criterion breakdown — are derived from `weighted_score` and per-criterion scores across all `experiment_runs` for a given `experiment_id` at query time. Rows that errored carry a null `weighted_score` and a populated `error`, and are excluded from the score aggregate. `session_id` deep-links a run to the host session it executed under, so the developer can open the full trace in Logs.
+
+### Operational Metrics
+
+Every dataset row runs through the host under a single session id shared by the primary agent and all of its subagents. That session's runtime events are a self-contained record of what the run cost, independent of the qualitative score. After a row finishes, the strategy folds those events into a `metrics` object and stores it on the run:
+
+```python
+{
+    "latency_ms": float | None,     # wall time across the session
+    "llm_calls": int,
+    "steps": int,
+    "tool_calls": int,
+    "tokens": {
+        "input": int,
+        "output": int,
+        "cache_read": int,
+        "cache_creation": int,
+    },
+    "tool_call_breakdown": dict,    # tool name → call count
+    "stop_reason": str | None,      # primary agent's terminal stop reason
+    "num_subagent_steps": int,
+    "subagents": [                  # per-subagent rollup
+        {
+            "agent_id": str,
+            "steps": int,
+            "tool_calls": int,
+            "llm_calls": int,
+            "stop_reason": str | None,
+            "tokens": { ... },
+        }
+    ],
+}
+```
+
+The fold is a pure function over the event list with no I/O, so it is deterministic and unit-testable against a captured session. It is best-effort: a row whose host request errored still reports the tokens and steps it spent before failing, and a metrics failure never fails the row. Metrics are rolled up at read time, so an experiment's operational aggregate always matches its persisted rows.
 
 ---
 
@@ -256,11 +304,11 @@ Host: travel-assistant
 
 **Step 1: Generate an eval.**
 
-The developer opens the Evals tab in the admin UI, selects `travel-assistant`, and runs `gen-synthetic-evals` with the following guidance:
+The developer opens the Evals tab in the admin UI, selects `travel-assistant`, sets the row count to 100, and runs `gen-synthetic-evals` with the following guidance:
 
 > "Users typically ask about round trips, multi-city itineraries, and budget constraints. FlightSearch and HotelSearch should both be exercised."
 
-The workflow snapshots the current composition and AgentSpec state, runs the SKILL, and produces:
+The workflow runs the SKILL and produces:
 
 - 100 synthetic inputs such as:
   - "Find me a round-trip flight from NYC to Paris under $1000 in mid-August"
@@ -268,13 +316,13 @@ The workflow snapshots the current composition and AgentSpec state, runs the SKI
   - "What's the cheapest way to get from London to Tokyo next month?"
 - A rubric with four criteria: `task_completion` (0.4), `subagent_coordination` (0.3), `response_quality` (0.2), `factual_grounding` (0.1)
 
-Result: `eval_id = eval-001`. AgentSpec baseline is frozen.
+Result: `eval_id = eval-001`. The developer bumps `task_completion` to 0.45 and trims `subagent_coordination` to 0.25 — the eval has no experiments yet, so it is still editable.
 
-**Step 2: Run the first experiment (baseline).**
+**Step 2: Run the first experiment.**
 
-The developer immediately runs `score-evals` with `eval_id = eval-001`. The current AgentSpec matches the baseline exactly, so `agent_spec_delta` is empty. All 100 inputs run through the host; outputs are scored.
+The developer runs `score-evals` with `eval_id = eval-001`. The strategy snapshots the live composition and AgentSpecs, and the 100 inputs run through the host in parallel over the row queue, each under its own session; every output is judged and every session is folded into operational metrics. This first experiment also locks `eval-001` — the rubric can no longer change.
 
-Result: `experiment_id = exp-001`. 100 `experiment_runs` written, one per dataset row.
+Result: `experiment_id = exp-001`. 100 `experiment_runs` written, one per dataset row, each carrying its score and its metrics.
 
 **Step 3: Change the primary agent's system prompt.**
 
@@ -282,40 +330,43 @@ The developer rewrites TravelConcierge's system prompt to explicitly handle budg
 
 **Step 4: Run a second experiment.**
 
-The developer runs `score-evals` again with `eval_id = eval-001`. The workflow snapshots the current AgentSpec and computes the delta:
-
-```
-agent_spec_delta:
-  TravelConcierge:
-    system_prompt_changed: true
-  FlightSearch:  (no changes)
-  HotelSearch:   (no changes)
-```
-
-The same 100 inputs run through the same frozen host composition. Outputs are scored against the same rubric.
+The developer runs `score-evals` again with `eval_id = eval-001`. A new experiment snapshots the host as it is now and runs the same 100 inputs through it, scored against the same rubric.
 
 Result: `experiment_id = exp-002`. 100 `experiment_runs` written.
 
 **Step 5: Compare in the Evals tab.**
 
-The developer selects `exp-001` as the baseline and `exp-002` as the control. Aggregate scores and per-criterion breakdowns are computed on the fly from `experiment_runs`:
+The developer selects `exp-001` as the baseline and `exp-002` as the control. The comparison is computed on the fly: the spec delta from the two snapshots, the score and operational aggregates from each experiment's runs.
 
 ```
-eval-001  travel-assistant  100 rows  2026-07-02
+eval-001  travel-assistant  100 rows  2026-07-04
 
-  baseline: exp-001  (no delta from eval — initial run)
-  control:  exp-002  (TravelConcierge: system_prompt changed)
+  baseline: exp-001
+  control:  exp-002
+
+  agent changes (exp-001 → exp-002):
+    TravelConcierge:  system_prompt changed
+    FlightSearch:     (no changes)
+    HotelSearch:      (no changes)
 
   aggregate score         3.6  →  4.1   (+0.5)
 
   by criterion:
-    task_completion       3.4  →  4.2   (+0.8)   weight: 0.4
-    subagent_coordination 3.8  →  3.9   (+0.1)   weight: 0.3
+    task_completion       3.4  →  4.2   (+0.8)   weight: 0.45
+    subagent_coordination 3.8  →  3.9   (+0.1)   weight: 0.25
     response_quality      3.5  →  4.3   (+0.8)   weight: 0.2
     factual_grounding     3.2  →  3.8   (+0.6)   weight: 0.1
+
+  operational (mean per row):
+    tokens (in / out)     2,940 / 610  →  3,510 / 720
+    llm calls             4.1  →  4.6
+    tool calls            2.3  →  2.5
+    latency               8.4s →  9.1s
 ```
 
-The developer then expands the row-level view to see which specific inputs drove the delta. Rows are ranked by absolute score change between the two experiments:
+The prompt rewrite raised scores but also raised cost per row. The operational rollup makes that trade-off visible alongside the quality delta.
+
+The developer then expands the row-level view to see which specific inputs drove the delta. Runs are paired by row_id and ranked by absolute score change between the two experiments:
 
 ```
   top regressions (baseline → control):

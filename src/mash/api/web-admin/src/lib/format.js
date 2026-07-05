@@ -1,3 +1,13 @@
+export function formatIso(isoString) {
+  if (!isoString) return '—';
+  return new Date(isoString).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function compactNumber(n) {
   const value = Number(n) || 0;
   if (Math.abs(value) >= 1000) {

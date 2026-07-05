@@ -6,10 +6,11 @@ import asyncio
 from collections import defaultdict
 from typing import Any, cast
 
+from mash.storage.migrations import run_migrations
+
 from ...protocol import RuntimeStore
 from ...types import FeedbackRecord, RuntimeEvent
 from . import loaders
-from .migrations import run_migrations
 
 try:
     import psycopg
@@ -126,6 +127,17 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.list_request_events(
             self._pool, request_id, after_seq=after_seq
+        )
+
+    async def list_session_events(
+        self,
+        session_id: str,
+        *,
+        event_types: list[str] | None = None,
+    ) -> list[RuntimeEvent]:
+        await self.open()
+        return await loaders.list_session_events(
+            self._pool, session_id, event_types=event_types
         )
 
     async def list_events(

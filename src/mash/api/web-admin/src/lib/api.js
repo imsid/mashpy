@@ -92,6 +92,8 @@ export const api = {
   // --- Hosts ---
   listHosts: () => request('/hosts'),
   getHost: (hostId) => request(`/hosts/${encodeURIComponent(hostId)}`),
+  getHostSnapshot: (hostId) =>
+    request(`/hosts/${encodeURIComponent(hostId)}/snapshot`),
   defineHost: (hostId, body) =>
     request(`/hosts/${encodeURIComponent(hostId)}`, { method: 'PUT', body }),
   submitHostRequest: (hostId, body) =>
@@ -123,4 +125,33 @@ export const api = {
 
   // --- Feedback ---
   listFeedback: (params) => request('/feedback', { params }),
+
+  // --- Evals ---
+  listEvals: (params) => request('/evals', { params }),
+  getEval: (evalId) => request(`/evals/${encodeURIComponent(evalId)}`),
+  deleteEval: (evalId) =>
+    request(`/evals/${encodeURIComponent(evalId)}`, { method: 'DELETE' }),
+  updateRubric: (evalId, body) =>
+    request(`/evals/${encodeURIComponent(evalId)}/rubric`, { method: 'PUT', body }),
+  listExperiments: (evalId, params) =>
+    request(`/evals/${encodeURIComponent(evalId)}/experiments`, { params }),
+  getExperiment: (evalId, experimentId) =>
+    request(
+      `/evals/${encodeURIComponent(evalId)}/experiments/${encodeURIComponent(experimentId)}`,
+    ),
+  compareExperiments: (evalId, baselineId, controlId) =>
+    request(`/evals/${encodeURIComponent(evalId)}/experiments/compare`, {
+      params: { baseline: baselineId, control: controlId },
+    }),
+  listRuns: (evalId, experimentId, params) =>
+    request(
+      `/evals/${encodeURIComponent(evalId)}/experiments/${encodeURIComponent(experimentId)}/runs`,
+      { params },
+    ),
+
+  // --- Workflow execution (for evals) ---
+  runWorkflow: (workflowId, body) =>
+    request(`/workflow/${encodeURIComponent(workflowId)}/run`, { method: 'POST', body }),
+  getWorkflowRun: (workflowId, runId) =>
+    request(`/workflow/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`),
 };

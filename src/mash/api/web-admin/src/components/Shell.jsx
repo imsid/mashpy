@@ -11,6 +11,7 @@ const NAV = [
   { to: '/hosts', label: 'Hosts' },
   { to: '/logs', label: 'Logs' },
   { to: '/feedback', label: 'Feedback' },
+  { to: '/evals', label: 'Evals' },
   { to: '/reference', label: 'Reference', divider: true },
 ];
 

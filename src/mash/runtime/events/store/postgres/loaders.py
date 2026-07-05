@@ -240,6 +240,47 @@ async def list_request_events(
     return [dict_to_event(row) for row in rows]
 
 
+async def list_session_events(
+    pool: Any,
+    session_id: str,
+    *,
+    event_types: list[str] | None = None,
+) -> list[RuntimeEvent]:
+    """Fetch a session's events across *all* agents (primary + subagents).
+
+    Unlike :func:`list_events`, this is not scoped to one ``app_id`` — subagents
+    log under their own app_id but share the session, so metrics aggregation
+    needs the whole session in one pass. The bulky ``response`` body is stripped
+    from terminal events since only ``response_metadata`` (stop_reason, tokens)
+    is needed here.
+    """
+    clauses = ["session_id = %s"]
+    params: list[Any] = [session_id]
+    if event_types:
+        clauses.append("event_type = ANY(%s)")
+        params.append(list(event_types))
+    query = f"""
+        SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+               agent_id, session_id, host_id, event_type, loop_index, step_key,
+               dedupe_key,
+               CASE
+                   WHEN event_type IN (
+                       'runtime.request.completed', 'runtime.request.failed'
+                   ) THEN payload - 'response'
+                   ELSE payload
+               END AS payload,
+               created_at
+        FROM runtime_event_log
+        WHERE {' AND '.join(clauses)}
+        ORDER BY event_id ASC
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+    return [dict_to_event(row) for row in rows]
+
+
 async def list_events(
     pool: Any,
     app_id: str,

@@ -20,6 +20,8 @@ from mash.agents.masher import (
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
 )
 from mash.agents.masher.tool import (
+    GenSyntheticEvalsWorkflowTool,
+    MasherRuntimeContext,
     _build_online_eval_row,
     _load_trace_bundle,
     _load_trace_events,
@@ -235,9 +237,12 @@ class MasherTests(unittest.TestCase):
                 tools = spec.build_tools()
                 skills = spec.build_skills()
 
+                # score-evals is a strategy-driven workflow (no Masher tool/skill);
+                # its judging path is exercised in the score_runner tests.
                 self.assertEqual(
                     sorted(tools.list_tools()),
                     [
+                        "run_gen_synthetic_evals_workflow",
                         "run_online_eval_curation_workflow",
                         "run_trace_digest_workflow",
                     ],
@@ -252,13 +257,14 @@ class MasherTests(unittest.TestCase):
                     sorted(agent.tools.list_tools()),
                     [
                         "Skill",
+                        "run_gen_synthetic_evals_workflow",
                         "run_online_eval_curation_workflow",
                         "run_trace_digest_workflow",
                     ],
                 )
                 self.assertEqual(
                     sorted(skill.name for skill in skills.list_skills()),
-                    ["online-eval-curation", "trace-digest-workflow"],
+                    ["gen-synthetic-evals", "online-eval-curation", "trace-digest-workflow"],
                 )
                 prompt = spec.build_agent_config().system_prompt
                 self.assertIn("event_type", prompt)
@@ -274,7 +280,7 @@ class MasherTests(unittest.TestCase):
                 self.assertNotIn("Online Eval Curation", prompt)
                 self.assertNotIn("run_trace_digest_workflow", prompt)
                 self.assertNotIn("run_online_eval_curation_workflow", prompt)
-                self.assertEqual(spec.build_agent_config().max_steps, 6)
+                self.assertEqual(spec.build_agent_config().max_steps, 20)
 
     def test_relative_data_dir_resolves_once_for_masher_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -702,6 +708,84 @@ class MasherTests(unittest.TestCase):
                     )
                 finally:
                     asyncio.run(host.close())
+
+
+class _FakeEval:
+    eval_id = "eval_1"
+    host_id = "guide"
+    dataset_id = "ds_1"
+    rubric_id = "rbr_1"
+
+
+class _FakeEvalService:
+    def __init__(self) -> None:
+        self.persisted_kwargs: dict[str, Any] | None = None
+
+    async def persist_eval(self, **kwargs: Any) -> _FakeEval:
+        self.persisted_kwargs = kwargs
+        return _FakeEval()
+
+
+def _gen_rows(count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "input": f"question {index}",
+            "scenario_description": "scenario",
+            "sampling_category": "random",
+            "expected_behavior": "answers correctly",
+            "target_agents": ["pilot"],
+        }
+        for index in range(count)
+    ]
+
+
+_GEN_RUBRIC = {
+    "global_scoring_prompt": "Judge it.",
+    "criteria": [
+        {"name": "accuracy", "description": "d", "weight": 1.0, "scoring_prompt": "p"},
+    ],
+}
+
+
+class GenSyntheticEvalsRowCountTests(unittest.TestCase):
+    def _tool(self) -> tuple[GenSyntheticEvalsWorkflowTool, _FakeEvalService]:
+        context = MasherRuntimeContext()
+        service = _FakeEvalService()
+        context.bind_eval_service(service)
+        return GenSyntheticEvalsWorkflowTool(context=context), service
+
+    def _execute(self, tool: GenSyntheticEvalsWorkflowTool, args: dict[str, Any]) -> Any:
+        return asyncio.run(tool.execute({"host_id": "guide", "rubric": _GEN_RUBRIC, **args}))
+
+    def test_defaults_to_20_rows_when_row_count_omitted(self) -> None:
+        tool, service = self._tool()
+        result = self._execute(tool, {"dataset_rows": _gen_rows(20)})
+        self.assertFalse(result.is_error)
+        self.assertEqual(len(service.persisted_kwargs["dataset_rows"]), 20)
+
+    def test_default_rejects_wrong_row_count(self) -> None:
+        tool, service = self._tool()
+        result = self._execute(tool, {"dataset_rows": _gen_rows(5)})
+        self.assertTrue(result.is_error)
+        self.assertIn("exactly 20 rows", result.content)
+        self.assertIsNone(service.persisted_kwargs)
+
+    def test_explicit_row_count_is_enforced(self) -> None:
+        tool, service = self._tool()
+        ok = self._execute(tool, {"row_count": 5, "dataset_rows": _gen_rows(5)})
+        self.assertFalse(ok.is_error)
+        self.assertEqual(len(service.persisted_kwargs["dataset_rows"]), 5)
+
+        mismatch = self._execute(tool, {"row_count": 5, "dataset_rows": _gen_rows(4)})
+        self.assertTrue(mismatch.is_error)
+        self.assertIn("exactly 5 rows", mismatch.content)
+
+    def test_row_count_out_of_range_is_rejected(self) -> None:
+        tool, _ = self._tool()
+        for bad in (0, 101):
+            result = self._execute(tool, {"row_count": bad, "dataset_rows": _gen_rows(1)})
+            self.assertTrue(result.is_error)
+            self.assertIn("between 1 and 100", result.content)
 
 
 if __name__ == "__main__":

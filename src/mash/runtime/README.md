@@ -55,7 +55,7 @@ The runtime is intentionally split into four layers:
 2. **Event sourcing**
    - `events/types.py`
    - `events/protocol.py`
-   - `events/store/` (Postgres backend + migrations)
+   - `events/store/` (Postgres backend; schema lives in the shared `mash/storage/migrations/` baseline)
    - defines the append-only runtime event model and the store interface used for replay/streaming
 
 3. **Workflow durability**
@@ -148,7 +148,7 @@ The event sourcing interface is:
 - [`events/store/`](./events/store/)
   - `PostgresRuntimeStore` implementation
   - `store/postgres/loaders.py` — all read/write query functions
-  - `store/postgres/migrations/` — ordered SQL migration files + runner
+  - schema migrations live in the shared [`mash/storage/migrations/`](../storage/migrations/) baseline
 
 The `RuntimeStore` boundary is intentionally small:
 

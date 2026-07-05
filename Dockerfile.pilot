@@ -15,7 +15,10 @@ WORKDIR /opt/mash
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install .
+# Editable install: site-packages gets a finder pointing at /opt/mash/src, so
+# a live bind-mount of the local repo over /opt/mash (see docker-compose.pilot.yml)
+# is picked up on restart without an image rebuild. Rebuild only for dep changes.
+RUN pip install -e .
 
 # Agents read the same source tree the runtime is running from.
 ENV MASH_HOST_APP=pilot.spec:build_pool
