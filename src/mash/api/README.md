@@ -378,6 +378,79 @@ These endpoints are always available; they do not depend on `enable_observabilit
   - `feedback`: list of stored records
   - `agent_id`, `after`, `before`, `limit`
 
+### Evals
+
+Read/manage surface for synthetic evals (see `src/mash/evals/README.md` for the
+data model). These endpoints do not depend on `enable_observability`, but they
+require a configured `MASH_DATABASE_URL`; without one every route returns `503
+EVALS_NOT_AVAILABLE`. Generation and scoring are not HTTP-native: they run as
+the `gen-synthetic-evals` and `score-evals` workflows through the normal
+`POST /api/v1/workflow/{workflow_id}/run` route.
+
+`GET /api/v1/evals`
+- Lists evals, most recent first.
+- Query params:
+  - `host_id` optional filter
+  - `limit` optional, default 50, clamped to `1..200`
+  - `offset` optional, default 0
+- Returns:
+  - `evals`: list of eval records (`eval_id`, `host_id`, `user_guidance`, `dataset_id`, `rubric_id`, `created_at`)
+  - `total`: count of returned records
+
+`GET /api/v1/evals/{eval_id}`
+- One eval with its full dataset and rubric.
+- Returns:
+  - `eval`: the eval record
+  - `rows`: dataset rows (`row_id`, `input`, `scenario_description`, `sampling_category`, `expected_behavior`)
+  - `rubric`: scoring rubric (`global_scoring_prompt`, weighted `criteria`)
+  - `locked`: true once the eval has at least one experiment
+- `404 EVAL_NOT_FOUND` for unknown ids.
+
+`DELETE /api/v1/evals/{eval_id}`
+- Deletes the eval with its dataset, rubric, experiments, and runs.
+- Returns `eval_id` and `deleted: true`; `404 EVAL_NOT_FOUND` for unknown ids.
+
+`PUT /api/v1/evals/{eval_id}/rubric`
+- Replaces the rubric criteria while the eval is unlocked.
+- Body fields:
+  - `criteria` required non-empty list of criterion objects (`name`, `description`, `weight`, `scoring_prompt`, optional `scale_min`/`scale_max`)
+- Returns the updated `rubric`.
+- `409 EVAL_LOCKED` once the eval has experiments — results stay comparable
+  because the measure can no longer change; generate a new eval instead.
+
+`GET /api/v1/evals/{eval_id}/experiments`
+- Lists experiments for one eval, most recent first.
+- Query params:
+  - `limit` optional, default 20, clamped to `1..100`
+  - `offset` optional, default 0
+- Returns:
+  - `experiments`: experiment records (`experiment_id`, `status`, `host_composition`, `agent_spec_snapshot`, `created_at`, `completed_at`)
+  - `total`: count of returned records
+
+`GET /api/v1/evals/{eval_id}/experiments/{experiment_id}`
+- One experiment with aggregate results.
+- Returns:
+  - `experiment`: the experiment record, including the host composition and per-agent spec snapshot captured at run start
+  - `aggregate`: `mean_score`, per-criterion means, run counts, and `operational` cost rollups (latency, steps, tokens including cache read/write, LLM/tool calls, subagent steps)
+- `404 EXPERIMENT_NOT_FOUND` for unknown ids.
+
+`GET /api/v1/evals/{eval_id}/experiments/compare`
+- Side-by-side comparison of two experiments on the same eval.
+- Query params:
+  - `baseline` required experiment id
+  - `control` required experiment id
+- Returns paired per-row runs, score and operational deltas, and the agent-spec
+  diff between the two snapshots (`diff_agent_specs`).
+
+`GET /api/v1/evals/{eval_id}/experiments/{experiment_id}/runs`
+- Per-row results for one experiment.
+- Query params:
+  - `limit` optional, default 100, clamped to `1..500`
+  - `offset` optional, default 0
+- Returns:
+  - `runs`: one record per dataset row — `input`, `actual_output`, `weighted_score`, per-criterion `scores` with rationales, `session_id` (links the row's execution to the telemetry surface), `error` when the row could not be scored, and `metrics` (per-row operational cost)
+  - `total`: count of returned records
+
 ### Observability
 
 These endpoints require `enable_observability = True`. Memory search uses the target agent's `memory_store`.
