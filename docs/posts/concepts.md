@@ -60,7 +60,9 @@ Host is a Mash-only concept for structuring how applications interface with agen
 
 ### Eval
 
-A dataset of test inputs plus a weighted scoring rubric, defined over a host: the host is the unit of deploy and the unit of evaluation. Synthetic evals generate both from the host's declared capabilities before any real traffic exists; live evals draw on real traces once users arrive. Each run measures deterministic operational metrics (latency, tokens, steps) alongside qualitative criteria scored by an LLM judge.
+A dataset of test inputs plus a weighted scoring rubric to evaluate the host. There are two types of evals: **Synthetic evals** are generated based on the host's declared capabilities and used for evaluating before any real traffic exists and **Live evals** are generated from traces of real user traffic when they exist. 
+
+Each eval run is an **Experiment** that takes a given Eval configuration and current snapshot of Host and Agent composition and measures deterministic operational metrics (latency, tokens, steps) alongside qualitative criteria scored by an LLM judge. Experiments can then be compared against each other to see the relative performance difference between two sets of changes. 
 
 **Mash**
 Python SDK for building agents, a runtime for deploying and managing a Host, and exposes an interface for embedding agents into any application.

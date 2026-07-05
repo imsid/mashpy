@@ -365,7 +365,7 @@ analysis dict in a single call, with no client-side computation needed.
 ### Admin dashboard
 
 The built-in admin dashboard at `http://<HOST>/admin` is a read view over the
-running deployment. The left nav has ten sections.
+running deployment.
 
 Overview reports deployment health: counts of agents, hosts, and sessions, plus
 a per-day chart of requests and tokens across the pool.
