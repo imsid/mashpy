@@ -18,15 +18,16 @@ harness and observability underneath.
 
 - [One Host, Composable Agents](#one-host-composable-agents)
 - [Durable Harness](#durable-harness)
-    - [Core Agent Loop](#core-agent-loop-context-memory-tools-skills-signals-structured-output)
-    - [Human-in-the-Loop Interactions (HITL)](#human-in-the-loop-interactions)
+    - [Core Agent Loop](#core-agent-loop)
+    - [Human-in-the-Loop Interactions (HITL)](#human-in-the-loop-interactions-hitl)
     - [Workflows](#workflows)
+- [Evals](#evals)
 - [Observability](#observability)
     - [Spans and Trace Analysis](#spans-and-trace-analysis)
     - [Telemetry API](#telemetry-api)
     - [Admin dashboard](#admin-dashboard)
     - [CLI Trace Inspection](#cli-trace-inspection)
-    - [Built-In Eval and Trace Digest](#built-in-eval-and-trace-digest)
+    - [Trace Digest](#trace-digest)
 - [Self-Hosted Interfaces](#self-hosted-interfaces)
     - [Composing from the Outside](#composing-from-the-outside)
     - [REPL](#repl)
@@ -264,6 +265,41 @@ execution model for repeatable, stateful agent tasks rather than a loose
 orchestration layer.
 
 
+## Evals
+
+The host is the unit of deploy and the unit of evaluation. Mash evals run a
+dataset through the full composition, primary agent, delegation, and
+subagents, so what gets scored is the response the application actually
+receives. Synthetic evals ship as two workflows on Masher, Mash's built-in
+workflow agent, registered into every pool by default (opt out with
+`HostBuilder.enable_masher(False)`). Masher is a hidden workflow-only worker:
+it never appears in agent listings or `InvokeSubagent` delegation.
+
+- **`gen-synthetic-evals`** reads a host's declared capabilities and the
+  developer's guidance and generates the eval: a dataset of test scenarios
+  (default 20 rows, max 100) plus a weighted scoring rubric. The rubric stays
+  editable until the first experiment runs; from then on the eval is locked,
+  which is what keeps experiments comparable.
+- **`score-evals`** runs one experiment. It snapshots the live host
+  composition and the spec of every agent in it, fans the dataset rows out as
+  durable child workflows over a dedicated queue, judges each output with
+  Masher against the rubric, and folds each row's session events into
+  operational metrics.
+
+Each run records two kinds of signal. Deterministic quantitative metrics come
+from the row's runtime events: latency, tokens with the cached read/write
+split, steps, tool calls, per-subagent breakdowns. Qualitative criteria are
+non-deterministic and scored by the Masher LLM judge, each with a rationale.
+Comparison is computed at read time over any two experiments of the same
+eval: the agent spec delta from the snapshots, score movement per criterion
+and per row, and the operational delta side by side. Nothing derived is
+stored.
+
+The admin dashboard's Evals tab drives the loop end to end: generate an eval
+for a host, tune the rubric, run experiments, and compare two of them down to
+individual rows. [Synthetic evals](synthetic-evals.md) covers the design in
+full.
+
 ## Observability
 
 When agents run as operational software, producing the right answer is not
@@ -329,7 +365,7 @@ analysis dict in a single call, with no client-side computation needed.
 ### Admin dashboard
 
 The built-in admin dashboard at `http://<HOST>/admin` is a read view over the
-running deployment. The left nav has seven sections.
+running deployment.
 
 Overview reports deployment health: counts of agents, hosts, and sessions, plus
 a per-day chart of requests and tokens across the pool.
@@ -338,11 +374,18 @@ Agents lists the role-less pool as cards. Each card shows the agent's display
 name, description, capabilities, usage guidance, and the hosts that use it as
 primary or subagent. Clicking a card opens that agent's logs.
 
+Tools and Skills list everything registered across the agent pool, each with a
+detail view showing which agents carry it.
+
 Workflows lists the workflows registered in the pool with the task chain each
 one runs, every task next to the agent that runs it.
 
 Hosts shows the host compositions: which agent is primary and which are
 subagents for each host.
+
+Evals drives the eval loop: generate an eval for a host, inspect its dataset
+and rubric, run experiments, and compare two experiments down to per-row score
+movement and each row's baseline and control responses.
 
 Logs is the trace view. Sessions list for the selected agent. Expand a session
 to see its traces newest first, then click a trace to open a drawer. The drawer
@@ -370,27 +413,18 @@ Each trace renders a summary line (status, duration, steps, tool calls, tokens),
 a timing breakdown table with visual bars, per-tool stats, and the top slowest
 operations.
 
-### Built-In Eval and Trace Digest
+### Trace Digest
 
-Masher, Mash's built-in workflow agent, is registered into every pool by default
-(opt out with `HostBuilder.enable_masher(False)`). It is a hidden workflow-only
-worker — it never appears in agent listings or `InvokeSubagent` delegation — and
-it exposes two workflows that build on the same span and analysis infrastructure:
-
-- **`masher-trace-digest`** produces a schema v2 digest with the full latency
-  breakdown, tool stats, step breakdown, slowest operations, nested subagent
-  traces, and notable events: a complete diagnostic snapshot of one trace.
-- **`masher-online-eval-curation`** writes normalized eval records with latency
-  context so teams can correlate quality with performance from day one.
-
-Both workflows run deterministically over the runtime event log. Incremental
-mode processes only new traces since the last checkpoint, making it safe to run
-on a schedule.
+Masher also exposes `masher-trace-digest`, a workflow that builds on the same
+span and analysis infrastructure. It produces a schema v2 digest with the full
+latency breakdown, tool stats, step breakdown, slowest operations, nested
+subagent traces, and notable events: a complete diagnostic snapshot of one
+trace. The workflow runs deterministically over the runtime event log, and
+incremental mode processes only new traces since the last checkpoint, making
+it safe to run on a schedule.
 
 ```bash
 /workflow run masher-trace-digest --input '{"mode": "trace", "target_agent_id": "..", "session_id": "..", "trace_id": ".."}'
-
-/workflow run masher-online-eval-curation --input '{"mode": "incremental", "target_agent_id": ".."}'
 ```
 
 ## Self-Hosted Interfaces

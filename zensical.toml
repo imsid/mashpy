@@ -14,7 +14,7 @@ nav = [
     { "Home" = "index.md" },
     { "Posts" = [
         { "Start Here" = [
-            { "Core Concepts" = "posts/concepts.md" },
+            { "General Concepts" = "posts/concepts.md" },
             { "Mash Product Brief" = "posts/product-brief.md" },
             { "Mash Under the Hood" = "posts/mash-under-the-hood.md" },
             { "Host-to-Agent Protocol (H2A)" = "rfcs/host-to-agent-protocol.md" },
@@ -35,6 +35,7 @@ nav = [
             { "Composing Agents" = "posts/composing-agents.md" },
             { "Workflows" = "posts/workflows-and-task-state.md" },
             { "Reading a Trace" = "posts/reading-a-trace.md" },
+            { "Synthetic Evals" = "posts/synthetic-evals.md" },
         ] },
         { "Guides" = [
             { "Exploring Mash with Pilot" = "posts/exploring-mash-with-pilot.md" },
@@ -42,6 +43,9 @@ nav = [
             { "Building Dynamic Hosts over the API" = "posts/building-dynamic-hosts-apis.md" },
             { "How to Deploy a Mash Host" = "posts/how-to-deploy.md" },
             { "Releasing Mash" = "posts/releasing.md" },
+        ] },
+        { "Learnings" = [
+            { "Prompt Caching and the Token Meter" = "posts/prompt-caching-token-meter.md" },
         ] },
     ] },
 ]

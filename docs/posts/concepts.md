@@ -1,6 +1,6 @@
-# Core concepts
+# General concepts
 
-An agent is a language model combined with tools, memory, and instructions to work through a task across multiple steps. Each component below plays a specific role in that system.
+An agentic platform is a system to augment a language model with tools, memory, and instructions to work through a task across multiple steps. Each component below plays a specific role in that system.
 
 ### Model
 
@@ -57,6 +57,12 @@ Events let you observe the agent loop while it is running. Each event has a defi
 A host is a pool of agents composed together. It is the bridge between a user application and one or more agents. Within a host, agents are assigned roles: **primary**, **subagent**, and **workflow**. The primary agent handles free-form user requests and can delegate to subagents. Workflow agents run a deterministic sequence of tasks and return structured output.
 
 Host is a Mash-only concept for structuring how applications interface with agents. The interaction model between user application, host, and agents is governed by the [H2A Protocol](../rfcs/host-to-agent-protocol.md). Composing agents through a host means you can add or remove agents without changing the application. Hosts are self-hosted services, accessible over HTTP or via the CLI.
+
+### Eval
+
+A dataset of test inputs plus a weighted scoring rubric to evaluate the host. There are two types of evals: **Synthetic evals** are generated based on the host's declared capabilities and used for evaluating before any real traffic exists and **Live evals** are generated from traces of real user traffic when they exist. 
+
+Each eval run is an **Experiment** that takes a given Eval configuration and current snapshot of Host and Agent composition and measures deterministic operational metrics (latency, tokens, steps) alongside qualitative criteria scored by an LLM judge. Experiments can then be compared against each other to see the relative performance difference between two sets of changes. 
 
 **Mash**
 Python SDK for building agents, a runtime for deploying and managing a Host, and exposes an interface for embedding agents into any application.
