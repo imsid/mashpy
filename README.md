@@ -32,6 +32,10 @@ standardizes interactions between user applications and agents.
   or published dynamically at runtime.
 - **Observability** — span trees, trace analysis, telemetry API, built-in
   dashboard, and CLI trace inspection. No external APM needed.
+- **Synthetic evals** — generate a test dataset and scoring rubric from a
+  host's declared capabilities, run experiments that snapshot the live host,
+  and compare quality and cost across runs — before the first user message.
+  Datasets, rubrics, and experiment results live in the built-in dashboard.
 - **Self-hosted interfaces** — HTTP API with streaming, CLI, and interactive REPL.
   Deploy locally, in Docker, or on any cloud.
 
@@ -207,6 +211,7 @@ mash repl --host assistant
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
 | **WorkflowSpec** | Ordered task chains with structured output, orchestrated by DBOS |
+| **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
 
 ## Mash Pilot
 
@@ -274,6 +279,7 @@ interactive scaffolding from the REPL.
 
 - [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
 - [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
+- [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem
 - [Deployment guide](docs/posts/how-to-deploy.md) — Docker, cloud, horizontal scaling
 - [Building agent CLIs](docs/posts/building-agent-clis.md) — custom CLI development
 - [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
