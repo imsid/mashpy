@@ -25,7 +25,9 @@ The dashboard's "input" number is the sum of the first three: about 2.03M raw to
 
 ## The prefix cache
 
-Anthropic's prompt cache is a prefix match. The cache key is derived from the exact bytes of the rendered request, in the order tools, then system prompt, then messages, up to a `cache_control` breakpoint. The cache is scoped to the organization and model with a TTL of about five minutes. It has no notion of a session or a conversation. Two requests from two unrelated processes hit the same entry as long as the bytes match.
+Anthropic's prompt cache is a prefix match. The cache key is derived from the exact bytes of the rendered request, in the order tools, then system prompt, then messages, up to a `cache_control` breakpoint. The cache is scoped to the organization and model. It has no notion of a session or a conversation. Two requests from two unrelated processes hit the same entry as long as the bytes match.
+
+An entry lives for five minutes by default, and every read resets that clock. So the entry persists across sessions for as long as something in the organization keeps reading it at least once per five minutes, which a running eval does constantly. In the second run below, the prefix written at 23:16:40 was still warm when the fan-out started at 23:17:42, because the first row's own loop had been reading it the whole time.
 
 Pilot, the primary agent under test in these runs, marks its system prompt for caching. The prompt embeds a set of repo docs, which is what makes it 32,186 tokens:
 
@@ -142,7 +144,19 @@ for index, row in enumerate(rows):
 scored_rows.extend([await handle.get_result() for handle in handles])
 ```
 
-The second run, 20 rows through the same host, confirms the shape. Row 0 started at 23:16:40 and is the only Pilot session in the run with a nonzero cache write (63,042: the prefix plus a second breakpoint as its own conversation grew). The remaining rows fanned out at 23:17:42 and read the warm entry:
+The second run, 20 rows through the same host, confirms the shape. The same first-call-per-row query that showed eight writers in run 1 now shows one:
+
+| row session first call | `cache_write` | `cache_read` |
+|---|---|---|
+| 23:16:40 (row 0) | 32,186 | 0 |
+| 23:17:42 | 0 | 32,186 |
+| 23:17:42 | 0 | 32,186 |
+| 23:17:44 | 0 | 32,186 |
+| 23:17:45 | 0 | 32,186 |
+| 23:17:47 | 0 | 32,186 |
+| 23:17:50 and later (12 rows) | 0 | 32,186 each |
+
+Row 0 is the only Pilot session in the run that wrote to the cache, 63,042 tokens in total, and that total is two entries rather than one. 32,186 is the tool-loop prefix from the table above: seven tool definitions plus the two system blocks. Each row's request also ends with a structured-output pass, where the runtime re-sends the same system prompt with no tools attached to coerce the final answer into JSON. Tools are part of the prefix bytes, so that request shape has its own cache key. Row 0's pass at 23:17:24 missed and wrote the second entry, 30,856 tokens: the same system blocks minus the 1,330 tokens of tool definitions. By the time the fan-out started, both entries were warm, and every later row read them. The run totals:
 
 | | run 1 (cold fan-out) | run 2 (serialized row 0) |
 |---|---|---|
@@ -164,3 +178,10 @@ Two checks against `runtime_event_log` tell you whether a scoring run behaved:
 - **Reads**: flat per-call `cache_read` values with a growing `input` column is a healthy agentic loop. Reads scale with loop count and are the baseline cost of running agents on a stateless API, at a tenth of the input rate.
 
 Both checks read straight off the `llm.request.complete` payloads, which are the same numbers the platform dashboard is summing into one figure.
+
+## Takeaways
+
+- Cache writes are the expensive part. They bill at 1.25x the input rate against 0.1x for reads, so a modest write count dominates the bill: in run 1 the writes were 17% of the raw tokens and 48% of the cost.
+- The Claude cache is persistent across sessions. It is scoped to the organization and model, lives for five minutes by default, and every read resets the clock, so a busy workload keeps its own entries alive indefinitely.
+- Fan-out workloads should lean on that persistence. Run one job to completion first, then fan out; the concurrency-sized write stampede disappears and the only write left is the one row 0 was going to pay anyway.
+- Break the dashboard's input number into cache reads, cache writes, and uncached input before reasoning about cost. The 2.03M raw figure hides the split, and the $1.27 of writes only becomes visible once the three usage fields are summed separately.
