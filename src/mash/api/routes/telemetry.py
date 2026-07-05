@@ -446,36 +446,56 @@ def build_telemetry_router() -> APIRouter:
     async def list_sessions(
         request: Request,
         agent_id: Optional[str] = Query(default=None),
+        workflow_id: Optional[str] = Query(default=None),
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
         if not state.observability_enabled:
             raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
 
-        owner_agent_id = normalize_optional_text(agent_id)
+        participant_agent_id = normalize_optional_text(agent_id)
+        resolved_workflow_id = normalize_optional_text(workflow_id)
         # The runtime event log is shared across the pool, so any agent's store
-        # rolls up every session; owner_agent_id scopes to one owning agent.
+        # rolls up every session. agent_id matches sessions the agent
+        # participated in (as primary or subagent); workflow_id matches
+        # sessions where that workflow ran.
         agent_ids = state.pool.list_agents()
         if not agent_ids:
-            return success({"sessions": [], "agent_id": owner_agent_id})
+            return success({"sessions": [], "total": 0, "agent_id": participant_agent_id})
         store = state.pool.get_agent(agent_ids[0]).runtime_store
         resolved_limit = (
             parse_limit(limit, default=state.default_events_limit, max_value=2000)
             if limit is not None
             else None
         )
-        sessions = await store.list_sessions(
-            owner_agent_id=owner_agent_id,
+        result = await store.list_sessions(
+            agent_id=participant_agent_id,
+            workflow_id=resolved_workflow_id,
             limit=resolved_limit,
         )
         return success(
             {
-                "sessions": sessions,
+                "sessions": result["sessions"],
+                "total": result["total"],
                 "source": telemetry_event_source(),
-                "agent_id": owner_agent_id,
+                "agent_id": participant_agent_id,
+                "workflow_id": resolved_workflow_id,
                 "limit": resolved_limit,
             }
         )
+
+    @router.get("/telemetry/workflows")
+    async def workflow_activity(request: Request) -> dict[str, Any]:
+        state = state_from_request(request)
+        if not state.observability_enabled:
+            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
+
+        agent_ids = state.pool.list_agents()
+        if not agent_ids:
+            return success({"workflows": []})
+        store = state.pool.get_agent(agent_ids[0]).runtime_store
+        activity = await store.aggregate_workflow_activity()
+        return success({"workflows": activity, "source": telemetry_event_source()})
 
     @router.post("/telemetry/command-events")
     async def ingest_command_event(

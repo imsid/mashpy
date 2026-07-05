@@ -188,7 +188,7 @@ function RubricTab({ evalId, rubric, locked, onUpdated }) {
             <span className="flex items-center gap-2">
               <Chip tone="amber">locked</Chip>
               <span className="text-xs text-slate-400">
-                This eval has experiments; the rubric can no longer change.
+                This eval has experiments and the rubric can no longer change. Generate a new Eval to change.
               </span>
             </span>
           ) : !editing ? (

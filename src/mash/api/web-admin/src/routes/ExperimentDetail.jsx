@@ -117,6 +117,10 @@ function OperationalCard({ operational }) {
             label="Tokens (in / out)"
             value={`${(operational.total_tokens?.input ?? 0).toLocaleString()} / ${(operational.total_tokens?.output ?? 0).toLocaleString()}`}
           />
+          <Stat
+            label="Cached (read / write)"
+            value={`${(operational.total_tokens?.cache_read ?? 0).toLocaleString()} / ${(operational.total_tokens?.cache_creation ?? 0).toLocaleString()}`}
+          />
           <Stat label="LLM calls" value={operational.total_llm_calls ?? 0} />
           <Stat label="Tool calls" value={operational.total_tool_calls ?? 0} />
           <Stat label="Subagent steps" value={operational.total_subagent_steps ?? 0} />
@@ -187,6 +191,8 @@ function RunDrawer({ run, onClose }) {
             {run.session_id ? (
               <Link
                 to={`/logs?tab=sessions&session=${encodeURIComponent(run.session_id)}`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="text-xs text-indigo-600 underline"
               >
                 View session log ↗
@@ -229,6 +235,10 @@ function RunDrawer({ run, onClose }) {
                 <Stat
                   label="Tokens (in / out)"
                   value={`${(run.metrics.tokens?.input ?? 0).toLocaleString()} / ${(run.metrics.tokens?.output ?? 0).toLocaleString()}`}
+                />
+                <Stat
+                  label="Cached (read / write)"
+                  value={`${(run.metrics.tokens?.cache_read ?? 0).toLocaleString()} / ${(run.metrics.tokens?.cache_creation ?? 0).toLocaleString()}`}
                 />
                 <Stat label="Subagent steps" value={run.metrics.num_subagent_steps ?? 0} />
               </div>

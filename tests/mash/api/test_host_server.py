@@ -770,15 +770,122 @@ def test_telemetry_sessions_rollup_from_events() -> None:
             info = client.get("/api/v1/agent/primary/sessions/s-roll").json()["data"]
             assert info["total_tokens"] == rolled["total_tokens"]
 
-            # Owner filter scopes to one owning agent.
+            # Agent filter matches sessions the agent participated in.
             scoped = client.get("/api/v1/telemetry/sessions?agent_id=primary")
             assert scoped.status_code == 200
             assert all(
-                s["owner_agent_id"] == "primary"
+                "primary" in s["agent_ids"]
                 for s in scoped.json()["data"]["sessions"]
             )
             none = client.get("/api/v1/telemetry/sessions?agent_id=nonexistent")
             assert none.json()["data"]["sessions"] == []
+            assert none.json()["data"]["total"] == 0
+
+
+def test_telemetry_sessions_participant_and_workflow_filters() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            # Primary owns the session; research participates as a subagent.
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-multi"},
+            )
+            assert submitted.status_code == 200
+            request_id = submitted.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", request_id)
+
+            store = client.app.state.runtime_state.pool.get_agent(
+                "primary"
+            ).runtime_store
+            asyncio.run(
+                store.append_event(
+                    RuntimeEvent(
+                        event_id=0,
+                        request_id=None,
+                        request_seq=None,
+                        trace_id="t-sub",
+                        app_id="research",
+                        agent_id="research",
+                        session_id="s-multi",
+                        host_id="assistant",
+                        workflow_id="changelog",
+                        workflow_run_id="run-1",
+                        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                        loop_index=None,
+                        step_key=None,
+                        dedupe_key=None,
+                        payload={"token_usage": {"input": 5, "output": 7}},
+                        created_at=9_999_999_999.0,
+                    )
+                )
+            )
+
+            # The session is owned by primary but research participated, so
+            # filtering by research must still return it.
+            scoped = client.get("/api/v1/telemetry/sessions?agent_id=research")
+            data = scoped.json()["data"]
+            assert [s["session_id"] for s in data["sessions"]] == ["s-multi"]
+            assert data["sessions"][0]["owner_agent_id"] == "primary"
+            assert "research" in data["sessions"][0]["agent_ids"]
+            assert data["total"] == 1
+
+            # Workflow filter matches sessions where the workflow ran.
+            by_workflow = client.get(
+                "/api/v1/telemetry/sessions?workflow_id=changelog"
+            )
+            wf_data = by_workflow.json()["data"]
+            assert [s["session_id"] for s in wf_data["sessions"]] == ["s-multi"]
+            assert wf_data["total"] == 1
+            no_wf = client.get("/api/v1/telemetry/sessions?workflow_id=absent")
+            assert no_wf.json()["data"]["sessions"] == []
+
+            # Unfiltered listing reports the full count alongside the page.
+            listed = client.get("/api/v1/telemetry/sessions")
+            assert listed.json()["data"]["total"] == len(
+                listed.json()["data"]["sessions"]
+            )
+
+
+def test_telemetry_workflow_activity_rollup() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            store = client.app.state.runtime_state.pool.get_agent(
+                "primary"
+            ).runtime_store
+            for run_id, tokens in (("run-1", 10), ("run-2", 20)):
+                asyncio.run(
+                    store.append_event(
+                        RuntimeEvent(
+                            event_id=0,
+                            request_id=None,
+                            request_seq=None,
+                            trace_id=f"t-{run_id}",
+                            app_id="primary",
+                            agent_id="primary",
+                            session_id=f"s-{run_id}",
+                            host_id=None,
+                            workflow_id="changelog",
+                            workflow_run_id=run_id,
+                            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                            loop_index=None,
+                            step_key=None,
+                            dedupe_key=None,
+                            payload={"token_usage": {"input": tokens, "output": 0}},
+                            created_at=9_999_999_990.0,
+                        )
+                    )
+                )
+
+            activity = client.get("/api/v1/telemetry/workflows")
+            assert activity.status_code == 200
+            workflows = activity.json()["data"]["workflows"]
+            changelog = next(w for w in workflows if w["workflow_id"] == "changelog")
+            assert changelog["run_count"] == 2
+            assert changelog["session_count"] == 2
+            assert changelog["total_tokens"] == 30
+            assert changelog["last_run_at"] == 9_999_999_990.0
 
 
 def test_command_events_ingest_and_list_round_trip() -> None:
