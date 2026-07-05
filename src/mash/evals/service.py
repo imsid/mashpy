@@ -325,7 +325,11 @@ def diff_agent_specs(
 def _pair_runs(
     baseline_runs: list[ExperimentRun], control_runs: list[ExperimentRun]
 ) -> list[dict[str, Any]]:
-    """Pair two experiments' runs by row_id and rank by score movement."""
+    """Pair two experiments' runs by row_id and rank by score movement.
+
+    Each row carries the paired runs' details (output, judge scores) so the
+    compare view can show them without fetching the run lists again.
+    """
     baseline_by_row = {r.row_id: r for r in baseline_runs}
     control_by_row = {r.row_id: r for r in control_runs}
     rows: list[dict[str, Any]] = []
@@ -345,9 +349,25 @@ def _pair_runs(
             "baseline_score": b_score,
             "control_score": c_score,
             "delta": delta,
+            "baseline": _run_details(b),
+            "control": _run_details(c),
         })
     rows.sort(key=lambda r: (r["delta"] is None, -abs(r["delta"] or 0.0)))
     return rows
+
+
+def _run_details(run: ExperimentRun | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    return {
+        "actual_output": run.actual_output,
+        "scores": {
+            name: {"score": cs.score, "rationale": cs.rationale}
+            for name, cs in run.scores.items()
+        },
+        "session_id": run.session_id,
+        "error": run.error,
+    }
 
 
 def _compute_aggregate(runs: list[ExperimentRun]) -> dict[str, Any]:

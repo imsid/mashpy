@@ -134,6 +134,20 @@ class CompareExperimentsTests(_ServiceCase):
         self.assertIsNone(rows[1]["control_score"])
         self.assertAlmostEqual(rows[1]["baseline_score"], 4.0)
 
+        # each side carries the run's output and judge scores for the drawer
+        self.assertEqual(rows[0]["baseline"]["actual_output"], "out")
+        self.assertEqual(
+            rows[0]["baseline"]["scores"],
+            {"accuracy": {"score": 2, "rationale": "r"}},
+        )
+        self.assertEqual(
+            rows[0]["control"]["scores"],
+            {"accuracy": {"score": 5, "rationale": "r"}},
+        )
+        # an errored row surfaces the failure reason on its side
+        self.assertIsNone(rows[1]["control"]["actual_output"])
+        self.assertEqual(rows[1]["control"]["error"], "boom")
+
     def test_compare_rejects_experiment_from_another_eval(self) -> None:
         eval_a = self._make_eval()
         eval_b = self._make_eval()

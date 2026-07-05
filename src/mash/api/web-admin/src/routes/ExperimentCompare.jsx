@@ -1,9 +1,12 @@
+import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Select } from '../components/Form.jsx';
 import { Table } from '../components/Table.jsx';
+import { Drawer } from '../components/Drawer.jsx';
+import { Markdown } from '../components/Markdown.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { formatIso } from '../lib/format.js';
@@ -115,7 +118,7 @@ function OperationalCard({ baseline, control }) {
       decimals: 0,
     },
     {
-      label: 'Total tokens (in)',
+      label: 'Uncached tokens (in)',
       baseline: b.total_tokens?.input,
       control: c.total_tokens?.input,
       decimals: 0,
@@ -124,6 +127,18 @@ function OperationalCard({ baseline, control }) {
       label: 'Total tokens (out)',
       baseline: b.total_tokens?.output,
       control: c.total_tokens?.output,
+      decimals: 0,
+    },
+    {
+      label: 'Cached tokens (read)',
+      baseline: b.total_tokens?.cache_read,
+      control: c.total_tokens?.cache_read,
+      decimals: 0,
+    },
+    {
+      label: 'Cached tokens (write)',
+      baseline: b.total_tokens?.cache_creation,
+      control: c.total_tokens?.cache_creation,
       decimals: 0,
     },
     { label: 'LLM calls', baseline: b.total_llm_calls, control: c.total_llm_calls, decimals: 0 },
@@ -156,6 +171,98 @@ function OperationalCard({ baseline, control }) {
         })}
       </div>
     </Card>
+  );
+}
+
+function RunSideSection({ label, run, score }) {
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</h3>
+        <span className="flex items-center gap-3">
+          {score != null ? (
+            <span className="tabular-nums text-sm font-medium text-slate-700">
+              {score.toFixed(2)}
+            </span>
+          ) : (
+            <Chip tone="rose">not scored</Chip>
+          )}
+          {run?.session_id ? (
+            <Link
+              to={`/logs?tab=sessions&session=${encodeURIComponent(run.session_id)}`}
+              className="text-xs text-indigo-600 underline"
+            >
+              View session log ↗
+            </Link>
+          ) : null}
+        </span>
+      </div>
+      {!run ? (
+        <p className="text-sm text-slate-400">No run for this row.</p>
+      ) : (
+        <div className="space-y-3">
+          {run.error ? (
+            <p className="rounded-md border border-rose-200 bg-rose-50 p-2.5 text-xs leading-relaxed text-rose-700">
+              {run.error}
+            </p>
+          ) : null}
+          <div>
+            <div className="mb-1 text-xs font-medium text-slate-500">Response</div>
+            {run.actual_output ? (
+              <div className="rounded-md border border-slate-200 p-3">
+                <Markdown>{run.actual_output}</Markdown>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">No output produced.</p>
+            )}
+          </div>
+          {run.scores && Object.keys(run.scores).length ? (
+            <div>
+              <div className="mb-1 text-xs font-medium text-slate-500">Judge scores</div>
+              <div className="space-y-2">
+                {Object.entries(run.scores).map(([name, cs]) => (
+                  <div key={name} className="rounded-md border border-slate-200 p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-slate-700">{name}</span>
+                      <span className="tabular-nums text-sm text-slate-600">{cs.score}</span>
+                    </div>
+                    {cs.rationale ? (
+                      <p className="mt-1 text-xs leading-relaxed text-slate-500">{cs.rationale}</p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CompareRowDrawer({ row, onClose }) {
+  return (
+    <Drawer open={!!row} onClose={onClose} title="Row comparison" subtitle={row?.row_id}>
+      {row ? (
+        <div className="space-y-5">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <span>Score movement:</span>
+            <ScorePair baseline={row.baseline_score} control={row.control_score} />
+            <DeltaValue delta={row.delta} />
+          </div>
+          <section>
+            <div className="mb-2 border-b border-slate-100 pb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+              Input
+            </div>
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <Markdown>{row.input}</Markdown>
+            </div>
+          </section>
+          <RunSideSection label="Baseline" run={row.baseline} score={row.baseline_score} />
+          <RunSideSection label="Control" run={row.control} score={row.control_score} />
+        </div>
+      ) : null}
+    </Drawer>
   );
 }
 
@@ -211,6 +318,7 @@ export default function ExperimentCompare() {
   );
   const experimentsState = useApi(() => api.listExperiments(evalId), [evalId]);
   const experiments = experimentsState.data?.experiments || [];
+  const [selectedRow, setSelectedRow] = useState(null);
 
   const data = state.data;
 
@@ -276,10 +384,17 @@ export default function ExperimentCompare() {
               Rows by score movement
             </div>
             {data?.rows?.length ? (
-              <Table columns={ROW_COLUMNS} rows={data.rows} getRowKey={(r) => r.row_id} />
+              <Table
+                columns={ROW_COLUMNS}
+                rows={data.rows}
+                getRowKey={(r) => r.row_id}
+                onRowClick={setSelectedRow}
+                activeKey={selectedRow?.row_id}
+              />
             ) : (
               <Empty>No paired rows to compare.</Empty>
             )}
+            <CompareRowDrawer row={selectedRow} onClose={() => setSelectedRow(null)} />
           </>
         )}
       </Async>
