@@ -51,6 +51,9 @@ class PostgresStore(MemoryStore):
                 min_size=1,
                 max_size=5,
                 open=False,
+                # Managed Postgres closes idle connections server-side; validate
+                # at checkout so a stale connection is replaced, not handed out.
+                check=AsyncConnectionPool.check_connection,
                 kwargs={"autocommit": True, "row_factory": dict_row},
             )
             await pool.open()

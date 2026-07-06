@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from typing import Any, cast
 
@@ -20,6 +21,11 @@ except ImportError:
     psycopg = None  # type: ignore[assignment]
     dict_row = None  # type: ignore[assignment]
     AsyncConnectionPool = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
+_LISTENER_RECONNECT_INITIAL_DELAY = 0.5
+_LISTENER_RECONNECT_MAX_DELAY = 30.0
 
 
 class PostgresRuntimeStore(RuntimeStore):
@@ -53,20 +59,24 @@ class PostgresRuntimeStore(RuntimeStore):
                 min_size=2,
                 max_size=10,
                 open=False,
+                # Managed Postgres closes idle connections server-side; validate
+                # at checkout so a stale connection is replaced, not handed out.
+                check=AsyncConnectionPool.check_connection,
                 kwargs={"autocommit": True, "row_factory": dict_row},
             )
             await pool.open()
             await run_migrations(pool)
             self._pool = pool
 
-            self._listener_conn = cast(
-                Any,
-                await psycopg.AsyncConnection.connect(
-                    self._database_url, autocommit=True
-                ),
-            )
-            await self._listener_conn.execute("LISTEN runtime_events")
+            await self._connect_listener()
             self._listener_task = asyncio.create_task(self._listen_loop())
+
+    async def _connect_listener(self) -> None:
+        self._listener_conn = cast(
+            Any,
+            await psycopg.AsyncConnection.connect(self._database_url, autocommit=True),
+        )
+        await self._listener_conn.execute("LISTEN runtime_events")
 
     async def close(self) -> None:
         if self._listener_task is not None:
@@ -86,16 +96,46 @@ class PostgresRuntimeStore(RuntimeStore):
             self._pool = None
 
     async def _listen_loop(self) -> None:
-        try:
-            async for notify in self._listener_conn.notifies():
-                request_id = notify.payload
-                if request_id:
-                    for ev in self._request_waiters.get(request_id, ()):
+        delay = _LISTENER_RECONNECT_INITIAL_DELAY
+        while True:
+            try:
+                if self._listener_conn is None:
+                    await self._connect_listener()
+                    delay = _LISTENER_RECONNECT_INITIAL_DELAY
+                    # NOTIFYs sent while the listener was down are lost; wake
+                    # every waiter so it re-reads the log instead of sleeping
+                    # through events appended during the outage.
+                    self._wake_all_waiters()
+                async for notify in self._listener_conn.notifies():
+                    request_id = notify.payload
+                    if request_id:
+                        for ev in self._request_waiters.get(request_id, ()):
+                            ev.set()
+                    for ev in self._global_waiters:
                         ev.set()
-                for ev in self._global_waiters:
-                    ev.set()
-        except asyncio.CancelledError:
-            return
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.warning(
+                    "runtime event listener connection lost (%s); reconnecting in %.1fs",
+                    exc,
+                    delay,
+                )
+                conn, self._listener_conn = self._listener_conn, None
+                if conn is not None:
+                    try:
+                        await conn.close()
+                    except Exception:
+                        pass
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _LISTENER_RECONNECT_MAX_DELAY)
+
+    def _wake_all_waiters(self) -> None:
+        for waiters in self._request_waiters.values():
+            for ev in waiters:
+                ev.set()
+        for ev in self._global_waiters:
+            ev.set()
 
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()
