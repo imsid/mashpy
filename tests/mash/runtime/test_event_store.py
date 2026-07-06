@@ -68,6 +68,18 @@ def _delete_app_rows(database_url: str, app_id: str) -> None:
             )
 
 
+def _terminate_other_backends(database_url: str) -> None:
+    """Server-side close of every other connection, as managed Postgres does."""
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        conn.execute(
+            """
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+            """
+        )
+
+
 def _fetch_committed_rows(database_url: str, request_id: str) -> list[dict[str, Any]]:
     with psycopg.connect(database_url, autocommit=True, row_factory=dict_row) as conn:
         with conn.cursor() as cursor:
@@ -213,6 +225,94 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 payload={"status": "accepted"},
             )
         )
+
+
+class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """The store must survive the server closing its connections (issue #133)."""
+
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.request_id = f"store-{uuid.uuid4()}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+        _delete_request_rows(self.database_url, self.request_id)
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_request_rows(self.database_url, self.request_id)
+
+    async def test_queries_recover_after_server_closes_connections(self) -> None:
+        self.assertFalse(await self.store.has_request(self.request_id))
+
+        _terminate_other_backends(self.database_url)
+
+        self.assertFalse(await self.store.has_request(self.request_id))
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-recovery",
+                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                dedupe_key=f"recovery-{uuid.uuid4().hex[:8]}",
+                payload={"status": "accepted"},
+            )
+        )
+        self.assertTrue(await self.store.has_request(self.request_id))
+
+    async def test_listener_reconnects_after_server_closes_connection(self) -> None:
+        waiter = self.store.register_request_waiter(self.request_id)
+        try:
+            _terminate_other_backends(self.database_url)
+
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id="store-test",
+                    agent_id="store-test",
+                    request_id=self.request_id,
+                    session_id="session-recovery",
+                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    dedupe_key=f"listener-{uuid.uuid4().hex[:8]}",
+                    payload={"status": "accepted"},
+                )
+            )
+            try:
+                await asyncio.wait_for(waiter.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                self.fail("waiter was not woken after the listener connection died")
+        finally:
+            self.store.unregister_request_waiter(self.request_id, waiter)
+
+    async def test_listener_keeps_delivering_notifies_after_reconnect(self) -> None:
+        old_conn = self.store._listener_conn
+        _terminate_other_backends(self.database_url)
+
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while self.store._listener_conn is None or self.store._listener_conn is old_conn:
+            if asyncio.get_running_loop().time() > deadline:
+                self.fail("listener did not reconnect")
+            await asyncio.sleep(0.05)
+
+        waiter = self.store.register_request_waiter(self.request_id)
+        try:
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id="store-test",
+                    agent_id="store-test",
+                    request_id=self.request_id,
+                    session_id="session-recovery",
+                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    dedupe_key=f"post-reconnect-{uuid.uuid4().hex[:8]}",
+                    payload={"status": "accepted"},
+                )
+            )
+            try:
+                await asyncio.wait_for(waiter.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                self.fail("waiter was not woken by NOTIFY after reconnect")
+        finally:
+            self.store.unregister_request_waiter(self.request_id, waiter)
 
 
 class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
