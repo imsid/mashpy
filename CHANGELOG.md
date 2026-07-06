@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.16.1](https://github.com/imsid/mashpy/compare/mashpy-v0.16.0...mashpy-v0.16.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* **storage:** recover from server-closed Postgres connections ([#134](https://github.com/imsid/mashpy/issues/134)) ([9863ce0](https://github.com/imsid/mashpy/commit/9863ce0be0509da3004b85623117875a02d45598))
+
 ## [0.16.0](https://github.com/imsid/mashpy/compare/mashpy-v0.15.0...mashpy-v0.16.0) (2026-07-05)
 
 
