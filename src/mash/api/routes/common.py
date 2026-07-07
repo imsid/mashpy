@@ -66,6 +66,7 @@ class HostSubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     structured_output: Optional[dict[str, Any]] = None
+    context: Optional[str] = None
 
 
 class CompactSessionRequest(BaseModel):

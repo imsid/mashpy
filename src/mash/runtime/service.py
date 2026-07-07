@@ -186,6 +186,7 @@ class AgentRuntime:
         session_id: str,
         structured_output: Any = None,
         host_snapshot: dict[str, Any] | None = None,
+        context: str | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
@@ -193,6 +194,7 @@ class AgentRuntime:
             session_id=session_id,
             structured_output=structured_output,
             host_snapshot=host_snapshot,
+            context=context,
         )
 
     async def submit_subagent_request(

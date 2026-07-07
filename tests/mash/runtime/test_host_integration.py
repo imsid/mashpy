@@ -755,6 +755,42 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
+    async def test_host_request_injects_caller_context_into_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                primary_spec = build_spec(
+                    agent_id="primary-app", response_text="answered"
+                )
+                pool = (
+                    HostBuilder()
+                    .agent(primary_spec, metadata=metadata())
+                    .host(Host(host_id="assistant", primary="primary-app"))
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    accepted = await pool.submit_host_request(
+                        "assistant",
+                        message="hello",
+                        session_id="s-ctx",
+                        context="User timezone: PST. Workspace: mashpy.",
+                    )
+                    client = pool.get_client("primary-app")
+                    result = await _collect_terminal_payload(
+                        client, accepted["request_id"], timeout=5
+                    )
+                    self.assertEqual(result["response"]["text"], "answered")
+
+                    # The caller-supplied context must reach the LLM via the
+                    # loaded context's system prompt.
+                    self.assertIn(
+                        "User timezone: PST. Workspace: mashpy.",
+                        str(primary_spec.provider.last_system),
+                    )
+                finally:
+                    await pool.close()
+
     async def test_dynamically_defined_host_routes_subagent_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
