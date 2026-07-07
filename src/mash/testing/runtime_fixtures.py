@@ -33,12 +33,14 @@ class DeterministicLLMProvider(LLMProvider):
         self._model_name = model_name
         self._delay_seconds = max(0.0, float(delay_seconds))
         self.last_session_id: str | None = None
+        self.last_system: Any = None
 
     @property
     def model(self) -> str:
         return self._model_name
 
     async def send(self, request: LLMRequest) -> LLMResponse:
+        self.last_system = request.system
         user_text = ""
         for message in reversed(request.messages):
             if message.role == "user":
@@ -84,6 +86,11 @@ class DeterministicAgentSpec(AgentSpec):
         self.response_text = response_text
         self.fail_on_message = fail_on_message
         self.delay_seconds = delay_seconds
+        self.provider = DeterministicLLMProvider(
+            response_text=self.response_text,
+            fail_on_message=self.fail_on_message,
+            delay_seconds=self.delay_seconds,
+        )
 
     def get_agent_id(self) -> str:
         return self.agent_id
@@ -95,11 +102,7 @@ class DeterministicAgentSpec(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self) -> LLMProvider:
-        return DeterministicLLMProvider(
-            response_text=self.response_text,
-            fail_on_message=self.fail_on_message,
-            delay_seconds=self.delay_seconds,
-        )
+        return self.provider
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(app_id=self.agent_id, system_prompt=f"You are {self.agent_id}.")

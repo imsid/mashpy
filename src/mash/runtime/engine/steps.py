@@ -354,12 +354,16 @@ async def load_request_context(
     # The host snapshot is captured in this persisted step output, so recovery
     # replays the original composition even if the host is redefined while the
     # request is in flight.
-    host = dict(request_metadata or {}).get("host") or None
+    metadata = dict(request_metadata or {})
+    host = metadata.get("host") or None
+    request_context = metadata.get("context")
     context_payload = await context_helpers.build_context_payload(
         runtime,
         session_id=session_id,
         message=message,
-        system_prompt=factory_helpers.resolve_host_system_prompt(runtime, host),
+        system_prompt=factory_helpers.resolve_host_system_prompt(
+            runtime, host, request_context
+        ),
     )
     await append_runtime_event(
         runtime,

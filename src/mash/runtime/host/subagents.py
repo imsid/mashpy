@@ -69,3 +69,21 @@ def build_subagent_prompt_block(
     if isinstance(base_prompt, list):
         return [*base_prompt, {"type": "text", "text": guidance}]
     return f"{base_prompt}\n\n{guidance}"
+
+
+def append_context_block(
+    base_prompt: SystemPrompt,
+    context: str | None,
+) -> SystemPrompt:
+    """Append caller-supplied per-request context to a system prompt.
+
+    ``context`` is injected verbatim (the caller owns its formatting). An
+    empty or whitespace-only value leaves the prompt unchanged.
+    """
+    text = str(context or "").strip()
+    if not text:
+        return base_prompt
+
+    if isinstance(base_prompt, list):
+        return [*base_prompt, {"type": "text", "text": text}]
+    return f"{base_prompt}\n\n{text}"

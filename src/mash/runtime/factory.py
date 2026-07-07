@@ -16,7 +16,11 @@ from ..core.config import SystemPrompt
 from ..memory.signals import build_default_signal_collector
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import InvokeSubagentTool
-from .host.subagents import AgentMetadata, build_subagent_prompt_block
+from .host.subagents import (
+    AgentMetadata,
+    append_context_block,
+    build_subagent_prompt_block,
+)
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -51,12 +55,18 @@ def resolve_host_subagents(
 def resolve_host_system_prompt(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
+    context: str | None = None,
 ) -> SystemPrompt:
-    """Render the runtime's base prompt with the snapshot's subagent block."""
-    return build_subagent_prompt_block(
+    """Render the base prompt with the subagent block and request context.
+
+    The subagent routing block is appended first, then any caller-supplied
+    per-request ``context`` after it.
+    """
+    prompt = build_subagent_prompt_block(
         self.system_prompt,
         resolve_host_subagents(self, host),
     )
+    return append_context_block(prompt, context)
 
 
 def build_agent_instance(

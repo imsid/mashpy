@@ -29,6 +29,7 @@ async def submit_request(
     session_id: str,
     structured_output: Any = None,
     host_snapshot: dict[str, Any] | None = None,
+    context: str | None = None,
 ) -> dict[str, Any]:
     normalized_structured_output = serialize_structured_output(structured_output)
     request_metadata: dict[str, Any] = {}
@@ -36,6 +37,8 @@ async def submit_request(
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:
         request_metadata["host"] = dict(host_snapshot)
+    if context is not None and str(context).strip():
+        request_metadata["context"] = str(context)
     return await _submit_request(
         self,
         message=message,

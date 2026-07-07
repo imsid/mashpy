@@ -138,7 +138,11 @@ validation).
 - Submits a request to the host: it routes to the host's primary agent with
   the host's composition snapshotted onto the request.
 - Body: `HostSubmitRequest` (`message`, `session_id`, optional
-  `structured_output`)
+  `structured_output`, optional `context`)
+- `context` is a freeform string the host appends to the primary agent's
+  system prompt for this request only (after the subagent routing block).
+  Use it to pass per-request/session facts like user profile, workspace
+  state, or the current date.
 - Returns `request_id`, `agent_id` (the primary), and `session_id`. Stream
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
