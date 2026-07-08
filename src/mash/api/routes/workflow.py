@@ -113,7 +113,7 @@ def build_workflow_router() -> APIRouter:
                         "started_at": run.started_at,
                         "finished_at": run.finished_at,
                         "error": run.error,
-                        "summary": run.summary,
+                        "output": run.output,
                     }
                     for run in runs
                 ],
@@ -139,7 +139,6 @@ def build_workflow_router() -> APIRouter:
                 "finished_at": run.finished_at,
                 "error": run.error,
                 "output": run.output,
-                "summary": run.summary,
                 "steps": run.steps,
             }
         )

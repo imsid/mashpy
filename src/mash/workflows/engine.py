@@ -195,6 +195,18 @@ async def _run_code_step(
     return out.model_dump(mode="json")
 
 
+def _coerce_input(step: StepSpec, merged: dict[str, Any]) -> dict[str, Any]:
+    """Build the step's input snapshot.
+
+    A pydantic ``input`` model coerces and validates the merged dict; a
+    passthrough (``None``) input forwards it unchanged (dynamic/over-the-wire
+    agent steps that ship no Python model).
+    """
+    if step.input is None:
+        return dict(merged)
+    return step.input.model_validate(merged).model_dump(mode="json")
+
+
 def _extract_agent_output(step: StepSpec, payload: dict[str, Any]) -> dict[str, Any]:
     response = payload.get("response")
     if not isinstance(response, dict):
@@ -206,7 +218,47 @@ def _extract_agent_output(step: StepSpec, payload: dict[str, Any]) -> dict[str, 
         raise RuntimeError(
             f"workflow step '{step.step_id}' response structured_output is required"
         )
+    # A JSON-schema output is already shaped by the provider; only a pydantic
+    # output model re-validates.
+    if isinstance(step.output, dict):
+        return dict(structured)
     return step.output.model_validate(structured).model_dump(mode="json")
+
+
+def _agent_step_message(
+    step: StepSpec,
+    *,
+    workflow_id: str,
+    run_id: str,
+    workflow_input: dict[str, Any],
+    prior_output: dict[str, Any] | None,
+    input_snapshot: dict[str, Any],
+) -> str:
+    """Envelope sent to an agent step.
+
+    Carries ``task_id`` (== ``step_id``) and ``task_state`` (the prior step's
+    output) so workflow-worker agents that route on the classic envelope keep
+    working; ``input`` is the coerced step input. A ``skill_name`` adds the
+    load-this-skill-first instructions.
+    """
+    payload: dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "workflow_run_id": run_id,
+        "task_id": step.step_id,
+        "step_id": step.step_id,
+        "workflow_input": dict(workflow_input),
+        "task_state": dict(prior_output or {}),
+        "input": dict(input_snapshot),
+    }
+    skill_name = getattr(step, "skill_name", None)
+    if skill_name:
+        payload["skill_name"] = skill_name
+        payload["workflow_task_instructions"] = [
+            f'Your first action must be calling the Skill tool with arguments {{"name": "{skill_name}"}}.',
+            "After the Skill tool returns, follow the loaded skill instructions.",
+            "Execute only the task identified by task_id.",
+        ]
+    return json.dumps(payload, ensure_ascii=True)
 
 
 class ForwardPipelineStrategy(WorkflowStrategy):
@@ -236,13 +288,20 @@ class ForwardPipelineStrategy(WorkflowStrategy):
             merged = {**ctx.workflow_input, **(prev_output or {})}
             input_snapshot: dict[str, Any] = merged
             try:
-                input_snapshot = step.input.model_validate(merged).model_dump(mode="json")
+                input_snapshot = _coerce_input(step, merged)
                 agent_request_id: str | None = None
                 if step.kind == "agent":
                     agent_request_id = await post_inline_agent_request(
                         runner_id,
                         agent_id=step.agent_id,  # type: ignore[attr-defined]
-                        message=json.dumps(input_snapshot, ensure_ascii=True),
+                        message=_agent_step_message(
+                            step,
+                            workflow_id=wf_id,
+                            run_id=run_id,
+                            workflow_input=ctx.workflow_input,
+                            prior_output=prev_output,
+                            input_snapshot=input_snapshot,
+                        ),
                         structured_output=serialize_structured_output(step.output),
                         workflow_id=wf_id,
                         workflow_run_id=run_id,

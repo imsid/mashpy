@@ -13,9 +13,7 @@ from .spec import (
     CodeStep,
     StepContext,
     StepSpec,
-    TaskSpec,
     WorkflowSpec,
-    WorkflowTaskMessageSpec,
     validate_step_pipeline,
 )
 from .strategy import WorkflowExecutionContext, WorkflowStrategy
@@ -26,7 +24,6 @@ __all__ = [
     "DuplicateWorkflowRunError",
     "StepContext",
     "StepSpec",
-    "TaskSpec",
     "WorkflowExecutionContext",
     "WorkflowNotFoundError",
     "WorkflowRegistry",
@@ -35,6 +32,5 @@ __all__ = [
     "WorkflowStrategy",
     "WorkflowStreamEvent",
     "WorkflowSpec",
-    "WorkflowTaskMessageSpec",
     "validate_step_pipeline",
 ]

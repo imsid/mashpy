@@ -19,7 +19,7 @@ from mash.runtime.host.subagents import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import AgentStep, WorkflowSpec
 
 from .score_runner import ScoreEvalsStrategy
 from .tool import (
@@ -277,48 +277,43 @@ class MasherAgentSpec(AgentSpec):
 
 
 def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSpec]:
+    # Masher is a single-agent-step worker per workflow: it reads the envelope
+    # (workflow_id/task_id/workflow_input), routes to its own skill, and returns
+    # a {json_text} structured output. Passthrough input (None) — the agent reads
+    # workflow_input directly. score-evals is strategy-driven (durable fan-out).
     return [
         WorkflowSpec(
             workflow_id=MASHER_TRACE_DIGEST_WORKFLOW_ID,
-            tasks=[
-                TaskSpec(
-                    task_id=MASHER_TRACE_DIGEST_TASK_ID,
+            steps=[
+                AgentStep(
+                    step_id=MASHER_TRACE_DIGEST_TASK_ID,
                     agent_spec=masher_spec,
-                    structured_output=MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
+                    output=MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
                 )
             ],
         ),
         WorkflowSpec(
             workflow_id=MASHER_ONLINE_EVAL_WORKFLOW_ID,
-            tasks=[
-                TaskSpec(
-                    task_id=MASHER_ONLINE_EVAL_TASK_ID,
+            steps=[
+                AgentStep(
+                    step_id=MASHER_ONLINE_EVAL_TASK_ID,
                     agent_spec=masher_spec,
-                    structured_output=MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
+                    output=MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
                 )
             ],
         ),
         WorkflowSpec(
             workflow_id=MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-            tasks=[
-                TaskSpec(
-                    task_id=MASHER_GEN_SYNTHETIC_EVALS_TASK_ID,
+            steps=[
+                AgentStep(
+                    step_id=MASHER_GEN_SYNTHETIC_EVALS_TASK_ID,
                     agent_spec=masher_spec,
-                    structured_output=MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT,
+                    output=MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT,
                 )
             ],
         ),
         WorkflowSpec(
             workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
-            # The task entry keeps the spec valid and pins the judge agent; the
-            # strategy (not the sequential task loop) drives execution.
-            tasks=[
-                TaskSpec(
-                    task_id=MASHER_SCORE_EVALS_TASK_ID,
-                    agent_spec=masher_spec,
-                    structured_output=MASHER_SCORE_EVALS_STRUCTURED_OUTPUT,
-                )
-            ],
             strategy=ScoreEvalsStrategy(context=masher_spec.runtime_context),
         ),
     ]

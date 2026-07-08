@@ -14,7 +14,7 @@ from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.ask_user import AskUserTool
 from mash.tools.registry import ToolRegistry
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import AgentStep, WorkflowSpec
 
 from ...prompt import build_repo_context
 from .._base import PILOT_SKILLS_DIR, build_bash_tool, build_default_llm
@@ -190,10 +190,11 @@ def build_quiz_workflow_spec(workspace_root: Path | None = None) -> WorkflowSpec
     resolved = (workspace_root or Path(".")).resolve()
     return WorkflowSpec(
         workflow_id=QUIZ_WORKFLOW_ID,
-        tasks=[
-            TaskSpec(
-                task_id=QUIZ_TASK_ID,
+        steps=[
+            AgentStep(
+                step_id=QUIZ_TASK_ID,
                 agent_spec=QuizAgentSpec(resolved),
+                output={"type": "object"},
             )
         ],
         metadata={"source": "pilot", "kind": "quiz"},

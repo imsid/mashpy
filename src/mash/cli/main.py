@@ -112,13 +112,13 @@ def _agent_rows(agents: list[dict]) -> list[list[str]]:
 def _workflow_rows(workflows: list[dict]) -> list[list[str]]:
     rows: list[list[str]] = []
     for workflow in sorted(workflows, key=lambda w: str(w.get("workflow_id") or "")):
-        rendered_tasks = []
-        for task in workflow.get("tasks") or []:
-            if isinstance(task, dict):
-                rendered_tasks.append(
-                    f"{task.get('task_id') or ''} -> {task.get('agent_id') or ''}"
+        rendered_steps = []
+        for step in workflow.get("steps") or []:
+            if isinstance(step, dict):
+                rendered_steps.append(
+                    f"{step.get('step_id') or ''} ({step.get('kind') or ''})"
                 )
-        rows.append([str(workflow.get("workflow_id") or ""), ", ".join(rendered_tasks)])
+        rows.append([str(workflow.get("workflow_id") or ""), ", ".join(rendered_steps)])
     return rows
 
 

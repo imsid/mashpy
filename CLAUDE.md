@@ -46,7 +46,8 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
   `OSSCompatibleProvider` (open-source models over any Chat Completions
   endpoint, with `GemmaProvider`/`QwenProvider`/`DeepSeekProvider`/`LlamaProvider`
   presets).
-- **WorkflowSpec / TaskSpec** — ordered task chains orchestrated by DBOS.
+- **WorkflowSpec / CodeStep / AgentStep** — durable, observable ordered step
+  pipelines (or a `WorkflowStrategy` for fan-out) orchestrated by DBOS.
 
 ## Minimal Agent Scaffold
 
@@ -404,14 +405,40 @@ constant regardless of agent count. Agents that override
 
 ## Workflows
 
+A workflow is an ordered **step pipeline**: each step is a `CodeStep`
+(deterministic Python) or an `AgentStep` (one agent-loop run). Every step has a
+pydantic `input`/`output`; step *n*'s output threads into step *n+1*'s input
+(merged over the immutable `workflow_input`), and the final step's output is the
+run result. Runs are durable (resume from the failed step) and observable (a
+per-step audit trail in the workflow store).
+
 ```python
-from mash.workflows import TaskSpec, WorkflowSpec
+from pydantic import BaseModel
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+
+
+class ScanIn(BaseModel):
+    repo_url: str
+
+class ScanOut(BaseModel):
+    files_changed: list[str]
+    head_sha: str
+
+class SummaryOut(BaseModel):
+    summary: str
+    head_sha: str
+
+
+def scan(inp: ScanIn, ctx: StepContext) -> ScanOut:
+    ...  # deterministic; author owns idempotency via ctx.run_id/ctx.step_id
+
 
 workflow = WorkflowSpec(
-    workflow_id="my-pipeline",
-    tasks=[
-        TaskSpec(task_id="step-1", agent_spec=Step1AgentSpec()),
-        TaskSpec(task_id="step-2", agent_spec=Step2AgentSpec()),
+    workflow_id="changelog",
+    input_model=ScanIn,  # types workflow_input; enables strict build-time checks
+    steps=[
+        CodeStep(step_id="scan", run=scan, input=ScanIn, output=ScanOut),
+        AgentStep(step_id="summarize", agent_id="writer", input=ScanOut, output=SummaryOut),
     ],
 )
 
@@ -422,6 +449,15 @@ pool = (
     .build()
 )
 ```
+
+- An `AgentStep`'s `output` may be a pydantic model or a JSON-schema dict; either
+  becomes the request's structured-output schema. `input` may be `None`
+  (passthrough) for agents that read `workflow_input` directly.
+- Non-linear shapes (fan-out, branching) supply a `WorkflowStrategy` instead of
+  `steps`; the strategy owns its own DBOS registration and run body.
+- Run, resume, inspect, and stream over the API (`POST /workflow/{id}/run`,
+  `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
+  the REPL (`/workflow run|status|resume`).
 
 ## Structured Output
 

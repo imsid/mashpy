@@ -535,10 +535,9 @@ class AgentPool:
             self._shared_workflow_store = None
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
-        # Legacy task-based workflows and v2 agent steps both bind an agent id
-        # (optionally with a spec to auto-register). Handle both surfaces.
-        bindings = [(task.agent_id, task.agent_spec) for task in workflow.tasks]
-        bindings += [
+        # Agent steps bind an agent id (optionally with a spec to auto-register).
+        # Strategy-only workflows register their agents separately.
+        bindings = [
             (step.agent_id, step.agent_spec)
             for step in workflow.steps
             if getattr(step, "kind", None) == "agent"

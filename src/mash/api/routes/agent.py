@@ -11,7 +11,7 @@ from mash.runtime import AgentClientError
 from mash.runtime.events import build_reasoning_trace
 from mash.runtime.structured_output import serialize_structured_output
 from mash.skills import Skill
-from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
+from mash.workflows import AgentStep, WorkflowSpec
 
 from .common import (
     APIError,
@@ -142,20 +142,22 @@ def build_agent_router() -> APIRouter:
                 status_code=404,
             )
 
+        # Dynamic publishing authors agent-step workflows over the wire: each
+        # task becomes an AgentStep with passthrough input and a JSON-schema
+        # output; the workflow-wide skill_name instructs the agent to load it.
+        skill_name = body.task_message.skill_name
         workflow = WorkflowSpec(
             workflow_id=body.workflow_id,
-            tasks=[
-                TaskSpec(
-                    task_id=task.task_id,
+            steps=[
+                AgentStep(
+                    step_id=task.task_id,
                     agent_id=task.agent_id,
-                    structured_output=task.structured_output,
+                    output=task.structured_output or {"type": "object"},
+                    skill_name=skill_name,
                 )
                 for task in body.tasks
             ],
             metadata=dict(body.metadata),
-            task_message=WorkflowTaskMessageSpec(
-                skill_name=body.task_message.skill_name,
-            ),
         )
         try:
             state.pool.register_agent_workflow(resolved_agent_id, workflow)

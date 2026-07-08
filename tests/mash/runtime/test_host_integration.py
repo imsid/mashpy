@@ -20,7 +20,7 @@ from mash.testing.runtime_fixtures import (
     build_spec,
     metadata,
 )
-from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
+from mash.workflows import AgentStep, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
 
 _IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -207,10 +207,11 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .workflow(
                         WorkflowSpec(
                             workflow_id="changelog",
-                            tasks=[
-                                TaskSpec(
-                                    task_id="scan",
+                            steps=[
+                                AgentStep(
+                                    step_id="scan",
                                     agent_spec=primary_spec,
+                                    output={"type": "object"},
                                 )
                             ],
                         )
@@ -249,11 +250,15 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 workflow = WorkflowSpec(
                     workflow_id="experiment-readout",
-                    tasks=[TaskSpec(task_id="analyze-experiment", agent_id="data")],
+                    steps=[
+                        AgentStep(
+                            step_id="analyze-experiment",
+                            agent_id="data",
+                            output={"type": "object"},
+                            skill_name="workflow:experiment-readout:v1",
+                        )
+                    ],
                     metadata={"source": "crew", "version": 1},
-                    task_message=WorkflowTaskMessageSpec(
-                        skill_name="workflow:experiment-readout:v1",
-                    ),
                 )
 
                 pool.register_agent_workflow("data", workflow)
@@ -279,15 +284,14 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "primary",
                         WorkflowSpec(
                             workflow_id="experiment-readout",
-                            tasks=[
-                                TaskSpec(
-                                    task_id="analyze-experiment",
+                            steps=[
+                                AgentStep(
+                                    step_id="analyze-experiment",
                                     agent_id="missing",
+                                    output={"type": "object"},
+                                    skill_name="workflow:experiment-readout:v1",
                                 )
                             ],
-                            task_message=WorkflowTaskMessageSpec(
-                                skill_name="workflow:experiment-readout:v1",
-                            ),
                         )
                     )
 
@@ -298,10 +302,14 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ).build()
         workflow = WorkflowSpec(
             workflow_id="wf",
-            tasks=[TaskSpec(task_id="task", agent_id="primary")],
-            task_message=WorkflowTaskMessageSpec(
-                skill_name="workflow:wf:v1",
-            ),
+            steps=[
+                AgentStep(
+                    step_id="task",
+                    agent_id="primary",
+                    output={"type": "object"},
+                    skill_name="workflow:wf:v1",
+                )
+            ],
         )
 
         pool.register_agent_workflow("primary", workflow)
@@ -325,10 +333,14 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         workflow = WorkflowSpec(
             workflow_id="wf",
-            tasks=[TaskSpec(task_id="task", agent_id="data")],
-            task_message=WorkflowTaskMessageSpec(
-                skill_name="workflow:wf:v1",
-            ),
+            steps=[
+                AgentStep(
+                    step_id="task",
+                    agent_id="data",
+                    output={"type": "object"},
+                    skill_name="workflow:wf:v1",
+                )
+            ],
         )
 
         pool.register_agent_workflow("data", workflow)
@@ -351,13 +363,13 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .workflow(
                         WorkflowSpec(
                             workflow_id="wf-a",
-                            tasks=[TaskSpec(task_id="task-a", agent_spec=worker_a)],
+                            steps=[AgentStep(step_id="task-a", agent_spec=worker_a, output={"type": "object"})],
                         )
                     )
                     .workflow(
                         WorkflowSpec(
                             workflow_id="wf-b",
-                            tasks=[TaskSpec(task_id="task-b", agent_spec=worker_b)],
+                            steps=[AgentStep(step_id="task-b", agent_spec=worker_b, output={"type": "object"})],
                         )
                     )
                     .build()
@@ -514,10 +526,11 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .workflow(
                         WorkflowSpec(
                             workflow_id="changelog",
-                            tasks=[
-                                TaskSpec(
-                                    task_id="scan-codebase-and-append-changelog",
+                            steps=[
+                                AgentStep(
+                                    step_id="scan-codebase-and-append-changelog",
                                     agent_spec=primary_spec,
+                                    output={"type": "object"},
                                 )
                             ],
                         )
@@ -572,7 +585,13 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         .workflow(
                             WorkflowSpec(
                                 workflow_id="wf",
-                                tasks=[TaskSpec(task_id="task", agent_spec=worker_spec)],
+                                steps=[
+                                    AgentStep(
+                                        step_id="task",
+                                        agent_spec=worker_spec,
+                                        output={"type": "object"},
+                                    )
+                                ],
                             )
                         )
                         .build()
@@ -584,6 +603,9 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             workflow_dbos,
                             "_load_dbos_api",
                             return_value=(_FakeWorkflowDBOS, None, None, None, None),
+                        ), patch(
+                            "mash.workflows.engine.load_dbos_api",
+                            return_value=(_FakeWorkflowDBOS, None, None, None, None),
                         ):
                             output = await workflow_dbos.execute_registered_workflow(
                                 pool.runner_id,
@@ -593,7 +615,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                 session_id="repl-session-1",
                             )
 
-                        self.assertEqual(output["task_states"]["task"], {"ok": True})
+                        self.assertEqual(output["result"], {"ok": True})
                         run_id = f"mw:{pool.runner_id}:wf:test"
                         worker = pool.get_agent("worker")
                         sessions = await worker.list_sessions()

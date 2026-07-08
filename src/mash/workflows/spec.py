@@ -13,63 +13,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .strategy import WorkflowStrategy
 
 
-@dataclass(frozen=True, init=False)
-class TaskSpec:
-    """One workflow task bound to an agent spec or registered agent id."""
-
-    task_id: str
-    agent_spec: AgentSpec | None
-    agent_id: str
-    structured_output: dict[str, Any] | None
-
-    def __init__(
-        self,
-        task_id: str,
-        agent_spec: AgentSpec | None = None,
-        *,
-        agent_id: str | None = None,
-        structured_output: dict[str, Any] | None = None,
-    ) -> None:
-        resolved_task_id = str(task_id or "").strip()
-        if not resolved_task_id:
-            raise ValueError("task_id is required")
-        if agent_spec is None and agent_id is None:
-            raise ValueError("agent_spec or agent_id is required")
-
-        resolved_agent_id = str(agent_id or "").strip()
-        if agent_spec is not None:
-            spec_agent_id = str(agent_spec.get_agent_id() or "").strip()
-            if not spec_agent_id:
-                raise ValueError("workflow task agent id is required")
-            if resolved_agent_id and resolved_agent_id != spec_agent_id:
-                raise ValueError(
-                    "agent_id must match agent_spec.get_agent_id() when both are provided"
-                )
-            resolved_agent_id = spec_agent_id
-        if not resolved_agent_id:
-            raise ValueError("workflow task agent id is required")
-
-        object.__setattr__(self, "task_id", resolved_task_id)
-        object.__setattr__(self, "agent_spec", agent_spec)
-        object.__setattr__(self, "agent_id", resolved_agent_id)
-        object.__setattr__(
-            self,
-            "structured_output",
-            dict(structured_output) if structured_output is not None else None,
-        )
-
-
-@dataclass(frozen=True)
-class WorkflowTaskMessageSpec:
-    """Dynamic workflow task prompt instructions."""
-
-    skill_name: str
-
-    def __post_init__(self) -> None:
-        if not str(self.skill_name or "").strip():
-            raise ValueError("workflow task message skill_name is required")
-
-
 @dataclass(frozen=True)
 class StepContext:
     """Runtime context handed to a step body.
@@ -89,27 +32,35 @@ class StepSpec:
     """Base marker for one workflow step.
 
     Concrete steps are :class:`AgentStep` (one run of the agent loop) and
-    :class:`CodeStep` (deterministic Python). Both carry a pydantic ``input`` and
-    ``output`` model; step ``n``'s output threads forward into step ``n+1``'s
-    input, and the final step's output is the workflow result.
+    :class:`CodeStep` (deterministic Python). Step ``n``'s output threads forward
+    into step ``n+1``'s input, and the final step's output is the workflow result.
     """
 
     step_id: str
-    input: type[BaseModel]
-    output: type[BaseModel]
+    input: type[BaseModel] | None
+    output: type[BaseModel] | dict[str, Any]
     timeout_s: float | None
     kind: str
 
 
 @dataclass(frozen=True, init=False)
 class AgentStep(StepSpec):
-    """A step executed by one run of a registered agent's loop."""
+    """A step executed by one run of a registered agent's loop.
+
+    ``input`` may be a pydantic model (coerced/validated) or ``None`` (the
+    workflow input and prior output pass through unchanged — used by
+    over-the-wire dynamic workflows that don't ship a Python model). ``output``
+    may be a pydantic model or a JSON-schema dict; either becomes the request's
+    structured-output schema. ``skill_name``, when set, instructs the agent to
+    load that skill before doing the step's work.
+    """
 
     step_id: str
-    input: type[BaseModel]
-    output: type[BaseModel]
+    input: type[BaseModel] | None
+    output: type[BaseModel] | dict[str, Any]
     agent_id: str
     agent_spec: AgentSpec | None
+    skill_name: str | None
     timeout_s: float | None
     kind: str
 
@@ -117,15 +68,17 @@ class AgentStep(StepSpec):
         self,
         step_id: str,
         *,
-        input: type[BaseModel],
-        output: type[BaseModel],
+        output: type[BaseModel] | dict[str, Any],
+        input: type[BaseModel] | None = None,
         agent_id: str | None = None,
         agent_spec: AgentSpec | None = None,
+        skill_name: str | None = None,
         timeout_s: float | None = None,
     ) -> None:
         resolved_step_id = _require_step_id(step_id)
-        _require_model(input, "AgentStep input")
-        _require_model(output, "AgentStep output")
+        if input is not None:
+            _require_model(input, "AgentStep input")
+        _require_output(output, "AgentStep output")
 
         resolved_agent_id = str(agent_id or "").strip()
         if agent_spec is not None:
@@ -145,6 +98,9 @@ class AgentStep(StepSpec):
         object.__setattr__(self, "output", output)
         object.__setattr__(self, "agent_id", resolved_agent_id)
         object.__setattr__(self, "agent_spec", agent_spec)
+        object.__setattr__(
+            self, "skill_name", str(skill_name).strip() if skill_name else None
+        )
         object.__setattr__(self, "timeout_s", _normalize_timeout(timeout_s))
         object.__setattr__(self, "kind", "agent")
 
@@ -155,7 +111,9 @@ class CodeStep(StepSpec):
 
     ``run`` is ``run(inp: input, ctx: StepContext) -> output`` and may be sync or
     async. Idempotency of any external effect is the author's responsibility (see
-    ``StepContext``); the framework only memoizes the returned output.
+    ``StepContext``); the framework only memoizes the returned output. Code steps
+    are pydantic-typed on both edges — they are authored in Python, never over
+    the wire.
     """
 
     step_id: str
@@ -190,7 +148,7 @@ class CodeStep(StepSpec):
 
 @dataclass(frozen=True)
 class WorkflowSpec:
-    """One workflow composed of ordered steps.
+    """One workflow, run as an ordered step pipeline or by a strategy.
 
     ``steps`` is the forward pipeline: each step's ``output`` threads into the
     next step's ``input`` (merged over the immutable ``workflow_input``), and the
@@ -199,21 +157,21 @@ class WorkflowSpec:
 
     ``strategy`` is the escape hatch for non-linear shapes (fan-out, branching).
     When set it owns both its DBOS registration and its run body, so the generic
-    engine stays agnostic to any one workflow. ``tasks`` is the legacy surface,
-    removed in the v2 cutover.
+    engine stays agnostic to any one workflow. A workflow supplies ``steps`` or a
+    ``strategy`` (at least one).
     """
 
     workflow_id: str
-    tasks: list[TaskSpec] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    task_message: WorkflowTaskMessageSpec | None = None
-    strategy: "WorkflowStrategy | None" = None
     steps: list[StepSpec] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    strategy: "WorkflowStrategy | None" = None
     input_model: type[BaseModel] | None = None
 
     def __post_init__(self) -> None:
         if self.steps:
             validate_step_pipeline(self.workflow_id, self.steps, self.input_model)
+        elif self.strategy is None:
+            raise ValueError("workflow requires steps or a strategy")
 
 
 def _require_step_id(step_id: str) -> str:
@@ -226,6 +184,12 @@ def _require_step_id(step_id: str) -> str:
 def _require_model(model: Any, label: str) -> None:
     if not (isinstance(model, type) and issubclass(model, BaseModel)):
         raise ValueError(f"{label} must be a pydantic BaseModel subclass")
+
+
+def _require_output(output: Any, label: str) -> None:
+    if isinstance(output, dict):
+        return
+    _require_model(output, f"{label} (a pydantic model or JSON-schema dict)")
 
 
 def _normalize_timeout(timeout_s: float | None) -> float | None:
@@ -241,6 +205,13 @@ def _required_fields(model: type[BaseModel]) -> set[str]:
     return {name for name, field in model.model_fields.items() if field.is_required()}
 
 
+def _output_fields(output: type[BaseModel] | dict[str, Any]) -> set[str]:
+    if isinstance(output, dict):
+        props = output.get("properties")
+        return set(props) if isinstance(props, dict) else set()
+    return set(output.model_fields)
+
+
 def validate_step_pipeline(
     workflow_id: str,
     steps: list[StepSpec],
@@ -248,11 +219,13 @@ def validate_step_pipeline(
 ) -> None:
     """Validate a forward step pipeline at build time.
 
-    Checks unique step ids, pydantic I/O models, and agent-step agent ids. When
+    Checks unique step ids, step I/O typing, and agent-step agent ids. When
     ``input_model`` is provided, also checks adjacency: every required input
     field of step ``n`` must be produced by ``workflow_input`` or the previous
-    step's output. Without ``input_model`` the ``workflow_input`` fields are
-    unknown, so adjacency is not enforced — declare it to get strict checks.
+    step's output. Adjacency is only enforced for steps whose ``input`` is a
+    pydantic model; a passthrough (``None``) input skips it. Without
+    ``input_model`` the ``workflow_input`` fields are unknown, so adjacency is not
+    enforced — declare it to get strict checks.
     """
     resolved_workflow_id = str(workflow_id or "").strip()
     if not resolved_workflow_id:
@@ -270,14 +243,15 @@ def validate_step_pipeline(
         if step_id in seen:
             raise ValueError(f"workflow step '{step_id}' is already defined")
         seen.add(step_id)
-        _require_model(step.input, f"step '{step_id}' input")
-        _require_model(step.output, f"step '{step_id}' output")
+        if step.input is not None:
+            _require_model(step.input, f"step '{step_id}' input")
+        _require_output(step.output, f"step '{step_id}' output")
         if getattr(step, "kind", None) == "agent" and not str(
             getattr(step, "agent_id", "") or ""
         ).strip():
             raise ValueError(f"workflow step '{step_id}' agent id is required")
 
-        if base_fields is not None:
+        if base_fields is not None and step.input is not None:
             available = set(base_fields)
             if prev_output_fields is not None:
                 available |= prev_output_fields
@@ -288,4 +262,4 @@ def validate_step_pipeline(
                     f"from workflow_input or the previous step's output: "
                     f"{sorted(missing)}"
                 )
-        prev_output_fields = set(step.output.model_fields)
+        prev_output_fields = _output_fields(step.output)

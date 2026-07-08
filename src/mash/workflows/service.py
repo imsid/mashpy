@@ -8,12 +8,10 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from mash.runtime.events import RuntimeEventType
-from mash.runtime.requests import to_public_event
-
 from . import dbos as workflow_dbos
 from .registry import WorkflowRegistry
 from .spec import WorkflowSpec
+from .store import RUN_QUEUED, RUN_TERMINAL
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import AgentPool
@@ -32,7 +30,6 @@ class WorkflowRun:
     finished_at: float | None = None
     error: str | None = None
     output: dict[str, Any] | None = None
-    summary: dict[str, Any] | None = None
     steps: list[dict[str, Any]] | None = None
 
 
@@ -62,7 +59,11 @@ class DuplicateWorkflowRunError(RuntimeError):
 
 
 class WorkflowService:
-    """Host-level workflow execution service."""
+    """Host-level workflow execution service.
+
+    Step pipelines own their run history in the workflow store; strategy
+    workflows (fan-out, branching) are projected from DBOS status.
+    """
 
     def __init__(
         self,
@@ -77,12 +78,12 @@ class WorkflowService:
         if not self._runner_id:
             raise ValueError("runner_id is required")
 
-    async def list_workflows(self) -> list[dict[str, Any]]:
-        return [self._serialize_workflow(item) for item in self._workflow_registry.list()]
-
     def _workflow_store(self) -> Any | None:
         getter = getattr(self._pool, "get_workflow_store", None)
         return getter() if callable(getter) else None
+
+    async def list_workflows(self) -> list[dict[str, Any]]:
+        return [self._serialize_workflow(item) for item in self._workflow_registry.list()]
 
     async def list_runs(
         self,
@@ -100,60 +101,24 @@ class WorkflowService:
             raise ValueError("workflow_id is required")
         workflow = self._require_workflow(resolved_workflow_id)
 
-        # v2 step pipelines own their run history in the workflow store.
-        if getattr(workflow, "steps", None):
-            store = self._workflow_store()
-            if store is None:
-                return []
-            records = await store.list_runs(
-                resolved_workflow_id,
-                status=_normalize_optional_text(status),
-                start_time=_parse_time_filter(start_time),
-                end_time=_parse_time_filter(end_time),
-                limit=max(1, int(limit)),
-                offset=max(0, int(offset)),
-                sort_desc=bool(sort_desc),
-            )
-            return [_run_from_record(record) for record in records]
-
-        normalized_status = _normalize_optional_text(status)
-        if normalized_status is not None and normalized_status.lower() != "completed":
+        # Strategy workflows keep their own result surface (e.g. experiments) and
+        # do not populate the workflow run store.
+        if not workflow.steps:
             return []
-        parsed_start_time = _parse_time_filter(start_time)
-        parsed_end_time = _parse_time_filter(end_time)
 
-        turns: list[dict[str, Any]] = []
-        for agent_id in self._workflow_task_agent_ids(workflow):
-            store = self._workflow_task_memory_store(agent_id)
-            if store is None:
-                continue
-            task_turns = await store.list_workflow_turns(
-                app_id=agent_id,
-                workflow_id=resolved_workflow_id,
-                start_time=parsed_start_time,
-                end_time=parsed_end_time,
-                limit=None,
-                offset=0,
-                sort_desc=bool(sort_desc),
-            )
-            for turn in task_turns:
-                run_id = str(turn.get("workflow_run_id") or "").strip()
-                if not run_id:
-                    continue
-                item = dict(turn)
-                item["workflow_id"] = resolved_workflow_id
-                item["task_id"] = turn.get("task_id")
-                item["run_id"] = run_id
-                item["agent_id"] = agent_id
-                turns.append(item)
-
-        return _runs_from_workflow_turns(
-            turns,
-            workflow_id=resolved_workflow_id,
+        store = self._workflow_store()
+        if store is None:
+            return []
+        records = await store.list_runs(
+            resolved_workflow_id,
+            status=_normalize_optional_text(status),
+            start_time=_parse_time_filter(start_time),
+            end_time=_parse_time_filter(end_time),
             limit=max(1, int(limit)),
             offset=max(0, int(offset)),
             sort_desc=bool(sort_desc),
         )
+        return [_run_from_record(record) for record in records]
 
     async def run_workflow(
         self,
@@ -208,7 +173,7 @@ class WorkflowService:
             run_id=run_id,
             workflow_id=resolved_workflow_id,
             dedup_key=normalized_dedup_key,
-            status="queued",
+            status=RUN_QUEUED,
             created_at=time.time(),
         )
 
@@ -221,33 +186,25 @@ class WorkflowService:
         if not resolved_run_id:
             raise ValueError("run_id is required")
 
-        if getattr(workflow, "steps", None):
+        if workflow.steps:
             store = self._workflow_store()
             record = await store.get_run(resolved_run_id) if store is not None else None
-            if record is None:
-                raise WorkflowNotFoundError(
-                    f"workflow run '{resolved_run_id}' was not found"
-                )
-            run = _run_from_record(record)
-            steps = await store.get_run_steps(resolved_run_id)
-            run.steps = [_step_to_dict(step) for step in steps]
-            return run
+            if record is not None:
+                run = _run_from_record(record)
+                steps = await store.get_run_steps(resolved_run_id)
+                run.steps = [_step_to_dict(step) for step in steps]
+                return run
+            # The store row is written once the run starts executing; before that
+            # the run is only visible as DBOS status. Fall through to it.
 
-        try:
-            status = await workflow_dbos.get_workflow_status(resolved_run_id)
-        except Exception as exc:
-            raise WorkflowNotFoundError(
-                f"workflow run '{resolved_run_id}' was not found"
-            ) from exc
+        status = await _get_workflow_status_or_none(resolved_run_id)
         if status is None:
             raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
-        run = _run_from_status(
+        return _run_from_status(
             status,
             workflow_id=resolved_workflow_id,
             dedup_key=_dedup_key_from_status(status, resolved_workflow_id),
         )
-        run.summary = await self._workflow_run_summary(resolved_workflow_id, resolved_run_id)
-        return run
 
     async def resume_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
         """Resume a failed step-pipeline run from its failed step (same run_id)."""
@@ -255,7 +212,7 @@ class WorkflowService:
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
         workflow = self._require_workflow(resolved_workflow_id)
-        if not getattr(workflow, "steps", None):
+        if not workflow.steps:
             raise ValueError("resume_run is only supported for step pipelines")
         resolved_run_id = str(run_id or "").strip()
         if not resolved_run_id:
@@ -295,6 +252,38 @@ class WorkflowService:
             for event in events
         ]
 
+    async def stream_run_events(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        poll_interval: float = 0.25,
+    ) -> AsyncIterator[WorkflowStreamEvent]:
+        resolved_workflow_id = str(workflow_id or "").strip()
+        resolved_run_id = str(run_id or "").strip()
+        workflow = self._require_workflow(resolved_workflow_id)
+        if not resolved_run_id:
+            raise ValueError("run_id is required")
+
+        if workflow.steps:
+            store = self._workflow_store()
+            if store is None or await store.get_run(resolved_run_id) is None:
+                raise WorkflowNotFoundError(
+                    f"workflow run '{resolved_run_id}' was not found"
+                )
+            return self._stream_step_run_events(
+                resolved_workflow_id, resolved_run_id, store, poll_interval
+            )
+
+        # Strategy workflows: poll DBOS status to a terminal event.
+        if await _get_workflow_status_or_none(resolved_run_id) is None:
+            raise WorkflowNotFoundError(
+                f"workflow run '{resolved_run_id}' was not found"
+            )
+        return self._stream_strategy_run_events(
+            resolved_workflow_id, resolved_run_id, poll_interval
+        )
+
     async def _stream_step_run_events(
         self,
         workflow_id: str,
@@ -302,8 +291,6 @@ class WorkflowService:
         store: Any,
         poll_interval: float,
     ) -> AsyncIterator[WorkflowStreamEvent]:
-        from .store import RUN_TERMINAL
-
         emitted: set[tuple[str, int, str]] = set()
         while True:
             for event in await store.list_step_events(run_id):
@@ -341,218 +328,39 @@ class WorkflowService:
             yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
             await _sleep(poll_interval)
 
-    async def stream_run_events(
+    async def _stream_strategy_run_events(
         self,
         workflow_id: str,
         run_id: str,
-        *,
-        poll_interval: float = 0.25,
+        poll_interval: float,
     ) -> AsyncIterator[WorkflowStreamEvent]:
-        resolved_workflow_id = str(workflow_id or "").strip()
-        resolved_run_id = str(run_id or "").strip()
-        workflow = self._require_workflow(resolved_workflow_id)
-
-        # v2 step pipelines stream their audit trail from the workflow store, so
-        # code steps are visible (they emit no agent runtime events).
-        if getattr(workflow, "steps", None):
-            store = self._workflow_store()
-            if store is None or await store.get_run(resolved_run_id) is None:
-                raise WorkflowNotFoundError(
-                    f"workflow run '{resolved_run_id}' was not found"
+        while True:
+            status = await _get_workflow_status_or_none(run_id)
+            mapped = _map_dbos_status(str(getattr(status, "status", "") or "")) if status else ""
+            if mapped == "completed":
+                yield WorkflowStreamEvent(
+                    event="workflow.completed",
+                    data={
+                        "workflow_id": workflow_id,
+                        "run_id": run_id,
+                        "status": mapped,
+                        "output": _status_output(status),
+                    },
                 )
-            return self._stream_step_run_events(
-                resolved_workflow_id, resolved_run_id, store, poll_interval
-            )
-        if not resolved_run_id:
-            raise ValueError("run_id is required")
-
-        initial_events: dict[str, list[Any]] = {}
-        for task in workflow.tasks:
-            task_events = await self._list_task_runtime_events(
-                task.agent_id,
-                workflow_id=resolved_workflow_id,
-                task_id=task.task_id,
-                run_id=resolved_run_id,
-                after_event_id=0,
-            )
-            initial_events[task.task_id] = task_events
-        if not any(initial_events.values()):
-            status = await _get_workflow_status_or_none(resolved_run_id)
-            if status is None:
-                raise WorkflowNotFoundError(
-                    f"workflow run '{resolved_run_id}' was not found"
+                return
+            if mapped in {"failed", "cancelled"}:
+                yield WorkflowStreamEvent(
+                    event="workflow.error",
+                    data={
+                        "workflow_id": workflow_id,
+                        "run_id": run_id,
+                        "status": mapped,
+                        "error": _status_error(status) or f"workflow {mapped}",
+                    },
                 )
-
-        async def _generate() -> AsyncIterator[WorkflowStreamEvent]:
-            cursors: dict[str, int] = {task.task_id: 0 for task in workflow.tasks}
-            started_tasks: set[str] = set()
-            completed_tasks: set[str] = set()
-            error_tasks: set[str] = set()
-            queued_events = initial_events
-
-            while True:
-                emitted = False
-                for task in workflow.tasks:
-                    task_events = queued_events.pop(task.task_id, None)
-                    if task_events is None:
-                        task_events = await self._list_task_runtime_events(
-                            task.agent_id,
-                            workflow_id=resolved_workflow_id,
-                            task_id=task.task_id,
-                            run_id=resolved_run_id,
-                            after_event_id=cursors.get(task.task_id, 0),
-                        )
-                    if not task_events:
-                        continue
-
-                    if task.task_id not in started_tasks:
-                        started_tasks.add(task.task_id)
-                        emitted = True
-                        yield _workflow_task_event(
-                            "workflow.task.started",
-                            workflow_id=resolved_workflow_id,
-                            run_id=resolved_run_id,
-                            task_id=task.task_id,
-                            task_agent_id=task.agent_id,
-                        )
-
-                    for event in task_events:
-                        cursors[task.task_id] = max(
-                            cursors.get(task.task_id, 0),
-                            int(getattr(event, "event_id", 0) or 0),
-                        )
-                        emitted = True
-                        public = to_public_event(event)
-                        yield WorkflowStreamEvent(
-                            event=str(public.get("event") or "message"),
-                            data=_augment_workflow_payload(
-                                public.get("data"),
-                                workflow_id=resolved_workflow_id,
-                                run_id=resolved_run_id,
-                                task_id=task.task_id,
-                                task_agent_id=task.agent_id,
-                            ),
-                        )
-
-                        if event.event_type == RuntimeEventType.REQUEST_COMPLETED.value:
-                            if task.task_id not in completed_tasks:
-                                completed_tasks.add(task.task_id)
-                                yield _workflow_task_event(
-                                    "workflow.task.completed",
-                                    workflow_id=resolved_workflow_id,
-                                    run_id=resolved_run_id,
-                                    task_id=task.task_id,
-                                    task_agent_id=task.agent_id,
-                                )
-                        elif event.event_type == RuntimeEventType.REQUEST_FAILED.value:
-                            if task.task_id not in error_tasks:
-                                error_tasks.add(task.task_id)
-                                yield _workflow_task_event(
-                                    "workflow.task.error",
-                                    workflow_id=resolved_workflow_id,
-                                    run_id=resolved_run_id,
-                                    task_id=task.task_id,
-                                    task_agent_id=task.agent_id,
-                                )
-
-                if error_tasks:
-                    return
-
-                status = None
-                if len(completed_tasks) == len(workflow.tasks):
-                    status = await workflow_dbos.get_workflow_status(resolved_run_id)
-                    terminal_event = _terminal_workflow_stream_event(
-                        status,
-                        workflow_id=resolved_workflow_id,
-                        run_id=resolved_run_id,
-                    )
-                    if terminal_event is not None:
-                        if terminal_event.event:
-                            yield terminal_event
-                        return
-                elif not emitted:
-                    status = await workflow_dbos.get_workflow_status(resolved_run_id)
-                    terminal_event = _terminal_workflow_stream_event(
-                        status,
-                        workflow_id=resolved_workflow_id,
-                        run_id=resolved_run_id,
-                    )
-                    if terminal_event is not None:
-                        if terminal_event.event:
-                            yield terminal_event
-                        return
-                if not emitted:
-                    yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
-                    await _sleep(poll_interval)
-
-        return _generate()
-
-    async def _list_task_runtime_events(
-        self,
-        agent_id: str,
-        *,
-        workflow_id: str,
-        task_id: str,
-        run_id: str,
-        after_event_id: int,
-    ) -> list[Any]:
-        agent = self._pool.get_agent(agent_id)
-        return await agent.runtime_store.list_events(
-            app_id=agent_id,
-            workflow_run_id=run_id,
-            after_event_id=max(0, int(after_event_id)),
-        )
-
-    async def _workflow_run_summary(
-        self,
-        workflow_id: str,
-        run_id: str,
-    ) -> dict[str, Any] | None:
-        workflow = self._require_workflow(workflow_id)
-        turns: list[dict[str, Any]] = []
-        for agent_id in self._workflow_task_agent_ids(workflow):
-            store = self._workflow_task_memory_store(agent_id)
-            if store is None:
-                continue
-            task_turns = await store.list_workflow_turns(
-                app_id=agent_id,
-                workflow_id=workflow_id,
-                workflow_run_id=run_id,
-                limit=None,
-                offset=0,
-                sort_desc=True,
-            )
-            for turn in task_turns:
-                item = dict(turn)
-                item["task_id"] = turn.get("task_id")
-                item["agent_id"] = agent_id
-                turns.append(item)
-        if not turns:
-            return None
-        latest = max(
-            turns,
-            key=lambda item: (
-                float(item.get("created_at") or 0.0),
-                str(item.get("trace_id") or ""),
-            ),
-        )
-        return _workflow_run_summary_from_turn(latest)
-
-    @staticmethod
-    def _workflow_task_agent_ids(workflow: Any) -> list[str]:
-        """Distinct task agent ids, preserving order (turns carry task_id)."""
-        seen: list[str] = []
-        for task in workflow.tasks:
-            if task.agent_id not in seen:
-                seen.append(task.agent_id)
-        return seen
-
-    def _workflow_task_memory_store(self, agent_id: str) -> Any | None:
-        try:
-            agent = self._pool.get_agent(agent_id)
-        except Exception:
-            return None
-        return getattr(agent, "memory_store", None) or getattr(agent, "store", None)
+                return
+            yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
+            await _sleep(poll_interval)
 
     def _require_workflow(self, workflow_id: str) -> WorkflowSpec:
         try:
@@ -564,21 +372,24 @@ class WorkflowService:
 
     @staticmethod
     def _serialize_workflow(workflow: WorkflowSpec) -> dict[str, Any]:
-        def _task(task: Any) -> dict[str, Any]:
-            entry: dict[str, Any] = {
-                "task_id": task.task_id,
-                "agent_id": task.agent_id,
-            }
-            if task.structured_output is not None:
-                entry["structured_output"] = dict(task.structured_output)
+        def _step(step: Any) -> dict[str, Any]:
+            entry: dict[str, Any] = {"step_id": step.step_id, "kind": step.kind}
+            if step.kind == "agent":
+                entry["agent_id"] = getattr(step, "agent_id", None)
+                skill_name = getattr(step, "skill_name", None)
+                if skill_name:
+                    entry["skill_name"] = skill_name
+            output = step.output
+            if isinstance(output, dict):
+                entry["structured_output"] = dict(output)
             return entry
 
         payload: dict[str, Any] = {
             "workflow_id": workflow.workflow_id,
-            "tasks": [_task(task) for task in workflow.tasks],
+            "steps": [_step(step) for step in workflow.steps],
         }
-        if workflow.task_message is not None:
-            payload["skill_name"] = workflow.task_message.skill_name
+        if workflow.strategy is not None and not workflow.steps:
+            payload["strategy"] = type(workflow.strategy).__name__
         if workflow.metadata:
             payload["metadata"] = dict(workflow.metadata)
         return payload
@@ -597,81 +408,6 @@ def _normalize_workflow_input(value: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("workflow_input must be a JSON object")
     return dict(value)
-
-
-def _workflow_task_event(
-    event_name: str,
-    *,
-    workflow_id: str,
-    run_id: str,
-    task_id: str,
-    task_agent_id: str,
-) -> WorkflowStreamEvent:
-    return WorkflowStreamEvent(
-        event=event_name,
-        data={
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "task_id": task_id,
-            "task_agent_id": task_agent_id,
-        },
-    )
-
-
-def _terminal_workflow_stream_event(
-    status: Any | None,
-    *,
-    workflow_id: str,
-    run_id: str,
-) -> WorkflowStreamEvent | None:
-    if status is None:
-        return None
-    mapped_status = _map_dbos_status(str(getattr(status, "status", "") or ""))
-    if mapped_status == "completed":
-        return WorkflowStreamEvent(event="", data={})
-    if mapped_status in {"failed", "cancelled"}:
-        error = _status_error(status) or f"workflow {mapped_status}"
-        return WorkflowStreamEvent(
-            event="workflow.error",
-            data={
-                "workflow_id": workflow_id,
-                "run_id": run_id,
-                "status": mapped_status,
-                "error": error,
-            },
-        )
-    return None
-
-
-def _augment_workflow_payload(
-    payload: Any,
-    *,
-    workflow_id: str,
-    run_id: str,
-    task_id: str,
-    task_agent_id: str,
-) -> dict[str, Any]:
-    data = dict(payload) if isinstance(payload, dict) else {"payload": payload}
-    data.update(
-        {
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "task_id": task_id,
-            "task_agent_id": task_agent_id,
-        }
-    )
-    return data
-
-
-async def _sleep(duration: float) -> None:
-    await asyncio.sleep(max(0.0, float(duration)))
-
-
-async def _get_workflow_status_or_none(run_id: str) -> Any | None:
-    try:
-        return await workflow_dbos.get_workflow_status(run_id)
-    except Exception:
-        return None
 
 
 def _run_from_record(record: Any) -> WorkflowRun:
@@ -726,61 +462,6 @@ def _run_from_status(
         error=_status_error(status),
         output=_status_output(status),
     )
-
-
-def _runs_from_workflow_turns(
-    turns: list[dict[str, Any]],
-    *,
-    workflow_id: str,
-    limit: int,
-    offset: int,
-    sort_desc: bool,
-) -> list[WorkflowRun]:
-    latest_by_run: dict[str, dict[str, Any]] = {}
-    for turn in turns:
-        run_id = str(turn.get("run_id") or "").strip()
-        if not run_id:
-            continue
-        current = latest_by_run.get(run_id)
-        if current is None or _turn_sort_key(turn) > _turn_sort_key(current):
-            latest_by_run[run_id] = turn
-
-    ordered = sorted(
-        latest_by_run.values(),
-        key=_turn_sort_key,
-        reverse=sort_desc,
-    )
-    sliced = ordered[max(0, int(offset)) : max(0, int(offset)) + max(1, int(limit))]
-    return [
-        WorkflowRun(
-            run_id=str(turn["run_id"]),
-            workflow_id=workflow_id,
-            dedup_key=None,
-            status="completed",
-            created_at=float(turn.get("created_at") or 0.0),
-            started_at=float(turn.get("created_at") or 0.0),
-            finished_at=float(turn.get("created_at") or 0.0),
-            error=None,
-            output=None,
-            summary=_workflow_run_summary_from_turn(turn),
-        )
-        for turn in sliced
-    ]
-
-
-def _turn_sort_key(turn: dict[str, Any]) -> tuple[float, str]:
-    return float(turn.get("created_at") or 0.0), str(turn.get("trace_id") or "")
-
-
-def _workflow_run_summary_from_turn(turn: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "trace_id": str(turn.get("trace_id") or ""),
-        "session_id": str(turn.get("session_id") or ""),
-        "task_id": str(turn.get("task_id") or ""),
-        "agent_id": str(turn.get("agent_id") or ""),
-        "user_message": str(turn.get("user_message") or ""),
-        "agent_response": str(turn.get("agent_response") or ""),
-    }
 
 
 def _map_dbos_status(status: str) -> str:
@@ -843,3 +524,14 @@ def _parse_time_filter(value: str | None) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.timestamp()
+
+
+async def _sleep(duration: float) -> None:
+    await asyncio.sleep(max(0.0, float(duration)))
+
+
+async def _get_workflow_status_or_none(run_id: str) -> Any | None:
+    try:
+        return await workflow_dbos.get_workflow_status(run_id)
+    except Exception:
+        return None

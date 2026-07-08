@@ -34,7 +34,7 @@ from mash.runtime import AgentSpec, Host, HostBuilder
 from mash.testing.runtime_fixtures import metadata
 from mash.runtime.events.types import RuntimeEvent
 from mash.testing.runtime_fixtures import build_spec
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import AgentStep, WorkflowSpec
 
 
 class _FakeLLMProvider(LLMProvider):
@@ -696,15 +696,11 @@ class MasherTests(unittest.TestCase):
                     self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
                     self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
                     self.assertEqual(
-                        workflows[
-                            MASHER_TRACE_DIGEST_WORKFLOW_ID
-                        ].tasks[0].structured_output,
+                        workflows[MASHER_TRACE_DIGEST_WORKFLOW_ID].steps[0].output,
                         MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
                     )
                     self.assertEqual(
-                        workflows[
-                            MASHER_ONLINE_EVAL_WORKFLOW_ID
-                        ].tasks[0].structured_output,
+                        workflows[MASHER_ONLINE_EVAL_WORKFLOW_ID].steps[0].output,
                         MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
                     )
                 finally:
@@ -719,12 +715,13 @@ class MasherTests(unittest.TestCase):
             ):
                 explicit = WorkflowSpec(
                     workflow_id="custom-chain",
-                    tasks=[
-                        TaskSpec(
-                            task_id="step-1",
+                    steps=[
+                        AgentStep(
+                            step_id="step-1",
                             agent_spec=build_spec(
                                 agent_id="chain-worker", response_text="ok"
                             ),
+                            output={"type": "object"},
                         )
                     ],
                 )

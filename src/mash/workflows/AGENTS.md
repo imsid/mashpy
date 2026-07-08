@@ -1,27 +1,47 @@
 # AGENTS Guide for `src/mash/workflows`
 
 ## Scope
-Code-defined host-level workflows that orchestrate existing Mash agents.
+Durable, observable host-level workflows: ordered step pipelines (or a
+`WorkflowStrategy` for non-linear shapes) orchestrated by DBOS on top of the Mash
+agent runtime.
 
 ## What Must Stay True
-- `WorkflowSpec` remains a code-defined ordered list of `TaskSpec` items.
-- `TaskSpec` stays minimal: `task_id` identifies workflow state, `agent_spec` identifies execution.
-- `WorkflowService` orchestrates workflows through normal Mash agent requests; it does not bypass the runtime.
-- Task input/output stays JSON-over-message text in this phase.
-- DBOS owns workflow orchestration, run status, run history, and active-run deduplication.
-- Task state is derived from the latest successful DBOS workflow output for the same `task_id`.
-- Workflow logic does not own artifacts; agents handle their own file or tool side effects.
-- `AgentPool` owns workflow registration and workflow service construction.
+- A `WorkflowSpec` supplies `steps` (a forward pipeline) or a `strategy` — one of
+  the two. Step pipelines validate themselves at build time.
+- Steps are `CodeStep` (deterministic Python, pydantic-typed) or `AgentStep`
+  (one agent-loop run; pydantic-or-JSON-schema output, optional passthrough
+  input and `skill_name`).
+- State threads forward: step *n*'s output merges over `workflow_input` into step
+  *n+1*'s input; the final step's output is the run result.
+- The workflow layer owns its persistence — `workflow_runs`, `workflow_steps`,
+  `workflow_step_events` via `WorkflowStore`. Run history and step audit come
+  from the store, not agent memory turns.
+- Each step body and store write is its own memoized DBOS step; store writes are
+  idempotent (deterministic keys) so at-least-once replay converges.
+- Idempotency of a step's external effects is the author's job (`StepContext`
+  exposes stable `run_id`/`step_id`); the framework never invents keys.
+- `AgentPool` owns workflow registration, the shared `WorkflowStore`, and
+  `WorkflowService` construction.
 
 ## Change Rules
-- Keep this package focused on workflow orchestration, registration, and DBOS workflow contracts.
-- Do not add transport clients here.
-- Do not move task state into agent memory/session history unless the workflow contract is explicitly redesigned.
-- If workflow request or output JSON shape changes, update this package README and the API tests together.
-- If workflow registration semantics change, update `HostBuilder`/`AgentPool` tests together.
-- If DBOS workflow status/output shape changes, update `WorkflowService`, API serialization, and tests together.
+- Keep this package focused on orchestration, registration, storage, and DBOS
+  contracts. No transport clients here.
+- Code steps stay Python-only (pydantic models + callables). The over-the-wire
+  dynamic-publishing path is agent-step-only (JSON-schema output).
+- If the agent-step envelope or output contract changes, update this package,
+  the masher/pilot workflow agents that consume it, the README, and the tests
+  together.
+- If the store schema changes, update the migration, `store.py`, `WorkflowService`
+  reads, and tests together.
+- If registration semantics change, update `HostBuilder`/`AgentPool` tests together.
 
 ## Minimal Validation
 - `python -m compileall src/mash/workflows`
-- Verify one successful single-task workflow, one multi-task workflow, one duplicate-dedup rejection, and one invalid-JSON failure path.
-- Verify API behavior for `GET /workflow`, successful `POST /workflow/{id}/run`, `GET /workflow/{id}/runs/{run_id}`, and not-found/conflict error paths.
+- Verify a code+agent step pipeline: output threading, result persistence, a
+  failed step marking the run failed with a `step.failed` audit event
+  (`tests/mash/workflows/test_forward_engine.py`).
+- Verify store-backed service reads and `resume_run`
+  (`tests/mash/workflows/test_service_v2.py`).
+- Verify API paths for `GET /workflow`, `POST /workflow/{id}/run`,
+  `GET /workflow/{id}/runs/{run_id}`, `.../resume`, `.../step-events`,
+  `.../events`, and not-found/conflict errors.
