@@ -205,6 +205,26 @@ async def get_workflow_status(run_id: str) -> Any | None:
     return await dbos_class.get_workflow_status_async(run_id)
 
 
+async def resume_workflow_run(run_id: str) -> str:
+    """Resume a failed/interrupted DBOS workflow run from its failed step.
+
+    DBOS replays completed steps from their memoized outputs and re-drives from
+    the point of failure. Returns the same ``run_id``.
+    """
+    resolved = str(run_id or "").strip()
+    if not resolved:
+        raise ValueError("run_id is required")
+    dbos_class, _, _, _, _ = _load_dbos_api()
+    resume = getattr(dbos_class, "resume_workflow_async", None)
+    if not callable(resume):
+        raise RuntimeError("dbos does not support resume_workflow_async")
+    handle = await resume(resolved)
+    workflow_id = getattr(handle, "get_workflow_id", None)
+    if callable(workflow_id):
+        return str(workflow_id())
+    return resolved
+
+
 async def execute_registered_workflow(
     runner_id: str,
     workflow_id: str,

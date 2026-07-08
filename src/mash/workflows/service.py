@@ -33,6 +33,7 @@ class WorkflowRun:
     error: str | None = None
     output: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
+    steps: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -79,6 +80,10 @@ class WorkflowService:
     async def list_workflows(self) -> list[dict[str, Any]]:
         return [self._serialize_workflow(item) for item in self._workflow_registry.list()]
 
+    def _workflow_store(self) -> Any | None:
+        getter = getattr(self._pool, "get_workflow_store", None)
+        return getter() if callable(getter) else None
+
     async def list_runs(
         self,
         workflow_id: str,
@@ -94,6 +99,23 @@ class WorkflowService:
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
         workflow = self._require_workflow(resolved_workflow_id)
+
+        # v2 step pipelines own their run history in the workflow store.
+        if getattr(workflow, "steps", None):
+            store = self._workflow_store()
+            if store is None:
+                return []
+            records = await store.list_runs(
+                resolved_workflow_id,
+                status=_normalize_optional_text(status),
+                start_time=_parse_time_filter(start_time),
+                end_time=_parse_time_filter(end_time),
+                limit=max(1, int(limit)),
+                offset=max(0, int(offset)),
+                sort_desc=bool(sort_desc),
+            )
+            return [_run_from_record(record) for record in records]
+
         normalized_status = _normalize_optional_text(status)
         if normalized_status is not None and normalized_status.lower() != "completed":
             return []
@@ -194,10 +216,22 @@ class WorkflowService:
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
-        self._require_workflow(resolved_workflow_id)
+        workflow = self._require_workflow(resolved_workflow_id)
         resolved_run_id = str(run_id or "").strip()
         if not resolved_run_id:
             raise ValueError("run_id is required")
+
+        if getattr(workflow, "steps", None):
+            store = self._workflow_store()
+            record = await store.get_run(resolved_run_id) if store is not None else None
+            if record is None:
+                raise WorkflowNotFoundError(
+                    f"workflow run '{resolved_run_id}' was not found"
+                )
+            run = _run_from_record(record)
+            steps = await store.get_run_steps(resolved_run_id)
+            run.steps = [_step_to_dict(step) for step in steps]
+            return run
 
         try:
             status = await workflow_dbos.get_workflow_status(resolved_run_id)
@@ -214,6 +248,52 @@ class WorkflowService:
         )
         run.summary = await self._workflow_run_summary(resolved_workflow_id, resolved_run_id)
         return run
+
+    async def resume_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Resume a failed step-pipeline run from its failed step (same run_id)."""
+        resolved_workflow_id = str(workflow_id or "").strip()
+        if not resolved_workflow_id:
+            raise ValueError("workflow_id is required")
+        workflow = self._require_workflow(resolved_workflow_id)
+        if not getattr(workflow, "steps", None):
+            raise ValueError("resume_run is only supported for step pipelines")
+        resolved_run_id = str(run_id or "").strip()
+        if not resolved_run_id:
+            raise ValueError("run_id is required")
+        store = self._workflow_store()
+        if store is None or await store.get_run(resolved_run_id) is None:
+            raise WorkflowNotFoundError(
+                f"workflow run '{resolved_run_id}' was not found"
+            )
+        await workflow_dbos.resume_workflow_run(resolved_run_id)
+        return await self.get_run(resolved_workflow_id, resolved_run_id)
+
+    async def list_run_step_events(
+        self, workflow_id: str, run_id: str
+    ) -> list[dict[str, Any]]:
+        """Store-backed step audit trail for one run — visible for code steps."""
+        resolved_workflow_id = str(workflow_id or "").strip()
+        self._require_workflow(resolved_workflow_id)
+        resolved_run_id = str(run_id or "").strip()
+        if not resolved_run_id:
+            raise ValueError("run_id is required")
+        store = self._workflow_store()
+        if store is None:
+            return []
+        events = await store.list_step_events(resolved_run_id)
+        return [
+            {
+                "run_id": event.run_id,
+                "workflow_id": event.workflow_id,
+                "step_id": event.step_id,
+                "attempt": event.attempt,
+                "event_type": event.event_type,
+                "seq": event.seq,
+                "at": event.at,
+                "payload": event.payload,
+            }
+            for event in events
+        ]
 
     async def stream_run_events(
         self,
@@ -534,6 +614,37 @@ async def _get_workflow_status_or_none(run_id: str) -> Any | None:
         return await workflow_dbos.get_workflow_status(run_id)
     except Exception:
         return None
+
+
+def _run_from_record(record: Any) -> WorkflowRun:
+    """Map a WorkflowStore run record to the public WorkflowRun projection."""
+    return WorkflowRun(
+        run_id=record.run_id,
+        workflow_id=record.workflow_id,
+        dedup_key=record.dedup_key,
+        status=record.status,
+        created_at=float(record.created_at or 0.0),
+        started_at=record.started_at,
+        finished_at=record.finished_at,
+        error=record.error,
+        output=record.result,
+    )
+
+
+def _step_to_dict(step: Any) -> dict[str, Any]:
+    return {
+        "step_id": step.step_id,
+        "ordinal": step.ordinal,
+        "kind": step.kind,
+        "status": step.status,
+        "input_snapshot": step.input_snapshot,
+        "output_snapshot": step.output_snapshot,
+        "error": step.error,
+        "attempt": step.attempt,
+        "agent_request_id": step.agent_request_id,
+        "started_at": step.started_at,
+        "finished_at": step.finished_at,
+    }
 
 
 def _run_from_status(
