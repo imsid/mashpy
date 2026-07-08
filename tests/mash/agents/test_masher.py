@@ -375,7 +375,6 @@ class MasherTests(unittest.TestCase):
                             "session_id": "s-1",
                             "trace_id": "t-1",
                         },
-                        "task_state": {},
                     }
                 )
             )
@@ -462,7 +461,7 @@ class MasherTests(unittest.TestCase):
         self.assertIn("timing", row)
         self.assertIn("total_duration_ms", row["timing"])
 
-    def test_trace_digest_workflow_incremental_mode_writes_jsonl_and_checkpoint(self) -> None:
+    def test_trace_digest_workflow_batch_mode_writes_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_store = self._build_runtime_store()
             self._save_trace_log(runtime_store, session_id="s-old", trace_id="t-old", created_at=1.0)
@@ -485,17 +484,9 @@ class MasherTests(unittest.TestCase):
                 spec.build_tools().get("run_trace_digest_workflow").execute(
                     {
                         "workflow_input": {
-                            "mode": "incremental",
+                            "mode": "batch",
                             "target_agent_id": "primary",
-                        },
-                        "task_state": {
-                            "schema_version": 1,
-                            "checkpoints": {
-                                "primary": {
-                                    "last_run_ts": 2.0,
-                                    "last_trace_ids": ["t-old"],
-                                }
-                            },
+                            "since_ts": 2.0,
                         },
                     }
                 )
@@ -503,12 +494,10 @@ class MasherTests(unittest.TestCase):
 
             self.assertFalse(result.is_error)
             next_state = json.loads(result.content)
+            self.assertEqual(next_state["schema_version"], 3)
             self.assertEqual(next_state["processed_trace_count"], 1)
             self.assertEqual(next_state["appended_trace_count"], 1)
-            self.assertEqual(
-                next_state["checkpoints"]["primary"]["last_trace_ids"],
-                ["t-new"],
-            )
+            self.assertNotIn("checkpoints", next_state)
             lines = artifact_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
             digest = json.loads(lines[0])
@@ -551,7 +540,6 @@ class MasherTests(unittest.TestCase):
                             "session_id": "s-1",
                             "trace_id": "t-1",
                         },
-                        "task_state": {},
                     }
                 )
             )
@@ -566,7 +554,7 @@ class MasherTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["trace_id"], "t-1")
 
-    def test_online_eval_workflow_incremental_skips_duplicate_row(self) -> None:
+    def test_online_eval_workflow_batch_skips_duplicate_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_store = self._build_runtime_store()
             self._save_trace_log(
@@ -607,22 +595,20 @@ class MasherTests(unittest.TestCase):
                 spec.build_tools().get("run_online_eval_curation_workflow").execute(
                     {
                         "workflow_input": {
-                            "mode": "incremental",
+                            "mode": "batch",
                             "target_agent_id": "primary",
+                            "since_ts": 2.0,
                         },
-                        "task_state": {"checkpoints": {"primary": {"last_run_ts": 2.0}}},
                     }
                 )
             )
 
             self.assertFalse(result.is_error)
             next_state = json.loads(result.content)
+            self.assertEqual(next_state["schema_version"], 3)
             self.assertEqual(next_state["processed_trace_count"], 1)
             self.assertEqual(next_state["appended_trace_count"], 0)
-            self.assertEqual(
-                next_state["checkpoints"]["primary"]["last_trace_ids"],
-                ["t-new"],
-            )
+            self.assertNotIn("checkpoints", next_state)
             self.assertEqual(len(artifact_path.read_text(encoding="utf-8").splitlines()), 1)
 
     def test_trace_digest_workflow_rejects_missing_trace_input(self) -> None:
@@ -636,7 +622,6 @@ class MasherTests(unittest.TestCase):
                         "target_agent_id": "primary",
                         "session_id": "s-1",
                     },
-                    "task_state": {},
                 }
             )
         )

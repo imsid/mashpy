@@ -133,16 +133,15 @@ An agent step receives a JSON message:
 {
   "workflow_id": "changelog",
   "workflow_run_id": "mw:...:changelog:abc",
-  "task_id": "summarize",
   "step_id": "summarize",
   "workflow_input": { ... },
-  "task_state": { ...prior step output... },
-  "input": { ...coerced step input... }
+  "input": { ...coerced step input == workflow_input merged with prior output... }
 }
 ```
 
-The agent must return structured output matching the step's `output` schema;
-that becomes the next step's threaded state.
+Each run is a clean slate — there is no cross-run state. The agent must return
+structured output matching the step's `output` schema; that becomes the next
+step's threaded input.
 
 ## CLI
 

@@ -231,23 +231,19 @@ def _agent_step_message(
     workflow_id: str,
     run_id: str,
     workflow_input: dict[str, Any],
-    prior_output: dict[str, Any] | None,
     input_snapshot: dict[str, Any],
 ) -> str:
     """Envelope sent to an agent step.
 
-    Carries ``task_id`` (== ``step_id``) and ``task_state`` (the prior step's
-    output) so workflow-worker agents that route on the classic envelope keep
-    working; ``input`` is the coerced step input. A ``skill_name`` adds the
-    load-this-skill-first instructions.
+    ``input`` is the coerced step input (``workflow_input`` merged with the prior
+    step's output). Each run is a clean slate — there is no cross-run state. A
+    ``skill_name`` adds the load-this-skill-first instructions.
     """
     payload: dict[str, Any] = {
         "workflow_id": workflow_id,
         "workflow_run_id": run_id,
-        "task_id": step.step_id,
         "step_id": step.step_id,
         "workflow_input": dict(workflow_input),
-        "task_state": dict(prior_output or {}),
         "input": dict(input_snapshot),
     }
     skill_name = getattr(step, "skill_name", None)
@@ -256,7 +252,7 @@ def _agent_step_message(
         payload["workflow_task_instructions"] = [
             f'Your first action must be calling the Skill tool with arguments {{"name": "{skill_name}"}}.',
             "After the Skill tool returns, follow the loaded skill instructions.",
-            "Execute only the task identified by task_id.",
+            "Execute only the step identified by step_id.",
         ]
     return json.dumps(payload, ensure_ascii=True)
 
@@ -299,7 +295,6 @@ class ForwardPipelineStrategy(WorkflowStrategy):
                             workflow_id=wf_id,
                             run_id=run_id,
                             workflow_input=ctx.workflow_input,
-                            prior_output=prev_output,
                             input_snapshot=input_snapshot,
                         ),
                         structured_output=serialize_structured_output(step.output),

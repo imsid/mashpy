@@ -80,38 +80,32 @@ class TraceDigestWorkflowTool(FunctionTool):
             name="run_trace_digest_workflow",
             description=(
                 "Execute Masher's workflow input. Supports trace mode for one trace "
-                "and incremental mode for all traces after a checkpoint."
+                "and batch mode for all of a target's traces (optionally since a "
+                "caller-supplied since_ts). Each run is a clean slate — no checkpoints."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "workflow_input": {
                         "type": "object",
-                        "description": "The workflow_input object from the task request.",
-                    },
-                    "task_state": {
-                        "type": "object",
-                        "description": "The task_state checkpoint object from the task request.",
+                        "description": "The workflow_input object from the step request.",
                     },
                 },
-                "required": ["workflow_input", "task_state"],
+                "required": ["workflow_input"],
             },
             _executor=self._execute,
         )
 
     async def _execute(self, args: Dict[str, Any]) -> ToolResult:
         workflow_input = args.get("workflow_input")
-        task_state = args.get("task_state")
         if not isinstance(workflow_input, dict):
             return ToolResult.error("workflow_input must be an object")
-        if not isinstance(task_state, dict):
-            return ToolResult.error("task_state must be an object")
         mode = str(workflow_input.get("mode") or "").strip().lower()
         if mode == "trace":
             return await self._run_trace_mode(workflow_input)
-        if mode == "incremental":
-            return await self._run_incremental_mode(workflow_input, task_state)
-        return ToolResult.error("workflow_input.mode must be 'trace' or 'incremental'")
+        if mode == "batch":
+            return await self._run_batch_mode(workflow_input)
+        return ToolResult.error("workflow_input.mode must be 'trace' or 'batch'")
 
     async def _run_trace_mode(self, workflow_input: dict[str, Any]) -> ToolResult:
         target_agent_id = _required_text(workflow_input, "target_agent_id")
@@ -140,30 +134,26 @@ class TraceDigestWorkflowTool(FunctionTool):
             return ToolResult.error(str(exc))
         return ToolResult.success(json.dumps(digest, ensure_ascii=True), **digest)
 
-    async def _run_incremental_mode(
-        self,
-        workflow_input: dict[str, Any],
-        task_state: dict[str, Any],
-    ) -> ToolResult:
+    async def _run_batch_mode(self, workflow_input: dict[str, Any]) -> ToolResult:
         target_agent_id = _required_text(workflow_input, "target_agent_id")
         if isinstance(target_agent_id, ToolResult):
             return target_agent_id
-        checkpoints = task_state.get("checkpoints")
-        checkpoint = _checkpoint_for_target(checkpoints, target_agent_id)
-        try:
-            last_run_ts = float(checkpoint.get("last_run_ts") or 0.0)
-        except (AttributeError, TypeError, ValueError):
-            last_run_ts = 0.0
 
         store = self._context.require_runtime_store()
         try:
             limit = max(1, int(workflow_input.get("limit") or 100))
         except (TypeError, ValueError):
             return ToolResult.error("workflow_input.limit must be an integer")
+        # Optional explicit window; defaults to all of the target's traces. There
+        # is no persisted checkpoint — each run stands alone.
+        try:
+            since_ts = float(workflow_input.get("since_ts") or 0.0)
+        except (TypeError, ValueError):
+            return ToolResult.error("workflow_input.since_ts must be a number")
         traces = await _list_traces_since(
             store,
             target_agent_id=target_agent_id,
-            since_ts=last_run_ts,
+            since_ts=since_ts,
             limit=limit,
         )
         digests: list[dict[str, Any]] = []
@@ -194,27 +184,13 @@ class TraceDigestWorkflowTool(FunctionTool):
             )
             for digest in digests
         ]
-        previous_checkpoints = dict(checkpoints) if isinstance(checkpoints, dict) else {}
-        next_ts = max(
-            [last_run_ts]
-            + [float(trace.get("latest_event_at") or 0.0) for trace in traces]
-        )
-        previous_checkpoints[target_agent_id] = {
-            "last_run_ts": next_ts,
-            "last_trace_ids": [
-                str(trace.get("trace_id") or "")
-                for trace in traces
-                if str(trace.get("trace_id") or "").strip()
-            ],
-        }
-        next_state = {
-            "schema_version": 2,
-            "checkpoints": previous_checkpoints,
+        result = {
+            "schema_version": 3,
             "processed_trace_count": len(digests),
             "artifact_path": str(self._context.require_trace_digest_jsonl_path()),
             "appended_trace_count": sum(1 for item in append_results if item),
         }
-        return ToolResult.success(json.dumps(next_state, ensure_ascii=True), **next_state)
+        return ToolResult.success(json.dumps(result, ensure_ascii=True), **result)
 
 
 class OnlineEvalCurationWorkflowTool(FunctionTool):
@@ -231,39 +207,33 @@ class OnlineEvalCurationWorkflowTool(FunctionTool):
             name="run_online_eval_curation_workflow",
             description=(
                 "Execute Masher's online eval curation workflow input. Supports "
-                "trace mode for one trace and incremental mode for all traces "
-                "after a checkpoint."
+                "trace mode for one trace and batch mode for all of a target's "
+                "traces (optionally since a caller-supplied since_ts). Each run is "
+                "a clean slate — no checkpoints."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "workflow_input": {
                         "type": "object",
-                        "description": "The workflow_input object from the task request.",
-                    },
-                    "task_state": {
-                        "type": "object",
-                        "description": "The task_state checkpoint object from the task request.",
+                        "description": "The workflow_input object from the step request.",
                     },
                 },
-                "required": ["workflow_input", "task_state"],
+                "required": ["workflow_input"],
             },
             _executor=self._execute,
         )
 
     async def _execute(self, args: Dict[str, Any]) -> ToolResult:
         workflow_input = args.get("workflow_input")
-        task_state = args.get("task_state")
         if not isinstance(workflow_input, dict):
             return ToolResult.error("workflow_input must be an object")
-        if not isinstance(task_state, dict):
-            return ToolResult.error("task_state must be an object")
         mode = str(workflow_input.get("mode") or "").strip().lower()
         if mode == "trace":
             return await self._run_trace_mode(workflow_input)
-        if mode == "incremental":
-            return await self._run_incremental_mode(workflow_input, task_state)
-        return ToolResult.error("workflow_input.mode must be 'trace' or 'incremental'")
+        if mode == "batch":
+            return await self._run_batch_mode(workflow_input)
+        return ToolResult.error("workflow_input.mode must be 'trace' or 'batch'")
 
     async def _run_trace_mode(self, workflow_input: dict[str, Any]) -> ToolResult:
         target_agent_id = _required_text(workflow_input, "target_agent_id")
@@ -302,30 +272,26 @@ class OnlineEvalCurationWorkflowTool(FunctionTool):
         }
         return ToolResult.success(json.dumps(payload, ensure_ascii=True), **payload)
 
-    async def _run_incremental_mode(
-        self,
-        workflow_input: dict[str, Any],
-        task_state: dict[str, Any],
-    ) -> ToolResult:
+    async def _run_batch_mode(self, workflow_input: dict[str, Any]) -> ToolResult:
         target_agent_id = _required_text(workflow_input, "target_agent_id")
         if isinstance(target_agent_id, ToolResult):
             return target_agent_id
-        checkpoints = task_state.get("checkpoints")
-        checkpoint = _checkpoint_for_target(checkpoints, target_agent_id)
-        try:
-            last_run_ts = float(checkpoint.get("last_run_ts") or 0.0)
-        except (AttributeError, TypeError, ValueError):
-            last_run_ts = 0.0
         try:
             limit = max(1, int(workflow_input.get("limit") or 100))
         except (TypeError, ValueError):
             return ToolResult.error("workflow_input.limit must be an integer")
+        # Optional explicit window; defaults to all of the target's traces. No
+        # persisted checkpoint — each run stands alone.
+        try:
+            since_ts = float(workflow_input.get("since_ts") or 0.0)
+        except (TypeError, ValueError):
+            return ToolResult.error("workflow_input.since_ts must be a number")
 
         store = self._context.require_runtime_store()
         traces = await _list_traces_since(
             store,
             target_agent_id=target_agent_id,
-            since_ts=last_run_ts,
+            since_ts=since_ts,
             limit=limit,
         )
         rows: list[dict[str, Any]] = []
@@ -355,27 +321,13 @@ class OnlineEvalCurationWorkflowTool(FunctionTool):
             )
             for row in rows
         ]
-        previous_checkpoints = dict(checkpoints) if isinstance(checkpoints, dict) else {}
-        next_ts = max(
-            [last_run_ts]
-            + [float(trace.get("latest_event_at") or 0.0) for trace in traces]
-        )
-        previous_checkpoints[target_agent_id] = {
-            "last_run_ts": next_ts,
-            "last_trace_ids": [
-                str(trace.get("trace_id") or "")
-                for trace in traces
-                if str(trace.get("trace_id") or "").strip()
-            ],
-        }
-        next_state = {
-            "schema_version": 2,
-            "checkpoints": previous_checkpoints,
+        result = {
+            "schema_version": 3,
             "processed_trace_count": len(rows),
             "artifact_path": str(self._context.require_online_eval_jsonl_path()),
             "appended_trace_count": sum(1 for item in append_results if item),
         }
-        return ToolResult.success(json.dumps(next_state, ensure_ascii=True), **next_state)
+        return ToolResult.success(json.dumps(result, ensure_ascii=True), **result)
 
 
 class GenSyntheticEvalsWorkflowTool(FunctionTool):
@@ -726,15 +678,6 @@ def _has_digest(path: Path, target_agent_id: str, session_id: str, trace_id: str
     except OSError:
         return False
     return False
-
-
-def _checkpoint_for_target(value: Any, target_agent_id: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    checkpoint = value.get(target_agent_id)
-    if isinstance(checkpoint, dict):
-        return checkpoint
-    return {}
 
 
 def _required_text(
