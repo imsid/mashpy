@@ -285,22 +285,31 @@ def register_default_commands(shell) -> None:
                 return
             rows = []
             for workflow in workflows:
-                tasks = workflow.get("tasks")
-                rendered_tasks = []
-                if isinstance(tasks, list):
-                    for task in tasks:
-                        if not isinstance(task, dict):
+                rendered_steps = []
+                steps = workflow.get("steps")
+                if isinstance(steps, list):
+                    for step in steps:
+                        if not isinstance(step, dict):
                             continue
-                        task_id = str(task.get("task_id") or "")
-                        agent_id = str(task.get("agent_id") or "")
-                        rendered_tasks.append(f"{task_id} -> {agent_id}")
+                        step_id = str(step.get("step_id") or "")
+                        kind = str(step.get("kind") or "")
+                        rendered_steps.append(f"{step_id} ({kind})")
+                else:
+                    tasks = workflow.get("tasks")
+                    if isinstance(tasks, list):
+                        for task in tasks:
+                            if not isinstance(task, dict):
+                                continue
+                            task_id = str(task.get("task_id") or "")
+                            agent_id = str(task.get("agent_id") or "")
+                            rendered_steps.append(f"{task_id} -> {agent_id}")
                 rows.append(
                     [
                         str(workflow.get("workflow_id") or ""),
-                        ", ".join(rendered_tasks),
+                        ", ".join(rendered_steps),
                     ]
                 )
-            ctx.renderer.table(["Workflow ID", "Tasks"], rows)
+            ctx.renderer.table(["Workflow ID", "Steps"], rows)
             return
 
         if subcommand == "run":
@@ -475,12 +484,48 @@ def register_default_commands(shell) -> None:
                 ["error", str(run.get("error") or "")],
             ]
             ctx.renderer.table(["Field", "Value"], rows)
+            steps = run.get("steps")
+            if isinstance(steps, list) and steps:
+                step_rows = [
+                    [
+                        str(step.get("step_id") or ""),
+                        str(step.get("kind") or ""),
+                        str(step.get("status") or ""),
+                    ]
+                    for step in steps
+                    if isinstance(step, dict)
+                ]
+                ctx.renderer.table(["Step", "Kind", "Status"], step_rows)
             output = run.get("output")
             if isinstance(output, dict):
                 ctx.renderer.print(json.dumps(output, ensure_ascii=True, indent=2))
             return
 
-        ctx.renderer.error("Usage: /workflow [list|run|status] ...")
+        if subcommand == "resume":
+            if len(args) < 3:
+                ctx.renderer.error("Usage: /workflow resume <workflow_id> <run_id>")
+                return
+            workflow_id = args[1].strip()
+            run_id = args[2].strip()
+            if not workflow_id or not run_id:
+                ctx.renderer.error("Usage: /workflow resume <workflow_id> <run_id>")
+                return
+            if ctx.host_id:
+                attached = _host_workflow_ids(ctx.client.get_host(ctx.host_id))
+                if workflow_id not in attached:
+                    ctx.renderer.error(
+                        f"Workflow '{workflow_id}' is not attached to host "
+                        f"'{ctx.host_id}'. Use /workflow list to see attached workflows."
+                    )
+                    return
+            run = ctx.client.resume_workflow_run(workflow_id, run_id)
+            ctx.renderer.info(
+                f"Resumed run {run.get('run_id') or run_id} "
+                f"(status {run.get('status') or 'unknown'})"
+            )
+            return
+
+        ctx.renderer.error("Usage: /workflow [list|run|status|resume] ...")
 
     def feedback_command(ctx, args: list[str]) -> None:
         message = " ".join(args).strip()
@@ -573,7 +618,7 @@ def register_default_commands(shell) -> None:
     shell.command_registry.register(
         Command(
             name="workflow",
-            help="List, run, and inspect workflows; bare `/workflow` lists (host-attached only when connected through a host)",
+            help="List, run, inspect, and resume workflows; bare `/workflow` lists (host-attached only when connected through a host)",
             handler=workflow_command,
         )
     )

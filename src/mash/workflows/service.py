@@ -295,6 +295,52 @@ class WorkflowService:
             for event in events
         ]
 
+    async def _stream_step_run_events(
+        self,
+        workflow_id: str,
+        run_id: str,
+        store: Any,
+        poll_interval: float,
+    ) -> AsyncIterator[WorkflowStreamEvent]:
+        from .store import RUN_TERMINAL
+
+        emitted: set[tuple[str, int, str]] = set()
+        while True:
+            for event in await store.list_step_events(run_id):
+                key = (event.step_id, event.seq, event.event_type)
+                if key in emitted:
+                    continue
+                emitted.add(key)
+                yield WorkflowStreamEvent(
+                    event=event.event_type,
+                    data={
+                        "workflow_id": workflow_id,
+                        "run_id": run_id,
+                        "step_id": event.step_id,
+                        "attempt": event.attempt,
+                        "seq": event.seq,
+                        "at": event.at,
+                        "payload": event.payload,
+                    },
+                )
+            run = await store.get_run(run_id)
+            if run is not None and run.status in RUN_TERMINAL:
+                yield WorkflowStreamEvent(
+                    event="workflow.completed"
+                    if run.status == "completed"
+                    else "workflow.error",
+                    data={
+                        "workflow_id": workflow_id,
+                        "run_id": run_id,
+                        "status": run.status,
+                        "result": run.result,
+                        "error": run.error,
+                    },
+                )
+                return
+            yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
+            await _sleep(poll_interval)
+
     async def stream_run_events(
         self,
         workflow_id: str,
@@ -305,6 +351,18 @@ class WorkflowService:
         resolved_workflow_id = str(workflow_id or "").strip()
         resolved_run_id = str(run_id or "").strip()
         workflow = self._require_workflow(resolved_workflow_id)
+
+        # v2 step pipelines stream their audit trail from the workflow store, so
+        # code steps are visible (they emit no agent runtime events).
+        if getattr(workflow, "steps", None):
+            store = self._workflow_store()
+            if store is None or await store.get_run(resolved_run_id) is None:
+                raise WorkflowNotFoundError(
+                    f"workflow run '{resolved_run_id}' was not found"
+                )
+            return self._stream_step_run_events(
+                resolved_workflow_id, resolved_run_id, store, poll_interval
+            )
         if not resolved_run_id:
             raise ValueError("run_id is required")
 

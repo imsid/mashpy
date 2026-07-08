@@ -745,6 +745,77 @@ def build_test_stores(
     return _TestRuntimeStore(database_url), _TestMemoryStore(database_url)
 
 
+class _TestWorkflowStore:
+    """Minimal in-memory WorkflowStore for tests against the fake database URL."""
+
+    def __init__(self, _database_url: str) -> None:
+        self._runs: dict[str, Any] = {}
+        self._steps: dict[tuple[str, str], Any] = {}
+        self._events: list[Any] = []
+
+    async def open(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        self._runs.clear()
+        self._steps.clear()
+        self._events.clear()
+
+    async def create_run(self, run: Any) -> None:
+        self._runs.setdefault(run.run_id, run)
+
+    async def mark_run_started(self, run_id: str, started_at: float) -> None:
+        run = self._runs.get(run_id)
+        if run is not None:
+            run.status = "running"
+            run.started_at = run.started_at or started_at
+
+    async def finish_run(self, run_id: str, *, status: str, result=None, error=None, finished_at: float) -> None:
+        run = self._runs.get(run_id)
+        if run is not None:
+            run.status = status
+            run.result = result
+            run.error = error
+            run.finished_at = finished_at
+
+    async def upsert_step(self, step: Any) -> None:
+        self._steps[(step.run_id, step.step_id)] = step
+
+    async def append_step_event(self, *, run_id, workflow_id, step_id, event_type, at, attempt=1, payload=None) -> int:
+        seq = sum(1 for e in self._events if e.run_id == run_id and e.step_id == step_id) + 1
+        from mash.workflows.store import WorkflowStepEventRecord
+
+        self._events.append(
+            WorkflowStepEventRecord(
+                run_id=run_id, workflow_id=workflow_id, step_id=step_id,
+                attempt=attempt, event_type=event_type, seq=seq, at=at, payload=payload or {},
+            )
+        )
+        return seq
+
+    async def get_run(self, run_id: str):
+        return self._runs.get(run_id)
+
+    async def list_runs(self, workflow_id: str, *, status=None, start_time=None, end_time=None, limit=50, offset=0, sort_desc=True):
+        runs = [r for r in self._runs.values() if r.workflow_id == workflow_id]
+        if status is not None:
+            runs = [r for r in runs if r.status == status]
+        runs.sort(key=lambda r: r.created_at, reverse=sort_desc)
+        return runs[offset : offset + limit]
+
+    async def get_run_steps(self, run_id: str):
+        steps = [s for (rid, _), s in self._steps.items() if rid == run_id]
+        steps.sort(key=lambda s: s.ordinal)
+        return steps
+
+    async def list_step_events(self, run_id: str, *, step_id=None, after_seq=0):
+        events = [e for e in self._events if e.run_id == run_id]
+        if step_id is not None:
+            events = [e for e in events if e.step_id == step_id and e.seq > after_seq]
+        events.sort(key=lambda e: (e.at, e.step_id, e.seq))
+        return events
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _patch_hosted_runtime_for_tests():
     from _pytest.monkeypatch import MonkeyPatch
@@ -753,6 +824,7 @@ def _patch_hosted_runtime_for_tests():
     patcher.setenv("MASH_DATABASE_URL", "postgresql://test/runtime")
     patcher.setattr("mash.runtime.host.host.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.host.host.PostgresStore", _TestMemoryStore)
+    patcher.setattr("mash.runtime.host.host.WorkflowStore", _TestWorkflowStore)
     patcher.setattr("mash.runtime.server.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.service.DBOSRequestEngine", _TestDBOSRequestEngine)
     yield

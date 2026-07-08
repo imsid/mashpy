@@ -429,6 +429,14 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
+    def resume_workflow_run(self, workflow_id: str, run_id: str) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            f"/api/v1/workflow/{quote(workflow_id, safe='')}/runs/{quote(run_id, safe='')}/resume",
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     def stream_workflow_run(
         self, workflow_id: str, run_id: str
     ) -> Iterator[dict[str, Any]]:

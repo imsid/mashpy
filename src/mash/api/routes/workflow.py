@@ -140,7 +140,45 @@ def build_workflow_router() -> APIRouter:
                 "error": run.error,
                 "output": run.output,
                 "summary": run.summary,
+                "steps": run.steps,
             }
+        )
+
+    @router.post("/workflow/{workflow_id}/runs/{run_id}/resume")
+    async def resume_workflow_run(
+        request: Request,
+        workflow_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow_service = get_workflow_service(request)
+        try:
+            run = await workflow_service.resume_run(workflow_id.strip(), run_id.strip())
+        except WorkflowNotFoundError:
+            raise
+        except Exception as exc:
+            raise APIError(
+                code="WORKFLOW_RESUME_FAILED", message=str(exc), status_code=500
+            ) from exc
+        return success(
+            {
+                "run_id": run.run_id,
+                "workflow_id": run.workflow_id,
+                "status": run.status,
+            }
+        )
+
+    @router.get("/workflow/{workflow_id}/runs/{run_id}/step-events")
+    async def list_workflow_run_step_events(
+        request: Request,
+        workflow_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow_service = get_workflow_service(request)
+        events = await workflow_service.list_run_step_events(
+            workflow_id.strip(), run_id.strip()
+        )
+        return success(
+            {"workflow_id": workflow_id.strip(), "run_id": run_id.strip(), "events": events}
         )
 
     @router.get("/workflow/{workflow_id}/runs/{run_id}/events")

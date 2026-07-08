@@ -426,7 +426,7 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow list")
         table.assert_called_once_with(
-            ["Workflow ID", "Tasks"],
+            ["Workflow ID", "Steps"],
             [["changelog", "scan -> worker"]],
         )
 
@@ -497,7 +497,7 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow list")
         table.assert_called_once_with(
-            ["Workflow ID", "Tasks"],
+            ["Workflow ID", "Steps"],
             [["changelog", "scan -> worker"]],
         )
 
@@ -600,14 +600,14 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "error") as error:
             shell.command_registry.execute(shell.context, "/workflow nope")
-        error.assert_called_once_with("Usage: /workflow [list|run|status] ...")
+        error.assert_called_once_with("Usage: /workflow [list|run|status|resume] ...")
 
     def test_workflow_without_subcommand_lists_workflows(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow")
         table.assert_called_once_with(
-            ["Workflow ID", "Tasks"],
+            ["Workflow ID", "Steps"],
             [["changelog", "scan -> worker"]],
         )
 
