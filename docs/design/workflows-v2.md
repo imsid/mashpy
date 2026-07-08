@@ -204,7 +204,7 @@ turns.
 | `error` | text | null unless failed |
 | `dedup_key` | text | nullable |
 | `session_id` | text | caller session or per-run session |
-| `created_at` / `started_at` / `finished_at` | timestamptz | |
+| `created_at` / `started_at` / `finished_at` | double precision | epoch seconds, matching the rest of the Mash schema |
 
 ### `workflow_steps`
 
@@ -237,7 +237,7 @@ agent turns or runtime events.
 | `step_id` | text | |
 | `seq` | int | per-step monotonic |
 | `event_type` | text | step.started / step.completed / step.failed / step.retried |
-| `at` | timestamptz | |
+| `at` | double precision | epoch seconds |
 | `payload` | jsonb | small; e.g. error message, attempt number |
 
 Primary key `(run_id, step_id, seq)`.
