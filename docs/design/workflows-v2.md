@@ -240,17 +240,31 @@ agent turns or runtime events.
 | `at` | double precision | epoch seconds |
 | `payload` | jsonb | small; e.g. error message, attempt number |
 
-Primary key `(run_id, step_id, seq)`.
+Primary key `(run_id, step_id, attempt, event_type)` — the deterministic identity
+of a lifecycle transition, so a re-run's re-append is a no-op. `seq` orders
+events within a step for display.
 
-### Consistency: write inside the DBOS step
+### Consistency: DBOS-step-wrapped idempotent writes
 
-The step record write and the DBOS step must commit together, or the audit can
-diverge from DBOS truth after a crash. So the `workflow_steps` /
-`workflow_step_events` writes happen **inside the DBOS step body** (or as a DBOS
-transaction against the same Postgres), atomic with the memoized output. This is
-the load-bearing choice: it keeps the audit tables exactly consistent with what
-DBOS will replay, and it is what lets `list_runs` and `stream_run_events` read
-from these tables instead of stitching together agent memory turns.
+Mash's store uses a psycopg pool that is separate from DBOS's own connection, so
+a single shared transaction spanning the store write and DBOS's step-output
+commit is not achievable across that boundary. Chasing literal atomicity there
+would be the wrong target. Instead consistency rests on two mechanisms that
+compose:
+
+1. **Every store write is its own `run_step_async` step.** DBOS memoizes each
+   step's completion, so on replay a store write that already finished is skipped
+   entirely — no duplicate.
+2. **The writes are idempotent on deterministic keys.** `workflow_steps` is an
+   upsert keyed by `(run_id, step_id)`; `workflow_step_events` inserts with
+   `ON CONFLICT (run_id, step_id, attempt, event_type) DO NOTHING`. This covers
+   the one window (1) leaves — a crash after the side effect but before DBOS
+   records the step — because the replay re-runs the body and the write converges
+   instead of duplicating.
+
+Together these keep the tables consistent with what DBOS will replay without a
+cross-system transaction, and let `list_runs` / `get_run` / `stream_run_events`
+read from the workflow tables instead of stitching together agent memory turns.
 
 ## Observability
 

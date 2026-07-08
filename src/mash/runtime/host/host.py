@@ -14,6 +14,7 @@ from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import make_runner_id
 from mash.workflows.dbos import register_runner as register_workflow_runner
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
+from mash.workflows.store import WorkflowStore
 
 from ..client import AgentClientLike, InProcessAgentClient
 from ..events import PostgresRuntimeStore, RuntimeStore
@@ -47,6 +48,7 @@ class AgentPool:
         self._agent_workflows: Dict[str, set[str]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
+        self._shared_workflow_store: WorkflowStore | None = None
         self._workflow_registry = WorkflowRegistry()
         self._workflow_service = WorkflowService(
             self._workflow_registry,
@@ -302,10 +304,13 @@ class AgentPool:
         try:
             shared_runtime_store = PostgresRuntimeStore(self.runtime_database_url)
             shared_memory_store = PostgresStore(self.runtime_database_url)
+            shared_workflow_store = WorkflowStore(self.runtime_database_url)
             self._shared_runtime_store = shared_runtime_store
             self._shared_memory_store = shared_memory_store
+            self._shared_workflow_store = shared_workflow_store
             await shared_runtime_store.open()
             await shared_memory_store.open()
+            await shared_workflow_store.open()
 
             for registered in self._registered.values():
                 uses_default_memory = (
@@ -387,6 +392,10 @@ class AgentPool:
     def get_runtime_store(self) -> RuntimeStore | None:
         """Shared runtime event store, or None if observability is disabled."""
         return self._shared_runtime_store
+
+    def get_workflow_store(self) -> WorkflowStore | None:
+        """Shared v2 workflow run/step store, or None before the pool is started."""
+        return self._shared_workflow_store
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry
@@ -521,22 +530,33 @@ class AgentPool:
         if self._shared_memory_store is not None:
             await self._shared_memory_store.close()
             self._shared_memory_store = None
+        if self._shared_workflow_store is not None:
+            await self._shared_workflow_store.close()
+            self._shared_workflow_store = None
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
-        for task in workflow.tasks:
-            agent_id = task.agent_id.strip()
+        # Legacy task-based workflows and v2 agent steps both bind an agent id
+        # (optionally with a spec to auto-register). Handle both surfaces.
+        bindings = [(task.agent_id, task.agent_spec) for task in workflow.tasks]
+        bindings += [
+            (step.agent_id, step.agent_spec)
+            for step in workflow.steps
+            if getattr(step, "kind", None) == "agent"
+        ]
+        for raw_agent_id, agent_spec in bindings:
+            agent_id = str(raw_agent_id or "").strip()
             if not agent_id:
-                raise ValueError("workflow task agent id is required")
+                raise ValueError("workflow step agent id is required")
             existing = self.get_registered_agent_spec(agent_id)
             if existing is None:
-                if task.agent_spec is None:
+                if agent_spec is None:
                     raise ValueError(
-                        f"workflow task agent '{agent_id}' is not registered"
+                        f"workflow agent '{agent_id}' is not registered"
                     )
-                self.register_workflow_agent(task.agent_spec, agent_id=agent_id)
-            elif task.agent_spec is not None and existing is not task.agent_spec:
+                self.register_workflow_agent(agent_spec, agent_id=agent_id)
+            elif agent_spec is not None and existing is not agent_spec:
                 raise ValueError(
-                    f"workflow task agent '{agent_id}' is already registered "
+                    f"workflow agent '{agent_id}' is already registered "
                     "with a different spec"
                 )
 

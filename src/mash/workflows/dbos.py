@@ -222,7 +222,15 @@ async def execute_registered_workflow(
         workflow_input=_normalize_workflow_input(workflow_input),
         session_id=session_id,
     )
-    strategy = workflow.strategy or _SEQUENTIAL_STRATEGY
+    strategy = workflow.strategy
+    if strategy is None:
+        if workflow.steps:
+            # Lazy import: engine imports helpers from this module.
+            from .engine import FORWARD_PIPELINE_STRATEGY
+
+            strategy = FORWARD_PIPELINE_STRATEGY
+        else:
+            strategy = _SEQUENTIAL_STRATEGY
     return await strategy.run(ctx)
 
 

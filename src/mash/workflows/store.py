@@ -84,8 +84,9 @@ class WorkflowStepEventRecord:
     run_id: str
     workflow_id: str
     step_id: str
-    seq: int
+    attempt: int
     event_type: str
+    seq: int
     at: float
     payload: dict[str, Any] = field(default_factory=dict)
 
@@ -202,13 +203,16 @@ async def append_step_event(
     step_id: str,
     event_type: str,
     at: float,
+    attempt: int = 1,
     payload: dict[str, Any] | None = None,
 ) -> int:
-    """Append one step audit event, assigning the next per-step seq.
+    """Append one step lifecycle event, assigning the next per-step seq.
 
-    Must run inside a transaction (the caller's DBOS transaction, or the
-    ``WorkflowStore`` wrapper's). The advisory lock serializes concurrent
-    appends for the same step so seq stays gap-free.
+    Idempotent on ``(run_id, step_id, attempt, event_type)``: a DBOS re-run of
+    the step re-appends the same transition and ON CONFLICT DO NOTHING makes it a
+    no-op. Returns the seq of the (existing or newly inserted) event. Must run
+    inside a transaction; the advisory lock serializes concurrent appends for the
+    same step so seq stays gap-free.
     """
     async with conn.cursor() as cursor:
         await cursor.execute(
@@ -228,12 +232,21 @@ async def append_step_event(
         await cursor.execute(
             """
             INSERT INTO workflow_step_events (
-                run_id, workflow_id, step_id, seq, event_type, at, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                run_id, workflow_id, step_id, attempt, event_type, seq, at, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (run_id, step_id, attempt, event_type) DO NOTHING
             """,
-            (run_id, workflow_id, step_id, seq, event_type, at, _json(payload or {})),
+            (run_id, workflow_id, step_id, attempt, event_type, seq, at, _json(payload or {})),
         )
-        return seq
+        await cursor.execute(
+            """
+            SELECT seq FROM workflow_step_events
+            WHERE run_id = %s AND step_id = %s AND attempt = %s AND event_type = %s
+            """,
+            (run_id, step_id, attempt, event_type),
+        )
+        existing = await cursor.fetchone()
+        return int(existing["seq"]) if existing is not None else seq
 
 
 # --- Row mapping -------------------------------------------------------------
@@ -278,8 +291,9 @@ def _event_from_row(row: dict[str, Any]) -> WorkflowStepEventRecord:
         run_id=row["run_id"],
         workflow_id=row["workflow_id"],
         step_id=row["step_id"],
-        seq=int(row["seq"]),
+        attempt=int(row.get("attempt") or 1),
         event_type=row["event_type"],
+        seq=int(row["seq"]),
         at=float(row["at"]),
         payload=row.get("payload") or {},
     )
@@ -378,6 +392,7 @@ class WorkflowStore:
         step_id: str,
         event_type: str,
         at: float,
+        attempt: int = 1,
         payload: dict[str, Any] | None = None,
     ) -> int:
         await self.open()
@@ -390,6 +405,7 @@ class WorkflowStore:
                     step_id=step_id,
                     event_type=event_type,
                     at=at,
+                    attempt=attempt,
                     payload=payload,
                 )
 

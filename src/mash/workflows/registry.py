@@ -44,8 +44,11 @@ def _validate_workflow(workflow: WorkflowSpec) -> str:
     workflow_id = str(workflow.workflow_id or "").strip()
     if not workflow_id:
         raise ValueError("workflow_id is required")
+    # v2 step pipelines validate themselves in WorkflowSpec.__post_init__.
+    if workflow.steps:
+        return workflow_id
     if not workflow.tasks:
-        raise ValueError("workflow tasks are required")
+        raise ValueError("workflow tasks or steps are required")
 
     seen_tasks: set[str] = set()
     for task in workflow.tasks:

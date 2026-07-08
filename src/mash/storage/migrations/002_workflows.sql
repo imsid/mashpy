@@ -50,19 +50,25 @@ CREATE INDEX IF NOT EXISTS idx_workflow_steps_run_ordinal
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_wf
     ON workflow_steps(workflow_id);
 
+-- The primary key is the deterministic identity of a lifecycle transition
+-- (run, step, attempt, event_type), not seq. Step execution is at-least-once
+-- under DBOS recovery, so a re-run re-appends the same transition; ON CONFLICT
+-- DO NOTHING on this key makes those appends no-ops. seq orders events within a
+-- step for display.
 CREATE TABLE IF NOT EXISTS workflow_step_events (
     run_id      TEXT NOT NULL,
     workflow_id TEXT NOT NULL,
     step_id     TEXT NOT NULL,
-    seq         INTEGER NOT NULL,
+    attempt     INTEGER NOT NULL DEFAULT 1,
     event_type  TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
     at          DOUBLE PRECISION NOT NULL,
     payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
-    PRIMARY KEY (run_id, step_id, seq)
+    PRIMARY KEY (run_id, step_id, attempt, event_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_workflow_step_events_run
-    ON workflow_step_events(run_id, at);
+    ON workflow_step_events(run_id, at, seq);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_step_events_wf
     ON workflow_step_events(workflow_id, at);
