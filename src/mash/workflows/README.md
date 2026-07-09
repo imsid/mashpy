@@ -86,7 +86,8 @@ retry. When DBOS recovery attempts are exhausted the run is `failed`.
 
 ## Storage
 
-Three tables (migration `002_workflows.sql`), owned by the workflow layer:
+Three tables (in the shared schema baseline `001_baseline.sql`), owned by the
+workflow layer:
 
 - `workflow_runs` — one row per run (status, `workflow_input`, `result`, timing).
 - `workflow_steps` — one row per step (status, input/output snapshots, attempt,
