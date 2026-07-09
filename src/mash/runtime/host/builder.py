@@ -77,21 +77,27 @@ class HostBuilder:
                 create_masher_agent_spec,
             ) = load_masher_components()
             masher_spec = create_masher_agent_spec()
-            # Masher is built at pool startup and needs an LLM provider; skip it
-            # when none is configured so keyless deployments still start cleanly.
-            if masher_spec.provider_available():
+            masher_spec.runtime_context.bind_pool(pool)
+            # The Masher agent is built at pool startup and needs an LLM
+            # provider; without one, only its agent-step workflows are skipped.
+            # The all-code pipelines (trace digest, online eval curation) never
+            # touch an LLM, so keyless deployments still register and run them.
+            agent_available = masher_spec.provider_available()
+            if agent_available:
                 pool.register_workflow_agent(masher_spec, agent_id=masher_agent_id)
-                for workflow in build_masher_workflow_specs(masher_spec):
-                    pool.register_workflow(workflow)
-                    masher_workflow_ids.append(workflow.workflow_id)
+            for workflow in build_masher_workflow_specs(
+                masher_spec, include_agent_workflows=agent_available
+            ):
+                pool.register_workflow(workflow)
+                masher_workflow_ids.append(workflow.workflow_id)
         for workflow in self._workflows:
             pool.register_workflow(workflow)
         # Hosts are defined last so workflow-id validation sees every
         # registered workflow. Masher workflows attach to every built host —
         # they run pool-wide, and attaching keeps them visible in host
         # compositions — appended after any explicitly attached workflows.
-        # Conditional on masher actually registering, so keyless deployments
-        # still define hosts cleanly.
+        # On keyless deployments only the all-code Masher pipelines exist, so
+        # only those attach.
         for host in self._hosts:
             merged = dict.fromkeys((*host.workflows, *masher_workflow_ids))
             if len(merged) > len(host.workflows):

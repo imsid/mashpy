@@ -836,7 +836,7 @@ wheels = [
 
 [[package]]
 name = "mashpy"
-version = "0.15.0"
+version = "0.16.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -850,6 +850,7 @@ dependencies = [
     { name = "prompt-toolkit" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -881,6 +882,7 @@ requires-dist = [
     { name = "prompt-toolkit", specifier = ">=3.0.36" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "psycopg-pool", specifier = ">=3.2.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },

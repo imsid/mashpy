@@ -19,28 +19,24 @@ from mash.runtime.host.subagents import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
-from mash.workflows import AgentStep, WorkflowSpec
+from mash.workflows import WorkflowSpec
 
-from .score_runner import ScoreEvalsStrategy
-from .tool import (
-    GenSyntheticEvalsWorkflowTool,
-    MasherRuntimeContext,
-    OnlineEvalCurationWorkflowTool,
-    TraceDigestWorkflowTool,
+from .context import MasherRuntimeContext
+from .pipelines import (
+    MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+    MASHER_ONLINE_EVAL_WORKFLOW_ID,
+    MASHER_TRACE_DIGEST_WORKFLOW_ID,
+    build_gen_synthetic_evals_workflow,
+    build_online_eval_curation_workflow,
+    build_trace_digest_workflow,
 )
+from .score_runner import ScoreEvalsStrategy
 
 if TYPE_CHECKING:
     from mash.runtime.service import AgentRuntime
 
 MASHER_AGENT_ID = "masher"
-MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
-MASHER_TRACE_DIGEST_TASK_ID = "digest-traces"
-MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
-MASHER_ONLINE_EVAL_TASK_ID = "curate-online-evals"
-MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID = "gen-synthetic-evals"
-MASHER_GEN_SYNTHETIC_EVALS_TASK_ID = "generate-evals"
 MASHER_SCORE_EVALS_WORKFLOW_ID = "score-evals"
-MASHER_SCORE_EVALS_TASK_ID = "score-evals"
 
 
 def _select_masher_provider_kind() -> str | None:
@@ -64,104 +60,42 @@ def _select_masher_provider_kind() -> str | None:
     return None
 
 
-MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT = {
-    "title": "MasherTraceDigestWorkflowOutput",
-    "type": "object",
-    "properties": {
-        "json_text": {
-            "type": "string",
-            "description": "A serialized JSON object string containing the full trace digest output.",
-        }
-    },
-    "required": ["json_text"],
-    "additionalProperties": False,
-}
-MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT = {
-    "title": "MasherOnlineEvalCurationWorkflowOutput",
-    "type": "object",
-    "properties": {
-        "json_text": {
-            "type": "string",
-            "description": "A serialized JSON object string containing the full trace digest output.",
-        }
-    },
-    "required": ["json_text"],
-    "additionalProperties": False,
-}
-MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT = {
-    "title": "MasherGenSyntheticEvalsWorkflowOutput",
-    "type": "object",
-    "properties": {
-        "json_text": {
-            "type": "string",
-            "description": "A serialized JSON object string containing eval_id, host_id, dataset_id, rubric_id, and row_count.",
-        }
-    },
-    "required": ["json_text"],
-    "additionalProperties": False,
-}
-MASHER_SCORE_EVALS_STRUCTURED_OUTPUT = {
-    "title": "MasherScoreEvalsWorkflowOutput",
-    "type": "object",
-    "properties": {
-        "json_text": {
-            "type": "string",
-            "description": "A serialized JSON object string containing experiment_id, eval_id, status, scored_count, and mean_score.",
-        }
-    },
-    "required": ["json_text"],
-    "additionalProperties": False,
-}
+_PROMPT = """You are Masher, Mash's built-in workflow worker and eval judge.
 
-_PROMPT = """You are Masher, Mash's built-in workflow-only worker.
+You are invoked only by Mash workflows. Do not answer free-form chat.
 
-You are invoked only by Mash workflows. Do not answer free-form diagnostic chat.
-Every request is JSON with workflow_id, workflow_run_id, step_id, workflow_input,
-and input. Each run is a clean slate — there is no cross-run state.
+Workflow step requests are JSON with workflow_id, workflow_run_id, step_id,
+workflow_input, and input. The `input` object carries everything the step
+needs; each run is a clean slate — there is no cross-run state. When the
+request names a skill_name, call the standard Skill tool with it exactly once
+before doing the step's work, then follow the loaded skill.
 
-Structured event schema:
-- Common envelope fields: event_id, event_type, app_id, session_id, trace_id, payload, created_at
-- Important event families:
-  - runtime.* for request lifecycle and persisted execution milestones
-  - agent.* for run lifecycle and tool actions
-  - llm.* for model usage, latency, token counts, finish reasons
-  - memory.search.* for retrieval/search activity
-  - mcp.* for MCP tool/server operations
-  - command.* for command lifecycle events
+Judge requests (from the score-evals workflow) are self-contained scoring
+messages carrying a rubric and an output to evaluate; follow the message's
+scoring instructions exactly.
 
-Workflow skill routing:
-- workflow_id=masher-trace-digest, step_id=digest-traces -> skill=trace-digest-workflow
-- workflow_id=masher-online-eval-curation, step_id=curate-online-evals -> skill=online-eval-curation
-- workflow_id=gen-synthetic-evals, step_id=generate-evals -> skill=gen-synthetic-evals
-
-Routing rules:
-- Match both workflow_id and step_id exactly.
-- Call the standard Skill tool exactly once with the matched skill name before doing workflow work.
-- After the skill loads, follow only the loaded skill's workflow instructions.
-- Do not infer a skill from workflow_input, input, user wording, or partial id matches.
-- If no route matches, return an error object and do not call workflow tools.
+Always answer with the structured output the request demands.
 """
 
 
 def build_masher_metadata() -> AgentMetadata:
     return AgentMetadata(
         display_name="Masher",
-        description="Workflow-only Mash trace digest worker.",
+        description="Workflow-only eval generation and judging worker.",
         capabilities=[
-            "trace digest generation",
-            "incremental trace checkpointing",
-            "trace digest JSONL artifacts",
+            "synthetic eval dataset and rubric generation",
+            "rubric-based eval output judging",
         ],
         usage_guidance=(
             "Masher is registered by HostBuilder.enable_masher() as an internal "
-            "workflow worker for the masher-trace-digest workflow. It should not "
-            "be exposed as a user-invokable subagent."
+            "workflow worker for the gen-synthetic-evals and score-evals "
+            "workflows. It should not be exposed as a user-invokable subagent."
         ),
     )
 
 
 class MasherAgentSpec(AgentSpec):
-    """Built-in trace diagnosis subagent."""
+    """Built-in eval generation and judging worker."""
 
     def __init__(self) -> None:
         self.runtime_context = MasherRuntimeContext()
@@ -171,26 +105,10 @@ class MasherAgentSpec(AgentSpec):
         return MASHER_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        tools = ToolRegistry()
-        tools.register(
-            TraceDigestWorkflowTool(
-                context=self.runtime_context,
-            )
-        )
-        tools.register(
-            OnlineEvalCurationWorkflowTool(
-                context=self.runtime_context,
-            )
-        )
-        tools.register(
-            GenSyntheticEvalsWorkflowTool(
-                context=self.runtime_context,
-            )
-        )
-        # score-evals no longer routes through a Masher persistence tool; the
-        # ScoreEvalsStrategy orchestrates loading, host execution, judging, and
-        # persistence directly (see score_runner.ScoreEvalsStrategy).
-        return tools
+        # Generation and judging are pure structured-output tasks; the
+        # deterministic work (trace analysis, artifact writes, eval
+        # persistence) lives in workflow code steps, not agent tools.
+        return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
         skills = SkillRegistry()
@@ -203,10 +121,11 @@ class MasherAgentSpec(AgentSpec):
     def provider_available() -> bool:
         """Whether build_llm() would construct a provider from the environment.
 
-        HostBuilder uses this to decide whether to register Masher by default:
-        Masher cannot run without an LLM, so a keyless deployment skips it rather
-        than failing at pool startup. True exactly when build_llm() succeeds — an
-        OSS endpoint counts only once MASHER_OSS_MODEL is also set.
+        HostBuilder uses this to decide whether to register the Masher agent
+        and its agent-step workflows: Masher cannot run without an LLM, so a
+        keyless deployment skips them (the all-code workflows still register).
+        True exactly when build_llm() succeeds — an OSS endpoint counts only
+        once MASHER_OSS_MODEL is also set.
         """
         kind = _select_masher_provider_kind()
         if kind is None:
@@ -276,47 +195,33 @@ class MasherAgentSpec(AgentSpec):
         self.runtime_context.bind_runtime_store(runtime.runtime_store)
 
 
-def build_masher_workflow_specs(masher_spec: MasherAgentSpec) -> list[WorkflowSpec]:
-    # Masher is a single-agent-step worker per workflow: it reads the envelope
-    # (workflow_id/task_id/workflow_input), routes to its own skill, and returns
-    # a {json_text} structured output. Passthrough input (None) — the agent reads
-    # workflow_input directly. score-evals is strategy-driven (durable fan-out).
-    return [
-        WorkflowSpec(
-            workflow_id=MASHER_TRACE_DIGEST_WORKFLOW_ID,
-            steps=[
-                AgentStep(
-                    step_id=MASHER_TRACE_DIGEST_TASK_ID,
-                    agent_spec=masher_spec,
-                    output=MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
-                )
-            ],
-        ),
-        WorkflowSpec(
-            workflow_id=MASHER_ONLINE_EVAL_WORKFLOW_ID,
-            steps=[
-                AgentStep(
-                    step_id=MASHER_ONLINE_EVAL_TASK_ID,
-                    agent_spec=masher_spec,
-                    output=MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
-                )
-            ],
-        ),
-        WorkflowSpec(
-            workflow_id=MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-            steps=[
-                AgentStep(
-                    step_id=MASHER_GEN_SYNTHETIC_EVALS_TASK_ID,
-                    agent_spec=masher_spec,
-                    output=MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT,
-                )
-            ],
-        ),
-        WorkflowSpec(
-            workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
-            strategy=ScoreEvalsStrategy(context=masher_spec.runtime_context),
-        ),
+def build_masher_workflow_specs(
+    masher_spec: MasherAgentSpec,
+    *,
+    include_agent_workflows: bool = True,
+) -> list[WorkflowSpec]:
+    """All of Masher's workflows.
+
+    The trace-digest and online-eval-curation pipelines are all code and never
+    touch an LLM, so they are always included — they run on keyless
+    deployments. ``include_agent_workflows`` gates the two that need the Masher
+    agent: gen-synthetic-evals (generation step) and score-evals (per-row
+    judge).
+    """
+    context = masher_spec.runtime_context
+    workflows = [
+        build_trace_digest_workflow(context),
+        build_online_eval_curation_workflow(context),
     ]
+    if include_agent_workflows:
+        workflows.append(build_gen_synthetic_evals_workflow(masher_spec))
+        workflows.append(
+            WorkflowSpec(
+                workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
+                strategy=ScoreEvalsStrategy(context=context),
+            )
+        )
+    return workflows
 
 
 def create_masher_agent_spec() -> MasherAgentSpec:
@@ -326,17 +231,9 @@ def create_masher_agent_spec() -> MasherAgentSpec:
 
 __all__ = [
     "MASHER_AGENT_ID",
-    "MASHER_GEN_SYNTHETIC_EVALS_STRUCTURED_OUTPUT",
-    "MASHER_GEN_SYNTHETIC_EVALS_TASK_ID",
     "MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID",
-    "MASHER_ONLINE_EVAL_TASK_ID",
-    "MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT",
     "MASHER_ONLINE_EVAL_WORKFLOW_ID",
-    "MASHER_SCORE_EVALS_STRUCTURED_OUTPUT",
-    "MASHER_SCORE_EVALS_TASK_ID",
     "MASHER_SCORE_EVALS_WORKFLOW_ID",
-    "MASHER_TRACE_DIGEST_TASK_ID",
-    "MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT",
     "MASHER_TRACE_DIGEST_WORKFLOW_ID",
     "MasherAgentSpec",
     "build_masher_workflow_specs",

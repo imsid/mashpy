@@ -1,147 +1,115 @@
 # Masher
 
-`src/mash/agents/masher` contains Mash's built-in workflow-only Masher worker.
+`src/mash/agents/masher` contains Mash's built-in observability and eval
+workflows, plus the workflow-only Masher worker agent that two of them use.
 
-Masher is not a user-invokable subagent. `HostBuilder` registers Masher as a
-workflow-only runtime and registers Masher's workflows into the pool. This is on
-by default; call `HostBuilder.enable_masher(False)` to opt out. Masher is hidden
-from public agent listings and from primary-agent `InvokeSubagent` delegation,
-but workflow tasks can still call it through the host runtime client.
+The package is organized along the judgment/computation line the v2 workflow
+design draws:
 
-When Masher registers, its workflows are also attached to every host the
-builder defines, appended after any workflows the host attached explicitly —
-so host compositions (the Hosts admin tab, `GET /workflow?host=...`) show
-them. When Masher is skipped (keyless deployment), host compositions are left
-exactly as declared. Hosts defined dynamically after `build()` are not
-touched.
+- `pipelines.py` — the workflow definitions: pydantic step models, code-step
+  bodies, and the `WorkflowSpec` builders.
+- `traces.py` — deterministic trace loading, span analysis, and JSONL artifact
+  helpers used by the code steps. No model inference anywhere.
+- `context.py` — `MasherRuntimeContext`, the dependency holder code steps close
+  over (runtime store, agent pool, eval service, artifact paths).
+- `spec.py` — the Masher agent (generation and judging only; it has no tools)
+  and `build_masher_workflow_specs`.
+- `judge.py` / `score_runner.py` — the score-evals judging contract and its
+  durable fan-out `WorkflowStrategy`.
 
-Because Masher is registered by default, it is built at pool startup and needs an
-LLM provider. `build_llm()` resolves the first configured of `GEMINI_API_KEY` /
-`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, then an OSS endpoint via
-`OSS_BASE_URL` (which also requires `MASHER_OSS_MODEL` to name the served
-tool-calling model, optionally `OSS_API_KEY`). Per-provider model overrides:
-`MASHER_GEMINI_MODEL`, `MASHER_OPENAI_MODEL`, `MASHER_ANTHROPIC_MODEL`,
-`MASHER_OSS_MODEL`.
-
-When **none** of these is configured Masher cannot be built, so `HostBuilder`
-skips registering it rather than failing pool startup — a keyless deployment
-simply runs without the Masher workflows. `enable_masher(True)` does not override
-this; the worker is registered only when a provider is available.
+Masher (the agent) is not a user-invokable subagent. It is hidden from public
+agent listings and from `InvokeSubagent` delegation; only workflow steps reach
+it. `HostBuilder` registers everything by default; opt out with
+`enable_masher(False)`.
 
 ## Workflows
 
-Masher's built-in workflows are:
+### `masher-trace-digest` — all code, no LLM
 
-```python
-WorkflowSpec(workflow_id="masher-trace-digest", tasks=[TaskSpec(task_id="digest-traces", agent_spec=masher_spec)])
-WorkflowSpec(workflow_id="masher-online-eval-curation", tasks=[TaskSpec(task_id="curate-online-evals", agent_spec=masher_spec)])
-```
-
-The task request contains the normal workflow message fields:
-
-- `workflow_id`
-- `workflow_run_id`
-- `task_id`
-- `workflow_input`
-- `task_state`
-
-Masher should call the workflow-specific tool with the request's `workflow_input`
-and `task_state`, then return JSON text only:
-
-- `masher-trace-digest`: call `run_trace_digest_workflow`
-- `masher-online-eval-curation`: call `run_online_eval_curation_workflow`
-
-## Modes
-
-### Trace Mode
-
-Trace mode operates on one explicit trace.
-
-```json
-{
-  "mode": "trace",
-  "target_agent_id": "primary",
-  "session_id": "session-id",
-  "trace_id": "trace-id"
-}
-```
-
-### Incremental Mode
-
-Incremental mode uses `task_state.checkpoints[target_agent_id].last_run_ts` to
-find traces whose latest event timestamp is newer than the checkpoint.
-
-```json
-{
-  "mode": "incremental",
-  "target_agent_id": "primary"
-}
-```
-
-Returned checkpoint state:
-
-```json
-{
-  "schema_version": 1,
-  "checkpoints": {
-    "primary": {
-      "last_run_ts": 1778871600.0,
-      "last_trace_ids": ["trace-id"]
-    }
-  },
-  "processed_trace_count": 1,
-  "artifact_path": "/path/to/.mash/masher/trace-digests.jsonl",
-  "appended_trace_count": 1
-}
-```
-
-## Purpose and Artifacts
-
-`masher-trace-digest` is diagnostic: it writes compact summaries with status,
-metrics, and notable events. Trace mode returns a digest and does not write the
-artifact. Incremental mode writes digest rows to:
+Deterministic latency analysis over an agent's runtime traces.
 
 ```text
-<MASH_DATA_DIR>/masher/trace-digests.jsonl
+list-traces (code) -> digest-traces (code) -> append-digests (code)
 ```
 
-`masher-online-eval-curation` is dataset curation only: it writes normalized
-online eval examples and does not include digest narrative fields such as
-`summary`, `metrics`, or `notable_events`. Trace and incremental mode write rows
-to:
+`workflow_input` (`TraceScanInput`): `mode` (`trace` | `batch`, default
+`batch`), `target_agent_id`, `session_id`/`trace_id` (required in trace mode),
+`since_ts` (batch watermark, default 0), `limit` (default 100).
+
+Trace mode returns the digest in the run result and does not write the
+artifact. Batch mode appends digest rows (deduped on
+target/session/trace) to `<MASH_DATA_DIR>/masher/trace-digests.jsonl` and
+returns counts. The result carries `latest_event_at` — the caller persists it
+and passes it back as the next run's `since_ts`; cross-run state lives at the
+trigger boundary, never inside the workflow.
+
+### `masher-online-eval-curation` — all code, no LLM
+
+Mechanical extraction of normalized online eval rows from runtime traces.
 
 ```text
-<MASH_DATA_DIR>/masher/online-evals.jsonl
+list-traces (code) -> extract-rows (code) -> append-rows (code)
 ```
 
-Both workflows share trace loading and build a span tree
-(`build_span_tree`) and trace analysis (`analyze_trace`) from the raw runtime
-events. The analysis is deterministic — no LLM inference is used for metrics.
-Subagent traces are stitched recursively up to 3 levels deep.
+Same `TraceScanInput` contract and watermark behavior. Rows append to
+`<MASH_DATA_DIR>/masher/online-evals.jsonl`; trace mode also returns the row as
+`record`. Eval rows are compact (`user_message`, `assistant_response`,
+`tools_called`, token/step counts, timing) and never include digest narrative
+fields.
 
-Digest rows (schema v2) include:
+### `gen-synthetic-evals` — code, agent, code
 
-- `schema_version`
-- `target_agent_id`, `session_id`, `trace_id`
-- `status`
-- `summary` (deterministic formatted string)
-- `timing`: `total_duration_ms`, `cold_start_ms`, `context_load_ms`, `total_think_ms`, `total_tool_ms`, `total_subagent_ms`, `idle_ms`, plus percentage breakdowns
-- `tokens`: `input_tokens`, `output_tokens`, `total_tokens`
-- `counts`: `step_count`, `tool_call_count`, `tool_error_count`, `event_count`
-- `tool_stats`: per-tool count, total/avg/max/min latency, error count
-- `step_breakdown`: per-step think/tool/subagent/overhead timing and tool call list
-- `slowest_operations`: top 10 slowest spans by duration
-- `subagent_traces`: nested child trace analysis (recursive)
-- `notable_events`
+```text
+profile-host (code) -> generate (agent) -> persist-eval (code)
+```
 
-Online eval rows (schema v2) include:
+`workflow_input` (`GenSyntheticEvalsInput`): `host_id`, `user_guidance`
+(optional), `row_count` (default 20, max 100).
 
-- `schema_version`
-- `target_agent_id`, `session_id`, `trace_id`
-- `user_message`, `assistant_response`
-- `tools_called`, `tool_call_count`, `step_count`
-- `input_tokens`, `output_tokens`
-- `timing`: same latency breakdown as digest rows
+`profile-host` reads the host composition and each member agent's declared
+`AgentMetadata` from the pool. `generate` is one Masher agent-loop run with the
+`gen-synthetic-evals` skill; its structured output is validated against
+`GeneratedEval` (row shapes, sampling categories, rubric weights summing
+to 1.0). `persist-eval` enforces the exact `row_count` and writes the eval
+through the eval service, returning `{eval_id, host_id, dataset_id, rubric_id,
+row_count}`. Because the generation output is memoized, a row-count failure is
+terminal for the run — start a fresh run to regenerate.
 
-The artifact is owned by Masher. The workflow framework stores checkpoint state
-and DBOS run output, but it does not own Masher artifact files.
+### `score-evals` — strategy (durable fan-out)
+
+Unchanged: a custom `WorkflowStrategy` that loads the eval, snapshots the host,
+fans out one durable child workflow per dataset row (host run, then Masher
+judge), and persists the experiment. See `score_runner.py`.
+
+## Registration and keyless deployments
+
+`HostBuilder.build()` constructs the Masher spec, binds the pool into its
+`MasherRuntimeContext`, and registers the workflows. The two all-code pipelines
+never touch an LLM, so they register (and their steps run) even when no
+provider is configured. Only the Masher agent and its two agent-dependent
+workflows (`gen-synthetic-evals`, `score-evals`) require a provider; on a
+keyless deployment they are skipped.
+
+`build_llm()` resolves the first configured of `GEMINI_API_KEY` /
+`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, then an OSS endpoint
+via `OSS_BASE_URL` (which also requires `MASHER_OSS_MODEL`, optionally
+`OSS_API_KEY`). Per-provider model overrides: `MASHER_GEMINI_MODEL`,
+`MASHER_OPENAI_MODEL`, `MASHER_ANTHROPIC_MODEL`, `MASHER_OSS_MODEL`.
+
+Registered Masher workflows are attached to every host the builder defines,
+appended after any workflows the host attached explicitly, so host
+compositions (the Hosts admin tab, `GET /workflow?host=...`) show them. Hosts
+defined dynamically after `build()` are not touched.
+
+## Digest contents
+
+Digest rows (schema v2) include `status`, a deterministic `summary` string,
+`timing` (total/think/tool/cold-start/context-load/subagent/idle plus
+percentages), `tokens`, `counts`, per-tool `tool_stats`, per-step
+`step_breakdown`, the top-10 `slowest_operations`, recursively stitched
+`subagent_traces` (up to 3 levels), and `notable_events`. All computed
+deterministically from `runtime_event_log` data by `traces.py`.
+
+The JSONL artifacts are owned by Masher's code steps. The workflow framework
+persists step I/O snapshots and run results in its own tables, but it does not
+own the artifact files.

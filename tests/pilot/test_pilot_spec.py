@@ -299,12 +299,9 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         assert "bash" in mcp_agent.agent.tools
                         assert "bash" in runtime_agent.agent.tools
                         assert "bash" in workflow_agent.agent.tools
-                        assert sorted(masher.agent.tools.list_tools()) == [
-                            "Skill",
-                            "run_gen_synthetic_evals_workflow",
-                            "run_online_eval_curation_workflow",
-                            "run_trace_digest_workflow",
-                        ]
+                        # Masher's deterministic work lives in workflow code
+                        # steps now; the agent keeps only the Skill meta-tool.
+                        assert sorted(masher.agent.tools.list_tools()) == ["Skill"]
                     finally:
                         await host.close()
 

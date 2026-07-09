@@ -604,9 +604,9 @@ def build_telemetry_router() -> APIRouter:
         analysis = analyze_trace(tree)
 
         if stitch and analysis.subagent_details:
-            from mash.agents.masher.tool import _stitch_subagent_traces
+            from mash.agents.masher.traces import stitch_subagent_traces
 
-            analysis = await _stitch_subagent_traces(agent.runtime_store, analysis)
+            analysis = await stitch_subagent_traces(agent.runtime_store, analysis)
 
         return success(
             {

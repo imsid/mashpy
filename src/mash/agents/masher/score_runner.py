@@ -23,8 +23,8 @@ from mash.workflows.strategy import WorkflowExecutionContext, WorkflowStrategy
 
 from ...evals.metrics import METRIC_EVENT_TYPES, compute_row_metrics
 from ...evals.models import CriterionScore, ExperimentRun
+from .context import MasherRuntimeContext
 from .judge import MASHER_JUDGE_STRUCTURED_OUTPUT, build_judge_message, parse_judge_output
-from .tool import MasherRuntimeContext
 
 MASHER_AGENT_ID = "masher"
 _ROW_QUEUE_NAME = "mash.eval.rows"
