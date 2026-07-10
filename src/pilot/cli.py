@@ -19,7 +19,6 @@ from mash.cli.shell import MashRemoteShell, ShellTarget
 
 from . import store
 from .catalog.agents.pilot import PILOT_AGENT_ID
-from .catalog.workflows.changelog import register_changelog_command
 from .catalog.workflows.quiz import QUIZ_WORKFLOW_ID, register_quiz_command
 
 PILOT_DEFAULT_API_BASE_URL = os.environ.get(
@@ -276,11 +275,8 @@ def _run_repl(
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3
     # (default_commands reads ctx.host_id).
     shell = MashRemoteShell(client, target)
-    # Pilot's commands are scoped too: /changelog registers its dynamic
-    # workflow on the session's target agent, and only makes sense on the
-    # `pilot` primary; /quiz exists only in hosts that attach pilot-quiz.
-    if agent_id == PILOT_AGENT_ID:
-        register_changelog_command(shell)
+    # Pilot's commands are scoped too: /quiz exists only in hosts that
+    # attach pilot-quiz.
     if QUIZ_WORKFLOW_ID in host_workflows:
         register_quiz_command(shell)
     shell.run()

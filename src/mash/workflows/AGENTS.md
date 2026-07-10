@@ -26,8 +26,8 @@ agent runtime.
 ## Change Rules
 - Keep this package focused on orchestration, registration, storage, and DBOS
   contracts. No transport clients here.
-- Code steps stay Python-only (pydantic models + callables). The over-the-wire
-  dynamic-publishing path is agent-step-only (JSON-schema output).
+- Workflows are defined in Python at build time (pydantic models + callables);
+  there is no over-the-wire workflow registration.
 - If the agent-step envelope or output contract changes, update this package,
   the masher/pilot workflow agents that consume it, the README, and the tests
   together.

@@ -17,16 +17,6 @@ class WorkflowRegistry:
             raise ValueError(f"workflow '{workflow_id}' is already registered")
         self._workflows[workflow_id] = workflow
 
-    def upsert(self, workflow: WorkflowSpec) -> None:
-        workflow_id = _validate_workflow(workflow)
-        self._workflows[workflow_id] = workflow
-
-    def unregister(self, workflow_id: str) -> None:
-        resolved = str(workflow_id or "").strip()
-        if not resolved:
-            raise ValueError("workflow_id is required")
-        self._workflows.pop(resolved, None)
-
     def get(self, workflow_id: str) -> WorkflowSpec:
         resolved = str(workflow_id or "").strip()
         if not resolved:

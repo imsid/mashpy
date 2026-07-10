@@ -119,13 +119,6 @@ HTTP (via `mash.api`):
 - `GET  /api/v1/workflow/{workflow_id}/runs/{run_id}/step-events`
 - `GET  /api/v1/workflow/{workflow_id}/runs/{run_id}/events` (SSE)
 
-## Dynamic publishing
-
-`POST /api/v1/agent/{agent_id}/workflow` authors an agent-step workflow over the
-wire (agent id + JSON-schema output + skill name). Code steps and pydantic
-models are Python-only; the HTTP path is agent-step-only. Definitions are live
-host state — republish on restart.
-
 ## Agent-step envelope
 
 An agent step receives a JSON message:

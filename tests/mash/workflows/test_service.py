@@ -70,21 +70,6 @@ class WorkflowRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             registry.register(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
 
-    def test_upsert_replaces_existing(self) -> None:
-        registry = WorkflowRegistry()
-        registry.register(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
-        replacement = WorkflowSpec(workflow_id="wf", steps=[_agent_step("s2", "worker")])
-        registry.upsert(replacement)
-        self.assertIs(registry.get("wf"), replacement)
-
-    def test_unregister_is_idempotent(self) -> None:
-        registry = WorkflowRegistry()
-        registry.register(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
-        registry.unregister("wf")
-        registry.unregister("wf")
-        with self.assertRaises(KeyError):
-            registry.get("wf")
-
     def test_strategy_only_workflow_is_valid(self) -> None:
         registry = WorkflowRegistry()
         registry.register(WorkflowSpec(workflow_id="wf", strategy=_DummyStrategy()))

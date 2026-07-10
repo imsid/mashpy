@@ -82,23 +82,6 @@ class RegisterAgentSkillRequest(BaseModel):
     content: Optional[str] = None
 
 
-class DynamicTaskSpecRequest(BaseModel):
-    task_id: str = Field(min_length=1)
-    agent_id: str = Field(min_length=1)
-    structured_output: Optional[dict[str, Any]] = None
-
-
-class WorkflowTaskMessageRequest(BaseModel):
-    skill_name: str = Field(min_length=1)
-
-
-class RegisterAgentWorkflowRequest(BaseModel):
-    workflow_id: str = Field(min_length=1)
-    tasks: list[DynamicTaskSpecRequest] = Field(min_length=1)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    task_message: WorkflowTaskMessageRequest
-
-
 class RunWorkflowRequest(BaseModel):
     dedup_key: Optional[str] = None
     input: dict[str, Any] = Field(default_factory=dict)

@@ -48,11 +48,11 @@ class AgentStep(StepSpec):
     """A step executed by one run of a registered agent's loop.
 
     ``input`` may be a pydantic model (coerced/validated) or ``None`` (the
-    workflow input and prior output pass through unchanged — used by
-    over-the-wire dynamic workflows that don't ship a Python model). ``output``
-    may be a pydantic model or a JSON-schema dict; either becomes the request's
-    structured-output schema. ``skill_name``, when set, instructs the agent to
-    load that skill before doing the step's work.
+    workflow input and prior output pass through unchanged, for agents that
+    read ``workflow_input`` directly). ``output`` may be a pydantic model or a
+    JSON-schema dict; either becomes the request's structured-output schema.
+    ``skill_name``, when set, instructs the agent to load that skill before
+    doing the step's work.
     """
 
     step_id: str

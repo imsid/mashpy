@@ -45,7 +45,6 @@ class AgentPool:
         self._agents: Dict[str, AgentRuntime] = {}
         self._clients: Dict[str, AgentClientLike] = {}
         self._agent_skills: Dict[str, Dict[str, Skill]] = {}
-        self._agent_workflows: Dict[str, set[str]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
         self._shared_workflow_store: WorkflowStore | None = None
@@ -219,33 +218,6 @@ class AgentPool:
     def register_workflow(self, workflow: WorkflowSpec) -> None:
         self._ensure_workflow_task_agents(workflow)
         self._workflow_registry.register(workflow)
-
-    def register_agent_workflow(self, agent_id: str, workflow: WorkflowSpec) -> None:
-        resolved_agent_id = str(agent_id or "").strip()
-        if not resolved_agent_id:
-            raise ValueError("agent_id is required")
-        self._require_registered_agent(resolved_agent_id)
-        self._ensure_workflow_task_agents(workflow)
-        self._workflow_registry.upsert(workflow)
-        self._remove_agent_workflow(workflow.workflow_id)
-        self._agent_workflows.setdefault(resolved_agent_id, set()).add(workflow.workflow_id)
-
-    def unregister_agent_workflow(self, agent_id: str, workflow_id: str) -> None:
-        resolved_agent_id = str(agent_id or "").strip()
-        if not resolved_agent_id:
-            raise ValueError("agent_id is required")
-        self._require_registered_agent(resolved_agent_id)
-        resolved_workflow_id = str(workflow_id or "").strip()
-        if not resolved_workflow_id:
-            raise ValueError("workflow_id is required")
-        owner_agent_id = self._workflow_owner_agent_id(resolved_workflow_id)
-        if owner_agent_id is not None and owner_agent_id != resolved_agent_id:
-            raise ValueError(
-                f"workflow '{resolved_workflow_id}' is registered for agent "
-                f"'{owner_agent_id}'"
-            )
-        self._workflow_registry.unregister(resolved_workflow_id)
-        self._remove_agent_workflow(resolved_workflow_id)
 
     def register_agent_skill(self, agent_id: str, skill: Skill) -> None:
         resolved_agent_id = str(agent_id or "").strip()
@@ -562,18 +534,6 @@ class AgentPool:
     def _require_registered_agent(self, agent_id: str) -> None:
         if agent_id not in self._registered:
             raise ValueError(f"agent '{agent_id}' is not registered")
-
-    def _workflow_owner_agent_id(self, workflow_id: str) -> str | None:
-        for agent_id, workflow_ids in self._agent_workflows.items():
-            if workflow_id in workflow_ids:
-                return agent_id
-        return None
-
-    def _remove_agent_workflow(self, workflow_id: str) -> None:
-        for agent_id, workflow_ids in list(self._agent_workflows.items()):
-            workflow_ids.discard(workflow_id)
-            if not workflow_ids:
-                self._agent_workflows.pop(agent_id, None)
 
     def _register_runtime_skill(self, runtime: AgentRuntime, skill: Skill) -> None:
         runtime.skills.register(skill)

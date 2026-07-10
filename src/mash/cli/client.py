@@ -187,19 +187,6 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def register_agent_workflow(
-        self,
-        agent_id: str,
-        workflow_payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/workflow",
-            json_body=dict(workflow_payload),
-        )
-        data = response.json()["data"]
-        return data if isinstance(data, dict) else {}
-
     def submit_request(
         self,
         agent_id: str,

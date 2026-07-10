@@ -199,8 +199,8 @@ def _coerce_input(step: StepSpec, merged: dict[str, Any]) -> dict[str, Any]:
     """Build the step's input snapshot.
 
     A pydantic ``input`` model coerces and validates the merged dict; a
-    passthrough (``None``) input forwards it unchanged (dynamic/over-the-wire
-    agent steps that ship no Python model).
+    passthrough (``None``) input forwards it unchanged (agent steps that
+    read ``workflow_input`` directly).
     """
     if step.input is None:
         return dict(merged)

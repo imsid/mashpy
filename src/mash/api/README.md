@@ -75,25 +75,6 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 At least one of `location` or `content` must be set (enforced by `Skill`
 validation).
 
-- `RegisterAgentWorkflowRequest`
-
-```json
-{
-  "workflow_id": "required non-empty string",
-  "tasks": [
-    {
-      "task_id": "required non-empty string",
-      "agent_id": "required non-empty string",
-      "structured_output": "optional JSON-schema object"
-    }
-  ],
-  "metadata": "optional JSON object",
-  "task_message": {
-    "skill_name": "required non-empty string"
-  }
-}
-```
-
 ## Endpoints
 
 ### Discovery And Meta
@@ -224,18 +205,6 @@ validation).
   - `skill_name`
 - Idempotent: if the skill name is already registered for that agent, the
   request is a no-op (no error).
-
-`POST /api/v1/agent/{agent_id}/workflow`
-- Publishes (upserts) a workflow definition owned by the named agent.
-- Path params:
-  - `agent_id`
-- Body: `RegisterAgentWorkflowRequest`
-- Returns:
-  - `agent_id`
-  - `workflow_id`
-- Upsert semantics: re-registering the same `workflow_id` replaces the live
-  definition. Unregistration is only available through the in-process host
-  API (`AgentPool.unregister_agent_workflow`), not HTTP.
 
 ### Sessions
 
