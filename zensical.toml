@@ -33,7 +33,7 @@ nav = [
             { "Skills: Instructions on Demand" = "posts/skills-on-demand.md" },
             { "Memory and Compaction" = "posts/memory-and-compaction.md" },
             { "Composing Agents" = "posts/composing-agents.md" },
-            { "Workflows" = "posts/workflows-and-task-state.md" },
+            { "Workflows" = "posts/workflows-as-step-pipelines.md" },
             { "Reading a Trace" = "posts/reading-a-trace.md" },
             { "Synthetic Evals" = "posts/synthetic-evals.md" },
         ] },

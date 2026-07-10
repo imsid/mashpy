@@ -405,8 +405,8 @@ dedicated commands for specific workflows that provide a better UX.
 
 Workflow runs target a registered agent directly and don't involve host
 composition, so this pattern is the same regardless of how the shell is
-targeted. Here is the pattern used by the Mash Pilot project for a
-changelog workflow:
+targeted. Here is the pattern, shown for a changelog workflow; the Mash
+Pilot project's `/quiz` command follows the same shape:
 
 ```python
 from mash.cli import Command
@@ -494,7 +494,7 @@ pilot/
   catalog/
     agents/     # one package per agent: pilot/ (the guide primary) plus a
                 # copilot per mashpy module (cli, api, mcp, runtime, workflow)
-    workflows/  # workflow definitions and their REPL commands (changelog, quiz)
+    workflows/  # workflow definitions and their REPL commands (quiz)
     __init__.py # CATALOG: the explicit registry build_pool() reads
   spec.py       # build_pool(): registers the catalog as a flat pool
   cli.py        # CLI entrypoint with MashRemoteShell + storefront commands
@@ -503,7 +503,6 @@ pilot/
   prompt.py     # System prompt construction
   skills/
     build-mash-agent/SKILL.md
-    changelog/SKILL.md
     mash-quiz/SKILL.md
 ```
 
@@ -517,19 +516,13 @@ code. The CLI entrypoint (`pilot/cli.py`):
    `ShellTarget` from its primary `agent_id` (or a bare agent id for
    `--agent`)
 3. Create the `MashRemoteShell` and register Pilot's scoped commands:
-   `/changelog` when the target is the `pilot` primary, and `/quiz` when the
-   host attaches the `pilot-quiz` workflow (the stock `/agents` and
-   `/workflow` commands are host-scoped natively)
+   `/quiz` when the host attaches the `pilot-quiz` workflow (the stock
+   `/agents` and `/workflow` commands are host-scoped natively)
 4. Call `shell.run()`
 
-The workflow commands (`/changelog`, `/quiz`) demonstrate two patterns:
-
-- **Dynamic workflows**: `/changelog` registers a skill and workflow
-  definition at runtime, then runs it. Good for workflows that need
-  runtime configuration.
-- **Static workflows**: `/quiz` relies on a workflow pre-registered during
-  `build_pool()`. The command just triggers a run and streams the output.
-  Good for workflows that are always available.
+`/quiz` relies on a workflow registered during `build_pool()`; the command
+triggers a run and streams the output, including the durable `AskUser`
+interactions the quiz asks its questions through.
 
 ## Summary
 

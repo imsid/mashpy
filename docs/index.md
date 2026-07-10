@@ -200,7 +200,7 @@ mash repl --host assistant
 - [**Skills: Instructions on demand**](posts/skills-on-demand.md): markdown bundles loaded through one meta-tool
 - [**Memory and compaction**](posts/memory-and-compaction.md): history, summary checkpoints, and signals
 - [**Composing agents**](posts/composing-agents.md): subagents, delegation, shared plumbing
-- [**Workflows**](posts/workflows-and-task-state.md): code authored and dynamic specs for deterministic tasks
+- [**Workflows**](posts/workflows-as-step-pipelines.md): durable step pipelines mixing code steps and agent steps
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 - [**Synthetic evals**](posts/synthetic-evals.md): generated datasets and rubrics, experiments over the live host, read-time comparison
 

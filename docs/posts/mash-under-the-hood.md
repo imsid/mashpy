@@ -157,9 +157,10 @@ required `agent_id` and `after` timestamp plus optional `before`, `session_id`,
 
 **Persistence**
 
-Mash persists to Postgres, and three areas write their own tables: the runtime
+Mash persists to Postgres, and four areas write their own tables: the runtime
 store behind the loop's resumability and observability, the per-agent memory
-store behind context loading, and the backend API request log. The main tables:
+store behind context loading, the workflow store behind workflow runs, and the
+backend API request log. The main tables:
 
 | Table | Store | Purpose |
 |---|---|---|
@@ -167,6 +168,7 @@ store behind context loading, and the backend API request log. The main tables:
 | `runtime_feedback` | runtime | Notes submitted through `/feedback`, read back through the feedback API. |
 | `memory_turns` | memory | One row per turn (user message, agent response, running token total). The replayable turns are the conversation history context loading feeds into a request; workflow and subagent turns are stored here too but excluded from replay. |
 | `memory_signals` | memory | Named signals emitted on a turn, stored as values keyed to that turn. |
+| `workflow_runs`, `workflow_steps`, `workflow_step_events` | workflow | One row per workflow run, per-step input/output snapshots, and the append-only step lifecycle audit behind durable resume and the step audit trail. |
 | `api_event_log` | api | HTTP request and response log for the backend API: method, path, status, duration, and bodies. |
 
 ### Human-in-the-Loop Interactions (HITL)
@@ -202,67 +204,47 @@ result = await ask_user(
 
 ### Workflows
 
-A workflow is an ordered sequence of tasks, JSON in and JSON out where each task is wired to an agent and optionally a structured
-output schema. Workflow can be deployed via code and composed in the host or registered dynamically at runtime via
-the host API or a client. Under the hood a workflow run is invoked with a fixed input payload that the runtime
-routes to the task agent as a JSON request:
-
-```json
-{ "workflow_id": "...", 
-  "workflow_run_id": "...", 
-  "task_id": "...",
-  "workflow_input": { ... }, 
-  "task_state": { ... } 
-}
-```
-
-The agent reads `workflow_input` and the prior `task_state`, and its structured
-output becomes that task's persisted state for future runs and downstream steps.
-
-A code-deployed workflow gets a dedicated workflow agent by passing an
-`agent_spec`, which `HostBuilder.workflow()` registers as a workflow-only agent
-hidden from delegation and listings. That agent carries the task's skill in its
-own `build_skills()`, and the `WorkflowSpec` ships with the pool at build time:
+A workflow is an ordered step pipeline defined in Python and registered with
+the pool at build time. Each step is either a `CodeStep`, a deterministic
+Python function, or an `AgentStep`, one run of a registered agent's loop.
+Steps declare pydantic input and output models. Each step's output merges over
+the run's immutable `workflow_input` to form the next step's input, and the
+final step's output is the run result. The pipeline is validated when the pool
+is built, so a step that expects a field no earlier step provides fails the
+build.
 
 ```python
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import AgentStep, CodeStep, WorkflowSpec
 
-quiz_workflow = WorkflowSpec(
-    workflow_id="pilot-quiz",
-    tasks=[TaskSpec(task_id="run-quiz", agent_spec=QuizAgentSpec(...))],
+changelog = WorkflowSpec(
+    workflow_id="changelog",
+    input_model=ScanIn,
+    steps=[
+        CodeStep(step_id="scan", run=scan, input=ScanIn, output=ScanOut),
+        AgentStep(step_id="summarize", agent_id="writer",
+                  input=ScanOut, output=SummaryOut),
+    ],
 )
-# HostBuilder().agent(PilotSpec(), metadata=...).workflow(quiz_workflow)
+# HostBuilder().agent(WriterSpec(), metadata=...).workflow(changelog)
 ```
 
-A dynamically registered workflow repurposes an existing agent instead of adding
-one. The client registers a dynamic `Skill` holding the task instructions, then a
-workflow whose task points at that skill through a `task_message`, and runs it:
+An agent step executes as a normal durable request. The agent receives a JSON
+envelope carrying `workflow_id`, `workflow_run_id`, `step_id`,
+`workflow_input`, and its coerced `input`, and must return structured output
+matching the step's output schema. The step can target a pooled agent by id or
+carry its own `agent_spec`, which registers as a workflow-only agent hidden
+from listings and delegation.
 
-```python
-client.register_agent_skill("pilot", {
-    "type": "dynamic",
-    "name": "workflow:pilot-changelog",
-    "description": "Generate a changelog from recent git commits.",
-    "content": skill_markdown,
-})
-client.register_agent_workflow("pilot", {
-    "workflow_id": "pilot-changelog",
-    "tasks": [{"task_id": "scan-recent-commits", "agent_id": "pilot",
-               "structured_output": {...}}],
-    "task_message": {"skill_name": "workflow:pilot-changelog"},
-})
-client.run_workflow("pilot-changelog", workflow_input={"commit_count": 5})
-```
-
-The same pair is exposed via the Host API as
-`POST /api/v1/agent/{agent_id}/skill` and `POST /api/v1/agent/{agent_id}/workflow`,
-so a service can generate a skill, publish a workflow that loads it, and trigger
-runs without redeploying. 
-
-Dynamic definitions live in memory, so the owning
-application republishes them after a restart. This makes workflows a concrete
-execution model for repeatable, stateful agent tasks rather than a loose
-orchestration layer.
+Runs are durable and observable. DBOS orchestrates each run, a failed run
+resumes from the failed step with completed steps replayed from their stored
+outputs, and every step leaves an audit trail of status, input and output
+snapshots, and lifecycle events in dedicated workflow tables. Runs start and
+stream over the API (`POST /api/v1/workflow/{id}/run`, then SSE on the run's
+events endpoint) or the REPL (`/workflow run|status|resume`). Non-linear
+shapes supply a `WorkflowStrategy` instead of steps; Masher's eval scorer uses
+one to fan dataset rows out as durable child workflows.
+[Workflows as Step Pipelines](workflows-as-step-pipelines.md) covers the layer
+in full.
 
 
 ## Evals
@@ -419,9 +401,10 @@ Masher also exposes `masher-trace-digest`, a workflow that builds on the same
 span and analysis infrastructure. It produces a schema v2 digest with the full
 latency breakdown, tool stats, step breakdown, slowest operations, nested
 subagent traces, and notable events: a complete diagnostic snapshot of one
-trace. The workflow runs deterministically over the runtime event log, and
-incremental mode processes only new traces since the last checkpoint, making
-it safe to run on a schedule.
+trace. The workflow is all code steps and runs deterministically over the
+runtime event log. Trace mode digests one trace and returns it inline; batch
+mode scans traces newer than a `since_ts` cutoff and appends each digest to a
+JSONL artifact, deduplicated, so repeated batch runs are safe on a schedule.
 
 ```bash
 /workflow run masher-trace-digest --input '{"mode": "trace", "target_agent_id": "..", "session_id": "..", "trace_id": ".."}'

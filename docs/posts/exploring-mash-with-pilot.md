@@ -95,20 +95,13 @@ trace frames live, so you watch the routing happen. It also carries a
 `build-mash-agent` skill, so it can scaffold a new Mash application from a
 description.
 
-## Two commands worth trying
-
-`/changelog [N]` generates a changelog from the last N mashpy commits
-(available in sessions targeting the `pilot` primary, which is the agent
-that carries the repo workspace). The
-command registers its skill and workflow definition on the host at the
-moment it runs — the [dynamic publishing](workflows-and-task-state.md) flow
-exercised end to end.
+## The /quiz command
 
 `/quiz` starts an interactive quiz about Mash internals, executed by the
-pooled `quiz-me` agent through the `pilot-quiz`
-[workflow](workflows-and-task-state.md). Workflows are attached to hosts in
+workflow-only `quiz-me` agent through the `pilot-quiz`
+[workflow](workflows-as-step-pipelines.md). Workflows are attached to hosts in
 your config (`guide` attaches `pilot-quiz` by default), and `/quiz`
-only exists in REPLs of hosts that attach it — compose it onto your own
+only exists in REPLs of hosts that attach it; compose it onto your own
 host with `--workflows pilot-quiz`.
 
 ## Watching it run
@@ -135,7 +128,7 @@ also serves the admin dashboard, with the trace drawer and span tree, at
 | `/agents`, `/hosts` | list agents and compositions |
 | `/history [N]`, `/trace [N]` | recent turns; latency analysis |
 | `/workflow list\|run\|status` | inspect or run the workflows attached to this host |
-| `/changelog [N]`, `/quiz` | the two feature demos |
+| `/quiz` | the interactive quiz workflow demo |
 | `/status`, `/session`, `/sessions` | connection and session info |
 | `/help`, `/clear`, `/exit` | shell basics |
 | `/feedback <message>` | record a note or bug report for the session |

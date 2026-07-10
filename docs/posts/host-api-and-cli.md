@@ -51,7 +51,7 @@ Each group of endpoints projects one subsystem from earlier in the series.
 
 **Sessions.** The [memory layer](memory-and-compaction.md), read over HTTP: `GET .../sessions` and `.../sessions/{session_id}` for listings, `.../history` for turns, `.../signals` for per-turn signal payloads with their definitions, and `POST .../compact` to trigger compaction manually. A reasoning endpoint (`GET .../session/{session_id}/trace/{trace_id}/reasoning`) returns the compact step-by-step trace for one turn.
 
-**Publishing.** The dynamic registration from [skills](skills-on-demand.md) and [workflows](workflows-and-task-state.md): `POST /agent/{agent_id}/skill` (idempotent; re-registering a name is a no-op) and `POST /agent/{agent_id}/workflow` (upsert; re-registering a `workflow_id` replaces the live definition).
+**Publishing.** The dynamic registration from [skills](skills-on-demand.md): `POST /agent/{agent_id}/skill` (idempotent; re-registering a name is a no-op).
 
 **Workflows.** `GET /workflow` lists definitions, `POST /workflow/{workflow_id}/run` starts a run with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its output, and `GET .../runs/{run_id}/events` streams a run's task events over SSE.
 

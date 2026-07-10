@@ -111,6 +111,6 @@ The pool owns the stores, as [the runtime store post](persistence-store.md) cove
 
 Sharing stops at infrastructure. Memory reads and writes are scoped by `app_id`, and runtime events carry their `agent_id`, so two agents in one pool stay as isolated as two agents in separate processes. One consequence worth knowing: memory is keyed by agent id, not by host, so an agent keeps its memory whether it's serving one host or three. If you need isolated instances of the same spec, register it twice under different ids.
 
-Delegation covers work that arrives as conversation. Scheduled, repeatable pipelines that need state between runs get their own layer, built from the same parts, and that's the next post.
+Delegation covers work that arrives as conversation. Scheduled, repeatable pipelines get their own layer, built from the same parts, and that's the next post.
 
-*Next: [Workflows and Task State](workflows-and-task-state.md).*
+*Next: [Workflows as Step Pipelines](workflows-as-step-pipelines.md).*
