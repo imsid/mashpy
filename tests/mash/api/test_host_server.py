@@ -18,6 +18,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 
 from mash.api import MashHostConfig, create_app
 from mash.api.admin_ui import get_admin_static_dir
@@ -43,6 +44,18 @@ MASHER_WORKFLOW_IDS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _stub_eval_agent_llm():
+    """Keep API tests independent from developer and CI provider credentials."""
+    with patch(
+        "mash.agents.masher.spec.EvalAgentSpec.build_llm",
+        side_effect=lambda: build_spec(
+            agent_id="eval-agent", response_text="{}"
+        ).build_llm(),
+    ):
+        yield
+
+
 def _runtime_state(client: TestClient) -> Any:
     """The app is a FastAPI instance; TestClient types it as a bare ASGI callable."""
     return cast(FastAPI, client.app).state.runtime_state
@@ -62,9 +75,6 @@ def _build_test_client(
             "MASH_DATA_DIR": str(root),
             "MASH_DATABASE_URL": "",
         },
-    ), patch(
-        "mash.agents.masher.spec.EvalAgentSpec.build_llm",
-        return_value=build_spec(agent_id="eval-agent", response_text="{}").build_llm(),
     ):
         builder = (
             HostBuilder()
