@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-for _path in (_REPO_ROOT / "src", _REPO_ROOT):
-    if str(_path) not in sys.path:
-        sys.path.insert(0, str(_path))
-
 from mash.logging import bound_host_id, bound_request_id
 from mash.runtime import context as context_helpers
 from mash.runtime.requests import host_id_from_request_metadata
+from mash.runtime.engine.dbos import register_runtime, unregister_runtime
 from mash.runtime.engine.steps import (
     commit_request_step,
     complete_request,
@@ -27,6 +21,7 @@ from mash.runtime.engine.steps import (
     start_request_trace,
 )
 from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
+from mash.workflows.store import WorkflowStepEventRecord
 
 
 def _event_tokens(event: RuntimeEvent) -> int:
@@ -304,28 +299,6 @@ class _TestRuntimeStore:
             sessions = sessions[: max(1, int(limit))]
         return {"sessions": sessions, "total": total}
 
-    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]:
-        async with self._lock:
-            events = list(self._events)
-        by_workflow: dict[str, list[RuntimeEvent]] = {}
-        for event in events:
-            if event.workflow_id is None:
-                continue
-            by_workflow.setdefault(event.workflow_id, []).append(event)
-        activity = []
-        for workflow_id, wf_events in by_workflow.items():
-            activity.append(
-                {
-                    "workflow_id": workflow_id,
-                    "run_count": len({e.workflow_run_id for e in wf_events if e.workflow_run_id}),
-                    "session_count": len({e.session_id for e in wf_events if e.session_id}),
-                    "last_run_at": max(float(e.created_at) for e in wf_events),
-                    "total_tokens": sum(_event_tokens(e) for e in wf_events),
-                }
-            )
-        activity.sort(key=lambda a: a["last_run_at"], reverse=True)
-        return activity
-
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()
         self._request_waiters.setdefault(request_id, set()).add(event)
@@ -389,7 +362,6 @@ async def _execute_request_inline(
                 request_metadata,
             )
             while True:
-                loop_index = int(workflow_state.get("loop_index") or 0)
                 workflow_state = await plan_request_step(
                     runtime.app_id,
                     request_id,
@@ -472,14 +444,10 @@ class _TestDBOSRequestEngine:
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def open(self) -> None:
-        from mash.runtime.engine.dbos import register_runtime
-
         register_runtime(self._runtime)
         return None
 
     async def close(self) -> None:
-        from mash.runtime.engine.dbos import unregister_runtime
-
         if not self._tasks:
             unregister_runtime(self._runtime)
             return
@@ -537,6 +505,7 @@ class _TestMemoryStore:
         limit: int | None = None,
         after_log_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        del after_log_id
         rows = [
             r for r in self._logs
             if r.get("app_id") == app_id
@@ -550,11 +519,13 @@ class _TestMemoryStore:
     async def get_latest_log_trace(
         self, app_id: str, session_id: str
     ) -> dict[str, Any] | None:
+        del app_id, session_id
         return None
 
     async def list_recent_log_traces(
         self, app_id: str, session_id: str, limit: int = 5
     ) -> list[dict[str, Any]]:
+        del app_id, session_id, limit
         return []
 
     async def save_turn(
@@ -627,6 +598,7 @@ class _TestMemoryStore:
         offset: int = 0,
         sort_desc: bool = True,
     ) -> list[dict[str, Any]]:
+        del start_time, end_time
         rows = [
             t for t in self._turns
             if t["app_id"] == app_id
@@ -667,6 +639,7 @@ class _TestMemoryStore:
         return list(seen.values())
 
     async def get_latest_session(self, app_id: str) -> dict[str, Any] | None:
+        del app_id
         return None
 
     async def get_latest_trace(
@@ -695,6 +668,7 @@ class _TestMemoryStore:
     async def get_turn_by_ids(
         self, pairs: list[dict[str, str]], app_id: str
     ) -> list[dict[str, Any]] | None:
+        del pairs, app_id
         return None
 
     async def keyword_search(
@@ -735,6 +709,7 @@ class _TestMemoryStore:
         session_id: str | None = None,
         app_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        del column, query_term, query_embedding, limit, session_id, app_id
         return []
 
 
@@ -745,14 +720,97 @@ def build_test_stores(
     return _TestRuntimeStore(database_url), _TestMemoryStore(database_url)
 
 
+class _TestWorkflowStore:
+    """Minimal in-memory WorkflowStore for tests against the fake database URL."""
+
+    def __init__(self, _database_url: str) -> None:
+        self._runs: dict[str, Any] = {}
+        self._steps: dict[tuple[str, str], Any] = {}
+        self._events: list[Any] = []
+
+    async def open(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        self._runs.clear()
+        self._steps.clear()
+        self._events.clear()
+
+    async def create_run(self, run: Any) -> None:
+        self._runs.setdefault(run.run_id, run)
+
+    async def mark_run_started(self, run_id: str, started_at: float) -> None:
+        run = self._runs.get(run_id)
+        if run is not None:
+            run.status = "running"
+            run.started_at = run.started_at or started_at
+
+    async def finish_run(self, run_id: str, *, status: str, result=None, error=None, finished_at: float) -> None:
+        run = self._runs.get(run_id)
+        if run is not None:
+            run.status = status
+            run.result = result
+            run.error = error
+            run.finished_at = finished_at
+
+    async def upsert_step(self, step: Any) -> None:
+        self._steps[(step.run_id, step.step_id)] = step
+
+    async def append_step_event(self, *, run_id, workflow_id, step_id, event_type, at, attempt=1, payload=None) -> int:
+        seq = sum(1 for e in self._events if e.run_id == run_id and e.step_id == step_id) + 1
+        self._events.append(
+            WorkflowStepEventRecord(
+                run_id=run_id, workflow_id=workflow_id, step_id=step_id,
+                attempt=attempt, event_type=event_type, seq=seq, at=at, payload=payload or {},
+            )
+        )
+        return seq
+
+    async def get_run(self, run_id: str):
+        return self._runs.get(run_id)
+
+    async def get_latest_runs(self, workflow_ids: list[str]):
+        latest = {}
+        for workflow_id in workflow_ids:
+            runs = [
+                run
+                for run in self._runs.values()
+                if run.workflow_id == workflow_id
+            ]
+            if runs:
+                latest[workflow_id] = max(
+                    runs, key=lambda run: (run.created_at, run.run_id)
+                )
+        return latest
+
+    async def list_runs(self, workflow_id: str, *, status=None, start_time=None, end_time=None, limit=50, offset=0, sort_desc=True):
+        del start_time, end_time
+        runs = [r for r in self._runs.values() if r.workflow_id == workflow_id]
+        if status is not None:
+            runs = [r for r in runs if r.status == status]
+        runs.sort(key=lambda r: r.created_at, reverse=sort_desc)
+        return runs[offset : offset + limit]
+
+    async def get_run_steps(self, run_id: str):
+        steps = [s for (rid, _), s in self._steps.items() if rid == run_id]
+        steps.sort(key=lambda s: s.ordinal)
+        return steps
+
+    async def list_step_events(self, run_id: str, *, step_id=None, after_seq=0):
+        events = [e for e in self._events if e.run_id == run_id]
+        if step_id is not None:
+            events = [e for e in events if e.step_id == step_id and e.seq > after_seq]
+        events.sort(key=lambda e: (e.at, e.step_id, e.seq))
+        return events
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _patch_hosted_runtime_for_tests():
-    from _pytest.monkeypatch import MonkeyPatch
-
-    patcher = MonkeyPatch()
+    patcher = pytest.MonkeyPatch()
     patcher.setenv("MASH_DATABASE_URL", "postgresql://test/runtime")
     patcher.setattr("mash.runtime.host.host.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.host.host.PostgresStore", _TestMemoryStore)
+    patcher.setattr("mash.runtime.host.host.WorkflowStore", _TestWorkflowStore)
     patcher.setattr("mash.runtime.server.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.service.DBOSRequestEngine", _TestDBOSRequestEngine)
     yield

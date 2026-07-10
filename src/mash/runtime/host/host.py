@@ -10,14 +10,16 @@ from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
 from mash.skills.base import Skill
 from mash.skills.tool import SkillTool
-from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
+from mash.workflows import AgentStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import make_runner_id
 from mash.workflows.dbos import register_runner as register_workflow_runner
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
+from mash.workflows.store import WorkflowStore
+
+from mash.tools.subagent import InvokeSubagentTool
 
 from ..client import AgentClientLike, InProcessAgentClient
 from ..events import PostgresRuntimeStore, RuntimeStore
-from mash.tools.subagent import InvokeSubagentTool
 from ..service import AgentRuntime
 from ..spec import AgentSpec
 from .subagents import AgentMetadata
@@ -44,10 +46,11 @@ class AgentPool:
         self._agents: Dict[str, AgentRuntime] = {}
         self._clients: Dict[str, AgentClientLike] = {}
         self._agent_skills: Dict[str, Dict[str, Skill]] = {}
-        self._agent_workflows: Dict[str, set[str]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
+        self._shared_workflow_store: WorkflowStore | None = None
         self._workflow_registry = WorkflowRegistry()
+        self._default_workflow_ids: list[str] = []
         self._workflow_service = WorkflowService(
             self._workflow_registry,
             self,
@@ -62,7 +65,7 @@ class AgentPool:
         self,
         definition: AgentSpec,
         *,
-        metadata: AgentMetadata,
+        metadata: AgentMetadata | None,
         agent_id: str | None = None,
     ) -> str:
         resolved_agent_id = (agent_id or definition.get_agent_id()).strip()
@@ -101,6 +104,16 @@ class AgentPool:
         return resolved_agent_id
 
     def define_host(self, host: Host) -> Host:
+        merged_workflows = tuple(
+            dict.fromkeys((*host.workflows, *self._default_workflow_ids))
+        )
+        if merged_workflows != host.workflows:
+            host = Host(
+                host_id=host.host_id,
+                primary=host.primary,
+                subagents=host.subagents,
+                workflows=merged_workflows,
+            )
         for agent_id in (host.primary, *host.subagents):
             registered = self._registered.get(agent_id)
             if registered is None or registered.is_workflow_agent:
@@ -218,32 +231,10 @@ class AgentPool:
         self._ensure_workflow_task_agents(workflow)
         self._workflow_registry.register(workflow)
 
-    def register_agent_workflow(self, agent_id: str, workflow: WorkflowSpec) -> None:
-        resolved_agent_id = str(agent_id or "").strip()
-        if not resolved_agent_id:
-            raise ValueError("agent_id is required")
-        self._require_registered_agent(resolved_agent_id)
-        self._ensure_workflow_task_agents(workflow)
-        self._workflow_registry.upsert(workflow)
-        self._remove_agent_workflow(workflow.workflow_id)
-        self._agent_workflows.setdefault(resolved_agent_id, set()).add(workflow.workflow_id)
-
-    def unregister_agent_workflow(self, agent_id: str, workflow_id: str) -> None:
-        resolved_agent_id = str(agent_id or "").strip()
-        if not resolved_agent_id:
-            raise ValueError("agent_id is required")
-        self._require_registered_agent(resolved_agent_id)
-        resolved_workflow_id = str(workflow_id or "").strip()
-        if not resolved_workflow_id:
-            raise ValueError("workflow_id is required")
-        owner_agent_id = self._workflow_owner_agent_id(resolved_workflow_id)
-        if owner_agent_id is not None and owner_agent_id != resolved_agent_id:
-            raise ValueError(
-                f"workflow '{resolved_workflow_id}' is registered for agent "
-                f"'{owner_agent_id}'"
-            )
-        self._workflow_registry.unregister(resolved_workflow_id)
-        self._remove_agent_workflow(resolved_workflow_id)
+    def register_default_workflow(self, workflow: WorkflowSpec) -> None:
+        """Register a workflow that is attached to every host in this pool."""
+        self.register_workflow(workflow)
+        self._default_workflow_ids.append(workflow.workflow_id)
 
     def register_agent_skill(self, agent_id: str, skill: Skill) -> None:
         resolved_agent_id = str(agent_id or "").strip()
@@ -302,10 +293,13 @@ class AgentPool:
         try:
             shared_runtime_store = PostgresRuntimeStore(self.runtime_database_url)
             shared_memory_store = PostgresStore(self.runtime_database_url)
+            shared_workflow_store = WorkflowStore(self.runtime_database_url)
             self._shared_runtime_store = shared_runtime_store
             self._shared_memory_store = shared_memory_store
+            self._shared_workflow_store = shared_workflow_store
             await shared_runtime_store.open()
             await shared_memory_store.open()
+            await shared_workflow_store.open()
 
             for registered in self._registered.values():
                 uses_default_memory = (
@@ -345,12 +339,12 @@ class AgentPool:
                 allowed = set(host.subagents)
 
                 def _make_client_resolver(
-                    _pool: "AgentPool", _allowed: frozenset[str]
+                    _pool: "AgentPool", _allowed: frozenset[str], _host_id: str
                 ):
                     def _resolver(agent_id: str) -> Any:
                         if agent_id not in _allowed:
                             raise ValueError(
-                                f"subagent '{agent_id}' is not in host '{host.host_id}'"
+                                f"subagent '{agent_id}' is not in host '{_host_id}'"
                             )
                         return _pool.get_client(agent_id)
 
@@ -361,7 +355,7 @@ class AgentPool:
                 primary_runtime.agent.tools.register(
                     InvokeSubagentTool(
                         client_resolver=_make_client_resolver(
-                            self, frozenset(allowed)
+                            self, frozenset(allowed), host.host_id
                         ),
                         primary_app_id=primary_runtime.app_id,
                         primary_session_id=primary_runtime.session_id,
@@ -387,6 +381,10 @@ class AgentPool:
     def get_runtime_store(self) -> RuntimeStore | None:
         """Shared runtime event store, or None if observability is disabled."""
         return self._shared_runtime_store
+
+    def get_workflow_store(self) -> WorkflowStore | None:
+        """Shared workflow run/step store, or None before the pool is started."""
+        return self._shared_workflow_store
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry
@@ -446,7 +444,10 @@ class AgentPool:
                         "parallel_safe": getattr(tool, "parallel_safe", True),
                     }
                 agents_by_tool.setdefault(name, []).append(agent_id)
-        return [{"tool": seen[n], "agents": agents_by_tool[n]} for n in seen]
+        return [
+            {"tool": tool, "agents": agents_by_tool[name]}
+            for name, tool in seen.items()
+        ]
 
     def describe_skills(self) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
@@ -461,7 +462,10 @@ class AgentPool:
                         "content": skill.content,
                     }
                 agents_by_skill.setdefault(skill.name, []).append(agent_id)
-        return [{"skill": seen[n], "agents": agents_by_skill[n]} for n in seen]
+        return [
+            {"skill": skill, "agents": agents_by_skill[name]}
+            for name, skill in seen.items()
+        ]
 
     async def aggregate_tool_invocations(
         self,
@@ -521,40 +525,38 @@ class AgentPool:
         if self._shared_memory_store is not None:
             await self._shared_memory_store.close()
             self._shared_memory_store = None
+        if self._shared_workflow_store is not None:
+            await self._shared_workflow_store.close()
+            self._shared_workflow_store = None
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
-        for task in workflow.tasks:
-            agent_id = task.agent_id.strip()
+        # Agent steps bind an agent id (optionally with a spec to auto-register).
+        # Strategy-only workflows register their agents separately.
+        bindings = [
+            (step.agent_id, step.agent_spec)
+            for step in workflow.steps
+            if isinstance(step, AgentStep)
+        ]
+        for raw_agent_id, agent_spec in bindings:
+            agent_id = str(raw_agent_id or "").strip()
             if not agent_id:
-                raise ValueError("workflow task agent id is required")
+                raise ValueError("workflow step agent id is required")
             existing = self.get_registered_agent_spec(agent_id)
             if existing is None:
-                if task.agent_spec is None:
+                if agent_spec is None:
                     raise ValueError(
-                        f"workflow task agent '{agent_id}' is not registered"
+                        f"workflow agent '{agent_id}' is not registered"
                     )
-                self.register_workflow_agent(task.agent_spec, agent_id=agent_id)
-            elif task.agent_spec is not None and existing is not task.agent_spec:
+                self.register_workflow_agent(agent_spec, agent_id=agent_id)
+            elif agent_spec is not None and existing is not agent_spec:
                 raise ValueError(
-                    f"workflow task agent '{agent_id}' is already registered "
+                    f"workflow agent '{agent_id}' is already registered "
                     "with a different spec"
                 )
 
     def _require_registered_agent(self, agent_id: str) -> None:
         if agent_id not in self._registered:
             raise ValueError(f"agent '{agent_id}' is not registered")
-
-    def _workflow_owner_agent_id(self, workflow_id: str) -> str | None:
-        for agent_id, workflow_ids in self._agent_workflows.items():
-            if workflow_id in workflow_ids:
-                return agent_id
-        return None
-
-    def _remove_agent_workflow(self, workflow_id: str) -> None:
-        for agent_id, workflow_ids in list(self._agent_workflows.items()):
-            workflow_ids.discard(workflow_id)
-            if not workflow_ids:
-                self._agent_workflows.pop(agent_id, None)
 
     def _register_runtime_skill(self, runtime: AgentRuntime, skill: Skill) -> None:
         runtime.skills.register(skill)

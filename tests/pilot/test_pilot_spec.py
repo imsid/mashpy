@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-# ruff: noqa: E402
-
 import asyncio
 import os
-import sys
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from mash.agents import MasherAgentSpec
+import pilot.spec as pilot_spec_module
+from mash.agents import EvalAgentSpec
 from mash.agents.masher import (
+    EVAL_AGENT_ID,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
     MASHER_SCORE_EVALS_WORKFLOW_ID,
@@ -46,13 +41,15 @@ from pilot.spec import (
     build_host,
 )
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class _FakeLLMProvider(LLMProvider):
     @property
     def model(self) -> str:
         return "test-model"
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         raise NotImplementedError
 
@@ -182,7 +179,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
@@ -194,12 +191,14 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     await host.start()
                     try:
                         described = {
-                            item["agent_id"]: item for item in host.describe_agents()
+                            str(item["agent_id"]): item
+                            for item in host.describe_agents()
                         }
                         assert sorted(described.keys()) == [
                             ADMIN_COPILOT_AGENT_ID,
                             API_COPILOT_AGENT_ID,
                             CLI_COPILOT_AGENT_ID,
+                            EVAL_AGENT_ID,
                             MCP_COPILOT_AGENT_ID,
                             PILOT_AGENT_ID,
                             RUNTIME_COPILOT_AGENT_ID,
@@ -223,7 +222,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         assert RUNTIME_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert WORKFLOW_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert ADMIN_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert "masher" not in str(primary.system_prompt)
+                        assert "eval-agent" not in str(primary.system_prompt)
                     finally:
                         await host.close()
 
@@ -273,7 +272,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
@@ -290,7 +289,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
                         runtime_agent = host.get_agent(RUNTIME_COPILOT_AGENT_ID)
                         workflow_agent = host.get_agent(WORKFLOW_COPILOT_AGENT_ID)
-                        masher = host.get_agent("masher")
+                        eval_agent = host.get_agent("eval-agent")
 
                         assert "bash" in primary.agent.tools
                         assert "InvokeSubagent" in primary.agent.tools
@@ -299,12 +298,9 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         assert "bash" in mcp_agent.agent.tools
                         assert "bash" in runtime_agent.agent.tools
                         assert "bash" in workflow_agent.agent.tools
-                        assert sorted(masher.agent.tools.list_tools()) == [
-                            "Skill",
-                            "run_gen_synthetic_evals_workflow",
-                            "run_online_eval_curation_workflow",
-                            "run_trace_digest_workflow",
-                        ]
+                        # Deterministic work lives in workflow code steps; the
+                        # eval agent keeps only the Skill meta-tool.
+                        assert sorted(eval_agent.agent.tools.list_tools()) == ["Skill"]
                     finally:
                         await host.close()
 
@@ -354,7 +350,7 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                     patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
@@ -476,8 +472,8 @@ def test_prompts_remain_compact_and_principle_driven() -> None:
     assert "runtime-serving behavior" not in primary_prompt.lower()
     assert "open-ended exploration" not in cli_prompt.lower()
     assert "Treat cached docs as the primary source of truth" in cli_prompt
-    import pilot.spec as _pilot_spec_module
-    pilot_spec_src = Path(_pilot_spec_module.__file__).read_text()
+    assert pilot_spec_module.__file__ is not None
+    pilot_spec_src = Path(pilot_spec_module.__file__).read_text(encoding="utf-8")
     assert "CopilotIndexState" not in pilot_spec_src
     assert "IndexScope" not in pilot_spec_src
     assert "code_index" not in pilot_spec_src

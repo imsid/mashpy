@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-from dataclasses import replace
 
 from mash.core.database import resolve_database_url
 from mash.workflows import WorkflowSpec
@@ -17,9 +16,10 @@ from .types import AgentRegistration, Host
 def load_masher_components():
     masher = importlib.import_module("mash.agents.masher")
     return (
-        masher.MASHER_AGENT_ID,
-        masher.build_masher_workflow_specs,
-        masher.create_masher_agent_spec,
+        masher.EVAL_AGENT_ID,
+        masher.EvalAgentSpec,
+        masher.build_eval_agent_metadata,
+        masher.build_masher_workflows,
     )
 
 
@@ -29,7 +29,6 @@ class HostBuilder:
     def __init__(self) -> None:
         self._agents: list[AgentRegistration] = []
         self._hosts: list[Host] = []
-        self._masher_enabled = True
         self._workflows: list[WorkflowSpec] = []
 
     def agent(
@@ -53,10 +52,6 @@ class HostBuilder:
         self._hosts.append(host)
         return self
 
-    def enable_masher(self, enabled: bool = True) -> "HostBuilder":
-        self._masher_enabled = bool(enabled)
-        return self
-
     def workflow(self, workflow: WorkflowSpec) -> "HostBuilder":
         self._workflows.append(workflow)
         return self
@@ -69,32 +64,26 @@ class HostBuilder:
                 metadata=registered.metadata,
                 agent_id=registered.agent_id,
             )
-        masher_workflow_ids: list[str] = []
-        if self._masher_enabled:
-            (
-                masher_agent_id,
-                build_masher_workflow_specs,
-                create_masher_agent_spec,
-            ) = load_masher_components()
-            masher_spec = create_masher_agent_spec()
-            # Masher is built at pool startup and needs an LLM provider; skip it
-            # when none is configured so keyless deployments still start cleanly.
-            if masher_spec.provider_available():
-                pool.register_workflow_agent(masher_spec, agent_id=masher_agent_id)
-                for workflow in build_masher_workflow_specs(masher_spec):
-                    pool.register_workflow(workflow)
-                    masher_workflow_ids.append(workflow.workflow_id)
+        (
+            eval_agent_id,
+            eval_agent_spec_type,
+            build_eval_agent_metadata,
+            build_masher_workflows,
+        ) = load_masher_components()
+        eval_agent_spec = eval_agent_spec_type()
+        eval_agent_spec.runtime_context.bind_pool(pool)
+        pool.register_agent(
+            eval_agent_spec,
+            metadata=build_eval_agent_metadata(),
+            agent_id=eval_agent_id,
+        )
+        for workflow in build_masher_workflows(eval_agent_spec):
+            pool.register_default_workflow(workflow)
         for workflow in self._workflows:
             pool.register_workflow(workflow)
         # Hosts are defined last so workflow-id validation sees every
-        # registered workflow. Masher workflows attach to every built host —
-        # they run pool-wide, and attaching keeps them visible in host
-        # compositions — appended after any explicitly attached workflows.
-        # Conditional on masher actually registering, so keyless deployments
-        # still define hosts cleanly.
+        # registered workflow. Pool defaults are appended to both these hosts
+        # and hosts defined later through the control API.
         for host in self._hosts:
-            merged = dict.fromkeys((*host.workflows, *masher_workflow_ids))
-            if len(merged) > len(host.workflows):
-                host = replace(host, workflows=tuple(merged))
             pool.define_host(host)
         return pool

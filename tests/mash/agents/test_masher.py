@@ -1,40 +1,56 @@
-"""Tests for the built-in Masher subagent."""
+"""Tests for the built-in Masher worker and its step pipelines."""
 
 from __future__ import annotations
 
 import asyncio
 import importlib.resources
+import inspect
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 from unittest.mock import patch
 
-from mash.agents import MasherAgentSpec
+from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from mash.evals.service import EvalService
+    from mash.runtime.events import RuntimeStore
+
+from mash.agents import EvalAgentSpec
 from mash.agents.masher import (
-    MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
+    GEN_SYNTHETIC_EVALS_SKILL_NAME,
+    MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
-    MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
+    MASHER_SCORE_EVALS_WORKFLOW_ID,
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
-)
-from mash.agents.masher.tool import (
-    GenSyntheticEvalsWorkflowTool,
     MasherRuntimeContext,
-    _build_online_eval_row,
-    _load_trace_bundle,
-    _load_trace_events,
 )
-from mash.runtime.events import build_runtime_trace, build_span_tree, analyze_trace
+from mash.agents.masher.workflows import (
+    DatasetRow,
+    GeneratedEval,
+    Rubric,
+    TraceScanInput,
+    build_gen_synthetic_evals_workflow,
+    build_online_eval_curation_workflow,
+    build_trace_digest_workflow,
+)
+from mash.agents.masher.traces import (
+    build_online_eval_row,
+    load_trace_events,
+)
 from mash.core.agent import Agent
 from mash.core.llm import LLMProvider, OSSCompatibleProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
-from mash.runtime import AgentSpec, Host, HostBuilder
-from mash.testing.runtime_fixtures import metadata
+from mash.runtime import AgentMetadata, AgentSpec, Host, HostBuilder
+from mash.runtime.events import analyze_trace, build_runtime_trace, build_span_tree
 from mash.runtime.events.types import RuntimeEvent
-from mash.testing.runtime_fixtures import build_spec
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.runtime.structured_output import serialize_structured_output
+from mash.testing.runtime_fixtures import build_spec, metadata
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from mash.workflows.strategy import WorkflowStrategy
 
 
 class _FakeLLMProvider(LLMProvider):
@@ -66,6 +82,7 @@ class _FakeRuntimeStore:
         event_type: str,
         created_at: float,
         payload: dict[str, Any] | None = None,
+        loop_index: int | None = None,
     ) -> None:
         self._events.append(
             RuntimeEvent(
@@ -77,6 +94,7 @@ class _FakeRuntimeStore:
                 event_type=event_type,
                 payload=dict(payload or {}),
                 created_at=created_at,
+                loop_index=loop_index,
             )
         )
 
@@ -101,102 +119,86 @@ class _FakeRuntimeStore:
             return events[: max(1, int(limit))]
         return events
 
-    async def get_latest_trace(
-        self,
-        app_id: str,
-        session_id: str,
-    ) -> dict[str, Any] | None:
-        traces = await self.list_recent_traces(app_id, session_id=session_id, limit=1)
-        return traces[0] if traces else None
 
-    async def list_recent_traces(
-        self,
-        app_id: str,
-        *,
-        session_id: str | None = None,
-        limit: int = 5,
-    ) -> list[dict[str, Any]]:
-        grouped: dict[tuple[str, str | None], list[RuntimeEvent]] = {}
-        for event in self._events:
-            if event.app_id != app_id or event.trace_id is None:
-                continue
-            if session_id is not None and event.session_id != session_id:
-                continue
-            grouped.setdefault((event.trace_id, event.session_id), []).append(event)
-        summaries: list[dict[str, Any]] = []
-        for (trace_id_value, session_id_value), trace_events in grouped.items():
-            trace_events.sort(key=lambda item: item.event_id)
-            summaries.append(
-                {
-                    "trace_id": trace_id_value,
-                    "session_id": session_id_value,
-                    "event_count": len(trace_events),
-                    "started_at": float(trace_events[0].created_at),
-                    "latest_event_at": float(trace_events[-1].created_at),
-                    "latest_event_id": int(trace_events[-1].event_id),
-                }
-            )
-        summaries.sort(
-            key=lambda item: (item["latest_event_at"], item["latest_event_id"]),
-            reverse=True,
+async def _run_code_pipeline(
+    workflow: WorkflowSpec, workflow_input: dict[str, Any]
+) -> dict[str, Any]:
+    """Drive an all-code pipeline with the engine's merge/coerce semantics."""
+    prev: dict[str, Any] = {}
+    for step in workflow.steps:
+        assert isinstance(step, CodeStep)
+        merged = {**workflow_input, **prev}
+        inp = step.input.model_validate(merged)
+        ctx = StepContext(
+            run_id="run-1",
+            step_id=step.step_id,
+            workflow_input=dict(workflow_input),
         )
-        return summaries[: max(1, int(limit))]
+        result = step.run(inp, ctx)
+        if inspect.isawaitable(result):
+            result = await result
+        out = result if isinstance(result, step.output) else step.output.model_validate(result)
+        prev = out.model_dump(mode="json")
+    return prev
 
 
-class MasherTests(unittest.TestCase):
+def _build_context(
+    *,
+    runtime_store: _FakeRuntimeStore | None = None,
+    tmp: str | None = None,
+) -> MasherRuntimeContext:
+    context = MasherRuntimeContext()
+    if runtime_store is not None:
+        context.bind_runtime_store(cast("RuntimeStore", runtime_store))
+    if tmp is not None:
+        context.configure_artifacts(Path(tmp))
+    return context
+
+
+def _save_trace_log(
+    store: _FakeRuntimeStore,
+    *,
+    session_id: str,
+    trace_id: str,
+    event_type: str = "agent.run.start",
+    app_id: str = "primary",
+    created_at: float = 1.0,
+    payload: dict[str, object] | None = None,
+    loop_index: int | None = None,
+) -> None:
+    store.append(
+        app_id=app_id,
+        session_id=session_id,
+        trace_id=trace_id,
+        event_type=event_type,
+        created_at=created_at,
+        payload=payload,
+        loop_index=loop_index,
+    )
+
+
+class MasherSpecTests(unittest.TestCase):
     def _primary_spec(self) -> AgentSpec:
         return build_spec(agent_id="primary", response_text="primary-ok")
 
-    def _build_runtime_store(self) -> _FakeRuntimeStore:
-        return _FakeRuntimeStore()
-
-    def _build_masher_spec(
-        self,
-        *,
-        runtime_store: _FakeRuntimeStore | None = None,
-        trace_digest_jsonl_path: Path | None = None,
-        online_eval_jsonl_path: Path | None = None,
-    ) -> MasherAgentSpec:
-        spec = MasherAgentSpec()
-        if runtime_store is not None:
-            spec.runtime_context.bind_runtime_store(runtime_store)
-        if trace_digest_jsonl_path is not None:
-            spec.runtime_context.trace_digest_jsonl_path = trace_digest_jsonl_path
-        if online_eval_jsonl_path is not None:
-            spec.runtime_context.online_eval_jsonl_path = online_eval_jsonl_path
-        return spec
-
-    def _save_trace_log(
-        self,
-        store: _FakeRuntimeStore,
-        *,
-        session_id: str,
-        trace_id: str,
-        event_type: str = "agent.run.start",
-        app_id: str = "primary",
-        created_at: float = 1.0,
-        payload: dict[str, object] | None = None,
-        loop_index: int | None = None,
-    ) -> None:
-        store._events.append(
-            RuntimeEvent(
-                event_id=len(store._events) + 1,
-                app_id=app_id,
-                agent_id=app_id,
-                session_id=session_id,
-                trace_id=trace_id,
-                event_type=event_type,
-                payload=dict(payload or {}),
-                created_at=created_at,
-                loop_index=loop_index,
-            )
+    def test_builder_always_registers_masher_and_its_workflows(self) -> None:
+        host = (
+            HostBuilder()
+            .agent(self._primary_spec(), metadata=metadata())
+            .build()
         )
-
-    def test_builder_enable_masher_false_leaves_builder_unchanged(self) -> None:
-        host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).enable_masher(False).build()
         try:
-            described = {item["agent_id"]: item for item in host.describe_agents()}
-            self.assertEqual(sorted(described.keys()), ["primary"])
+            described = {str(item["agent_id"]): item for item in host.describe_agents()}
+            self.assertEqual(sorted(described.keys()), ["eval-agent", "primary"])
+            self.assertEqual(
+                {item.workflow_id for item in host.get_workflow_registry().list()},
+                {
+                    MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                    MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                    MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                    MASHER_SCORE_EVALS_WORKFLOW_ID,
+                },
+            )
         finally:
             asyncio.run(host.close())
 
@@ -207,11 +209,11 @@ class MasherTests(unittest.TestCase):
                 {
                     "MASH_DATA_DIR": tmp,
                     "OSS_BASE_URL": "http://gpu-box:8000/v1",
-                    "MASHER_OSS_MODEL": "Qwen/Qwen3-32B",
+                    "EVAL_AGENT_OSS_MODEL": "Qwen/Qwen3-32B",
                 },
                 clear=True,
             ):
-                provider = MasherAgentSpec().build_llm()
+                provider = EvalAgentSpec().build_llm()
                 self.assertIsInstance(provider, OSSCompatibleProvider)
 
     def test_build_llm_raises_when_oss_base_url_set_without_model(self) -> None:
@@ -222,66 +224,44 @@ class MasherTests(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(RuntimeError):
-                    MasherAgentSpec().build_llm()
+                    EvalAgentSpec().build_llm()
 
     def test_build_llm_raises_without_any_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
                 with self.assertRaises(RuntimeError):
-                    MasherAgentSpec().build_llm()
+                    EvalAgentSpec().build_llm()
 
-    def test_spec_registers_only_workflow_tools_and_normal_skills(self) -> None:
+    def test_spec_registers_no_tools_and_only_generation_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                spec = MasherAgentSpec()
+                spec = EvalAgentSpec()
 
                 tools = spec.build_tools()
                 skills = spec.build_skills()
 
-                # score-evals is a strategy-driven workflow (no Masher tool/skill);
-                # its judging path is exercised in the score_runner tests.
-                self.assertEqual(
-                    sorted(tools.list_tools()),
-                    [
-                        "run_gen_synthetic_evals_workflow",
-                        "run_online_eval_curation_workflow",
-                        "run_trace_digest_workflow",
-                    ],
-                )
+                # The deterministic work moved into workflow code steps;
+                # Masher itself only generates and judges via structured
+                # output, so it has no workflow tools left.
+                self.assertEqual(tools.list_tools(), [])
                 agent = Agent(
                     llm=_FakeLLMProvider(),
                     tools=tools,
                     skills=skills,
                     config=spec.build_agent_config(),
                 )
+                self.assertEqual(sorted(agent.tools.list_tools()), ["Skill"])
                 self.assertEqual(
-                    sorted(agent.tools.list_tools()),
-                    [
-                        "Skill",
-                        "run_gen_synthetic_evals_workflow",
-                        "run_online_eval_curation_workflow",
-                        "run_trace_digest_workflow",
-                    ],
-                )
-                self.assertEqual(
-                    sorted(skill.name for skill in skills.list_skills()),
-                    ["gen-synthetic-evals", "online-eval-curation", "trace-digest-workflow"],
+                    [skill.name for skill in skills.list_skills()],
+                    [GEN_SYNTHETIC_EVALS_SKILL_NAME],
                 )
                 prompt = spec.build_agent_config().system_prompt
-                self.assertIn("event_type", prompt)
                 self.assertIn("workflow_input", prompt)
-                self.assertIn("masher-trace-digest", prompt)
-                self.assertIn("digest-traces", prompt)
-                self.assertIn("trace-digest-workflow", prompt)
-                self.assertIn("masher-online-eval-curation", prompt)
-                self.assertIn("curate-online-evals", prompt)
-                self.assertIn("online-eval-curation", prompt)
-                self.assertIn("Call the standard Skill tool exactly once", prompt)
-                self.assertNotIn("Trace Digest Workflow", prompt)
-                self.assertNotIn("Online Eval Curation", prompt)
-                self.assertNotIn("run_trace_digest_workflow", prompt)
-                self.assertNotIn("run_online_eval_curation_workflow", prompt)
-                self.assertEqual(spec.build_agent_config().max_steps, 20)
+                self.assertIn("skill_name", prompt)
+                self.assertIn("score-evals", prompt)
+                self.assertIn("structured output", prompt)
+                self.assertNotIn("trace-digest", prompt)
+                self.assertNotIn("online-eval-curation", prompt)
 
     def test_relative_data_dir_resolves_once_for_masher_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,7 +273,7 @@ class MasherTests(unittest.TestCase):
                     {"MASH_DATA_DIR": ".mash", "MASH_DATABASE_URL": ""},
                     clear=False,
                 ):
-                    spec = MasherAgentSpec()
+                    spec = EvalAgentSpec()
                     self.assertEqual(
                         spec.runtime_context.require_trace_digest_jsonl_path(),
                         (Path(tmp) / ".mash" / "masher" / "trace-digests.jsonl").resolve(),
@@ -305,34 +285,32 @@ class MasherTests(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
 
-    def test_masher_skill_files_are_package_resources(self) -> None:
-        masher_root = importlib.resources.files("mash.agents.masher")
-        trace_skill = masher_root / "skills" / "trace-digest-workflow" / "SKILL.md"
-        online_eval_skill = masher_root / "skills" / "online-eval-curation" / "SKILL.md"
+    def test_generation_skill_is_a_package_resource(self) -> None:
+        skills_root = importlib.resources.files("mash.agents.masher") / "skills"
+        gen_skill = skills_root / "gen-synthetic-evals" / "SKILL.md"
+        self.assertTrue(gen_skill.is_file())
+        gen_text = gen_skill.read_text(encoding="utf-8")
+        self.assertIn("name: gen-synthetic-evals", gen_text)
+        self.assertIn("step id `generate`", gen_text)
+        self.assertNotIn("run_gen_synthetic_evals_workflow", gen_text)
+        # The trace workflows are all code now; their skills are gone.
+        self.assertFalse((skills_root / "trace-digest-workflow").is_dir())
+        self.assertFalse((skills_root / "online-eval-curation").is_dir())
 
-        self.assertTrue(trace_skill.is_file())
-        self.assertTrue(online_eval_skill.is_file())
-        trace_text = trace_skill.read_text(encoding="utf-8")
-        online_eval_text = online_eval_skill.read_text(encoding="utf-8")
-        self.assertIn("name: trace-digest-workflow", trace_text)
-        self.assertIn("name: online-eval-curation", online_eval_text)
-        for skill_text in (trace_text, online_eval_text):
-            self.assertIn("Use the tool result as the workflow outcome.", skill_text)
-            self.assertNotIn("Do not use a code fence.", skill_text)
-            self.assertNotIn("raw JSON", skill_text)
 
-    def test_trace_digest_workflow_trace_mode_returns_digest_without_artifact(self) -> None:
+class TraceDigestPipelineTests(unittest.TestCase):
+    def test_trace_mode_returns_digest_without_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            runtime_store = self._build_runtime_store()
-            self._save_trace_log(
-                runtime_store,
+            store = _FakeRuntimeStore()
+            _save_trace_log(
+                store,
                 session_id="s-1",
                 trace_id="t-1",
                 event_type="runtime.request.accepted",
                 created_at=1.0,
             )
-            self._save_trace_log(
-                runtime_store,
+            _save_trace_log(
+                store,
                 session_id="s-1",
                 trace_id="t-1",
                 event_type="runtime.llm.think.completed",
@@ -344,8 +322,8 @@ class MasherTests(unittest.TestCase):
                     "token_usage": {"input": 10, "output": 4},
                 },
             )
-            self._save_trace_log(
-                runtime_store,
+            _save_trace_log(
+                store,
                 session_id="s-1",
                 trace_id="t-1",
                 event_type="runtime.step.completed",
@@ -353,68 +331,141 @@ class MasherTests(unittest.TestCase):
                 loop_index=0,
                 payload={"duration_ms": 500},
             )
-            self._save_trace_log(
-                runtime_store,
+            _save_trace_log(
+                store,
                 session_id="s-1",
                 trace_id="t-1",
                 event_type="runtime.request.completed",
                 created_at=2.1,
             )
-            artifact_path = Path(tmp) / "masher" / "trace-digests.jsonl"
+            context = _build_context(runtime_store=store, tmp=tmp)
+            workflow = build_trace_digest_workflow(context)
 
-            spec = self._build_masher_spec(
-                runtime_store=runtime_store,
-                trace_digest_jsonl_path=artifact_path,
-            )
             result = asyncio.run(
-                spec.build_tools().get("run_trace_digest_workflow").execute(
+                _run_code_pipeline(
+                    workflow,
                     {
-                        "workflow_input": {
-                            "mode": "trace",
-                            "target_agent_id": "primary",
-                            "session_id": "s-1",
-                            "trace_id": "t-1",
-                        },
-                        "task_state": {},
-                    }
+                        "mode": "trace",
+                        "target_agent_id": "primary",
+                        "session_id": "s-1",
+                        "trace_id": "t-1",
+                    },
                 )
             )
 
-            self.assertFalse(result.is_error)
-            digest = json.loads(result.content)
+            self.assertEqual(result["mode"], "trace")
+            self.assertEqual(result["processed_trace_count"], 1)
+            self.assertEqual(result["appended_trace_count"], 0)
+            self.assertIsNone(result["artifact_path"])
+            digest = result["digest"]
             self.assertEqual(digest["schema_version"], 2)
             self.assertEqual(digest["target_agent_id"], "primary")
             self.assertEqual(digest["session_id"], "s-1")
             self.assertEqual(digest["trace_id"], "t-1")
             self.assertEqual(digest["tokens"]["input_tokens"], 10)
-            self.assertIn("timing", digest)
             self.assertIn("total_duration_ms", digest["timing"])
-            self.assertIn("tool_stats", digest)
-            self.assertIn("step_breakdown", digest)
-            self.assertIn("slowest_operations", digest)
-            self.assertIn("subagent_traces", digest)
-            self.assertFalse(artifact_path.exists())
+            for key in ("tool_stats", "step_breakdown", "slowest_operations", "subagent_traces"):
+                self.assertIn(key, digest)
+            self.assertFalse(context.require_trace_digest_jsonl_path().exists())
 
+    def test_batch_mode_writes_jsonl_and_reports_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _FakeRuntimeStore()
+            _save_trace_log(store, session_id="s-old", trace_id="t-old", created_at=1.0)
+            _save_trace_log(store, session_id="s-new", trace_id="t-new", created_at=3.0)
+            _save_trace_log(
+                store,
+                session_id="s-new",
+                trace_id="t-new",
+                event_type="agent.tool.error",
+                created_at=4.0,
+                payload={"error": "boom"},
+            )
+            context = _build_context(runtime_store=store, tmp=tmp)
+            workflow = build_trace_digest_workflow(context)
+
+            result = asyncio.run(
+                _run_code_pipeline(
+                    workflow,
+                    {"mode": "batch", "target_agent_id": "primary", "since_ts": 2.0},
+                )
+            )
+
+            self.assertEqual(result["schema_version"], 3)
+            self.assertEqual(result["processed_trace_count"], 1)
+            self.assertEqual(result["appended_trace_count"], 1)
+            # The watermark for the caller's next since_ts.
+            self.assertEqual(result["latest_event_at"], 4.0)
+            artifact_path = context.require_trace_digest_jsonl_path()
+            lines = artifact_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            digest = json.loads(lines[0])
+            self.assertEqual(digest["trace_id"], "t-new")
+            self.assertIn("notable_events", digest)
+
+    def test_batch_mode_skips_already_appended_digests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _FakeRuntimeStore()
+            _save_trace_log(store, session_id="s-1", trace_id="t-1", created_at=3.0)
+            context = _build_context(runtime_store=store, tmp=tmp)
+            workflow = build_trace_digest_workflow(context)
+            workflow_input = {"mode": "batch", "target_agent_id": "primary"}
+
+            first = asyncio.run(_run_code_pipeline(workflow, workflow_input))
+            second = asyncio.run(_run_code_pipeline(workflow, workflow_input))
+
+            self.assertEqual(first["appended_trace_count"], 1)
+            self.assertEqual(second["appended_trace_count"], 0)
+            artifact_path = context.require_trace_digest_jsonl_path()
+            self.assertEqual(
+                len(artifact_path.read_text(encoding="utf-8").splitlines()), 1
+            )
+
+    def test_trace_mode_requires_session_and_trace_ids(self) -> None:
+        with self.assertRaises(ValidationError):
+            TraceScanInput.model_validate(
+                {"mode": "trace", "target_agent_id": "primary", "session_id": "s-1"}
+            )
+
+    def test_trace_mode_fails_when_trace_has_no_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = _build_context(runtime_store=_FakeRuntimeStore(), tmp=tmp)
+            workflow = build_trace_digest_workflow(context)
+            with self.assertRaises(RuntimeError):
+                asyncio.run(
+                    _run_code_pipeline(
+                        workflow,
+                        {
+                            "mode": "trace",
+                            "target_agent_id": "primary",
+                            "session_id": "s-x",
+                            "trace_id": "t-x",
+                        },
+                    )
+                )
+
+
+class OnlineEvalCurationPipelineTests(unittest.TestCase):
     def test_shared_trace_bundle_extracts_eval_fields(self) -> None:
-        runtime_store = self._build_runtime_store()
-        self._save_trace_log(
-            runtime_store,
+        store = _FakeRuntimeStore()
+        _save_trace_log(
+            store,
             session_id="s-1",
             trace_id="t-1",
             event_type="agent.run.start",
             created_at=1.0,
             payload={"user_message": "How should this work?"},
         )
-        self._save_trace_log(
-            runtime_store,
+        _save_trace_log(
+            store,
             session_id="s-1",
             trace_id="t-1",
             event_type="runtime.tool.call.completed",
             created_at=2.0,
             payload={"tool_name": "bash"},
         )
-        self._save_trace_log(
-            runtime_store,
+        _save_trace_log(
+            store,
             session_id="s-1",
             trace_id="t-1",
             event_type="runtime.step.completed",
@@ -422,16 +473,16 @@ class MasherTests(unittest.TestCase):
             payload={},
             loop_index=0,
         )
-        self._save_trace_log(
-            runtime_store,
+        _save_trace_log(
+            store,
             session_id="s-1",
             trace_id="t-1",
             event_type="runtime.llm.think.completed",
             created_at=4.0,
             payload={"token_usage": {"input": 12, "output": 5}},
         )
-        self._save_trace_log(
-            runtime_store,
+        _save_trace_log(
+            store,
             session_id="s-1",
             trace_id="t-1",
             event_type="runtime.request.completed",
@@ -440,17 +491,16 @@ class MasherTests(unittest.TestCase):
         )
 
         events = asyncio.run(
-            _load_trace_events(
-                runtime_store,
+            load_trace_events(
+                cast("RuntimeStore", store),
                 target_agent_id="primary",
                 session_id="s-1",
                 trace_id="t-1",
             )
         )
         bundle = build_runtime_trace(events)
-        tree = build_span_tree(events)
-        analysis = analyze_trace(tree)
-        row = _build_online_eval_row(bundle, analysis)
+        analysis = analyze_trace(build_span_tree(events))
+        row = build_online_eval_row(bundle, analysis)
 
         self.assertEqual(row["user_message"], "How should this work?")
         self.assertEqual(row["assistant_response"], "It works like this.")
@@ -459,133 +509,72 @@ class MasherTests(unittest.TestCase):
         self.assertEqual(row["step_count"], 1)
         self.assertEqual(row["input_tokens"], 12)
         self.assertEqual(row["output_tokens"], 5)
-        self.assertIn("timing", row)
         self.assertIn("total_duration_ms", row["timing"])
 
-    def test_trace_digest_workflow_incremental_mode_writes_jsonl_and_checkpoint(self) -> None:
+    def test_trace_mode_appends_row_and_returns_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            runtime_store = self._build_runtime_store()
-            self._save_trace_log(runtime_store, session_id="s-old", trace_id="t-old", created_at=1.0)
-            self._save_trace_log(runtime_store, session_id="s-new", trace_id="t-new", created_at=3.0)
-            self._save_trace_log(
-                runtime_store,
-                session_id="s-new",
-                trace_id="t-new",
-                event_type="agent.tool.error",
-                created_at=4.0,
-                payload={"error": "boom"},
-            )
-            artifact_path = Path(tmp) / "masher" / "trace-digests.jsonl"
-
-            spec = self._build_masher_spec(
-                runtime_store=runtime_store,
-                trace_digest_jsonl_path=artifact_path,
-            )
-            result = asyncio.run(
-                spec.build_tools().get("run_trace_digest_workflow").execute(
-                    {
-                        "workflow_input": {
-                            "mode": "incremental",
-                            "target_agent_id": "primary",
-                        },
-                        "task_state": {
-                            "schema_version": 1,
-                            "checkpoints": {
-                                "primary": {
-                                    "last_run_ts": 2.0,
-                                    "last_trace_ids": ["t-old"],
-                                }
-                            },
-                        },
-                    }
-                )
-            )
-
-            self.assertFalse(result.is_error)
-            next_state = json.loads(result.content)
-            self.assertEqual(next_state["processed_trace_count"], 1)
-            self.assertEqual(next_state["appended_trace_count"], 1)
-            self.assertEqual(
-                next_state["checkpoints"]["primary"]["last_trace_ids"],
-                ["t-new"],
-            )
-            lines = artifact_path.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 1)
-            digest = json.loads(lines[0])
-            self.assertEqual(digest["trace_id"], "t-new")
-            self.assertEqual(digest["schema_version"], 2)
-            self.assertIn("timing", digest)
-            self.assertIn("notable_events", digest)
-
-    def test_online_eval_workflow_trace_mode_writes_dataset_row(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runtime_store = self._build_runtime_store()
-            self._save_trace_log(
-                runtime_store,
+            store = _FakeRuntimeStore()
+            _save_trace_log(
+                store,
                 session_id="s-1",
                 trace_id="t-1",
                 event_type="agent.run.start",
                 created_at=1.0,
                 payload={"user_message": "Question"},
             )
-            self._save_trace_log(
-                runtime_store,
+            _save_trace_log(
+                store,
                 session_id="s-1",
                 trace_id="t-1",
                 event_type="runtime.request.completed",
                 created_at=2.0,
                 payload={"response": {"text": "Answer"}},
             )
-            artifact_path = Path(tmp) / "masher" / "online-evals.jsonl"
+            context = _build_context(runtime_store=store, tmp=tmp)
+            workflow = build_online_eval_curation_workflow(context)
 
-            spec = self._build_masher_spec(
-                runtime_store=runtime_store,
-                online_eval_jsonl_path=artifact_path,
-            )
             result = asyncio.run(
-                spec.build_tools().get("run_online_eval_curation_workflow").execute(
+                _run_code_pipeline(
+                    workflow,
                     {
-                        "workflow_input": {
-                            "mode": "trace",
-                            "target_agent_id": "primary",
-                            "session_id": "s-1",
-                            "trace_id": "t-1",
-                        },
-                        "task_state": {},
-                    }
+                        "mode": "trace",
+                        "target_agent_id": "primary",
+                        "session_id": "s-1",
+                        "trace_id": "t-1",
+                    },
                 )
             )
 
-            self.assertFalse(result.is_error)
-            payload = json.loads(result.content)
-            self.assertTrue(payload["appended"])
-            self.assertNotIn("summary", payload["record"])
-            self.assertEqual(payload["record"]["user_message"], "Question")
-            self.assertEqual(payload["record"]["assistant_response"], "Answer")
+            self.assertEqual(result["appended_trace_count"], 1)
+            self.assertEqual(result["record"]["user_message"], "Question")
+            self.assertEqual(result["record"]["assistant_response"], "Answer")
+            self.assertNotIn("summary", result["record"])
+            artifact_path = context.require_online_eval_jsonl_path()
             lines = artifact_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["trace_id"], "t-1")
 
-    def test_online_eval_workflow_incremental_skips_duplicate_row(self) -> None:
+    def test_batch_mode_skips_duplicate_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            runtime_store = self._build_runtime_store()
-            self._save_trace_log(
-                runtime_store,
+            store = _FakeRuntimeStore()
+            _save_trace_log(
+                store,
                 session_id="s-new",
                 trace_id="t-new",
                 event_type="agent.run.start",
                 created_at=3.0,
                 payload={"user_message": "Question"},
             )
-            self._save_trace_log(
-                runtime_store,
+            _save_trace_log(
+                store,
                 session_id="s-new",
                 trace_id="t-new",
                 event_type="runtime.request.completed",
                 created_at=4.0,
                 payload={"response": {"text": "Answer"}},
             )
-            artifact_path = Path(tmp) / "masher" / "online-evals.jsonl"
+            context = _build_context(runtime_store=store, tmp=tmp)
+            artifact_path = context.require_online_eval_jsonl_path()
             artifact_path.parent.mkdir(parents=True)
             artifact_path.write_text(
                 json.dumps(
@@ -598,174 +587,20 @@ class MasherTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            workflow = build_online_eval_curation_workflow(context)
 
-            spec = self._build_masher_spec(
-                runtime_store=runtime_store,
-                online_eval_jsonl_path=artifact_path,
-            )
             result = asyncio.run(
-                spec.build_tools().get("run_online_eval_curation_workflow").execute(
-                    {
-                        "workflow_input": {
-                            "mode": "incremental",
-                            "target_agent_id": "primary",
-                        },
-                        "task_state": {"checkpoints": {"primary": {"last_run_ts": 2.0}}},
-                    }
+                _run_code_pipeline(
+                    workflow,
+                    {"mode": "batch", "target_agent_id": "primary", "since_ts": 2.0},
                 )
             )
 
-            self.assertFalse(result.is_error)
-            next_state = json.loads(result.content)
-            self.assertEqual(next_state["processed_trace_count"], 1)
-            self.assertEqual(next_state["appended_trace_count"], 0)
+            self.assertEqual(result["processed_trace_count"], 1)
+            self.assertEqual(result["appended_trace_count"], 0)
             self.assertEqual(
-                next_state["checkpoints"]["primary"]["last_trace_ids"],
-                ["t-new"],
+                len(artifact_path.read_text(encoding="utf-8").splitlines()), 1
             )
-            self.assertEqual(len(artifact_path.read_text(encoding="utf-8").splitlines()), 1)
-
-    def test_trace_digest_workflow_rejects_missing_trace_input(self) -> None:
-        runtime_store = self._build_runtime_store()
-        spec = self._build_masher_spec(runtime_store=runtime_store)
-        result = asyncio.run(
-            spec.build_tools().get("run_trace_digest_workflow").execute(
-                {
-                    "workflow_input": {
-                        "mode": "trace",
-                        "target_agent_id": "primary",
-                        "session_id": "s-1",
-                    },
-                    "task_state": {},
-                }
-            )
-        )
-
-        self.assertTrue(result.is_error)
-        self.assertIn("workflow_input.trace_id is required", result.content)
-
-    def test_builder_enables_masher_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ,
-                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
-                clear=True,
-            ):
-                host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
-                try:
-                    self.assertNotIn("masher", host.list_agents())
-                    workflows = {
-                        workflow.workflow_id
-                        for workflow in host.get_workflow_registry().list()
-                    }
-                    self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
-                    self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
-                finally:
-                    asyncio.run(host.close())
-
-    def test_builder_skips_masher_when_no_provider_configured(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
-                host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
-                try:
-                    workflows = {
-                        workflow.workflow_id
-                        for workflow in host.get_workflow_registry().list()
-                    }
-                    self.assertNotIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
-                    self.assertNotIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
-                finally:
-                    asyncio.run(host.close())
-
-    def test_builder_enable_masher_registers_hidden_workflow_worker(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ,
-                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
-                clear=True,
-            ):
-                host = HostBuilder().agent(self._primary_spec(), metadata=metadata()).enable_masher().build()
-                try:
-                    described = {item["agent_id"]: item for item in host.describe_agents()}
-                    self.assertNotIn("masher", described)
-                    self.assertNotIn("masher", host.list_agents())
-                    workflows = {
-                        workflow.workflow_id: workflow
-                        for workflow in host.get_workflow_registry().list()
-                    }
-                    self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, workflows)
-                    self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, workflows)
-                    self.assertEqual(
-                        workflows[
-                            MASHER_TRACE_DIGEST_WORKFLOW_ID
-                        ].tasks[0].structured_output,
-                        MASHER_TRACE_DIGEST_STRUCTURED_OUTPUT,
-                    )
-                    self.assertEqual(
-                        workflows[
-                            MASHER_ONLINE_EVAL_WORKFLOW_ID
-                        ].tasks[0].structured_output,
-                        MASHER_ONLINE_EVAL_STRUCTURED_OUTPUT,
-                    )
-                finally:
-                    asyncio.run(host.close())
-
-    def test_builder_enable_masher_attaches_workflows_to_hosts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ,
-                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
-                clear=True,
-            ):
-                explicit = WorkflowSpec(
-                    workflow_id="custom-chain",
-                    tasks=[
-                        TaskSpec(
-                            task_id="step-1",
-                            agent_spec=build_spec(
-                                agent_id="chain-worker", response_text="ok"
-                            ),
-                        )
-                    ],
-                )
-                pool = (
-                    HostBuilder()
-                    .agent(self._primary_spec(), metadata=metadata())
-                    .workflow(explicit)
-                    .host(
-                        Host(
-                            host_id="main",
-                            primary="primary",
-                            workflows=("custom-chain",),
-                        )
-                    )
-                    .enable_masher()
-                    .build()
-                )
-                try:
-                    attached = pool.get_host("main").workflows
-                    # Explicit attachments come first and are preserved.
-                    self.assertEqual(attached[0], "custom-chain")
-                    self.assertIn(MASHER_TRACE_DIGEST_WORKFLOW_ID, attached)
-                    self.assertIn(MASHER_ONLINE_EVAL_WORKFLOW_ID, attached)
-                    self.assertEqual(len(attached), len(set(attached)))
-                finally:
-                    asyncio.run(pool.close())
-
-    def test_builder_keyless_masher_leaves_host_workflows_unchanged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
-                pool = (
-                    HostBuilder()
-                    .agent(self._primary_spec(), metadata=metadata())
-                    .host(Host(host_id="main", primary="primary"))
-                    .enable_masher()
-                    .build()
-                )
-                try:
-                    self.assertEqual(pool.get_host("main").workflows, ())
-                finally:
-                    asyncio.run(pool.close())
 
 
 class _FakeEval:
@@ -782,6 +617,33 @@ class _FakeEvalService:
     async def persist_eval(self, **kwargs: Any) -> _FakeEval:
         self.persisted_kwargs = kwargs
         return _FakeEval()
+
+
+class _FakePool:
+    def __init__(self) -> None:
+        self._host = Host(host_id="guide", primary="pilot", subagents=("helper",))
+        self._metadata = {
+            "pilot": AgentMetadata(
+                display_name="Pilot",
+                description="Primary guide agent.",
+                capabilities=["answer questions", "delegate work"],
+                usage_guidance="Default entry point.",
+            ),
+            "helper": AgentMetadata(
+                display_name="Helper",
+                description="Subagent for lookups.",
+                capabilities=["reference lookup"],
+                usage_guidance="Delegate lookups here.",
+            ),
+        }
+
+    def get_host(self, host_id: str) -> Host:
+        if host_id != self._host.host_id:
+            raise ValueError(f"host '{host_id}' is not defined")
+        return self._host
+
+    def get_agent_metadata(self, agent_id: str):
+        return self._metadata.get(agent_id)
 
 
 def _gen_rows(count: int) -> list[dict[str, Any]]:
@@ -805,45 +667,289 @@ _GEN_RUBRIC = {
 }
 
 
-class GenSyntheticEvalsRowCountTests(unittest.TestCase):
-    def _tool(self) -> tuple[GenSyntheticEvalsWorkflowTool, _FakeEvalService]:
-        context = MasherRuntimeContext()
+class GenSyntheticEvalsPipelineTests(unittest.TestCase):
+    def _workflow(self) -> tuple[WorkflowSpec, MasherRuntimeContext, _FakeEvalService]:
+        spec = EvalAgentSpec()
         service = _FakeEvalService()
-        context.bind_eval_service(service)
-        return GenSyntheticEvalsWorkflowTool(context=context), service
+        spec.runtime_context.bind_pool(_FakePool())
+        spec.runtime_context.bind_eval_service(cast("EvalService", service))
+        return build_gen_synthetic_evals_workflow(spec), spec.runtime_context, service
 
-    def _execute(self, tool: GenSyntheticEvalsWorkflowTool, args: dict[str, Any]) -> Any:
-        return asyncio.run(tool.execute({"host_id": "guide", "rubric": _GEN_RUBRIC, **args}))
+    def test_pipeline_shape_and_generation_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+                workflow, _, _ = self._workflow()
+                self.assertEqual(
+                    [(step.step_id, step.kind) for step in workflow.steps],
+                    [
+                        ("profile-host", "code"),
+                        ("generate", "agent"),
+                        ("persist-eval", "code"),
+                    ],
+                )
+                generate = workflow.steps[1]
+                assert isinstance(generate, AgentStep)
+                self.assertEqual(generate.agent_id, "eval-agent")
+                self.assertEqual(generate.skill_name, GEN_SYNTHETIC_EVALS_SKILL_NAME)
+                self.assertIs(generate.output, GeneratedEval)
 
-    def test_defaults_to_20_rows_when_row_count_omitted(self) -> None:
-        tool, service = self._tool()
-        result = self._execute(tool, {"dataset_rows": _gen_rows(20)})
-        self.assertFalse(result.is_error)
-        self.assertEqual(len(service.persisted_kwargs["dataset_rows"]), 20)
+    def test_generated_eval_schema_is_valid_for_strict_structured_output(self) -> None:
+        schema = serialize_structured_output(GeneratedEval)
+        assert schema is not None
+        dataset_row = schema["$defs"]["DatasetRow"]
+        rubric = schema["$defs"]["Rubric"]
+        criterion = schema["$defs"]["RubricCriterion"]
 
-    def test_default_rejects_wrong_row_count(self) -> None:
-        tool, service = self._tool()
-        result = self._execute(tool, {"dataset_rows": _gen_rows(5)})
-        self.assertTrue(result.is_error)
-        self.assertIn("exactly 20 rows", result.content)
-        self.assertIsNone(service.persisted_kwargs)
+        self.assertEqual(
+            set(dataset_row["required"]), set(dataset_row["properties"])
+        )
+        self.assertEqual(set(rubric["required"]), set(rubric["properties"]))
+        self.assertEqual(
+            set(criterion["required"]), set(criterion["properties"])
+        )
+        self.assertNotIn("default", rubric["properties"]["global_scoring_prompt"])
+        self.assertNotIn("default", criterion["properties"]["scale_min"])
+        self.assertNotIn("default", criterion["properties"]["scale_max"])
 
-    def test_explicit_row_count_is_enforced(self) -> None:
-        tool, service = self._tool()
-        ok = self._execute(tool, {"row_count": 5, "dataset_rows": _gen_rows(5)})
-        self.assertFalse(ok.is_error)
-        self.assertEqual(len(service.persisted_kwargs["dataset_rows"]), 5)
+    def test_profile_host_step_collects_declared_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+                workflow, _, _ = self._workflow()
+                profile_step = workflow.steps[0]
+                assert isinstance(profile_step, CodeStep)
+                inp = profile_step.input.model_validate({"host_id": "guide"})
+                ctx = StepContext(
+                    run_id="run-1", step_id="profile-host", workflow_input={}
+                )
 
-        mismatch = self._execute(tool, {"row_count": 5, "dataset_rows": _gen_rows(4)})
-        self.assertTrue(mismatch.is_error)
-        self.assertIn("exactly 5 rows", mismatch.content)
+                profile = profile_step.run(inp, ctx)
 
-    def test_row_count_out_of_range_is_rejected(self) -> None:
-        tool, _ = self._tool()
-        for bad in (0, 101):
-            result = self._execute(tool, {"row_count": bad, "dataset_rows": _gen_rows(1)})
-            self.assertTrue(result.is_error)
-            self.assertIn("between 1 and 100", result.content)
+                self.assertEqual(profile.primary_agent_id, "pilot")
+                self.assertEqual(
+                    [(p.agent_id, p.role) for p in profile.agent_profiles],
+                    [("pilot", "primary"), ("helper", "subagent")],
+                )
+                self.assertEqual(
+                    profile.agent_profiles[0].capabilities,
+                    ["answer questions", "delegate work"],
+                )
+
+    def test_persist_step_persists_generated_eval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+                workflow, _, service = self._workflow()
+                persist_step = workflow.steps[2]
+                assert isinstance(persist_step, CodeStep)
+                inp = persist_step.input.model_validate(
+                    {
+                        "host_id": "guide",
+                        "row_count": 5,
+                        "dataset_rows": _gen_rows(5),
+                        "rubric": _GEN_RUBRIC,
+                    }
+                )
+                ctx = StepContext(
+                    run_id="run-1", step_id="persist-eval", workflow_input={}
+                )
+
+                result = asyncio.run(persist_step.run(inp, ctx))
+
+                self.assertEqual(result.eval_id, "eval_1")
+                self.assertEqual(result.row_count, 5)
+                persisted = service.persisted_kwargs
+                assert persisted is not None
+                self.assertEqual(len(persisted["dataset_rows"]), 5)
+                self.assertEqual(persisted["rubric"]["criteria"][0]["weight"], 1.0)
+
+    def test_persist_step_rejects_row_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
+                workflow, _, service = self._workflow()
+                persist_step = workflow.steps[2]
+                assert isinstance(persist_step, CodeStep)
+                inp = persist_step.input.model_validate(
+                    {
+                        "host_id": "guide",
+                        "row_count": 5,
+                        "dataset_rows": _gen_rows(4),
+                        "rubric": _GEN_RUBRIC,
+                    }
+                )
+                ctx = StepContext(
+                    run_id="run-1", step_id="persist-eval", workflow_input={}
+                )
+
+                with self.assertRaises(ValueError):
+                    asyncio.run(persist_step.run(inp, ctx))
+                self.assertIsNone(service.persisted_kwargs)
+
+    def test_generated_eval_validates_rows_and_rubric(self) -> None:
+        with self.assertRaises(ValidationError):
+            DatasetRow.model_validate(
+                {
+                    "input": "q",
+                    "scenario_description": "s",
+                    "expected_behavior": "e",
+                    "sampling_category": "not-a-category",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            Rubric.model_validate(
+                {
+                    "criteria": [
+                        {
+                            "name": "a",
+                            "description": "d",
+                            "scoring_prompt": "p",
+                            "weight": 0.5,
+                        }
+                    ]
+                }
+            )
+        with self.assertRaises(ValidationError):
+            GeneratedEval.model_validate(
+                {"dataset_rows": [], "rubric": _GEN_RUBRIC}
+            )
+
+
+class MasherBuilderTests(unittest.TestCase):
+    def _primary_spec(self) -> AgentSpec:
+        return build_spec(agent_id="primary", response_text="primary-ok")
+
+    def test_builder_registers_all_workflows_with_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
+                clear=True,
+            ):
+                host = (
+                    HostBuilder()
+                    .agent(self._primary_spec(), metadata=metadata())
+                    .build()
+                )
+                try:
+                    described = {item["agent_id"] for item in host.describe_agents()}
+                    self.assertIn("eval-agent", described)
+                    self.assertIn("eval-agent", host.list_agents())
+                    self.assertIsNotNone(host.get_agent_metadata("eval-agent"))
+                    workflows = {
+                        workflow.workflow_id: workflow
+                        for workflow in host.get_workflow_registry().list()
+                    }
+                    self.assertEqual(
+                        set(workflows),
+                        {
+                            MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                            MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                        },
+                    )
+                    digest = workflows[MASHER_TRACE_DIGEST_WORKFLOW_ID]
+                    self.assertEqual([step.kind for step in digest.steps], ["code"] * 3)
+                    curation = workflows[MASHER_ONLINE_EVAL_WORKFLOW_ID]
+                    self.assertEqual([step.kind for step in curation.steps], ["code"] * 3)
+                    gen = workflows[MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID]
+                    self.assertEqual(
+                        [step.kind for step in gen.steps], ["code", "agent", "code"]
+                    )
+                finally:
+                    asyncio.run(host.close())
+
+    def test_builder_keyless_still_registers_masher_and_all_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
+                host = (
+                    HostBuilder()
+                    .agent(self._primary_spec(), metadata=metadata())
+                    .build()
+                )
+                try:
+                    self.assertIn("eval-agent", host.list_agents())
+                    self.assertIsNotNone(host.get_registered_agent_spec("eval-agent"))
+                    workflows = {
+                        workflow.workflow_id
+                        for workflow in host.get_workflow_registry().list()
+                    }
+                    self.assertEqual(
+                        workflows,
+                        {
+                            MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                            MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                        },
+                    )
+                finally:
+                    asyncio.run(host.close())
+
+    def test_builder_attaches_masher_workflows_to_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "ANTHROPIC_API_KEY": "test-key"},
+                clear=True,
+            ):
+                explicit = WorkflowSpec(
+                    workflow_id="custom-chain",
+                    strategy=_NoopStrategy(),
+                )
+                pool = (
+                    HostBuilder()
+                    .agent(self._primary_spec(), metadata=metadata())
+                    .workflow(explicit)
+                    .host(
+                        Host(
+                            host_id="main",
+                            primary="primary",
+                            workflows=("custom-chain",),
+                        )
+                    )
+                    .build()
+                )
+                try:
+                    attached = pool.get_host("main").workflows
+                    # Explicit attachments come first and are preserved.
+                    self.assertEqual(attached[0], "custom-chain")
+                    for workflow_id in (
+                        MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                        MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                        MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                        MASHER_SCORE_EVALS_WORKFLOW_ID,
+                    ):
+                        self.assertIn(workflow_id, attached)
+                    self.assertEqual(len(attached), len(set(attached)))
+                finally:
+                    asyncio.run(pool.close())
+
+    def test_builder_keyless_attaches_all_workflows_to_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
+                pool = (
+                    HostBuilder()
+                    .agent(self._primary_spec(), metadata=metadata())
+                    .host(Host(host_id="main", primary="primary"))
+                    .build()
+                )
+                try:
+                    self.assertEqual(
+                        set(pool.get_host("main").workflows),
+                        {
+                            MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                            MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                        },
+                    )
+                finally:
+                    asyncio.run(pool.close())
+
+
+class _NoopStrategy(WorkflowStrategy):
+    async def run(self, ctx: Any) -> dict[str, Any]:
+        del ctx
+        return {}
 
 
 if __name__ == "__main__":

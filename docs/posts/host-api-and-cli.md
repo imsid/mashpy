@@ -51,9 +51,9 @@ Each group of endpoints projects one subsystem from earlier in the series.
 
 **Sessions.** The [memory layer](memory-and-compaction.md), read over HTTP: `GET .../sessions` and `.../sessions/{session_id}` for listings, `.../history` for turns, `.../signals` for per-turn signal payloads with their definitions, and `POST .../compact` to trigger compaction manually. A reasoning endpoint (`GET .../session/{session_id}/trace/{trace_id}/reasoning`) returns the compact step-by-step trace for one turn.
 
-**Publishing.** The dynamic registration from [skills](skills-on-demand.md) and [workflows](workflows-and-task-state.md): `POST /agent/{agent_id}/skill` (idempotent; re-registering a name is a no-op) and `POST /agent/{agent_id}/workflow` (upsert; re-registering a `workflow_id` replaces the live definition).
+**Publishing.** The dynamic registration from [skills](skills-on-demand.md): `POST /agent/{agent_id}/skill` (idempotent; re-registering a name is a no-op).
 
-**Workflows.** `GET /workflow` lists definitions, `POST /workflow/{workflow_id}/run` starts a run with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its output, and `GET .../runs/{run_id}/events` streams a run's task events over SSE.
+**Workflows.** `GET /workflow` lists definition summaries, `GET /workflow/{workflow_id}` returns a complete definition, `POST /workflow/{workflow_id}/run` starts a run with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its result and step snapshots, and `GET .../runs/{run_id}/events` streams step lifecycle events over SSE.
 
 **Feedback.** Two routes that stay open whether or not observability is enabled. `POST /feedback` records a free-form note with its session context, and `GET /feedback` lists notes for an agent, narrowed by a required `after` timestamp and an optional full-text `q` over the message. The runtime store keeps them in a `runtime_feedback` table beside the event log.
 

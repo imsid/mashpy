@@ -1,343 +1,146 @@
 # Workflows
 
-`src/mash/workflows` adds a DBOS-backed host-level workflow layer on top of the
-existing Mash agent request runtime.
+`src/mash/workflows` is a DBOS-backed workflow layer on top of the Mash agent
+runtime. A workflow guarantees the execution of a deterministic, ordered set of
+steps, is durable (a run resumes from the failed step), and is observable (a
+per-step audit trail in a dedicated store).
 
-This package supports code-defined workflows and runtime-only dynamic workflows.
-A workflow is an ordered list of tasks, and each task delegates execution to a
-registered Mash agent.
+A workflow runs as either:
 
-The current design is intentionally small:
+- a **step pipeline** — an ordered `steps` list, the default; or
+- a **strategy** — a `WorkflowStrategy` that owns its own DBOS registration and
+  run body, for non-linear shapes (fan-out, branching). See
+  [`strategy.py`](./strategy.py) and the eval `ScoreEvalsStrategy`.
 
-- workflows are registered in Python host code, not created over the HTTP API
-- code-defined tasks can carry the `AgentSpec` that executes them
-- dynamic tasks can reference an already registered agent by id
-- DBOS owns workflow orchestration, run history, status, and active-run deduplication
-- task state is derived from prior successful DBOS workflow outputs
-- the workflow framework does not own artifacts
-- each task execution still runs through the normal Mash request path
-- dynamic workflow definitions and inline dynamic skill content are live host
-  state; applications that own authoring must republish them on startup
+## Steps
 
-## Public Surface
+Each step is one of:
 
-Import the workflow API from `mash.workflows`:
+- **`CodeStep`** — deterministic Python: `run(inp, ctx) -> output`, sync or async.
+  Pydantic-typed on both edges. Authored in Python only.
+- **`AgentStep`** — one run of a registered agent's loop. `output` may be a
+  pydantic model or a JSON-schema dict; either becomes the request's
+  structured-output schema. `input` may be a pydantic model or `None`
+  (passthrough). An optional `skill_name` tells the agent to load a skill first.
 
-- `TaskSpec`
-- `WorkflowSpec`
-- `WorkflowTaskMessageSpec`
-- `WorkflowRegistry`
-- `WorkflowRun`
-- `WorkflowService`
-- `WorkflowStreamEvent`
-
-## How To Define A Workflow
-
-Define a workflow with one or more `TaskSpec` objects:
+Step *n*'s `output` threads into step *n+1*'s `input`, merged over the immutable
+`workflow_input`. The final step's output is the run result. `WorkflowSpec`
+validates the pipeline at build time (unique ids, typed I/O, and — when
+`input_model` is set — field-level adjacency between steps).
 
 ```python
-from mash.workflows import TaskSpec, WorkflowSpec
+from pydantic import BaseModel
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 
 
-CHANGELOG_WORKFLOW = WorkflowSpec(
+class ScanIn(BaseModel):
+    repo_url: str
+
+class ScanOut(BaseModel):
+    files_changed: list[str]
+    head_sha: str
+
+class SummaryOut(BaseModel):
+    summary: str
+    head_sha: str
+
+
+def scan(inp: ScanIn, ctx: StepContext) -> ScanOut:
+    ...
+
+
+CHANGELOG = WorkflowSpec(
     workflow_id="changelog",
-    tasks=[
-        TaskSpec(
-            task_id="scan-codebase-and-append-changelog",
-            agent_spec=changelog_agent_spec,
-        ),
+    input_model=ScanIn,
+    steps=[
+        CodeStep(step_id="scan", run=scan, input=ScanIn, output=ScanOut),
+        AgentStep(step_id="summarize", agent_id="writer", input=ScanOut, output=SummaryOut),
     ],
 )
 ```
 
-`task_id` identifies the workflow node and its persisted task state.
+Register with `HostBuilder().workflow(CHANGELOG)`. Agent-step agents are
+auto-registered from their `agent_spec`.
 
-`agent_spec` is registered by `HostBuilder.workflow(...)` as a workflow-only
-agent unless the same spec is already registered as the primary agent or a
-subagent.
+## Idempotency
 
-## Per-Task Structured Output
+Step execution is at-least-once (DBOS recovery re-runs an interrupted step).
+Pure transforms replay safely. A step with external effects must dedupe on a
+stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`, and
+`attempt`, all stable across retries. The framework never invents a key or
+classifies steps.
 
-A `TaskSpec` can attach a JSON schema that the task agent's response must
-match. The schema is forwarded as request-level structured output; the
-serialized JSON payload is what becomes the next task state, instead of
-parsing free-form text.
+## Durability and resume
 
-```python
-TaskSpec(
-    task_id="analyze-experiment",
-    agent_id="data",
-    structured_output={
-        "type": "object",
-        "properties": {"ok": {"type": "boolean"}},
-        "required": ["ok"],
-        "additionalProperties": False,
-    },
-)
-```
+DBOS orchestrates and recovers runs. Each step body and each store write is its
+own memoized DBOS step, so a replay skips completed work; store writes are
+idempotent so the crash-after-effect window converges rather than duplicating.
 
-See [`src/mash/runtime/README.md`](../runtime/README.md) (Structured Output)
-for the runtime-level flow.
+- `resume_run(run_id)` — replay completed steps and re-drive from the failed
+  step (same `run_id`). Agent steps interlock with their own durable request
+  workflow through a deterministic `request_id`, so they resume mid-loop.
+- `run_workflow(workflow_id, ...)` — a fresh `run_id` from step 1.
 
-## How To Register A Workflow
+A step may declare `timeout_s`; exceeding it fails the step (resumable), not a
+retry. When DBOS recovery attempts are exhausted the run is `failed`.
 
-Register workflows through `HostBuilder`, alongside the agents they depend on:
+## Storage
 
-```python
-from mash.runtime import HostBuilder
-from mash.workflows import TaskSpec, WorkflowSpec
+Three tables (in the shared schema baseline `001_baseline.sql`), owned by the
+workflow layer:
 
+- `workflow_runs` — one row per run (status, `workflow_input`, `result`, timing).
+- `workflow_steps` — one row per step (status, input/output snapshots, attempt,
+  `agent_request_id`).
+- `workflow_step_events` — append-only lifecycle audit keyed by
+  `(run_id, step_id, attempt, event_type)`. This is what makes **code** steps
+  observable, since they emit no agent runtime events.
 
-builder = (
-    HostBuilder()
-    .agent(primary_spec, metadata=primary_metadata)
-    .workflow(
-        WorkflowSpec(
-            workflow_id="changelog",
-            tasks=[
-                TaskSpec(
-                    task_id="scan-codebase-and-append-changelog",
-                    agent_spec=changelog_agent_spec,
-                )
-            ],
-        )
-    )
-)
+`WorkflowStore` ([`store.py`](./store.py)) is opened and shared by `AgentPool`.
 
-host = builder.build()
-```
+## Service and API
 
-The host exposes a `WorkflowRegistry` and `WorkflowService`.
+`WorkflowService`:
 
-## How To Publish A Dynamic Workflow
+- `list_workflows()` / `list_runs(workflow_id, ...)` / `get_run(workflow_id, run_id)`
+  — step runs read from the store; strategy runs project from DBOS status.
+- `resume_run(workflow_id, run_id)` — resume a failed step pipeline.
+- `list_run_step_events(...)` — the step audit trail.
+- `stream_run_events(...)` — SSE; store-backed for step pipelines (code steps
+  visible), DBOS-status-polled for strategy workflows.
 
-Dynamic workflow publishing is an in-process host API. The application owns
-authoring, persistence, and validation policy, then publishes live definitions to
-Mash:
+HTTP (via `mash.api`):
 
-```python
-from mash.skills import Skill
-from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
+- `GET  /api/v1/workflow`
+- `GET  /api/v1/workflow/{workflow_id}`
+- `POST /api/v1/workflow/{workflow_id}/run`
+- `GET  /api/v1/workflow/{workflow_id}/runs`
+- `GET  /api/v1/workflow/{workflow_id}/runs/{run_id}`
+- `POST /api/v1/workflow/{workflow_id}/runs/{run_id}/resume`
+- `GET  /api/v1/workflow/{workflow_id}/runs/{run_id}/step-events`
+- `GET  /api/v1/workflow/{workflow_id}/runs/{run_id}/events` (SSE)
 
+## Agent-step envelope
 
-host.register_agent_skill(
-    "data",
-    Skill(
-        type="dynamic",
-        name="workflow:experiment-readout:v1",
-        description="Execute Experiment Readout workflow v1.",
-        content=generated_skill_markdown,
-    ),
-)
-
-host.register_agent_workflow(
-    "data",
-    WorkflowSpec(
-        workflow_id="experiment-readout",
-        tasks=[TaskSpec(task_id="analyze-experiment", agent_id="data")],
-        metadata={"source": "crew", "version": 1},
-        task_message=WorkflowTaskMessageSpec(
-            skill_name="workflow:experiment-readout:v1",
-        ),
-    )
-)
-
-host.unregister_agent_workflow("data", "experiment-readout")
-```
-
-`register_agent_workflow(...)` replaces the live workflow definition for future
-runs and records the publishing agent. `unregister_agent_workflow(...)` removes
-the workflow from future runs for that same agent; it does not cancel or mutate
-already queued DBOS runs.
-
-`unregister_agent_workflow(...)` is scoped to the agent that originally
-registered the workflow. Calling it with a different `agent_id` raises
-`ValueError` (see `_workflow_owner_agent_id` in
-[`src/mash/runtime/host/host.py`](../runtime/host/host.py)).
-
-Dynamic skill content and dynamic workflow definitions are live host state.
-On host restart, the application that owns authoring must republish both.
-
-`WorkflowTaskMessageSpec` is the standard way to ship a dynamic workflow to
-its task agent: it tells the agent which skill to load. `skill_name` is
-required when the spec is provided (validation lives in
-[`src/mash/workflows/spec.py`](./spec.py)).
-The HTTP publishing endpoint requires `task_message` on every request. When
-the task runs, the request payload includes `task_message`, and the workflow
-runtime instructs the agent to invoke the `Skill` tool with the named skill
-before executing.
-
-## HTTP API For Dynamic Publishing
-
-Hosts wrapped by `mash.api` expose dynamic publishing as two POST endpoints
-on the agent the workflow/skill belongs to:
-
-- `POST /api/v1/agent/{agent_id}/skill`
-- `POST /api/v1/agent/{agent_id}/workflow`
-
-Body shapes match the Pydantic models in
-[`src/mash/api/routes/common.py`](../api/routes/common.py)
-(`RegisterAgentSkillRequest` and `RegisterAgentWorkflowRequest`).
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/agent/data/skill \
-  -H "Authorization: Bearer $MASH_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "dynamic",
-    "name": "workflow:experiment-readout:v1",
-    "description": "Execute Experiment Readout workflow v1.",
-    "content": "# Experiment Readout\n\nLoad and run the workflow…"
-  }'
-
-curl -X POST http://127.0.0.1:8000/api/v1/agent/data/workflow \
-  -H "Authorization: Bearer $MASH_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "workflow_id": "experiment-readout",
-    "tasks": [
-      {
-        "task_id": "analyze-experiment",
-        "agent_id": "data",
-        "structured_output": {
-          "type": "object",
-          "properties": {"ok": {"type": "boolean"}},
-          "required": ["ok"],
-          "additionalProperties": false
-        }
-      }
-    ],
-    "metadata": {"source": "crew", "version": 1},
-    "task_message": {
-      "skill_name": "workflow:experiment-readout:v1"
-    }
-  }'
-```
-
-Responses are `{"data": {"agent_id": "...", "skill_name": "..."}}` and
-`{"data": {"agent_id": "...", "workflow_id": "..."}}` respectively.
-
-There is no DELETE endpoint exposed yet — unregistration is only available
-through the in-process host API.
-
-## DBOS Orchestration
-
-`WorkflowService.run_workflow(...)` starts a DBOS workflow named
-`mash.workflow.execute` and returns after the run is queued or started. The
-returned `WorkflowRun` is a projection of DBOS workflow status.
-
-When a `dedup_key` is provided, the workflow is enqueued with a DBOS queue
-deduplication id. Active duplicate runs are rejected. Once DBOS marks the queued
-workflow complete, the deduplication id is released by DBOS.
-
-Task state is append-only. Before a task runs, Mash looks at recent successful
-DBOS workflow outputs for the same workflow and passes the latest
-`task_states[task_id]` object to the agent. If no prior state exists, the
-framework passes `{}`.
-
-Callers may also pass a per-run workflow input object. Workflow input is immutable
-for the run, is passed to every task request, and is separate from task state.
-Use workflow input for trigger parameters. Use task state only for checkpoints.
-
-## Task Execution Contract
-
-`WorkflowService` sends a normal Mash request to the target agent. The request
-message is JSON text with this shape:
+An agent step receives a JSON message:
 
 ```json
 {
   "workflow_id": "changelog",
-  "workflow_run_id": "mw:h_example:changelog:abc",
-  "task_id": "scan-codebase-and-append-changelog",
-  "workflow_input": {
-    "target_agent_id": "primary"
-  },
-  "task_state": {
-    "last_run_ts": "2026-05-14T00:00:00Z"
-  }
+  "workflow_run_id": "mw:...:changelog:abc",
+  "step_id": "summarize",
+  "workflow_input": { ... },
+  "input": { ...coerced step input == workflow_input merged with prior output... }
 }
 ```
 
-The target agent must return JSON text only, and that JSON must decode to an
-object. That object becomes the next task state in the DBOS workflow output.
-
-Example task output:
-
-```json
-{
-  "last_run_ts": "2026-05-14T00:15:00Z"
-}
-```
-
-If the agent returns invalid JSON, non-object JSON, or a failed request, the DBOS
-workflow run fails and the last successful task state remains the latest state.
-
-## How To Run Workflows
-
-Inside the host process, call `WorkflowService` directly:
-
-```python
-workflow_service = host.get_workflow_service()
-workflows = await workflow_service.list_workflows()
-run = await workflow_service.run_workflow(
-    "changelog",
-    dedup_key="manual-2026-05-14",
-    workflow_input={"target_agent_id": "primary"},
-)
-latest = await workflow_service.get_run("changelog", run.run_id)
-```
-
-## HTTP API
-
-When the host is wrapped by `mash.api`, workflows are exposed through:
-
-- `GET /api/v1/workflow` — each serialized workflow carries `workflow_id`,
-  `tasks`, optional `metadata`, and, when the spec defines them, a workflow-level
-  `skill_name` (from `task_message`) and a per-task `structured_output` schema.
-- `POST /api/v1/workflow/{workflow_id}/run`
-- `GET /api/v1/workflow/{workflow_id}/runs`
-- `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
-- `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`
-
-The run list endpoint returns lightweight completed-run summaries from workflow
-task turns persisted in agent memory. Each summary includes the task `session_id`,
-`turn_id`, `user_message`, and `agent_response`. The endpoint supports
-`status=completed`, `start_time`, `end_time`, `limit`, `offset`, and `sort_desc`;
-non-completed status filters return an empty list until a durable non-completed
-run source is added. Call the run detail endpoint with a returned `run_id` to
-fetch DBOS status and output.
-
-The events endpoint replays task lifecycle events and each task agent's normal
-runtime events over SSE from runtime event logs; it does not query DBOS for live
-workflow status.
-
-### Session model
-
-A workflow run executes under one session — the caller's `session_id` when
-`POST /workflow/{id}/run` provides one (e.g. the REPL session), otherwise a
-fresh per-run session. The run is a **trace** within that session, tagged with
-`workflow_id` / `workflow_run_id` (first-class columns on both the runtime event
-log and the persisted turn). There is no `workflow:…:run:…` session scheme; run
-history, summaries, and the live event stream are all keyed by `workflow_run_id`.
-Workflow task turns are persisted but marked non-replayable, so they never enter
-the conversation history the model replays.
+Each run is a clean slate — there is no cross-run state. The agent must return
+structured output matching the step's `output` schema; that becomes the next
+step's threaded input.
 
 ## CLI
 
-The interactive Mash REPL exposes workflow commands as thin wrappers around the
-HTTP API:
-
-- `/workflow list`: list registered workflows
-- `/workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]`: start a workflow run and stream task progress
-- `/workflow status <workflow_id> <run_id>`: show workflow run status
-
-Workflow run streams show workflow status, task lifecycle events, task agent
-trace progress, and task responses. When a completed run has DBOS output,
-`/workflow status` includes that output.
-
-## What This Package Does Not Do
-
-- It does not define a standalone workflow client.
-- It does not add top-level `mash workflow ...` commands.
-- It does not define workflow table schemas or a default workflow store backend.
-- It does not own artifacts or file outputs produced by agents.
+- `/workflow list`
+- `/workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]`
+- `/workflow status <workflow_id> <run_id>`
+- `/workflow resume <workflow_id> <run_id>`

@@ -14,7 +14,7 @@ from mash.skills.base import Skill
 from mash.skills.registry import SkillRegistry
 from mash.tools.ask_user import AskUserTool
 from mash.tools.registry import ToolRegistry
-from mash.workflows import TaskSpec, WorkflowSpec
+from mash.workflows import AgentStep, WorkflowSpec
 
 from ...prompt import build_repo_context
 from .._base import PILOT_SKILLS_DIR, build_bash_tool, build_default_llm
@@ -47,14 +47,14 @@ _PROMPT = """You are a Mash quiz workflow worker.
 
 You are invoked only by the pilot-quiz workflow. Do not answer free-form chat.
 
-Every request is JSON with workflow_id, workflow_run_id, task_id, workflow_input,
-and task_state.
+Every request is JSON with workflow_id, workflow_run_id, step_id, workflow_input,
+and input. Each run is a clean slate — there is no cross-run state.
 
 Workflow skill routing:
-- workflow_id=pilot-quiz, task_id=run-quiz -> skill=mash-quiz
+- workflow_id=pilot-quiz, step_id=run-quiz -> skill=mash-quiz
 
 Routing rules:
-- Match both workflow_id and task_id exactly.
+- Match both workflow_id and step_id exactly.
 - Call the standard Skill tool exactly once with the matched skill name before doing workflow work.
 - After the skill loads, follow only the loaded skill's workflow instructions.
 - If no route matches, return an error object and do not call workflow tools.
@@ -190,10 +190,11 @@ def build_quiz_workflow_spec(workspace_root: Path | None = None) -> WorkflowSpec
     resolved = (workspace_root or Path(".")).resolve()
     return WorkflowSpec(
         workflow_id=QUIZ_WORKFLOW_ID,
-        tasks=[
-            TaskSpec(
-                task_id=QUIZ_TASK_ID,
+        steps=[
+            AgentStep(
+                step_id=QUIZ_TASK_ID,
                 agent_spec=QuizAgentSpec(resolved),
+                output={"type": "object"},
             )
         ],
         metadata={"source": "pilot", "kind": "quiz"},

@@ -1,113 +1,125 @@
-import { Link } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
-import { Mono } from '../components/Chip.jsx';
+import { Chip, Mono } from '../components/Chip.jsx';
+import { Select, TextInput } from '../components/Form.jsx';
+import { KindBadge, StatusBadge } from '../components/workflows/WorkflowUI.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
-import { compactNumber, formatTime } from '../lib/format.js';
+import { formatTime } from '../lib/format.js';
+import { workflowCatalogEntries, workflowType } from '../lib/workflow.js';
 
-// Runtime rollup line for one workflow; absent (null) when the workflow has
-// never run or observability is off.
-function ActivityLine({ activity }) {
-  if (!activity) {
-    return <span className="text-xs text-slate-400">No runs recorded.</span>;
-  }
-  return (
-    <span className="text-xs tabular-nums text-slate-500">
-      {activity.run_count} run{activity.run_count !== 1 ? 's' : ''}
-      <span className="text-slate-300"> · </span>
-      last {formatTime(activity.last_run_at)}
-      <span className="text-slate-300"> · </span>
-      {compactNumber(activity.total_tokens)} tokens
-    </span>
-  );
-}
+const TYPE_LABELS = {
+  all: 'All workflows',
+  code: 'Code only',
+  agent: 'Agent only',
+  mixed: 'Mixed',
+};
 
-function WorkflowCard({ workflow, activity }) {
-  const meta = workflow.metadata || {};
-  const name = meta.display_name || workflow.workflow_id;
-  const tasks = workflow.tasks || [];
+function WorkflowCard({ workflow }) {
+  const type = workflowType(workflow);
+  const preview = workflow.step_preview || [];
   return (
-    <Link
-      to={`/logs?tab=sessions&workflow=${encodeURIComponent(workflow.workflow_id)}`}
-      className="block"
+    <Card
+      to={`/workflows/${encodeURIComponent(workflow.workflow_id)}`}
+      className="flex h-full flex-col gap-4 p-4"
     >
-      <Card className="flex h-full flex-col gap-3 p-4 transition hover:border-slate-300 hover:shadow-sm">
-        <div>
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="font-display text-base font-semibold">{name}</h3>
-            {name !== workflow.workflow_id ? <Mono>{workflow.workflow_id}</Mono> : null}
+      <div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="truncate font-display text-base font-semibold">{workflow.display_name}</h2>
+            {workflow.display_name !== workflow.workflow_id ? <Mono>{workflow.workflow_id}</Mono> : null}
           </div>
-          {meta.description ? (
-            <p className="mt-1 text-sm text-slate-600">{meta.description}</p>
-          ) : null}
+          <Chip tone={type === 'mixed' ? 'indigo' : 'slate'}>
+            {type} · {workflow.step_count}
+          </Chip>
         </div>
+        {workflow.description ? (
+          <p className="mt-2 line-clamp-2 text-sm text-slate-600">{workflow.description}</p>
+        ) : null}
+      </div>
 
-        <div className="border-t border-slate-100 pt-3">
-          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
-            Task chain ({tasks.length})
-          </div>
-          {tasks.length ? (
-            <ol className="space-y-1.5">
-              {tasks.map((task, idx) => (
-                <li key={task.task_id} className="flex items-center gap-2 text-sm">
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs tabular-nums text-slate-500">
-                    {idx + 1}
-                  </span>
-                  <Mono>{task.task_id}</Mono>
-                  <span className="text-slate-300">→</span>
-                  <span className="text-slate-600">{task.agent_id}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <span className="text-xs text-slate-400">No tasks defined.</span>
-          )}
-        </div>
+      <ol className="space-y-1.5 border-t border-slate-100 pt-3">
+        {preview.map((step) => (
+          <li key={step.step_id} className="flex items-center gap-2 text-sm">
+            <span className="w-5 text-right text-xs tabular-nums text-slate-400">{step.ordinal + 1}</span>
+            <KindBadge kind={step.kind} />
+            <span className="truncate font-mono text-xs text-slate-700">{step.step_id}</span>
+            {step.agent_id ? <span className="ml-auto truncate text-xs text-slate-400">{step.agent_id}</span> : null}
+          </li>
+        ))}
+        {workflow.step_count > preview.length ? (
+          <li className="pl-7 text-xs text-slate-400">+ {workflow.step_count - preview.length} more</li>
+        ) : null}
+      </ol>
 
-        <div className="mt-auto flex items-center justify-between border-t border-slate-100 pt-3">
-          <ActivityLine activity={activity} />
-          <span className="text-xs text-slate-400">View sessions →</span>
-        </div>
-      </Card>
-    </Link>
+      <div className="mt-auto flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs">
+        {workflow.latest_run ? (
+          <span className="flex min-w-0 items-center gap-2">
+            <StatusBadge status={workflow.latest_run.status} />
+            <span className="truncate text-slate-500">{formatTime(workflow.latest_run.started_at || workflow.latest_run.created_at)}</span>
+          </span>
+        ) : workflow.history_available ? (
+          <span className="text-slate-400">Never run</span>
+        ) : (
+          <span className="text-slate-400">Run history unavailable</span>
+        )}
+        <span className="shrink-0 text-slate-400">Open workflow →</span>
+      </div>
+    </Card>
   );
 }
 
 export default function Workflows() {
   const state = useApi(() => api.listWorkflows(), []);
-  // Activity is best-effort: unavailable when observability is disabled.
-  const activityState = useApi(
-    () => api.workflowActivity().catch(() => ({ workflows: [] })),
-    [],
+  const [query, setQuery] = useState('');
+  const [type, setType] = useState('all');
+
+  const catalog = useMemo(
+    () => workflowCatalogEntries(state.data?.workflows),
+    [state.data],
   );
-  const activityById = new Map(
-    (activityState.data?.workflows || []).map((a) => [a.workflow_id, a]),
-  );
+  const workflows = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return catalog.filter((workflow) => {
+      const matchesQuery = !normalized ||
+        workflow.workflow_id.toLowerCase().includes(normalized) ||
+        workflow.display_name.toLowerCase().includes(normalized);
+      const matchesType = type === 'all' || workflowType(workflow) === type;
+      return matchesQuery && matchesType;
+    });
+  }, [catalog, query, type]);
 
   return (
     <div>
       <PageHeader
         title="Workflows"
-        description="Ordered task chains registered in the pool. Click through to their sessions in Logs."
+        description="Durable step pipelines registered in this deployment."
       />
-      <Async state={state} empty={(d) => !d.workflows?.length}>
-        {(data) => {
-          if (!data.workflows?.length) {
-            return <Empty>No workflows registered in this pool.</Empty>;
-          }
-          return (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {data.workflows.map((workflow) => (
-                <WorkflowCard
-                  key={workflow.workflow_id}
-                  workflow={workflow}
-                  activity={activityById.get(workflow.workflow_id)}
-                />
-              ))}
-            </div>
-          );
-        }}
+      <div className="mb-4 flex flex-wrap gap-3">
+        <div className="w-full max-w-sm">
+          <TextInput
+            aria-label="Search workflows"
+            placeholder="Search by workflow id or name"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <div className="w-48">
+          <Select aria-label="Workflow type" value={type} onChange={(event) => setType(event.target.value)}>
+            {Object.entries(TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </Select>
+        </div>
+      </div>
+      <Async state={state}>
+        {() => !catalog.length ? (
+          <Empty>No step pipelines are registered.</Empty>
+        ) : workflows.length ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {workflows.map((workflow) => <WorkflowCard key={workflow.workflow_id} workflow={workflow} />)}
+          </div>
+        ) : <Empty>No workflows match those filters.</Empty>}
       </Async>
     </div>
   );

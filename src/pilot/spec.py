@@ -91,7 +91,6 @@ def build_pool(workspace_root: Path | None = None) -> AgentPool:
             ),
         )
     )
-    builder.enable_masher()
     pool = builder.build()
     pool.register_workflow(build_quiz_workflow_spec(resolved))
     return pool

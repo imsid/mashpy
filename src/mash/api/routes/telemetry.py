@@ -484,19 +484,6 @@ def build_telemetry_router() -> APIRouter:
             }
         )
 
-    @router.get("/telemetry/workflows")
-    async def workflow_activity(request: Request) -> dict[str, Any]:
-        state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
-        agent_ids = state.pool.list_agents()
-        if not agent_ids:
-            return success({"workflows": []})
-        store = state.pool.get_agent(agent_ids[0]).runtime_store
-        activity = await store.aggregate_workflow_activity()
-        return success({"workflows": activity, "source": telemetry_event_source()})
-
     @router.post("/telemetry/command-events")
     async def ingest_command_event(
         request: Request,
@@ -604,9 +591,10 @@ def build_telemetry_router() -> APIRouter:
         analysis = analyze_trace(tree)
 
         if stitch and analysis.subagent_details:
-            from mash.agents.masher.tool import _stitch_subagent_traces
+            # Deferred: only pay for the masher package when stitching is requested.
+            from mash.agents.masher.traces import stitch_subagent_traces  # pylint: disable=import-outside-toplevel
 
-            analysis = await _stitch_subagent_traces(agent.runtime_store, analysis)
+            analysis = await stitch_subagent_traces(agent.runtime_store, analysis)
 
         return success(
             {

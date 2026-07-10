@@ -37,7 +37,7 @@ tasks but are hidden from public agent listings and subagent delegation.
 Related READMEs:
 
 - [`src/mash/workflows/README.md`](../workflows/README.md) — workflow layer,
-  including dynamic publishing and per-task structured output.
+  including step pipelines and per-step structured output.
 - [`src/mash/skills/README.md`](../skills/README.md) — agent skills, including
   runtime registration.
 - [`src/mash/core/llm/README.md`](../core/llm/README.md) — how provider

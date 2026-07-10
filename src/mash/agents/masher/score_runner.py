@@ -3,9 +3,9 @@
 This is a :class:`WorkflowStrategy` that replaces the generic sequential task
 loop for ``score-evals``. It loads the eval, snapshots the host under test,
 fans out one durable child workflow per dataset row over a dedicated DBOS queue
-(run the row through the host, then judge the output with Masher), and persists
+(run the row through the host, then judge the output with the eval agent), and persists
 the gathered results as an experiment. Orchestration is deterministic code;
-Masher is used only as the per-row judge.
+the eval agent is used only as the per-row judge.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ from mash.workflows.strategy import WorkflowExecutionContext, WorkflowStrategy
 
 from ...evals.metrics import METRIC_EVENT_TYPES, compute_row_metrics
 from ...evals.models import CriterionScore, ExperimentRun
-from .judge import MASHER_JUDGE_STRUCTURED_OUTPUT, build_judge_message, parse_judge_output
-from .tool import MasherRuntimeContext
+from .context import MasherRuntimeContext
+from .judge import EVAL_JUDGE_STRUCTURED_OUTPUT, build_judge_message, parse_judge_output
+from .spec import EVAL_AGENT_ID
 
-MASHER_AGENT_ID = "masher"
 _ROW_QUEUE_NAME = "mash.eval.rows"
 _DEFAULT_ROW_CONCURRENCY = 8
 _WORKFLOW_ID = "score-evals"
@@ -89,6 +89,7 @@ async def _score_row(
     rubric: dict[str, Any],
 ) -> dict[str, Any]:
     """Child DBOS workflow: run one row through the host, then judge it."""
+    del host_id  # unused here; kept in the durable arg record for observability
     dbos_class, _, _, _, _ = load_dbos_api()
     row_id = str(row.get("row_id") or "")
     row_input = str(row.get("input") or "")
@@ -126,14 +127,14 @@ async def _score_row(
         actual_output = _response_text(host_payload)
         scored["actual_output"] = actual_output
 
-        # 2) Judge the output with Masher (structured output).
+        # 2) Judge the output with the eval agent (structured output).
         judge_request = await post_inline_agent_request(
             runner_id,
-            agent_id=MASHER_AGENT_ID,
+            agent_id=EVAL_AGENT_ID,
             message=build_judge_message(
                 row_input=row_input, actual_output=actual_output, rubric=rubric
             ),
-            structured_output=MASHER_JUDGE_STRUCTURED_OUTPUT,
+            structured_output=EVAL_JUDGE_STRUCTURED_OUTPUT,
             workflow_id=_WORKFLOW_ID,
             workflow_run_id=run_id,
             task_id=f"score-row-judge:{row_id}",
@@ -143,7 +144,7 @@ async def _score_row(
             {"name": f"score-row.judge.{row_id}"},
             collect_terminal_payload,
             runner_id,
-            MASHER_AGENT_ID,
+            EVAL_AGENT_ID,
             judge_request,
         )
         scores, weighted_score = parse_judge_output(

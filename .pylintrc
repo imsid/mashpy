@@ -1,2 +1,18 @@
 [MESSAGES CONTROL]
-disable=missing-module-docstring,missing-class-docstring,missing-function-docstring,broad-exception-caught,pointless-string-statement,line-too-long
+# Style/docs checks the project opts out of, plus the size-metric family
+# (too-many-*/too-few-*): Mash's public builders and stores use deliberately
+# keyword-heavy signatures, so those counters flag the API design itself.
+# cyclic-import fires on the intentional deferred imports between
+# mash.workflows.dbos and mash.workflows.engine; duplicate-code fires on
+# intentionally parallel test scaffolding.
+disable=missing-module-docstring,missing-class-docstring,missing-function-docstring,
+        broad-exception-caught,pointless-string-statement,line-too-long,
+        too-many-arguments,too-many-positional-arguments,too-many-locals,
+        too-many-statements,too-many-branches,too-many-return-statements,
+        too-many-instance-attributes,too-many-public-methods,too-few-public-methods,
+        too-many-nested-blocks,too-many-lines,duplicate-code,cyclic-import
+
+[VARIABLES]
+# `input`/`output` are the public field names on workflow steps
+# (CodeStep(input=..., output=...)); shadowing the builtin there is the API.
+allowed-redefined-builtins=input

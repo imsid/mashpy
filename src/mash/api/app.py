@@ -26,10 +26,14 @@ from mash.api.routes.common import (
 )
 from mash.api.routes.telemetry import build_telemetry_router
 from mash.api.routes.workflow import build_workflow_router
-from mash.agents.masher.spec import MASHER_AGENT_ID
+from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, AgentPool
-from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
+from mash.workflows import (
+    DuplicateWorkflowRunError,
+    WorkflowInputValidationError,
+    WorkflowNotFoundError,
+)
 
 from .config import MashHostConfig
 from .admin_ui import mount_admin_ui
@@ -54,9 +58,9 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
             eval_store = PostgresEvalStore(database_url)
             await eval_store.open()
             eval_service = EvalService(eval_store)
-            masher_spec = pool.get_registered_agent_spec(MASHER_AGENT_ID)
-            if masher_spec is not None and hasattr(masher_spec, "runtime_context"):
-                masher_spec.runtime_context.bind_eval_service(eval_service)
+            eval_agent_spec = pool.get_registered_agent_spec(EVAL_AGENT_ID)
+            if eval_agent_spec is not None and hasattr(eval_agent_spec, "runtime_context"):
+                eval_agent_spec.runtime_context.bind_eval_service(eval_service)
         application.state.runtime_state = AppRuntimeState(
             pool=pool,
             api_event_store=api_event_store,
@@ -126,6 +130,19 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
         return JSONResponse(
             status_code=404,
             content=error_payload("WORKFLOW_NOT_FOUND", str(exc)),
+        )
+
+    @app.exception_handler(WorkflowInputValidationError)
+    async def _workflow_input_validation_error_handler(
+        _: Request, exc: WorkflowInputValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=error_payload(
+                "WORKFLOW_INPUT_INVALID",
+                str(exc),
+                {"workflow_id": exc.workflow_id, "errors": exc.errors},
+            ),
         )
 
     @app.exception_handler(DuplicateWorkflowRunError)

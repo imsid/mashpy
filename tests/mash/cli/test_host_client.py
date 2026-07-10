@@ -1,8 +1,12 @@
 """Tests for remote host HTTP client behavior."""
 
+# Tests inject a recording session behind the client's private seam.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from mash.cli.client import DEFAULT_REQUEST_TIMEOUT, DEFAULT_STREAM_TIMEOUT, MashHostClient
 
@@ -32,7 +36,7 @@ class _FakeResponse:
 
 class _RecordingSession:
     def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
         self.responses: list[_FakeResponse] = []
 
     def request(self, method, url, headers=None, json=None, stream=False, timeout=None):
@@ -112,33 +116,6 @@ class MashHostClientTests(unittest.TestCase):
         )
         self.assertEqual(session.calls[-1]["json"], payload)
 
-    def test_register_agent_workflow_posts_workflow_payload(self) -> None:
-        client = MashHostClient("http://localhost:8000")
-        session = _RecordingSession()
-        session.responses.append(
-            _FakeResponse({"data": {"agent_id": "primary", "workflow_id": "wf"}})
-        )
-        client._session = session  # type: ignore[assignment]
-        payload = {
-            "workflow_id": "wf",
-            "tasks": [{"task_id": "task", "agent_id": "primary"}],
-            "metadata": {"source": "test"},
-            "task_message": {
-                "skill_name": "workflow:test:v1",
-                "instruction": "Run the task.",
-            },
-        }
-
-        result = client.register_agent_workflow("primary", payload)
-
-        self.assertEqual(result["workflow_id"], "wf")
-        self.assertEqual(session.calls[-1]["method"], "POST")
-        self.assertEqual(
-            session.calls[-1]["url"],
-            "http://localhost:8000/api/v1/agent/primary/workflow",
-        )
-        self.assertEqual(session.calls[-1]["json"], payload)
-
     def test_submit_feedback_posts_session_context(self) -> None:
         client = MashHostClient("http://localhost:8000")
         session = _RecordingSession()
@@ -192,7 +169,16 @@ class MashHostClientTests(unittest.TestCase):
                         "workflows": [
                             {
                                 "workflow_id": "changelog",
-                                "tasks": [{"task_id": "scan", "agent_id": "worker"}],
+                                "mode": "pipeline",
+                                "step_count": 1,
+                                "step_preview": [
+                                    {
+                                        "ordinal": 0,
+                                        "step_id": "scan",
+                                        "kind": "agent",
+                                        "agent_id": "worker",
+                                    }
+                                ],
                             }
                         ]
                     }
@@ -206,6 +192,31 @@ class MashHostClientTests(unittest.TestCase):
         self.assertEqual(workflows[0]["workflow_id"], "changelog")
         self.assertEqual(session.calls[-1]["method"], "GET")
         self.assertEqual(session.calls[-1]["url"], "http://localhost:8000/api/v1/workflow")
+
+    def test_get_workflow_definition_uses_quoted_route(self) -> None:
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        session.responses.append(
+            _FakeResponse(
+                {
+                    "data": {
+                        "workflow_id": "wf/one",
+                        "mode": "pipeline",
+                        "steps": [],
+                    }
+                }
+            )
+        )
+        client._session = session  # type: ignore[assignment]
+
+        definition = client.get_workflow_definition("wf/one")
+
+        self.assertEqual(definition["mode"], "pipeline")
+        self.assertEqual(session.calls[-1]["method"], "GET")
+        self.assertIn(
+            "/api/v1/workflow/wf%2Fone",
+            str(session.calls[-1]["url"]),
+        )
 
     def test_run_workflow_posts_optional_dedup_key(self) -> None:
         client = MashHostClient("http://localhost:8000")

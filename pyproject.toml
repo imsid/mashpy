@@ -25,6 +25,7 @@ dependencies = [
   "httpx>=0.28.0",
   "mcp>=0.1.0",
   "openai>=1.57.4",
+  "pydantic>=2.0",
   "psycopg[binary]>=3.2.0",
   "psycopg_pool>=3.2.0",
   "prompt_toolkit>=3.0.36",
@@ -55,6 +56,9 @@ dev = [
   "pytest>=8.3.0",
   "twine>=6.1.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

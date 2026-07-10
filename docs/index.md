@@ -11,7 +11,7 @@ hide:
 **Build self-hosted agent applications on frontier and open source models.**
 
 [Mash](posts/product-brief.md) is a Python SDK and a host runtime for building,
-composing, and evaluating agents.
+composing, and evaluating agents and workflows.
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
 standardizes interactions between user applications and agents. 
 
@@ -113,39 +113,105 @@ class ResearchAgent(AgentSpec):
         )
 ```
 
+**Add a workflow:**
+
+A workflow is an ordered pipeline of typed steps. Use a `CodeStep` for
+deterministic Python and an `AgentStep` when the work needs an agent.
+
+```python
+## my_app/workflows.py
+
+from pydantic import BaseModel
+
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+
+
+class ResearchRequest(BaseModel):
+    topic: str
+
+
+class ResearchPlan(BaseModel):
+    topic: str
+    questions: list[str]
+
+
+class ResearchBrief(BaseModel):
+    summary: str
+    sources: list[str]
+
+
+def plan_research(
+    request: ResearchRequest,
+    _context: StepContext,
+) -> ResearchPlan:
+    return ResearchPlan(
+        topic=request.topic,
+        questions=[
+            f"What are the key facts about {request.topic}?",
+            f"What should a reader understand about {request.topic}?",
+        ],
+    )
+
+
+RESEARCH_BRIEF = WorkflowSpec(
+    workflow_id="research-brief",
+    input_model=ResearchRequest,
+    steps=[
+        CodeStep(
+            step_id="plan",
+            run=plan_research,
+            input=ResearchRequest,
+            output=ResearchPlan,
+        ),
+        AgentStep(
+            step_id="research",
+            agent_id="research",
+            input=ResearchPlan,
+            output=ResearchBrief,
+        ),
+    ],
+)
+```
+
+The `CodeStep` output becomes the `AgentStep` input. Mash validates both edges,
+runs each step durably, and uses the last step's output as the workflow result.
+
 **Build Mash host with an Agent pool:**
 
 ```python
 ## my_app/host.py
 
-from mash.runtime import AgentMetadata, Host, HostBuilder
+from mash.runtime import AgentMetadata, HostBuilder
 
 from .agents import ConciergeAgent, ResearchAgent
+from .workflows import RESEARCH_BRIEF
+
 
 def build_pool():
-  pool = (
-      HostBuilder()
-      .agent(
-          ConciergeAgent(),
-          metadata=AgentMetadata(
-              display_name="Concierge",
-              description="Front-door agent that answers users and delegates.",
-              capabilities=["conversation", "delegation"],
-              usage_guidance="Default entry point for user requests.",
-          ),
-      )
-      .agent(
-          ResearchAgent(),
-          metadata=AgentMetadata(
-              display_name="Research",
-              description="Handles research-heavy questions in depth.",
-              capabilities=["research", "analysis"],
-              usage_guidance="Use for questions that need digging.",
-          ),
-      )
-      .build()
-  )
-  return pool
+    pool = (
+        HostBuilder()
+        .agent(
+            ConciergeAgent(),
+            metadata=AgentMetadata(
+                display_name="Concierge",
+                description="Front-door agent that answers users and delegates.",
+                capabilities=["conversation", "delegation"],
+                usage_guidance="Default entry point for user requests.",
+            ),
+        )
+        .agent(
+            ResearchAgent(),
+            metadata=AgentMetadata(
+                display_name="Research",
+                description="Handles research-heavy questions in depth.",
+                capabilities=["research", "analysis"],
+                usage_guidance="Use for questions that need digging.",
+            ),
+        )
+        .workflow(RESEARCH_BRIEF)
+        .build()
+    )
+    return pool
 ```
 
 **Configure the environment:**
@@ -172,7 +238,8 @@ mash browse
 
 **Compose an assistant host with primary and subagents:**
 ```bash
-mash compose assistant --primary concierge --subagents research
+mash compose assistant --primary concierge --subagents research \
+  --workflows research-brief
 ```
 
 **Talk to the host or execute `/` commands using Mash repl:**
@@ -200,7 +267,7 @@ mash repl --host assistant
 - [**Skills: Instructions on demand**](posts/skills-on-demand.md): markdown bundles loaded through one meta-tool
 - [**Memory and compaction**](posts/memory-and-compaction.md): history, summary checkpoints, and signals
 - [**Composing agents**](posts/composing-agents.md): subagents, delegation, shared plumbing
-- [**Workflows**](posts/workflows-and-task-state.md): code authored and dynamic specs for deterministic tasks
+- [**Workflows**](posts/workflows-as-step-pipelines.md): durable step pipelines mixing code steps and agent steps
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 - [**Synthetic evals**](posts/synthetic-evals.md): generated datasets and rubrics, experiments over the live host, read-time comparison
 

@@ -11,13 +11,11 @@ from mash.runtime import AgentClientError
 from mash.runtime.events import build_reasoning_trace
 from mash.runtime.structured_output import serialize_structured_output
 from mash.skills import Skill
-from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
 
 from .common import (
     APIError,
     CompactSessionRequest,
     RegisterAgentSkillRequest,
-    RegisterAgentWorkflowRequest,
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
@@ -126,46 +124,6 @@ def build_agent_router() -> APIRouter:
                     status_code=400,
                 ) from exc
         return success({"agent_id": resolved_agent_id, "skill_name": skill.name})
-
-    @router.post("/agent/{agent_id}/workflow")
-    async def register_agent_workflow(
-        request: Request,
-        agent_id: str,
-        body: RegisterAgentWorkflowRequest,
-    ) -> dict[str, Any]:
-        state = state_from_request(request)
-        resolved_agent_id = require_agent_id(agent_id)
-        if state.pool.get_registered_agent_spec(resolved_agent_id) is None:
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message=f"agent '{resolved_agent_id}' is not registered",
-                status_code=404,
-            )
-
-        workflow = WorkflowSpec(
-            workflow_id=body.workflow_id,
-            tasks=[
-                TaskSpec(
-                    task_id=task.task_id,
-                    agent_id=task.agent_id,
-                    structured_output=task.structured_output,
-                )
-                for task in body.tasks
-            ],
-            metadata=dict(body.metadata),
-            task_message=WorkflowTaskMessageSpec(
-                skill_name=body.task_message.skill_name,
-            ),
-        )
-        try:
-            state.pool.register_agent_workflow(resolved_agent_id, workflow)
-        except ValueError as exc:
-            raise APIError(
-                code="INVALID_AGENT_WORKFLOW",
-                message=str(exc),
-                status_code=400,
-            ) from exc
-        return success({"agent_id": resolved_agent_id, "workflow_id": workflow.workflow_id})
 
     @router.post("/agent/{agent_id}/request")
     async def submit_request(

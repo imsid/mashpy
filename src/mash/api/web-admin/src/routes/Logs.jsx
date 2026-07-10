@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/Page.jsx';
 import { Async, Empty, Loading } from '../components/State.jsx';
@@ -177,7 +177,7 @@ const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cache 
 // Pool-wide session rollup, or scoped to sessions where the selected agent
 // participated (as primary or subagent) and/or the selected workflow ran.
 // Each session expands to its traces, which may span multiple agents.
-function SessionsTab({ agentId, workflowId, initialSession }) {
+function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   const state = useApi(
     () =>
       api.listSessionRollups({
@@ -193,6 +193,7 @@ function SessionsTab({ agentId, workflowId, initialSession }) {
   const [sessionQuery, setSessionQuery] = useState(initialSession || '');
   const [traceQuery, setTraceQuery] = useState('');
   const [jumpError, setJumpError] = useState('');
+  const openedTrace = useRef('');
 
   // Deep links (from Feedback / Overview) carry a session to focus on.
   useEffect(() => {
@@ -202,8 +203,8 @@ function SessionsTab({ agentId, workflowId, initialSession }) {
     }
   }, [initialSession]);
 
-  const jumpToTrace = async () => {
-    const q = traceQuery.trim();
+  const jumpToTrace = async (rawQuery = traceQuery) => {
+    const q = rawQuery.trim();
     if (!q) return;
     setJumpError('');
     try {
@@ -216,6 +217,7 @@ function SessionsTab({ agentId, workflowId, initialSession }) {
         if (match) {
           setSelected({ ...match, __agentId: match.agent_id });
           setExpanded(session.session_id);
+          setSessionQuery(session.session_id);
           return;
         }
       }
@@ -224,6 +226,15 @@ function SessionsTab({ agentId, workflowId, initialSession }) {
       setJumpError('Trace lookup failed.');
     }
   };
+
+  useEffect(() => {
+    if (!initialTrace || !state.data || openedTrace.current === initialTrace) return;
+    openedTrace.current = initialTrace;
+    setTraceQuery(initialTrace);
+    jumpToTrace(initialTrace);
+    // The deep link is consumed once per trace id; subsequent reloads preserve the drawer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTrace, state.data]);
 
   return (
     <>
@@ -249,7 +260,7 @@ function SessionsTab({ agentId, workflowId, initialSession }) {
                 if (e.key === 'Enter') jumpToTrace();
               }}
             />
-            <Button variant="secondary" onClick={jumpToTrace}>
+            <Button variant="secondary" onClick={() => jumpToTrace()}>
               Open
             </Button>
           </div>
@@ -525,7 +536,7 @@ export default function Logs() {
                 <option value="">All workflows</option>
                 {workflows.map((w) => (
                   <option key={w.workflow_id} value={w.workflow_id}>
-                    {w.metadata?.display_name || w.workflow_id}
+                    {w.display_name || w.workflow_id}
                   </option>
                 ))}
               </Select>
@@ -555,6 +566,7 @@ export default function Logs() {
           agentId={agentId}
           workflowId={workflowId}
           initialSession={params.get('session') || ''}
+          initialTrace={params.get('trace') || ''}
         />
       ) : null}
       {tab === 'api' ? <ApiAccessTab /> : null}

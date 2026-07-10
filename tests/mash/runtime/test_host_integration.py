@@ -8,6 +8,7 @@ import inspect
 import os
 import tempfile
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from mash.runtime.client import AgentClientError
@@ -20,7 +21,7 @@ from mash.testing.runtime_fixtures import (
     build_spec,
     metadata,
 )
-from mash.workflows import TaskSpec, WorkflowSpec, WorkflowTaskMessageSpec
+from mash.workflows import AgentStep, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
 
 _IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -47,7 +48,7 @@ class _FakeWorkflowDBOS:
 
 
 class _FailureInspectingWorkflowDBOS:
-    fail_payload: dict[str, object] | None = None
+    fail_payload: dict[str, Any] | None = None
 
     @classmethod
     async def run_step_async(cls, config, func, *args, **kwargs):
@@ -97,7 +98,7 @@ class _StepRestrictedRequestEngine:
         request_id: str,
         message: str,
         session_id: str,
-        request_metadata: dict[str, object],
+        request_metadata: dict[str, Any],
     ) -> None:
         del self._database_url
         if _IN_FAKE_DBOS_STEP.get():
@@ -118,6 +119,18 @@ class _StepRestrictedRequestEngine:
 
 
 class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._masher_llm_patch = patch(
+            "mash.agents.masher.spec.EvalAgentSpec.build_llm",
+            return_value=build_spec(
+                agent_id="eval-agent", response_text="{}"
+            ).build_llm(),
+        )
+        self._masher_llm_patch.start()
+
+    def tearDown(self) -> None:
+        self._masher_llm_patch.stop()
+
     def test_host_validation_rejects_unknown_members(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
@@ -172,8 +185,10 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     .build()
                 )
-                described = {item["agent_id"]: item for item in pool.describe_agents()}
-                self.assertEqual(sorted(described.keys()), ["primary", "research"])
+                described = {str(item["agent_id"]): item for item in pool.describe_agents()}
+                self.assertEqual(
+                    sorted(described.keys()), ["eval-agent", "primary", "research"]
+                )
                 for item in described.values():
                     self.assertNotIn("role", item)
                     self.assertIsNotNone(item["metadata"])
@@ -202,15 +217,15 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 primary_spec = build_spec(agent_id="primary", response_text="primary-ok")
                 pool = (
                     HostBuilder()
-                    .enable_masher(False)
                     .agent(primary_spec, metadata=metadata())
                     .workflow(
                         WorkflowSpec(
                             workflow_id="changelog",
-                            tasks=[
-                                TaskSpec(
-                                    task_id="scan",
+                            steps=[
+                                AgentStep(
+                                    step_id="scan",
                                     agent_spec=primary_spec,
+                                    output={"type": "object"},
                                 )
                             ],
                         )
@@ -224,117 +239,29 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     .build()
                 )
+                workflow_ids = {
+                    item.workflow_id for item in pool.get_workflow_registry().list()
+                }
                 self.assertEqual(
-                    [item.workflow_id for item in pool.get_workflow_registry().list()],
-                    ["changelog"],
+                    workflow_ids,
+                    {
+                        "changelog",
+                        "masher-trace-digest",
+                        "masher-online-eval-curation",
+                        "gen-synthetic-evals",
+                        "score-evals",
+                    },
                 )
                 self.assertEqual(
-                    pool.get_host("changelog-host").workflows, ("changelog",)
-                )
-
-    def test_host_registers_agent_workflow_bound_to_existing_agent(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                pool = (
-                    HostBuilder()
-                    .agent(
-                        build_spec(agent_id="primary", response_text="primary-ok"),
-                        metadata=metadata(),
-                    )
-                    .agent(
-                        build_spec(agent_id="data", response_text='{"ok":true}'),
-                        metadata=metadata(),
-                    )
-                    .build()
-                )
-                workflow = WorkflowSpec(
-                    workflow_id="experiment-readout",
-                    tasks=[TaskSpec(task_id="analyze-experiment", agent_id="data")],
-                    metadata={"source": "crew", "version": 1},
-                    task_message=WorkflowTaskMessageSpec(
-                        skill_name="workflow:experiment-readout:v1",
+                    pool.get_host("changelog-host").workflows,
+                    (
+                        "changelog",
+                        "masher-trace-digest",
+                        "masher-online-eval-curation",
+                        "gen-synthetic-evals",
+                        "score-evals",
                     ),
                 )
-
-                pool.register_agent_workflow("data", workflow)
-                pool.register_agent_workflow("data", workflow)
-
-                described = {item["agent_id"]: item for item in pool.describe_agents()}
-                self.assertEqual(sorted(described.keys()), ["data", "primary"])
-                self.assertIs(
-                    pool.get_workflow_registry().get("experiment-readout"),
-                    workflow,
-                )
-
-    def test_host_rejects_dynamic_workflow_with_unknown_agent(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                pool = HostBuilder().agent(
-                    build_spec(agent_id="primary", response_text="primary-ok"),
-                    metadata=metadata(),
-                ).build()
-
-                with self.assertRaises(ValueError):
-                    pool.register_agent_workflow(
-                        "primary",
-                        WorkflowSpec(
-                            workflow_id="experiment-readout",
-                            tasks=[
-                                TaskSpec(
-                                    task_id="analyze-experiment",
-                                    agent_id="missing",
-                                )
-                            ],
-                            task_message=WorkflowTaskMessageSpec(
-                                skill_name="workflow:experiment-readout:v1",
-                            ),
-                        )
-                    )
-
-    def test_host_unregister_agent_workflow_is_idempotent(self) -> None:
-        pool = HostBuilder().enable_masher(False).agent(
-            build_spec(agent_id="primary", response_text="primary-ok"),
-            metadata=metadata(),
-        ).build()
-        workflow = WorkflowSpec(
-            workflow_id="wf",
-            tasks=[TaskSpec(task_id="task", agent_id="primary")],
-            task_message=WorkflowTaskMessageSpec(
-                skill_name="workflow:wf:v1",
-            ),
-        )
-
-        pool.register_agent_workflow("primary", workflow)
-        pool.unregister_agent_workflow("primary", "wf")
-        pool.unregister_agent_workflow("primary", "wf")
-
-        self.assertEqual(pool.get_workflow_registry().list(), [])
-
-    def test_host_rejects_agent_workflow_unregister_from_wrong_agent(self) -> None:
-        pool = (
-            HostBuilder()
-            .agent(
-                build_spec(agent_id="primary", response_text="primary-ok"),
-                metadata=metadata(),
-            )
-            .agent(
-                build_spec(agent_id="data", response_text='{"ok":true}'),
-                metadata=metadata(),
-            )
-            .build()
-        )
-        workflow = WorkflowSpec(
-            workflow_id="wf",
-            tasks=[TaskSpec(task_id="task", agent_id="data")],
-            task_message=WorkflowTaskMessageSpec(
-                skill_name="workflow:wf:v1",
-            ),
-        )
-
-        pool.register_agent_workflow("data", workflow)
-
-        with self.assertRaises(ValueError):
-            pool.unregister_agent_workflow("primary", "wf")
 
     async def test_host_builder_registers_multiple_workflow_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,7 +270,6 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 worker_b = build_spec(agent_id="worker-b", response_text="{}")
                 pool = (
                     HostBuilder()
-                    .enable_masher(False)
                     .agent(
                         build_spec(agent_id="primary", response_text="primary-ok"),
                         metadata=metadata(),
@@ -351,24 +277,31 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .workflow(
                         WorkflowSpec(
                             workflow_id="wf-a",
-                            tasks=[TaskSpec(task_id="task-a", agent_spec=worker_a)],
+                            steps=[AgentStep(step_id="task-a", agent_spec=worker_a, output={"type": "object"})],
                         )
                     )
                     .workflow(
                         WorkflowSpec(
                             workflow_id="wf-b",
-                            tasks=[TaskSpec(task_id="task-b", agent_spec=worker_b)],
+                            steps=[AgentStep(step_id="task-b", agent_spec=worker_b, output={"type": "object"})],
                         )
                     )
                     .build()
                 )
 
-                described = {item["agent_id"]: item for item in pool.describe_agents()}
-                self.assertEqual(sorted(described.keys()), ["primary"])
-                self.assertEqual(pool.list_agents(), ["primary"])
+                described = {str(item["agent_id"]): item for item in pool.describe_agents()}
+                self.assertEqual(sorted(described.keys()), ["eval-agent", "primary"])
+                self.assertEqual(pool.list_agents(), ["primary", "eval-agent"])
                 self.assertEqual(
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
-                    ["wf-a", "wf-b"],
+                    [
+                        "gen-synthetic-evals",
+                        "masher-online-eval-curation",
+                        "masher-trace-digest",
+                        "score-evals",
+                        "wf-a",
+                        "wf-b",
+                    ],
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
@@ -509,15 +442,15 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 pool = (
                     HostBuilder()
-                    .enable_masher(False)
                     .agent(primary_spec, metadata=metadata())
                     .workflow(
                         WorkflowSpec(
                             workflow_id="changelog",
-                            tasks=[
-                                TaskSpec(
-                                    task_id="scan-codebase-and-append-changelog",
+                            steps=[
+                                AgentStep(
+                                    step_id="scan-codebase-and-append-changelog",
                                     agent_spec=primary_spec,
+                                    output={"type": "object"},
                                 )
                             ],
                         )
@@ -530,7 +463,8 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     workflow_service = pool.get_workflow_service()
                     self.assertIsNotNone(workflow_service)
                     listed = await workflow_service.list_workflows()
-                    self.assertEqual(len(listed), 1)
+                    self.assertEqual(len(listed), 5)
+                    self.assertIn("changelog", {item["workflow_id"] for item in listed})
 
                     async def start_workflow_run(**_kwargs):
                         return f"mw:{pool.runner_id}:changelog:abc"
@@ -572,7 +506,13 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         .workflow(
                             WorkflowSpec(
                                 workflow_id="wf",
-                                tasks=[TaskSpec(task_id="task", agent_spec=worker_spec)],
+                                steps=[
+                                    AgentStep(
+                                        step_id="task",
+                                        agent_spec=worker_spec,
+                                        output={"type": "object"},
+                                    )
+                                ],
                             )
                         )
                         .build()
@@ -584,6 +524,9 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             workflow_dbos,
                             "_load_dbos_api",
                             return_value=(_FakeWorkflowDBOS, None, None, None, None),
+                        ), patch(
+                            "mash.workflows.engine.load_dbos_api",
+                            return_value=(_FakeWorkflowDBOS, None, None, None, None),
                         ):
                             output = await workflow_dbos.execute_registered_workflow(
                                 pool.runner_id,
@@ -593,7 +536,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                 session_id="repl-session-1",
                             )
 
-                        self.assertEqual(output["task_states"]["task"], {"ok": True})
+                        self.assertEqual(output["result"], {"ok": True})
                         run_id = f"mw:{pool.runner_id}:wf:test"
                         worker = pool.get_agent("worker")
                         sessions = await worker.list_sessions()
@@ -943,7 +886,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "narrow", message="delegate", session_id="s-1"
                     )
                     client = pool.get_client("primary-app")
-                    events = await _collect_events(
+                    await _collect_events(
                         client, accepted["request_id"], timeout=5
                     )
                     research = pool.get_agent("research")
@@ -1050,8 +993,8 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, object]]:
-    events: list[dict[str, object]] = []
+async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     async for event in client.stream_response(request_id, timeout=timeout):
         events.append(event)
         if event.get("event") in {"request.completed", "request.error"}:
@@ -1064,7 +1007,7 @@ async def _collect_terminal_payload(
     request_id: str,
     *,
     timeout: float,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     events = await _collect_events(client, request_id, timeout=timeout)
     terminal = events[-1]
     if terminal.get("event") != "request.completed":

@@ -42,7 +42,7 @@ component in `src/routes/`.
 | --- | --- | --- | --- |
 | Overview | `/` (`Overview.jsx`) | Per-agent usage/cost and recent-session rollups across the pool; summary cards and charts. | `listAgents` → `GET /agent`; per agent `usage` → `GET /telemetry/usage`, `listSessions` → `GET /agent/{id}/sessions` |
 | Agents | `/agents` (`Agents.jsx`) | The pooled agents and hosts in the deployment. | `listAgents` → `GET /agent` |
-| Workflows | `/workflows` (`Workflows.jsx`) | Registered workflow definitions with runtime activity (runs, last run, tokens); cards click through to the workflow's sessions in Logs. | `listWorkflows` → `GET /workflow`; `workflowActivity` → `GET /telemetry/workflows` |
+| Workflows | `/workflows` (`Workflows.jsx`), `/workflows/:workflowId` (`WorkflowDetail.jsx`), `/workflows/:workflowId/runs` (`WorkflowRuns.jsx`), `/workflows/:workflowId/runs/:runId` (`WorkflowRunDetail.jsx`) | Registered workflow definitions, typed step pipelines, schema-driven run submission, store-backed run history, live step status, snapshots, audit events, results, and resume/run-again actions. | `listWorkflows` → `GET /workflow`; `getWorkflow` → `GET /workflow/{id}`; `runWorkflow` → `POST /workflow/{id}/run`; run/history/audit methods under `/workflow/{id}/runs` |
 | Hosts | `/hosts` (`Hosts.jsx`) | Host compositions; create/edit a host (`PUT`) and submit a test request to its primary. | `listHosts` → `GET /hosts`, `listAgents` → `GET /agent`; `defineHost` → `PUT /hosts/{id}`; `submitHostRequest` → `POST /hosts/{id}/request` |
 | Tools | `/tools` (`Tools.jsx`), `/tools/:toolName` (`ToolDetail.jsx`) | Tool catalog as cards with invocation counts; detail view per tool. | `listTools` → `GET /tools`; `listToolInvocations` → `GET /telemetry/tool-invocations` |
 | Skills | `/skills` (`Skills.jsx`), `/skills/:skillName` (`SkillDetail.jsx`) | Skill catalog as cards with invocation counts; detail view per skill. | `listSkills` → `GET /skills`; `listSkillInvocations` → `GET /telemetry/skill-invocations` |
@@ -71,6 +71,8 @@ Notes:
   session trace.
 - `Form.jsx`, `State.jsx` — form controls and load/empty/error state wrappers
   (`State` pairs with `lib/useApi.js`).
+- `components/workflows/` — workflow pipeline, status, run submission, and step
+  inspection components.
 
 ## Helpers (`src/lib/`)
 
@@ -78,6 +80,8 @@ Notes:
 - `useApi.js` — `useApi(loader, deps)` hook returning `{ data, error, loading }`.
 - `format.js` — duration/number/token formatting.
 - `conversation.js` — shaping session history into a renderable conversation.
+- `workflow.js` — schema projection, input validation, catalog classification,
+  queued-step merging, and workflow event helpers.
 
 ## Build & serve
 

@@ -96,6 +96,6 @@ Dynamic skills are live host state. A host restart forgets them, and the applica
 
 A tool invocation makes something happen in the world and returns a result. A `Skill` invocation changes only what the model knows for the rest of the request; the returned markdown is input, not effect. That's why a skill carries only a name, a description, and markdown, while approval gating, parameter schemas, and result types stay with tools. It's also why one executor can serve every skill: executing a skill is just a read.
 
-Skills come back two posts from now, where dynamic workflows ship their task instructions as skills. The next post stays with context. The markdown a skill loads goes into the same conversation context that memory builds, and memory has its own rules about what to keep and what to summarize away.
+Skills come back two posts from now, where workflow agent steps load their task instructions as skills. The next post stays with context. The markdown a skill loads goes into the same conversation context that memory builds, and memory has its own rules about what to keep and what to summarize away.
 
 *Next: [Memory and Compaction](memory-and-compaction.md).*

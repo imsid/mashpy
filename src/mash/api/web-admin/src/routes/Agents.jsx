@@ -1,35 +1,20 @@
-import { Link } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { api } from '../lib/api.js';
+import { agentAnchor, buildAgentUsage } from '../lib/agent.js';
 import { useApi } from '../lib/useApi.js';
 
-// Map each agent_id to the hosts that reference it, with the role it plays.
-function buildHostUsage(hosts) {
-  const usage = new Map();
-  for (const host of hosts || []) {
-    const add = (agentId, role) => {
-      if (!agentId) return;
-      const list = usage.get(agentId) || [];
-      list.push({ hostId: host.host_id, role });
-      usage.set(agentId, list);
-    };
-    add(host.primary, 'primary');
-    for (const sub of host.subagents || []) add(sub, 'subagent');
-  }
-  return usage;
-}
-
-function AgentCard({ agent, usedIn }) {
+function AgentCard({ agent, usedIn, highlighted }) {
   const meta = agent.metadata;
   const name = meta?.display_name || agent.agent_id;
   return (
-    <Link
-      to={`/logs?agent=${encodeURIComponent(agent.agent_id)}&tab=sessions`}
-      className="block"
+    <Card
+      id={agentAnchor(agent.agent_id)}
+      className={`flex h-full scroll-mt-6 flex-col gap-3 p-4 transition hover:border-slate-300 hover:shadow-sm ${highlighted ? 'border-indigo-300 ring-2 ring-indigo-100' : ''}`}
     >
-    <Card className="flex h-full flex-col gap-3 p-4 transition hover:border-slate-300 hover:shadow-sm">
       <div>
         <div className="flex items-center justify-between gap-2">
           <h3 className="font-display text-base font-semibold">{name}</h3>
@@ -63,23 +48,54 @@ function AgentCard({ agent, usedIn }) {
         </div>
         {usedIn?.length ? (
           <div className="flex flex-wrap gap-1.5">
-            {usedIn.map(({ hostId, role }) => (
-              <Chip key={`${hostId}-${role}`}>
-                {hostId} · {role}
+            {usedIn.map((usage) => usage.type === 'workflow' ? (
+              <Link
+                key={`${usage.type}-${usage.id}-${usage.role}`}
+                to={`/workflows/${encodeURIComponent(usage.id)}`}
+                className="hover:opacity-75"
+              >
+                <Chip>{usage.id} · {usage.role}</Chip>
+              </Link>
+            ) : (
+              <Chip key={`${usage.type}-${usage.id}-${usage.role}`}>
+                {usage.id} · {usage.role}
               </Chip>
             ))}
           </div>
         ) : (
-          <span className="text-xs text-slate-400">No host composition.</span>
+          <span className="text-xs text-slate-400">No host or workflow references.</span>
         )}
       </div>
+      <Link
+        to={`/logs?agent=${encodeURIComponent(agent.agent_id)}&tab=sessions`}
+        className="text-xs font-medium text-indigo-600 hover:underline"
+      >
+        View logs →
+      </Link>
     </Card>
-    </Link>
   );
 }
 
 export default function Agents() {
-  const state = useApi(() => api.listAgents(), []);
+  const location = useLocation();
+  const state = useApi(async () => {
+    const [deployment, catalog] = await Promise.all([
+      api.listAgents(),
+      api.listWorkflows(),
+    ]);
+    const definitions = await Promise.all(
+      (catalog.workflows || [])
+        .filter((workflow) => workflow.step_kinds?.agent)
+        .map((workflow) => api.getWorkflow(workflow.workflow_id)),
+    );
+    return { ...deployment, workflowDefinitions: definitions };
+  }, []);
+
+  useEffect(() => {
+    if (state.loading || !location.hash) return;
+    const id = location.hash.slice(1);
+    document.getElementById(id)?.scrollIntoView({ block: 'center' });
+  }, [location.hash, state.loading]);
 
   return (
     <div>
@@ -89,7 +105,7 @@ export default function Agents() {
       />
       <Async state={state} empty={(d) => !d.agents?.length}>
         {(data) => {
-          const usage = buildHostUsage(data.hosts);
+          const usage = buildAgentUsage(data.hosts, data.workflowDefinitions);
           const agents = [...data.agents].sort((a, b) =>
             a.agent_id.localeCompare(b.agent_id),
           );
@@ -100,6 +116,7 @@ export default function Agents() {
                   key={agent.agent_id}
                   agent={agent}
                   usedIn={usage.get(agent.agent_id)}
+                  highlighted={location.hash === `#${agentAnchor(agent.agent_id)}`}
                 />
               ))}
             </div>

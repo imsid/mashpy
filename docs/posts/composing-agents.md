@@ -103,7 +103,7 @@ flowchart TD
 
 Besides pooled agents, deployments can carry **workflow-only agents**, specs registered through `HostBuilder.workflow(...)` (or `register_workflow_agent`) that exist to execute workflow tasks. They're full runtimes, but they're hidden from public agent listings and can't be named in a host: the primary can't invoke them and clients can't address them. They surface in the next post.
 
-Masher is a built-in example: the workflow-only specialist that runs Mash's trace-digest and eval-curation workflows against another agent's event logs. It's registered into every pool by default; pass `enable_masher(False)` to the builder to leave it out.
+The bundled eval agent uses the normal registration kind instead. It appears in the agent catalog so the spec behind its workflow steps is inspectable, and every pool includes it plus Masher's trace-digest, eval-curation, eval-generation, and scoring workflows.
 
 ## Shared infrastructure
 
@@ -111,6 +111,6 @@ The pool owns the stores, as [the runtime store post](persistence-store.md) cove
 
 Sharing stops at infrastructure. Memory reads and writes are scoped by `app_id`, and runtime events carry their `agent_id`, so two agents in one pool stay as isolated as two agents in separate processes. One consequence worth knowing: memory is keyed by agent id, not by host, so an agent keeps its memory whether it's serving one host or three. If you need isolated instances of the same spec, register it twice under different ids.
 
-Delegation covers work that arrives as conversation. Scheduled, repeatable pipelines that need state between runs get their own layer, built from the same parts, and that's the next post.
+Delegation covers work that arrives as conversation. Scheduled, repeatable pipelines get their own layer, built from the same parts, and that's the next post.
 
-*Next: [Workflows and Task State](workflows-and-task-state.md).*
+*Next: [Workflows as Step Pipelines](workflows-as-step-pipelines.md).*

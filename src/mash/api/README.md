@@ -75,25 +75,6 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 At least one of `location` or `content` must be set (enforced by `Skill`
 validation).
 
-- `RegisterAgentWorkflowRequest`
-
-```json
-{
-  "workflow_id": "required non-empty string",
-  "tasks": [
-    {
-      "task_id": "required non-empty string",
-      "agent_id": "required non-empty string",
-      "structured_output": "optional JSON-schema object"
-    }
-  ],
-  "metadata": "optional JSON object",
-  "task_message": {
-    "skill_name": "required non-empty string"
-  }
-}
-```
-
 ## Endpoints
 
 ### Discovery And Meta
@@ -225,18 +206,6 @@ validation).
 - Idempotent: if the skill name is already registered for that agent, the
   request is a no-op (no error).
 
-`POST /api/v1/agent/{agent_id}/workflow`
-- Publishes (upserts) a workflow definition owned by the named agent.
-- Path params:
-  - `agent_id`
-- Body: `RegisterAgentWorkflowRequest`
-- Returns:
-  - `agent_id`
-  - `workflow_id`
-- Upsert semantics: re-registering the same `workflow_id` replaces the live
-  definition. Unregistration is only available through the in-process host
-  API (`AgentPool.unregister_agent_workflow`), not HTTP.
-
 ### Sessions
 
 `GET /api/v1/agent/{agent_id}/sessions`
@@ -310,9 +279,13 @@ validation).
 
 `GET /api/v1/workflow`
 - Lists registered host workflows.
-- Returns `workflows`; each carries `workflow_id`, `tasks`, optional `metadata`,
-  and — when the spec sets them — a workflow-level `skill_name` (from
-  `task_message`) and a per-task `structured_output` schema.
+- Returns catalog summaries with `workflow_id`, display fields, pipeline or
+  strategy mode, step counts, a step preview, history availability, and the
+  latest stored pipeline run.
+
+`GET /api/v1/workflow/{workflow_id}`
+- Returns the complete registered definition: workflow input schema, metadata,
+  ordered step schemas and execution details, or the custom strategy name.
 
 `POST /api/v1/workflow/{workflow_id}/run`
 - Starts a workflow run.
@@ -333,22 +306,29 @@ validation).
 - Path params:
   - `workflow_id`
 - Query params:
-  - `status` optional public status filter; only `completed` returns memory-backed runs
-  - `start_time`, `end_time` optional memory turn time bounds
+  - `status` optional public status filter
+  - `start_time`, `end_time` optional creation-time bounds
   - `limit` optional, default `50`, clamped to `1..200`
   - `offset` optional, default `0`
   - `sort_desc` optional, default `true`
-- Returns `workflow_id` and `runs`; each run includes `run_id`, `workflow_id`, `dedup_key`, `status`, timestamps, `error`, and `summary`.
-- Does not include run `output`; call the run detail endpoint for results.
+- Returns `workflow_id`, summary `runs`, and `limit`, `offset`, and `has_more`.
+- Does not include the run result; call the run detail endpoint for it.
 
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
-- Returns one workflow run status and output.
+- Returns one workflow run with immutable `workflow_input`, `session_id`, final
+  `result`, and ordered step snapshots.
 - Path params:
   - `workflow_id`
   - `run_id`
 
+`POST /api/v1/workflow/{workflow_id}/runs/{run_id}/resume`
+- Resumes a failed step pipeline under the same run id.
+
+`GET /api/v1/workflow/{workflow_id}/runs/{run_id}/step-events`
+- Returns the persisted step lifecycle audit, including code steps.
+
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`
-- Server-Sent Events stream for workflow task runtime events.
+- Server-Sent Events stream for step lifecycle and terminal workflow events.
 - Path params:
   - `workflow_id`
   - `run_id`

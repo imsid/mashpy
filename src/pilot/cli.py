@@ -19,7 +19,6 @@ from mash.cli.shell import MashRemoteShell, ShellTarget
 
 from . import store
 from .catalog.agents.pilot import PILOT_AGENT_ID
-from .catalog.workflows.changelog import register_changelog_command
 from .catalog.workflows.quiz import QUIZ_WORKFLOW_ID, register_quiz_command
 
 PILOT_DEFAULT_API_BASE_URL = os.environ.get(
@@ -182,14 +181,14 @@ def _render_configured_hosts(renderer: RichRenderer) -> None:
 def _workflow_rows(workflows: list[dict[str, Any]]) -> list[list[str]]:
     rows: list[list[str]] = []
     for workflow in sorted(workflows, key=lambda w: str(w.get("workflow_id") or "")):
-        rendered_tasks = []
-        for task in workflow.get("tasks") or []:
-            if isinstance(task, dict):
-                rendered_tasks.append(
-                    f"{task.get('task_id') or ''} -> {task.get('agent_id') or ''}"
+        rendered_steps = []
+        for step in workflow.get("step_preview") or []:
+            if isinstance(step, dict):
+                rendered_steps.append(
+                    f"{step.get('step_id') or ''} ({step.get('kind') or ''})"
                 )
         rows.append(
-            [str(workflow.get("workflow_id") or ""), ", ".join(rendered_tasks)]
+            [str(workflow.get("workflow_id") or ""), ", ".join(rendered_steps)]
         )
     return rows
 
@@ -202,7 +201,7 @@ def _run_browse(client: MashHostClient, renderer: RichRenderer) -> int:
     renderer.info("Workflows (attach with `pilot compose ... --workflows <id>`)")
     workflow_rows = _workflow_rows(client.list_workflows())
     if workflow_rows:
-        renderer.table(["Workflow", "Tasks"], workflow_rows)
+        renderer.table(["Workflow", "Steps"], workflow_rows)
     else:
         renderer.info("(none registered)")
     renderer.info(f"Configured hosts ({store.hosts_file_path()})")
@@ -276,11 +275,8 @@ def _run_repl(
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3
     # (default_commands reads ctx.host_id).
     shell = MashRemoteShell(client, target)
-    # Pilot's commands are scoped too: /changelog registers its dynamic
-    # workflow on the session's target agent, and only makes sense on the
-    # `pilot` primary; /quiz exists only in hosts that attach pilot-quiz.
-    if agent_id == PILOT_AGENT_ID:
-        register_changelog_command(shell)
+    # Pilot's commands are scoped too: /quiz exists only in hosts that
+    # attach pilot-quiz.
     if QUIZ_WORKFLOW_ID in host_workflows:
         register_quiz_command(shell)
     shell.run()

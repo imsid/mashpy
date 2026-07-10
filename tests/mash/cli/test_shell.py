@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +12,9 @@ from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, build_runtime_trace
 
+if TYPE_CHECKING:
+    from mash.cli.client import MashHostClient
+
 
 class _FakeClient:
     def __init__(self) -> None:
@@ -20,8 +23,7 @@ class _FakeClient:
         self.host_workflows: list[str] = []
         self.feedback: list[dict[str, Any]] = []
         self.interactions: list[dict[str, Any]] = []
-        self.emit_workflow_interaction = False
-        self.workflow_structured_output: dict[str, Any] | None = None
+        self.workflow_result: dict[str, Any] = {"status": "ok"}
 
     def health(self):
         return {
@@ -82,7 +84,17 @@ class _FakeClient:
         workflows = [
             {
                 "workflow_id": "changelog",
-                "tasks": [{"task_id": "scan", "agent_id": "worker"}],
+                "display_name": "changelog",
+                "mode": "pipeline",
+                "step_count": 1,
+                "step_preview": [
+                    {
+                        "ordinal": 0,
+                        "step_id": "scan",
+                        "kind": "agent",
+                        "agent_id": "worker",
+                    }
+                ],
             }
         ]
         if host is None:
@@ -121,7 +133,7 @@ class _FakeClient:
             "started_at": 2.0,
             "finished_at": 3.0,
             "error": None,
-            "output": {"task_states": {"digest-traces": {"status": "ok"}}},
+            "result": {"digest": "ok"},
         }
 
     def submit_request(self, agent_id: str, *, message: str, session_id: str | None = None):
@@ -226,108 +238,48 @@ class _FakeClient:
 
     def stream_workflow_run(self, workflow_id: str, run_id: str):
         del run_id
-        task_id = "scan"
-        task_agent_id = "worker"
-        response_text = "{\"status\":\"ok\"}"
         yield {
-            "event": "workflow.status",
+            "event": "step.started",
             "data": {
                 "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
-                "status": "running",
+                "step_id": "scan",
+                "attempt": 1,
+                "seq": 1,
+                "payload": {},
             },
         }
         yield {
-            "event": "workflow.task.started",
+            "event": "step.completed",
             "data": {
                 "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
-                "task_id": task_id,
-                "task_agent_id": task_agent_id,
-            },
-        }
-        if self.emit_workflow_interaction:
-            yield {
-                "event": "request.interaction.create",
-                "data": {
-                    "workflow_id": workflow_id,
-                    "run_id": "mw:host:changelog:abc",
-                    "task_id": task_id,
-                    "task_agent_id": task_agent_id,
-                    "request_id": "task-req-1",
-                    "interaction_id": "int-1",
-                    "type": "info",
-                    "prompt": "What is your name?",
-                },
-            }
-            yield {
-                "event": "request.interaction.ack",
-                "data": {
-                    "workflow_id": workflow_id,
-                    "run_id": "mw:host:changelog:abc",
-                    "task_id": task_id,
-                    "task_agent_id": task_agent_id,
-                    "interaction_id": "int-1",
-                    "response": "Ada",
-                },
-            }
-        yield {
-            "event": "agent.trace",
-            "data": {
-                "workflow_id": workflow_id,
-                "run_id": "mw:host:changelog:abc",
-                "task_id": task_id,
-                "task_agent_id": task_agent_id,
-                "event_type": "runtime.llm.think.completed",
-                "trace_id": "trace-wf-1",
-                "session_id": "workflow:changelog:task:scan:run:mw:host:changelog:abc",
-                "loop_index": 0,
-                "created_at": 100.0,
-                "payload": {
-                    "duration_ms": 9,
-                    "action_type": "response",
-                    "assistant_text": response_text,
-                    "tool_calls": [],
-                    "token_usage": {"input": 2, "output": 1},
-                },
-            },
-        }
-        completed_response: dict[str, Any] = {"text": response_text}
-        if self.workflow_structured_output is not None:
-            completed_response["structured_output"] = self.workflow_structured_output
-        yield {
-            "event": "request.completed",
-            "data": {
-                "workflow_id": workflow_id,
-                "run_id": "mw:host:changelog:abc",
-                "task_id": task_id,
-                "task_agent_id": task_agent_id,
-                "response": completed_response,
+                "step_id": "scan",
+                "attempt": 1,
+                "seq": 2,
+                "payload": {},
             },
         }
         yield {
-            "event": "workflow.task.completed",
-            "data": {
-                "workflow_id": workflow_id,
-                "run_id": "mw:host:changelog:abc",
-                "task_id": task_id,
-                "task_agent_id": task_agent_id,
-            },
-        }
-        yield {
-            "event": "workflow.status",
+            "event": "workflow.completed",
             "data": {
                 "workflow_id": workflow_id,
                 "run_id": "mw:host:changelog:abc",
                 "status": "completed",
+                "result": self.workflow_result,
             },
         }
+
+
+def _fake(shell: MashRemoteShell) -> _FakeClient:
+    """Recover the typed fake behind the shell's MashHostClient attribute."""
+    return cast(_FakeClient, shell.client)
 
 
 class MashRemoteShellTests(unittest.TestCase):
     def _build_shell(self) -> MashRemoteShell:
         return MashRemoteShell(
-            _FakeClient(),
+            cast("MashHostClient", _FakeClient()),
             ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1"),
         )
 
@@ -335,7 +287,7 @@ class MashRemoteShellTests(unittest.TestCase):
         client = _FakeClient()
         client.host_workflows = list(host_workflows or [])
         return MashRemoteShell(
-            client,
+            cast("MashHostClient", client),
             ShellTarget(
                 api_base_url="http://localhost:8000",
                 agent_id="primary",
@@ -364,8 +316,8 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.command_registry.execute(
                 shell.context, "/feedback the trace output is hard to read"
             )
-        self.assertEqual(len(shell.client.feedback), 1)
-        recorded = shell.client.feedback[0]
+        self.assertEqual(len(_fake(shell).feedback), 1)
+        recorded = _fake(shell).feedback[0]
         self.assertEqual(recorded["agent_id"], "primary")
         self.assertEqual(recorded["message"], "the trace output is hard to read")
         self.assertEqual(recorded["host_id"], "assistant")
@@ -377,7 +329,7 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "error") as error:
             shell.command_registry.execute(shell.context, "/feedback")
-        self.assertEqual(shell.client.feedback, [])
+        self.assertEqual(_fake(shell).feedback, [])
         error.assert_called_once_with("Usage: /feedback <message>")
 
     def test_handle_repl_message_tracks_last_request_id(self) -> None:
@@ -426,8 +378,8 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow list")
         table.assert_called_once_with(
-            ["Workflow ID", "Tasks"],
-            [["changelog", "scan -> worker"]],
+            ["Workflow ID", "Steps"],
+            [["changelog", "scan (agent)"]],
         )
 
     def test_workflow_list_host_scoped_without_attached_workflows(self) -> None:
@@ -440,7 +392,7 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_host_shell()
         with patch.object(shell.context.renderer, "error") as error:
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        self.assertEqual(shell.client.workflow_runs, [])
+        self.assertEqual(_fake(shell).workflow_runs, [])
         self.assertIn("not attached to host 'assistant'", error.call_args.args[0])
         self.assertIn("'changelog'", error.call_args.args[0])
 
@@ -449,29 +401,11 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "info") as info:
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
         self.assertEqual(
-            shell.client.workflow_runs,
+            _fake(shell).workflow_runs,
             [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None}],
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow status: completed", lines)
-
-    def test_workflow_run_handles_ask_user_interaction(self) -> None:
-        shell = self._build_host_shell(host_workflows=["changelog"])
-        shell.client.emit_workflow_interaction = True
-        with patch("builtins.input", return_value="Ada"):
-            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # The response is posted to the TASK's agent and request, not ctx.agent_id.
-        self.assertEqual(
-            shell.client.interactions,
-            [
-                {
-                    "agent_id": "worker",
-                    "request_id": "task-req-1",
-                    "interaction_id": "int-1",
-                    "response": "Ada",
-                }
-            ],
-        )
 
     def test_workflow_status_host_scoped_refuses_unattached(self) -> None:
         shell = self._build_host_shell()
@@ -479,7 +413,7 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.command_registry.execute(
                 shell.context, "/workflow status changelog mw:host:changelog:abc"
             )
-        self.assertEqual(shell.client.workflow_status_requests, [])
+        self.assertEqual(_fake(shell).workflow_status_requests, [])
         self.assertIn("not attached to host 'assistant'", error.call_args.args[0])
 
     def test_workflow_status_host_scoped_allows_attached(self) -> None:
@@ -488,7 +422,7 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "table"):
             shell.command_registry.execute(shell.context, f"/workflow status changelog {run_id}")
         self.assertEqual(
-            shell.client.workflow_status_requests,
+            _fake(shell).workflow_status_requests,
             [{"workflow_id": "changelog", "run_id": run_id}],
         )
 
@@ -497,8 +431,8 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow list")
         table.assert_called_once_with(
-            ["Workflow ID", "Tasks"],
-            [["changelog", "scan -> worker"]],
+            ["Workflow ID", "Steps"],
+            [["changelog", "scan (agent)"]],
         )
 
     def test_workflows_alias_is_not_registered(self) -> None:
@@ -512,33 +446,27 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "info") as info:
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
         self.assertEqual(
-            shell.client.workflow_runs,
+            _fake(shell).workflow_runs,
             [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None}],
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow: changelog", lines)
         self.assertIn("Run ID: mw:host:changelog:abc", lines)
-        self.assertIn("Workflow status: running", lines)
-        self.assertIn("Workflow task scan started", lines)
-        self.assertIn("Workflow task scan completed", lines)
+        self.assertIn("Workflow step scan started", lines)
+        self.assertIn("Workflow step scan completed", lines)
         self.assertIn("Workflow status: completed", lines)
 
-    def test_workflow_run_streams_task_response_and_chain_events(self) -> None:
+    def test_workflow_run_renders_result_without_agent_chain_events(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.chain_renderer, "on_runtime_event") as runtime_event:
             with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
                 with patch.object(shell.context.renderer, "markdown") as markdown:
                     shell.command_registry.execute(shell.context, "/workflow run changelog")
 
-        runtime_event.assert_called_once()
-        self.assertEqual(
-            runtime_event.call_args.args[0].event_type,
-            RuntimeEventType.LLM_THINK_COMPLETED.value,
-        )
-        markdown.assert_called_once_with('{"status":"ok"}')
-        # finish_trace is called once per task (inside request.completed) and
-        # once more in the finally block after the stream ends.
-        self.assertEqual(finish_trace.call_count, 2)
+        runtime_event.assert_not_called()
+        markdown.assert_called_once()
+        self.assertIn('"status": "ok"', markdown.call_args.args[0])
+        finish_trace.assert_called_once()
 
     def test_workflow_run_forwards_input_json(self) -> None:
         shell = self._build_shell()
@@ -547,7 +475,7 @@ class MashRemoteShellTests(unittest.TestCase):
             "/workflow run changelog manual --input '{\"x\":1}'",
         )
         self.assertEqual(
-            shell.client.workflow_runs,
+            _fake(shell).workflow_runs,
             [
                 {
                     "workflow_id": "changelog",
@@ -561,14 +489,14 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "error") as error:
             shell.command_registry.execute(shell.context, "/workflow run changelog --input '{bad}'")
-        self.assertEqual(shell.client.workflow_runs, [])
+        self.assertEqual(_fake(shell).workflow_runs, [])
         self.assertIn("Workflow input must be valid JSON", error.call_args.args[0])
 
     def test_workflow_run_rejects_non_object_input_json_locally(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "error") as error:
             shell.command_registry.execute(shell.context, "/workflow run changelog --input '[1]'")
-        self.assertEqual(shell.client.workflow_runs, [])
+        self.assertEqual(_fake(shell).workflow_runs, [])
         error.assert_called_once_with("Workflow input must be a JSON object")
 
     def test_workflow_status_fetches_run(self) -> None:
@@ -580,12 +508,12 @@ class MashRemoteShellTests(unittest.TestCase):
         ) as print_:
             shell.command_registry.execute(shell.context, f"/workflow status changelog {run_id}")
         self.assertEqual(
-            shell.client.workflow_status_requests,
+            _fake(shell).workflow_status_requests,
             [{"workflow_id": "changelog", "run_id": run_id}],
         )
         rows = table.call_args.args[1]
         self.assertIn(["status", "completed"], rows)
-        self.assertIn('"digest-traces"', print_.call_args.args[0])
+        self.assertIn('"digest"', print_.call_args.args[0])
 
     def test_workflow_run_usage_error_is_local(self) -> None:
         shell = self._build_shell()
@@ -594,21 +522,21 @@ class MashRemoteShellTests(unittest.TestCase):
         error.assert_called_once_with(
             "Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]"
         )
-        self.assertEqual(shell.client.workflow_runs, [])
+        self.assertEqual(_fake(shell).workflow_runs, [])
 
     def test_workflow_unknown_subcommand_usage_error_is_local(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "error") as error:
             shell.command_registry.execute(shell.context, "/workflow nope")
-        error.assert_called_once_with("Usage: /workflow [list|run|status] ...")
+        error.assert_called_once_with("Usage: /workflow [list|run|status|resume] ...")
 
     def test_workflow_without_subcommand_lists_workflows(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/workflow")
         table.assert_called_once_with(
-            ["Workflow ID", "Tasks"],
-            [["changelog", "scan -> worker"]],
+            ["Workflow ID", "Steps"],
+            [["changelog", "scan (agent)"]],
         )
 
     def test_handle_repl_message_renders_remote_response(self) -> None:
@@ -626,7 +554,8 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_handle_repl_message_deduplicates_streamed_and_terminal_response(self) -> None:
         shell = self._build_shell()
 
-        def stream_same_text(_agent_id: str, _request_id: str):
+        def stream_same_text(agent_id: str, request_id: str):
+            del agent_id, request_id
             yield {
                 "event": "agent.trace",
                 "data": {
@@ -649,7 +578,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
             }
 
-        shell.client.stream_request = stream_same_text
+        _fake(shell).stream_request = stream_same_text
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
         markdown.assert_called_once_with("echo: hello")
@@ -657,7 +586,8 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_handle_repl_message_does_not_stream_terminal_finish_preview(self) -> None:
         shell = self._build_shell()
 
-        def stream_finish_preview(_agent_id: str, _request_id: str):
+        def stream_finish_preview(agent_id: str, request_id: str):
+            del agent_id, request_id
             yield {
                 "event": "agent.trace",
                 "data": {
@@ -681,7 +611,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 },
             }
 
-        shell.client.stream_request = stream_finish_preview
+        _fake(shell).stream_request = stream_finish_preview
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
         markdown.assert_called_once_with("final response")
@@ -689,7 +619,8 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_handle_repl_message_renders_runtime_think_events(self) -> None:
         shell = self._build_shell()
 
-        def stream_runtime_think(_agent_id: str, _request_id: str):
+        def stream_runtime_think(agent_id: str, request_id: str):
+            del agent_id, request_id
             yield {
                 "event": "agent.trace",
                 "data": {
@@ -712,7 +643,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 },
             }
 
-        shell.client.stream_request = stream_runtime_think
+        _fake(shell).stream_request = stream_runtime_think
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
         # The LLM_THINK_COMPLETED event still feeds chain_renderer for trace
@@ -727,7 +658,8 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         answer = "# Title\n\nBody paragraph one.\n\nDone."
 
-        def stream_with_deltas(_agent_id: str, _request_id: str):
+        def stream_with_deltas(agent_id: str, request_id: str):
+            del agent_id, request_id
             for chunk in ["# Title\n\n", "Body paragraph one.\n\n", "Done."]:
                 yield {
                     "event": "agent.trace",
@@ -758,7 +690,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 "data": {"session_id": "s-1", "response": {"text": answer}},
             }
 
-        shell.client.stream_request = stream_with_deltas
+        _fake(shell).stream_request = stream_with_deltas
         with patch.object(shell.context.renderer, "markdown") as markdown:
             shell.handle_repl_message(shell.context, "hello")
         # The answer rendered live (token streaming); the terminal/preview
@@ -767,7 +699,7 @@ class MashRemoteShellTests(unittest.TestCase):
 
     def test_split_complete_markdown_buffers_open_code_fence(self) -> None:
         renderer = ChainOfThoughtRenderer(Console(record=True, width=80))
-        complete, remainder = renderer._split_complete_markdown(
+        complete, remainder = renderer._split_complete_markdown(  # pylint: disable=protected-access
             "para one\n\n```\ncode\n"
         )
         self.assertEqual(complete, "para one\n")
@@ -846,7 +778,8 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_handle_repl_message_ignores_null_subagent_payloads(self) -> None:
         shell = self._build_shell()
 
-        def stream_with_null_subagent_payload(_agent_id: str, _request_id: str):
+        def stream_with_null_subagent_payload(agent_id: str, request_id: str):
+            del agent_id, request_id
             yield {
                 "event": "agent.trace",
                 "data": {
@@ -859,7 +792,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
             }
 
-        shell.client.stream_request = stream_with_null_subagent_payload
+        _fake(shell).stream_request = stream_with_null_subagent_payload
         with patch.object(shell.renderer, "error") as error:
             shell.handle_repl_message(shell.context, "hello")
         error.assert_called_once_with("    Subagent subagent error: request failed")
@@ -867,7 +800,8 @@ class MashRemoteShellTests(unittest.TestCase):
     def test_handle_repl_message_renders_assistant_blocks_in_order(self) -> None:
         shell = self._build_shell()
 
-        def stream_with_blocks(_agent_id: str, _request_id: str):
+        def stream_with_blocks(agent_id: str, request_id: str):
+            del agent_id, request_id
             yield {
                 "event": "request.completed",
                 "data": {
@@ -882,7 +816,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 },
             }
 
-        shell.client.stream_request = stream_with_blocks
+        _fake(shell).stream_request = stream_with_blocks
         thinking_calls: list[str] = []
         markdown_calls: list[str] = []
         with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
@@ -895,7 +829,8 @@ class MashRemoteShellTests(unittest.TestCase):
         shell = self._build_shell()
         answer = "streamed answer"
 
-        def stream_delta_then_blocks(_agent_id: str, _request_id: str):
+        def stream_delta_then_blocks(agent_id: str, request_id: str):
+            del agent_id, request_id
             yield {
                 "event": "agent.trace",
                 "data": {
@@ -918,7 +853,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 },
             }
 
-        shell.client.stream_request = stream_delta_then_blocks
+        _fake(shell).stream_request = stream_delta_then_blocks
         thinking_calls: list[str] = []
         markdown_calls: list[str] = []
         with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
@@ -928,43 +863,6 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertEqual(thinking_calls, ["deep thought"])
         # Text block is skipped — it was already shown via delta streaming.
         self.assertEqual(markdown_calls, [])
-
-    def test_workflow_run_renders_assistant_blocks_with_thinking(self) -> None:
-        shell = self._build_shell()
-
-        def stream_blocks_workflow(workflow_id: str, run_id: str):
-            yield {
-                "event": "workflow.task.started",
-                "data": {"task_id": "scan", "task_agent_id": "worker"},
-            }
-            yield {
-                "event": "request.completed",
-                "data": {
-                    "task_id": "scan",
-                    "task_agent_id": "worker",
-                    "response": {
-                        "text": "result",
-                        "assistant_blocks": [
-                            {"type": "thinking", "thinking": "task reasoning"},
-                            {"type": "text", "text": "result"},
-                        ],
-                    },
-                },
-            }
-            yield {
-                "event": "workflow.task.completed",
-                "data": {"task_id": "scan", "task_agent_id": "worker"},
-            }
-
-        shell.client.stream_workflow_run = stream_blocks_workflow
-        thinking_calls: list[str] = []
-        markdown_calls: list[str] = []
-        with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
-            with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
-                shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        self.assertEqual(thinking_calls, ["task reasoning"])
-        self.assertEqual(markdown_calls, ["result"])
-
 
 class ChainOfThoughtRendererTests(unittest.TestCase):
     def test_think_events_use_step_id_for_display_when_step_complete_is_missing(self) -> None:
@@ -1073,83 +971,53 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
         self.assertIn("Agent Execution Complete:", output)
 
 
-class StructuredOutputRenderingTests(unittest.TestCase):
-    """Tests for /workflow run rendering of structured_output."""
+class WorkflowResultRenderingTests(unittest.TestCase):
+    """Tests for completed workflow result rendering."""
 
     def _build_shell(self) -> MashRemoteShell:
         return MashRemoteShell(
-            _FakeClient(),
+            cast("MashHostClient", _FakeClient()),
             ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1"),
         )
 
-    def test_structured_output_renders_as_json_code_block_by_default(self) -> None:
+    def test_result_renders_as_json_code_block_by_default(self) -> None:
         shell = self._build_shell()
-        shell.client.workflow_structured_output = {"digest": "hello world", "score": 0.9}
+        _fake(shell).workflow_result = {"digest": "hello world", "score": 0.9}
         rendered: list[str] = []
         with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # request.completed renders the structured_output JSON block; the
-        # agent.trace preview is gone so there is only one render.
         self.assertEqual(len(rendered), 1)
         json_block = rendered[0]
         self.assertIn("```json", json_block)
         self.assertIn('"digest": "hello world"', json_block)
         self.assertIn('"score": 0.9', json_block)
 
-    def test_text_not_re_rendered_when_structured_output_present(self) -> None:
-        shell = self._build_shell()
-        shell.client.workflow_structured_output = {"result": "ok"}
-        rendered: list[str] = []
-        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
-            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # Only the structured JSON block is rendered by request.completed;
-        # the task text is not repeated.
-        self.assertEqual(len(rendered), 1)
-        self.assertIn("```json", rendered[0])
-        self.assertNotIn('{"status":"ok"}', rendered[0])
-
-    def test_text_rendered_when_no_structured_output(self) -> None:
-        shell = self._build_shell()
-        # No structured_output set — default fake client behavior.
-        rendered: list[str] = []
-        with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
-            shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # Only one render: streamed text via agent.trace. request.completed sees the
-        # same text was already shown and does not repeat it.
-        self.assertEqual(len(rendered), 1)
-        self.assertEqual(rendered[0], '{"status":"ok"}')
-
     def test_registered_renderer_called_instead_of_default(self) -> None:
         shell = self._build_shell()
-        shell.client.workflow_structured_output = {"summary": "digest ready"}
-        calls: list[tuple] = []
+        _fake(shell).workflow_result = {"summary": "digest ready"}
+        calls: list[dict[str, Any]] = []
 
-        def my_renderer(task_id: str, agent_id: str, data: dict) -> None:
-            calls.append((task_id, agent_id, data))
+        def my_renderer(data: dict[str, Any]) -> None:
+            calls.append(data)
 
-        shell.register_structured_output_renderer("changelog", my_renderer)
+        shell.register_workflow_result_renderer("changelog", my_renderer)
         rendered: list[str] = []
         with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # Custom renderer received the right args.
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "scan")      # task_id
-        self.assertEqual(calls[0][1], "worker")    # agent_id
-        self.assertEqual(calls[0][2], {"summary": "digest ready"})
-        # No default markdown render: no agent.trace preview, and the custom
-        # renderer handled structured_output without calling ctx.renderer.markdown.
+        self.assertEqual(calls, [{"summary": "digest ready"}])
         self.assertEqual(len(rendered), 0)
 
     def test_registered_renderer_for_other_workflow_not_called(self) -> None:
         shell = self._build_shell()
-        shell.client.workflow_structured_output = {"x": 1}
+        _fake(shell).workflow_result = {"x": 1}
         calls: list[tuple] = []
 
-        shell.register_structured_output_renderer("other-workflow", lambda *a: calls.append(a))
+        shell.register_workflow_result_renderer(
+            "other-workflow", lambda data: calls.append((data,))
+        )
         rendered: list[str] = []
         with patch.object(shell.context.renderer, "markdown", side_effect=rendered.append):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
-        # Falls back to default JSON render because "changelog" has no registered renderer.
         self.assertEqual(calls, [])
         self.assertEqual(len(rendered), 1)
         self.assertIn("```json", rendered[0])

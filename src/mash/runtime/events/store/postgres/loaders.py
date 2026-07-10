@@ -586,43 +586,6 @@ async def list_sessions(
     return {"sessions": sessions, "total": total}
 
 
-async def aggregate_workflow_activity(pool: Any) -> list[dict[str, Any]]:
-    # Per-workflow runtime rollup across the shared event log: how often each
-    # registered (or historical) workflow ran, when it last ran, and what it
-    # cost. Keyed by workflow_id; runs are distinct workflow_run_ids.
-    sql = """
-        SELECT
-            workflow_id,
-            COUNT(DISTINCT workflow_run_id) AS run_count,
-            COUNT(DISTINCT session_id) AS session_count,
-            MAX(created_at) AS last_run_at,
-            COALESCE(SUM(
-                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
-                    + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
-                ELSE 0 END
-            ), 0) AS total_tokens
-        FROM runtime_event_log
-        WHERE workflow_id IS NOT NULL
-        GROUP BY workflow_id
-        ORDER BY MAX(created_at) DESC
-    """
-    async with pool.connection() as conn:
-        async with conn.cursor() as cursor:
-            await cursor.execute(sql)
-            rows = await cursor.fetchall()
-    return [
-        {
-            "workflow_id": str(row["workflow_id"]),
-            "run_count": int(row["run_count"] or 0),
-            "session_count": int(row["session_count"] or 0),
-            "last_run_at": float(row["last_run_at"]),
-            "total_tokens": int(row["total_tokens"] or 0),
-        }
-        for row in rows
-    ]
-
-
 async def aggregate_usage(
     pool: Any,
     app_id: str,

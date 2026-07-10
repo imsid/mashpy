@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import json
 import secrets
-import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -15,8 +13,8 @@ from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import append_runtime_event
 from mash.runtime.structured_output import normalize_structured_output_schema
 
-from .spec import WorkflowSpec, WorkflowTaskMessageSpec
-from .strategy import WorkflowExecutionContext, WorkflowStrategy
+from .spec import WorkflowSpec
+from .strategy import WorkflowExecutionContext
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import AgentPool
@@ -31,7 +29,7 @@ _WORKFLOW_TASK_STRUCTURED_OUTPUT = {
     "properties": {},
     "required": [],
     # Provider-native structured output requires a closed object schema for
-    # Anthropic. Hosts should set TaskSpec.structured_output for non-empty task state.
+    # Anthropic. Agent steps should declare an output model/schema for non-empty state.
     "additionalProperties": False,
 }
 
@@ -159,7 +157,8 @@ async def start_workflow_run(
     workflow_input: dict[str, Any] | None = None,
     session_id: str | None = None,
 ) -> str:
-    from mash.runtime.engine.dbos import ensure_dbos_ready
+    # Deferred: mash.runtime.engine.dbos imports this module back.
+    from mash.runtime.engine.dbos import ensure_dbos_ready  # pylint: disable=import-outside-toplevel
 
     await ensure_dbos_ready(database_url)
     dbos_class, _, set_workflow_id, set_enqueue_options, dedup_error = _load_dbos_api()
@@ -205,6 +204,26 @@ async def get_workflow_status(run_id: str) -> Any | None:
     return await dbos_class.get_workflow_status_async(run_id)
 
 
+async def resume_workflow_run(run_id: str) -> str:
+    """Resume a failed/interrupted DBOS workflow run from its failed step.
+
+    DBOS replays completed steps from their memoized outputs and re-drives from
+    the point of failure. Returns the same ``run_id``.
+    """
+    resolved = str(run_id or "").strip()
+    if not resolved:
+        raise ValueError("run_id is required")
+    dbos_class, _, _, _, _ = _load_dbos_api()
+    resume = getattr(dbos_class, "resume_workflow_async", None)
+    if resume is None:
+        raise RuntimeError("dbos does not support resume_workflow_async")
+    handle = await resume(resolved)
+    workflow_id = getattr(handle, "get_workflow_id", None)
+    if callable(workflow_id):
+        return str(workflow_id())
+    return resolved
+
+
 async def execute_registered_workflow(
     runner_id: str,
     workflow_id: str,
@@ -222,154 +241,17 @@ async def execute_registered_workflow(
         workflow_input=_normalize_workflow_input(workflow_input),
         session_id=session_id,
     )
-    strategy = workflow.strategy or _SEQUENTIAL_STRATEGY
+    strategy = workflow.strategy
+    if strategy is None:
+        if not workflow.steps:
+            raise RuntimeError(
+                f"workflow '{workflow_id}' has neither steps nor a strategy"
+            )
+        # Lazy import: engine imports helpers from this module.
+        from .engine import FORWARD_PIPELINE_STRATEGY  # pylint: disable=import-outside-toplevel
+
+        strategy = FORWARD_PIPELINE_STRATEGY
     return await strategy.run(ctx)
-
-
-class SequentialTaskStrategy(WorkflowStrategy):
-    """Default strategy: run the workflow's ordered tasks one after another."""
-
-    async def run(self, ctx: WorkflowExecutionContext) -> dict[str, Any]:
-        dbos_class, _, _, _, _ = _load_dbos_api()
-        workflow = ctx.workflow
-        runner_id = ctx.runner_id
-        run_id = ctx.run_id
-        session_id = ctx.session_id
-        normalized_workflow_input = ctx.workflow_input
-        task_requests: dict[str, str] = {}
-        task_states: dict[str, dict[str, Any]] = {}
-
-        for task in workflow.tasks:
-            previous_state = await load_previous_task_state(
-                runner_id=runner_id,
-                workflow_id=workflow.workflow_id,
-                task_id=task.task_id,
-                current_run_id=run_id,
-            )
-            # Starting a task request through the normal in-process client would
-            # enqueue a child DBOS workflow from inside this host workflow. DBOS can
-            # reject that, so workflow tasks enter the request workflow body inline.
-            request_id = await _post_task_request(
-                runner_id,
-                workflow.workflow_id,
-                run_id,
-                task.task_id,
-                task.agent_id,
-                normalized_workflow_input,
-                previous_state,
-                workflow.task_message,
-                task.structured_output,
-                session_id=session_id,
-            )
-            payload = await dbos_class.run_step_async(
-                {"name": f"{task.task_id}.request.await"},
-                _collect_terminal_payload,
-                runner_id,
-                task.agent_id,
-                request_id,
-            )
-            next_state = await dbos_class.run_step_async(
-                {"name": f"{task.task_id}.state.extract"},
-                _extract_task_state,
-                payload,
-            )
-            task_requests[task.task_id] = request_id
-            task_states[task.task_id] = next_state
-
-        return {
-            "workflow_id": workflow.workflow_id,
-            "run_id": run_id,
-            "completed_at": time.time(),
-            "task_requests": task_requests,
-            "task_states": task_states,
-        }
-
-
-_SEQUENTIAL_STRATEGY = SequentialTaskStrategy()
-
-
-async def load_previous_task_state(
-    *,
-    runner_id: str,
-    workflow_id: str,
-    task_id: str,
-    current_run_id: str,
-) -> dict[str, Any]:
-    dbos_class, _, _, _, _ = _load_dbos_api()
-    statuses = await dbos_class.list_workflows_async(
-        name=_WORKFLOW_NAME,
-        workflow_id_prefix=workflow_run_id_prefix(runner_id, workflow_id),
-        status="SUCCESS",
-        sort_desc=True,
-        limit=20,
-        load_input=False,
-        load_output=True,
-    )
-    for status in statuses:
-        if getattr(status, "workflow_id", None) == current_run_id:
-            continue
-        output = getattr(status, "output", None)
-        if not isinstance(output, dict):
-            continue
-        task_states = output.get("task_states")
-        if not isinstance(task_states, dict):
-            continue
-        state = task_states.get(task_id)
-        if isinstance(state, dict):
-            return dict(state)
-    return {}
-
-
-async def _post_task_request(
-    runner_id: str,
-    workflow_id: str,
-    run_id: str,
-    task_id: str,
-    agent_id: str,
-    workflow_input: dict[str, Any],
-    task_state: dict[str, Any],
-    task_message: WorkflowTaskMessageSpec | None,
-    structured_output: dict[str, Any] | None,
-    *,
-    session_id: str | None = None,
-) -> str:
-    pool = require_runner(runner_id)
-    client = pool.get_client(agent_id)
-    # A workflow run executes under one session: the caller's session when one is
-    # threaded through (e.g. the REPL), otherwise a fresh per-run session. The run
-    # is a trace in that session, tagged with workflow_run_id, not a session of
-    # its own.
-    session_id = session_id or _run_session_id(run_id)
-    message = _build_task_message(
-        workflow_id=workflow_id,
-        workflow_run_id=run_id,
-        task_id=task_id,
-        workflow_input=workflow_input,
-        task_state=task_state,
-        task_message=task_message,
-    )
-    runtime = _resolve_inline_runtime(pool, agent_id)
-    task_structured_output = (
-        normalize_structured_output_schema(structured_output)
-        if isinstance(structured_output, dict)
-        else _WORKFLOW_TASK_STRUCTURED_OUTPUT
-    )
-    if runtime is not None:
-        return await _execute_inline_task_request(
-            runtime,
-            agent_id=agent_id,
-            message=message,
-            session_id=session_id,
-            structured_output=task_structured_output,
-            workflow_id=workflow_id,
-            workflow_run_id=run_id,
-            task_id=task_id,
-        )
-    return await client.post_request(
-        message,
-        session_id=session_id,
-        structured_output=task_structured_output,
-    )
 
 
 async def post_inline_agent_request(
@@ -516,46 +398,6 @@ async def _collect_terminal_payload(
 collect_terminal_payload = _collect_terminal_payload
 
 
-def _extract_task_state(payload: dict[str, Any]) -> dict[str, Any]:
-    response = payload.get("response")
-    if not isinstance(response, dict):
-        raise RuntimeError("workflow task completed without a response payload")
-    structured_output = response.get("structured_output")
-    if not isinstance(structured_output, dict):
-        raise RuntimeError("workflow task response structured_output is required")
-    return dict(structured_output)
-
-
-def _build_task_message(
-    *,
-    workflow_id: str,
-    workflow_run_id: str,
-    task_id: str,
-    workflow_input: dict[str, Any],
-    task_state: dict[str, Any],
-    task_message: WorkflowTaskMessageSpec | None = None,
-) -> str:
-    payload: dict[str, Any] = {
-        "workflow_id": workflow_id,
-        "workflow_run_id": workflow_run_id,
-        "task_id": task_id,
-        "workflow_input": dict(workflow_input),
-        "task_state": dict(task_state),
-    }
-    if task_message is not None:
-        skill_name = str(task_message.skill_name or "").strip()
-        payload["skill_name"] = skill_name
-        payload["workflow_task_instructions"] = [
-            (
-                f"Your first action must be calling the Skill tool with "
-                f"arguments {{\"name\": \"{skill_name}\"}}."
-            ),
-            "After the Skill tool returns, follow the loaded skill instructions.",
-            "Execute only the task identified by task_id.",
-        ]
-    return json.dumps(payload, ensure_ascii=True)
-
-
 def _run_session_id(run_id: str) -> str:
     """Deterministic session id for one workflow run.
 
@@ -590,7 +432,6 @@ __all__ = [
     "execute_registered_workflow",
     "get_workflow_status",
     "load_dbos_api",
-    "load_previous_task_state",
     "make_runner_id",
     "make_run_id",
     "post_inline_agent_request",

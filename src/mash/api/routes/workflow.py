@@ -7,7 +7,11 @@ from typing import Any, AsyncIterator, Optional
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
-from mash.workflows import DuplicateWorkflowRunError, WorkflowNotFoundError
+from mash.workflows import (
+    DuplicateWorkflowRunError,
+    WorkflowInputValidationError,
+    WorkflowNotFoundError,
+)
 
 from .common import (
     APIError,
@@ -47,6 +51,17 @@ def build_workflow_router() -> APIRouter:
             ]
         return success({"workflows": workflows})
 
+    @router.get("/workflow/{workflow_id}")
+    async def get_workflow_definition(
+        request: Request,
+        workflow_id: str,
+    ) -> dict[str, Any]:
+        workflow_service = get_workflow_service(request)
+        definition = await workflow_service.get_workflow_definition(
+            workflow_id.strip()
+        )
+        return success(definition)
+
     @router.post("/workflow/{workflow_id}/run")
     async def run_workflow(
         request: Request,
@@ -61,7 +76,11 @@ def build_workflow_router() -> APIRouter:
                 workflow_input=body.input,
                 session_id=normalize_optional_text(body.session_id),
             )
-        except (WorkflowNotFoundError, DuplicateWorkflowRunError):
+        except (
+            WorkflowNotFoundError,
+            WorkflowInputValidationError,
+            DuplicateWorkflowRunError,
+        ):
             raise
         except Exception as exc:
             raise APIError(
@@ -96,10 +115,12 @@ def build_workflow_router() -> APIRouter:
             status=status,
             start_time=start_time,
             end_time=end_time,
-            limit=resolved_limit,
+            limit=resolved_limit + 1,
             offset=resolved_offset,
             sort_desc=sort_desc,
         )
+        has_more = len(runs) > resolved_limit
+        visible_runs = runs[:resolved_limit]
         return success(
             {
                 "workflow_id": workflow_id.strip(),
@@ -113,10 +134,12 @@ def build_workflow_router() -> APIRouter:
                         "started_at": run.started_at,
                         "finished_at": run.finished_at,
                         "error": run.error,
-                        "summary": run.summary,
                     }
-                    for run in runs
+                    for run in visible_runs
                 ],
+                "limit": resolved_limit,
+                "offset": resolved_offset,
+                "has_more": has_more,
             }
         )
 
@@ -138,9 +161,48 @@ def build_workflow_router() -> APIRouter:
                 "started_at": run.started_at,
                 "finished_at": run.finished_at,
                 "error": run.error,
-                "output": run.output,
-                "summary": run.summary,
+                "workflow_input": run.workflow_input,
+                "session_id": run.session_id,
+                "result": run.result,
+                "steps": run.steps,
             }
+        )
+
+    @router.post("/workflow/{workflow_id}/runs/{run_id}/resume")
+    async def resume_workflow_run(
+        request: Request,
+        workflow_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow_service = get_workflow_service(request)
+        try:
+            run = await workflow_service.resume_run(workflow_id.strip(), run_id.strip())
+        except WorkflowNotFoundError:
+            raise
+        except Exception as exc:
+            raise APIError(
+                code="WORKFLOW_RESUME_FAILED", message=str(exc), status_code=500
+            ) from exc
+        return success(
+            {
+                "run_id": run.run_id,
+                "workflow_id": run.workflow_id,
+                "status": run.status,
+            }
+        )
+
+    @router.get("/workflow/{workflow_id}/runs/{run_id}/step-events")
+    async def list_workflow_run_step_events(
+        request: Request,
+        workflow_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow_service = get_workflow_service(request)
+        events = await workflow_service.list_run_step_events(
+            workflow_id.strip(), run_id.strip()
+        )
+        return success(
+            {"workflow_id": workflow_id.strip(), "run_id": run_id.strip(), "events": events}
         )
 
     @router.get("/workflow/{workflow_id}/runs/{run_id}/events")

@@ -320,7 +320,7 @@
 
   <h2>What Pilot does</h2>
   <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a multi-agent guide to the Mash codebase: one primary agent plus six module-scoped copilots, each loaded with the documentation and source for its slice of the repo. The user composes which agents work together, then enters the REPL.</p>
-  <p>It also serves as the application behind the Mash documentation series, so every framework feature — delegation, dynamic host composition, durable workflows, skills, human-in-the-loop approval, MCP, traces — is observable in a real running system.</p>
+  <p>It also serves as the application behind the Mash documentation series, so every framework feature is observable in a real running system: delegation, host composition at runtime, durable workflows, skills, human-in-the-loop approval, MCP, and traces.</p>
 
   <h2>The catalog</h2>
   <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs two callables: a spec factory that constructs an <code>AgentSpec</code> (accepting <code>workspace_root</code>) and a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
@@ -342,10 +342,9 @@ CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry(<span class="str">"runtime-copilot"</span>,  runtime.create_runtime_copilot_spec, runtime.build_runtime_metadata),
     CatalogEntry(<span class="str">"workflow-copilot"</span>, workflow.create_workflow_copilot_spec, workflow.build_workflow_metadata),
     CatalogEntry(<span class="str">"admin-copilot"</span>,    admin.create_admin_copilot_spec, admin.build_admin_metadata),
-    CatalogEntry(<span class="str">"quiz-me"</span>,          quiz.create_spec,              quiz.build_metadata),
 )</code></pre>
 
-  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, enables the built-in Masher, and returns the pool. The quiz workflow is registered on the pool after it's built. No host compositions are defined in code.</p>
+  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, defines the default <code>guide</code> host, and registers the quiz workflow on the built pool. The builder includes Masher and its workflows automatically.</p>
 
   <pre><code><span class="cm"># pilot/spec.py</span>
 <span class="kw">def</span> <span class="fn">build_pool</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> AgentPool:
@@ -354,15 +353,15 @@ CATALOG: tuple[CatalogEntry, ...] = (
         builder.agent(
             entry.create_spec(workspace_root=ws), metadata=entry.build_metadata()
         )
-    builder.enable_masher()
+    builder.host(<span class="fn">Host</span>(host_id=<span class="str">"guide"</span>, primary=<span class="str">"pilot"</span>, subagents=(...)))
     pool = builder.build()
-    pool.register_workflow(<span class="fn">build_quiz_workflow_spec</span>())
+    pool.register_workflow(<span class="fn">build_quiz_workflow_spec</span>(resolved))
     <span class="kw">return</span> pool</code></pre>
 
-  <p>Host compositions belong to the CLI's config file (<code>~/.pilot/hosts.json</code>), not to the deployment. The pool is flat. Which agents work together is user configuration.</p>
+  <p>The <code>guide</code> composition ships in code as the default. Further hosts belong to the CLI's config file (<code>~/.pilot/hosts.json</code>) and are published to the deployment as idempotent PUTs when the CLI connects. Which agents work together is user configuration.</p>
 
   <h2>The guide family</h2>
-  <p>Seven of the eight catalog agents form the guide family. The <code>pilot</code> agent is the primary: it covers the shared and cross-cutting modules (<code>core</code>, <code>tools</code>, <code>skills</code>, <code>logging</code>, <code>memory</code>) and delegates to module-scoped copilots for everything else.</p>
+  <p>The seven catalog agents form the guide family. The <code>pilot</code> agent is the primary: it covers the shared and cross-cutting modules (<code>core</code>, <code>tools</code>, <code>skills</code>, <code>logging</code>, <code>memory</code>) and delegates to module-scoped copilots for everything else.</p>
 
   <table class="resp-table">
     <thead>
@@ -377,7 +376,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
       <tr><td><code>api-copilot</code></td><td><code>src/mash/api</code> — HTTP routes, FastAPI, admin dashboard</td></tr>
       <tr><td><code>mcp-copilot</code></td><td><code>src/mash/mcp</code> — MCP client/server, transport, tool adaptation</td></tr>
       <tr><td><code>runtime-copilot</code></td><td><code>src/mash/runtime</code> — request lifecycle, event sourcing, durability</td></tr>
-      <tr><td><code>workflow-copilot</code></td><td><code>src/mash/workflows</code> — DBOS orchestration, task state, run status</td></tr>
+      <tr><td><code>workflow-copilot</code></td><td><code>src/mash/workflows</code> — step pipelines, DBOS orchestration, run status</td></tr>
       <tr><td><code>admin-copilot</code></td><td><code>src/mash/api/routes/admin</code> — admin dashboard routes and assets</td></tr>
     </tbody>
   </table>
@@ -398,13 +397,13 @@ CATALOG: tuple[CatalogEntry, ...] = (
   <p>The <code>AgentMetadata</code> each copilot registers lists its <code>capabilities</code> and <code>usage_guidance</code>. The primary reads that metadata when routing a delegated question — the same metadata that appears in <code>pilot browse</code> listings. The storefront and the delegation directory are the same data.</p>
 
   <h2>The pilot agent</h2>
-  <p>The <code>pilot</code> primary carries more tools than the copilots. It registers a <code>BashTool</code> scoped to the workspace, an <code>UpdateDocsTool</code> that requires user approval, and an <code>AskUserTool</code>. It also optionally connects to a GitHub MCP server when <code>GITHUB_MCP_PAT</code> is set, with a two-tool allowlist (<code>list_commits</code> and <code>get_commit</code>) used by <code>/changelog</code>.</p>
+  <p>The <code>pilot</code> primary carries more tools than the copilots. It registers a <code>BashTool</code> scoped to the workspace, an <code>UpdateDocsTool</code> that requires user approval, and an <code>AskUserTool</code>. It also optionally connects to a GitHub MCP server when <code>GITHUB_MCP_PAT</code> is set, with a two-tool allowlist (<code>list_commits</code> and <code>get_commit</code>) for inspecting mashpy commits.</p>
 
   <div class="arch">
     <div class="arch-layer arch-layer-blue">
       <div class="arch-layer-label">pilot (primary)</div>
       <div class="arch-layer-title">Tools: bash · update_docs · ask_user · GitHub MCP (optional)</div>
-      <div class="arch-layer-sub">Skills: build-mash-agent · changelog (dynamic)</div>
+      <div class="arch-layer-sub">Skills: build-mash-agent</div>
     </div>
     <div class="arch-connector">
       <span class="arch-connector-label">InvokeSubagent</span>
@@ -419,26 +418,22 @@ CATALOG: tuple[CatalogEntry, ...] = (
   <p>The <code>update_docs</code> tool has <code>requires_approval = True</code>, which causes the runtime to pause and surface an approval event before the tool runs. In the REPL this appears as an interactive prompt; over the API it emits a <code>request.waiting</code> event that the client polls. The user approves or rejects; the runtime resumes or aborts. This is the human-in-the-loop flow exercised live.</p>
 
   <h2>Workflows</h2>
-  <p>Pilot ships two workflows. <code>pilot-quiz</code> is registered at pool build time. <code>pilot-changelog</code> is dynamic — the REPL command <code>/changelog [N]</code> publishes both the skill and the workflow definition to the server at the moment it runs.</p>
+  <p>Pilot ships one workflow. <code>pilot-quiz</code> is a Mash step pipeline: <code>build_quiz_workflow_spec()</code> returns a <code>WorkflowSpec</code> whose single <code>AgentStep</code> carries <code>QuizAgentSpec</code> as its <code>agent_spec</code>, so registering the workflow also registers the quiz agent as a workflow-only runtime, hidden from listings and delegation.</p>
 
-  <h3>pilot-quiz</h3>
-  <p><code>build_quiz_workflow_spec()</code> returns a <code>WorkflowSpec</code> with a single task backed by the <code>quiz-me</code> agent. After <code>build_pool()</code>, the pool registers the workflow: <code>pool.register_workflow(build_quiz_workflow_spec())</code>. A host config that includes <code>"workflows": ["pilot-quiz"]</code> makes the <code>/quiz</code> REPL command available to anyone who enters that host.</p>
+  <pre><code><span class="cm"># pilot/catalog/workflows/quiz.py</span>
+<span class="kw">def</span> <span class="fn">build_quiz_workflow_spec</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> WorkflowSpec:
+    <span class="kw">return</span> <span class="fn">WorkflowSpec</span>(
+        workflow_id=<span class="str">"pilot-quiz"</span>,
+        steps=[
+            <span class="fn">AgentStep</span>(
+                step_id=<span class="str">"run-quiz"</span>,
+                agent_spec=<span class="fn">QuizAgentSpec</span>(resolved),
+                output={<span class="str">"type"</span>: <span class="str">"object"</span>},
+            )
+        ],
+    )</code></pre>
 
-  <h3>pilot-changelog (dynamic)</h3>
-  <p><code>/changelog [N]</code> publishes a skill (<code>workflow:pilot-changelog:v1</code>) and a workflow definition to the server over the control API before running the workflow. The workflow itself is a single-task run backed by the <code>pilot</code> agent. Its structured output schema specifies the fields the REPL renders: <code>title</code>, <code>commits_scanned</code>, <code>items</code>, and <code>markdown</code>.</p>
-
-  <pre><code><span class="cm"># The changelog structured output schema</span>
-CHANGELOG_STRUCTURED_OUTPUT = {
-    <span class="str">"title"</span>: <span class="str">"PilotChangelogWorkflowOutput"</span>,
-    <span class="str">"type"</span>: <span class="str">"object"</span>,
-    <span class="str">"properties"</span>: {
-        <span class="str">"title"</span>:           {<span class="str">"type"</span>: <span class="str">"string"</span>},
-        <span class="str">"commits_scanned"</span>: {<span class="str">"type"</span>: <span class="str">"integer"</span>},
-        <span class="str">"items"</span>:           {<span class="str">"type"</span>: <span class="str">"array"</span>, <span class="str">"items"</span>: {<span class="str">"type"</span>: <span class="str">"string"</span>}},
-        <span class="str">"markdown"</span>:        {<span class="str">"type"</span>: <span class="str">"string"</span>},
-    },
-    <span class="str">"required"</span>: [<span class="str">"title"</span>, <span class="str">"commits_scanned"</span>, <span class="str">"items"</span>, <span class="str">"markdown"</span>],
-}</code></pre>
+  <p>A host config that includes <code>"workflows": ["pilot-quiz"]</code> makes the <code>/quiz</code> REPL command available to anyone who enters that host. The command starts a run over the workflow API and streams it: the quiz agent loads its <code>mash-quiz</code> skill, asks its questions through durable <code>AskUser</code> interactions, and the REPL renders each one as an interactive prompt. The run survives a host restart mid-question the same way any durable request does.</p>
 
   <h2>Every piece exercises a Mash feature</h2>
 
@@ -467,16 +462,8 @@ CHANGELOG_STRUCTURED_OUTPUT = {
         <td>Durable human-in-the-loop: <code>requires_approval = True</code></td>
       </tr>
       <tr>
-        <td><code>/changelog [N]</code></td>
-        <td>Dynamic skills and workflows, published at runtime</td>
-      </tr>
-      <tr>
         <td><code>/quiz</code></td>
-        <td>Workflows registered on the pool; attached to hosts by config</td>
-      </tr>
-      <tr>
-        <td>Structured changelog output</td>
-        <td>Pydantic-validated structured output from a workflow task</td>
+        <td>Step-pipeline workflows registered on the pool; attached to hosts by config</td>
       </tr>
       <tr>
         <td><code>/trace [N]</code></td>
@@ -501,7 +488,7 @@ CHANGELOG_STRUCTURED_OUTPUT = {
   -v pilot-data:/var/lib/pilot \
   ghcr.io/imsid/mash-pilot:latest</code></pre>
 
-  <p>Add <code>-e GITHUB_MCP_PAT=ghp_...</code> to enable the GitHub MCP tools used by <code>/changelog</code>. Set <code>MASH_DATABASE_URL</code> to bring an external Postgres instead of the embedded one — this is the only change the Docker Compose development setup makes. The CLI installs separately and points at any running store by URL.</p>
+  <p>Add <code>-e GITHUB_MCP_PAT=ghp_...</code> to enable the GitHub commit tools on the pilot agent. Set <code>MASH_DATABASE_URL</code> to bring an external Postgres instead of the embedded one — this is the only change the Docker Compose development setup makes. The CLI installs separately and points at any running store by URL.</p>
 
   <pre><code>curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
 pilot browse                  <span class="cm"># see the catalog</span>

@@ -14,11 +14,11 @@
 - `memory`: persistent storage, retrieval, and compaction support.
 - `logging`: structured JSONL events and trace correlation helpers.
 - `mcp`: Model Context Protocol client/server/manager integration.
-- `agents`: built-in specialist agent specs such as the workflow-only `MasherAgentSpec`.
+- `agents`: built-in specialist agent specs such as `EvalAgentSpec`.
 
 ## How The Pieces Fit Together
 1. A user implements `mash.runtime.AgentSpec` to define one agent.
-2. `mash.runtime.HostBuilder` composes one primary agent, optional subagents, optional workflow-only agents, and optional code-defined workflows into a host.
+2. `mash.runtime.HostBuilder` composes one primary agent, optional subagents, and code-defined workflows into a host; every pool also includes Masher and its workflows.
 3. `mash.workflows.WorkflowService` can orchestrate ordered task chains by sending normal Mash requests to registered or internal workflow agents.
 4. `mash.runtime.AgentServer` exposes each per-agent runtime over HTTP + SSE.
 5. `mash.api` exposes that host over HTTP, including workflow routes, and `mash.cli` talks to it as a remote client.

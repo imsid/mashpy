@@ -79,7 +79,7 @@ Over HTTP, `GET /api/v1/telemetry/trace/analysis?agent_id=…&session_id=…&tra
 
 In the browser, the admin dashboard at `/admin` renders the trace under Logs: a request list per agent, and a drawer per trace with summary tiles, the reconstructed conversation, and a collapsible span tree with per-span durations. This is the view for browsing and reading traces, where a terminal table stops scaling.
 
-For continuous use, Masher (the built-in workflow-only agent from the composition post) packages the same analysis into scheduled workflows. `masher-trace-digest` emits a full diagnostic snapshot per trace, and `masher-online-eval-curation` writes eval records with latency context. Both run incrementally over the event log, checkpointed by [task state](workflows-and-task-state.md), which makes them safe on a schedule.
+For continuous use, Masher packages the same analysis into scheduled workflows. `masher-trace-digest` emits a full diagnostic snapshot per trace, and `masher-online-eval-curation` writes eval records with latency context. Both are all-code [step pipelines](workflows-as-step-pipelines.md) that scan the event log deterministically and deduplicate what they append, which makes them safe on a schedule.
 
 ## Wrapping up
 

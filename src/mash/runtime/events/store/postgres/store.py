@@ -268,16 +268,12 @@ class PostgresRuntimeStore(RuntimeStore):
         *,
         agent_id: str | None = None,
         workflow_id: str | None = None,
-        limit: int,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         await self.open()
         return await loaders.list_sessions(
             self._pool, agent_id=agent_id, workflow_id=workflow_id, limit=limit
         )
-
-    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]:
-        await self.open()
-        return await loaders.aggregate_workflow_activity(self._pool)
 
     async def aggregate_usage(
         self,
