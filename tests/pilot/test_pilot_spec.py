@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-# ruff: noqa: E402
-
 import asyncio
 import os
-import sys
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
+import pilot.spec as pilot_spec_module
 from mash.agents import MasherAgentSpec
 from mash.agents.masher import (
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
@@ -46,13 +40,15 @@ from pilot.spec import (
     build_host,
 )
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class _FakeLLMProvider(LLMProvider):
     @property
     def model(self) -> str:
         return "test-model"
 
-    def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         raise NotImplementedError
 
@@ -194,7 +190,8 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     await host.start()
                     try:
                         described = {
-                            item["agent_id"]: item for item in host.describe_agents()
+                            str(item["agent_id"]): item
+                            for item in host.describe_agents()
                         }
                         assert sorted(described.keys()) == [
                             ADMIN_COPILOT_AGENT_ID,
@@ -473,8 +470,8 @@ def test_prompts_remain_compact_and_principle_driven() -> None:
     assert "runtime-serving behavior" not in primary_prompt.lower()
     assert "open-ended exploration" not in cli_prompt.lower()
     assert "Treat cached docs as the primary source of truth" in cli_prompt
-    import pilot.spec as _pilot_spec_module
-    pilot_spec_src = Path(_pilot_spec_module.__file__).read_text()
+    assert pilot_spec_module.__file__ is not None
+    pilot_spec_src = Path(pilot_spec_module.__file__).read_text(encoding="utf-8")
     assert "CopilotIndexState" not in pilot_spec_src
     assert "IndexScope" not in pilot_spec_src
     assert "code_index" not in pilot_spec_src

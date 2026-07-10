@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import secrets
-import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -158,7 +157,8 @@ async def start_workflow_run(
     workflow_input: dict[str, Any] | None = None,
     session_id: str | None = None,
 ) -> str:
-    from mash.runtime.engine.dbos import ensure_dbos_ready
+    # Deferred: mash.runtime.engine.dbos imports this module back.
+    from mash.runtime.engine.dbos import ensure_dbos_ready  # pylint: disable=import-outside-toplevel
 
     await ensure_dbos_ready(database_url)
     dbos_class, _, set_workflow_id, set_enqueue_options, dedup_error = _load_dbos_api()
@@ -215,7 +215,7 @@ async def resume_workflow_run(run_id: str) -> str:
         raise ValueError("run_id is required")
     dbos_class, _, _, _, _ = _load_dbos_api()
     resume = getattr(dbos_class, "resume_workflow_async", None)
-    if not callable(resume):
+    if resume is None:
         raise RuntimeError("dbos does not support resume_workflow_async")
     handle = await resume(resolved)
     workflow_id = getattr(handle, "get_workflow_id", None)
@@ -248,7 +248,7 @@ async def execute_registered_workflow(
                 f"workflow '{workflow_id}' has neither steps nor a strategy"
             )
         # Lazy import: engine imports helpers from this module.
-        from .engine import FORWARD_PIPELINE_STRATEGY
+        from .engine import FORWARD_PIPELINE_STRATEGY  # pylint: disable=import-outside-toplevel
 
         strategy = FORWARD_PIPELINE_STRATEGY
     return await strategy.run(ctx)

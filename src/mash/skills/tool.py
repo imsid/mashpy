@@ -15,6 +15,7 @@ class SkillTool:
 
     name = "Skill"
     requires_approval = False
+    parallel_safe = True
 
     def __init__(self, registry: SkillRegistry) -> None:
         self._registry = registry

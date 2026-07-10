@@ -10,15 +10,16 @@ from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
 from mash.skills.base import Skill
 from mash.skills.tool import SkillTool
-from mash.workflows import WorkflowRegistry, WorkflowService, WorkflowSpec
+from mash.workflows import AgentStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import make_runner_id
 from mash.workflows.dbos import register_runner as register_workflow_runner
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
 from mash.workflows.store import WorkflowStore
 
+from mash.tools.subagent import InvokeSubagentTool
+
 from ..client import AgentClientLike, InProcessAgentClient
 from ..events import PostgresRuntimeStore, RuntimeStore
-from mash.tools.subagent import InvokeSubagentTool
 from ..service import AgentRuntime
 from ..spec import AgentSpec
 from .subagents import AgentMetadata
@@ -63,7 +64,7 @@ class AgentPool:
         self,
         definition: AgentSpec,
         *,
-        metadata: AgentMetadata,
+        metadata: AgentMetadata | None,
         agent_id: str | None = None,
     ) -> str:
         resolved_agent_id = (agent_id or definition.get_agent_id()).strip()
@@ -322,12 +323,12 @@ class AgentPool:
                 allowed = set(host.subagents)
 
                 def _make_client_resolver(
-                    _pool: "AgentPool", _allowed: frozenset[str]
+                    _pool: "AgentPool", _allowed: frozenset[str], _host_id: str
                 ):
                     def _resolver(agent_id: str) -> Any:
                         if agent_id not in _allowed:
                             raise ValueError(
-                                f"subagent '{agent_id}' is not in host '{host.host_id}'"
+                                f"subagent '{agent_id}' is not in host '{_host_id}'"
                             )
                         return _pool.get_client(agent_id)
 
@@ -338,7 +339,7 @@ class AgentPool:
                 primary_runtime.agent.tools.register(
                     InvokeSubagentTool(
                         client_resolver=_make_client_resolver(
-                            self, frozenset(allowed)
+                            self, frozenset(allowed), host.host_id
                         ),
                         primary_app_id=primary_runtime.app_id,
                         primary_session_id=primary_runtime.session_id,
@@ -427,7 +428,10 @@ class AgentPool:
                         "parallel_safe": getattr(tool, "parallel_safe", True),
                     }
                 agents_by_tool.setdefault(name, []).append(agent_id)
-        return [{"tool": seen[n], "agents": agents_by_tool[n]} for n in seen]
+        return [
+            {"tool": tool, "agents": agents_by_tool[name]}
+            for name, tool in seen.items()
+        ]
 
     def describe_skills(self) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
@@ -442,7 +446,10 @@ class AgentPool:
                         "content": skill.content,
                     }
                 agents_by_skill.setdefault(skill.name, []).append(agent_id)
-        return [{"skill": seen[n], "agents": agents_by_skill[n]} for n in seen]
+        return [
+            {"skill": skill, "agents": agents_by_skill[name]}
+            for name, skill in seen.items()
+        ]
 
     async def aggregate_tool_invocations(
         self,
@@ -512,7 +519,7 @@ class AgentPool:
         bindings = [
             (step.agent_id, step.agent_spec)
             for step in workflow.steps
-            if getattr(step, "kind", None) == "agent"
+            if isinstance(step, AgentStep)
         ]
         for raw_agent_id, agent_spec in bindings:
             agent_id = str(raw_agent_id or "").strip()

@@ -89,6 +89,7 @@ async def _score_row(
     rubric: dict[str, Any],
 ) -> dict[str, Any]:
     """Child DBOS workflow: run one row through the host, then judge it."""
+    del host_id  # unused here; kept in the durable arg record for observability
     dbos_class, _, _, _, _ = load_dbos_api()
     row_id = str(row.get("row_id") or "")
     row_input = str(row.get("input") or "")

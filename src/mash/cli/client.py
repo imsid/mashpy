@@ -83,9 +83,10 @@ class MashHostClient:
     def _iter_sse_events(response: requests.Response) -> Iterator[dict[str, Any]]:
         event_name: Optional[str] = None
         data_lines: list[str] = []
-        for line in response.iter_lines(chunk_size=1, decode_unicode=True):
-            if line is None:
+        for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
+            if raw_line is None:
                 continue
+            line = raw_line.decode() if isinstance(raw_line, bytes) else raw_line
             stripped = line.strip()
             if not stripped:
                 if event_name and data_lines:

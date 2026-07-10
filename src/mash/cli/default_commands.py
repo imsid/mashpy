@@ -63,7 +63,8 @@ def _render_trace(renderer, data: dict, *, depth: int = 0) -> None:
     status = data.get("status", "unknown")
     total_tokens = tokens.get("input_tokens", 0) + tokens.get("output_tokens", 0)
 
-    _p = lambda text: renderer.print(f"{prefix}{text}")  # noqa: E731
+    def _p(text: str) -> None:
+        renderer.print(f"{prefix}{text}")
 
     _p(
         f"  {_fmt_status(status)}  {_fmt_ms(total_ms)}"
@@ -88,9 +89,9 @@ def _render_trace(renderer, data: dict, *, depth: int = 0) -> None:
         label_width = max(len(label) for label, _, _ in visible)
         dur_width = max(len(_fmt_ms(ms)) for _, ms, _ in visible)
         for label, ms, pct in visible:
-            bar = "█" * int(pct / 2.5) if pct > 0 else ""
+            pct_bar = "█" * int(pct / 2.5) if pct > 0 else ""
             pct_str = f"{pct:5.1f}%" if pct else ""
-            _p(f"  {label:<{label_width}}  {_fmt_ms(ms):>{dur_width}}  {pct_str}  {bar}")
+            _p(f"  {label:<{label_width}}  {_fmt_ms(ms):>{dur_width}}  {pct_str}  {pct_bar}")
         _p("")
 
     tool_stats = analysis.get("tool_stats") or []
@@ -386,7 +387,7 @@ def register_default_commands(shell) -> None:
                     task_label = f"Workflow task {task_id}" if task_id else "Workflow task"
 
                     if event_name == "request.interaction.create":
-                        shell._handle_interaction(
+                        shell.handle_interaction(
                             ctx,
                             str(payload.get("request_id") or ""),
                             payload,
@@ -395,7 +396,7 @@ def register_default_commands(shell) -> None:
                         continue
 
                     if event_name == "request.interaction.ack":
-                        shell._render_interaction_ack(payload)
+                        shell.render_interaction_ack(payload)
                         continue
 
                     if event_name == "workflow.status":

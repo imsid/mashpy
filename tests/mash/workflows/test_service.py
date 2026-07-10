@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
+
+if TYPE_CHECKING:
+    from mash.runtime.host.host import AgentPool
 
 from mash.testing.runtime_fixtures import build_spec
 from mash.workflows import (
@@ -84,7 +87,9 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, workflow: WorkflowSpec) -> WorkflowService:
         registry = WorkflowRegistry()
         registry.register(workflow)
-        return WorkflowService(registry, _FakeHost(registry), runner_id="runner-1")
+        return WorkflowService(
+            registry, cast("AgentPool", _FakeHost(registry)), runner_id="runner-1"
+        )
 
     async def test_list_workflows_serializes_steps_and_metadata(self) -> None:
         service = self._service(

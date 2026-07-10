@@ -8,6 +8,7 @@ import inspect
 import os
 import tempfile
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from mash.runtime.client import AgentClientError
@@ -47,7 +48,7 @@ class _FakeWorkflowDBOS:
 
 
 class _FailureInspectingWorkflowDBOS:
-    fail_payload: dict[str, object] | None = None
+    fail_payload: dict[str, Any] | None = None
 
     @classmethod
     async def run_step_async(cls, config, func, *args, **kwargs):
@@ -97,7 +98,7 @@ class _StepRestrictedRequestEngine:
         request_id: str,
         message: str,
         session_id: str,
-        request_metadata: dict[str, object],
+        request_metadata: dict[str, Any],
     ) -> None:
         del self._database_url
         if _IN_FAKE_DBOS_STEP.get():
@@ -172,7 +173,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     .build()
                 )
-                described = {item["agent_id"]: item for item in pool.describe_agents()}
+                described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(sorted(described.keys()), ["primary", "research"])
                 for item in described.values():
                     self.assertNotIn("role", item)
@@ -260,7 +261,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .build()
                 )
 
-                described = {item["agent_id"]: item for item in pool.describe_agents()}
+                described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(sorted(described.keys()), ["primary"])
                 self.assertEqual(pool.list_agents(), ["primary"])
                 self.assertEqual(
@@ -850,7 +851,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "narrow", message="delegate", session_id="s-1"
                     )
                     client = pool.get_client("primary-app")
-                    events = await _collect_events(
+                    await _collect_events(
                         client, accepted["request_id"], timeout=5
                     )
                     research = pool.get_agent("research")
@@ -957,8 +958,8 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, object]]:
-    events: list[dict[str, object]] = []
+async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     async for event in client.stream_response(request_id, timeout=timeout):
         events.append(event)
         if event.get("event") in {"request.completed", "request.error"}:
@@ -971,7 +972,7 @@ async def _collect_terminal_payload(
     request_id: str,
     *,
     timeout: float,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     events = await _collect_events(client, request_id, timeout=timeout)
     terminal = events[-1]
     if terminal.get("event") != "request.completed":

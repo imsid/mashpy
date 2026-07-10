@@ -10,10 +10,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 from unittest.mock import patch
 
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from mash.evals.service import EvalService
+    from mash.runtime.events import RuntimeStore
 
 from mash.agents import MasherAgentSpec
 from mash.agents.masher import (
@@ -44,7 +48,7 @@ from mash.runtime import AgentMetadata, AgentSpec, Host, HostBuilder
 from mash.runtime.events import analyze_trace, build_runtime_trace, build_span_tree
 from mash.runtime.events.types import RuntimeEvent
 from mash.testing.runtime_fixtures import build_spec, metadata
-from mash.workflows import StepContext, WorkflowSpec
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.strategy import WorkflowStrategy
 
 
@@ -121,6 +125,7 @@ async def _run_code_pipeline(
     """Drive an all-code pipeline with the engine's merge/coerce semantics."""
     prev: dict[str, Any] = {}
     for step in workflow.steps:
+        assert isinstance(step, CodeStep)
         merged = {**workflow_input, **prev}
         inp = step.input.model_validate(merged)
         ctx = StepContext(
@@ -143,7 +148,7 @@ def _build_context(
 ) -> MasherRuntimeContext:
     context = MasherRuntimeContext()
     if runtime_store is not None:
-        context.bind_runtime_store(runtime_store)
+        context.bind_runtime_store(cast("RuntimeStore", runtime_store))
     if tmp is not None:
         context.configure_artifacts(Path(tmp))
     return context
@@ -183,7 +188,7 @@ class MasherSpecTests(unittest.TestCase):
             .build()
         )
         try:
-            described = {item["agent_id"]: item for item in host.describe_agents()}
+            described = {str(item["agent_id"]): item for item in host.describe_agents()}
             self.assertEqual(sorted(described.keys()), ["primary"])
             self.assertEqual(host.get_workflow_registry().list(), [])
         finally:
@@ -479,7 +484,7 @@ class OnlineEvalCurationPipelineTests(unittest.TestCase):
 
         events = asyncio.run(
             load_trace_events(
-                store,
+                cast("RuntimeStore", store),
                 target_agent_id="primary",
                 session_id="s-1",
                 trace_id="t-1",
@@ -659,7 +664,7 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
         spec = MasherAgentSpec()
         service = _FakeEvalService()
         spec.runtime_context.bind_pool(_FakePool())
-        spec.runtime_context.bind_eval_service(service)
+        spec.runtime_context.bind_eval_service(cast("EvalService", service))
         return build_gen_synthetic_evals_workflow(spec), spec.runtime_context, service
 
     def test_pipeline_shape_and_generation_skill(self) -> None:
@@ -675,6 +680,7 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
                     ],
                 )
                 generate = workflow.steps[1]
+                assert isinstance(generate, AgentStep)
                 self.assertEqual(generate.agent_id, "masher")
                 self.assertEqual(generate.skill_name, GEN_SYNTHETIC_EVALS_SKILL_NAME)
                 self.assertIs(generate.output, GeneratedEval)
@@ -684,6 +690,7 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
                 workflow, _, _ = self._workflow()
                 profile_step = workflow.steps[0]
+                assert isinstance(profile_step, CodeStep)
                 inp = profile_step.input.model_validate({"host_id": "guide"})
                 ctx = StepContext(
                     run_id="run-1", step_id="profile-host", workflow_input={}
@@ -706,6 +713,7 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
                 workflow, _, service = self._workflow()
                 persist_step = workflow.steps[2]
+                assert isinstance(persist_step, CodeStep)
                 inp = persist_step.input.model_validate(
                     {
                         "host_id": "guide",
@@ -722,16 +730,17 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
 
                 self.assertEqual(result.eval_id, "eval_1")
                 self.assertEqual(result.row_count, 5)
-                self.assertEqual(len(service.persisted_kwargs["dataset_rows"]), 5)
-                self.assertEqual(
-                    service.persisted_kwargs["rubric"]["criteria"][0]["weight"], 1.0
-                )
+                persisted = service.persisted_kwargs
+                assert persisted is not None
+                self.assertEqual(len(persisted["dataset_rows"]), 5)
+                self.assertEqual(persisted["rubric"]["criteria"][0]["weight"], 1.0)
 
     def test_persist_step_rejects_row_count_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
                 workflow, _, service = self._workflow()
                 persist_step = workflow.steps[2]
+                assert isinstance(persist_step, CodeStep)
                 inp = persist_step.input.model_validate(
                     {
                         "host_id": "guide",

@@ -34,7 +34,7 @@ class NeedsMissing(BaseModel):
     missing_field: str
 
 
-def _scan(inp: TriggerIn, ctx: StepContext) -> ScanOut:  # pragma: no cover - not run in Phase 0
+def _scan(_inp: TriggerIn, _ctx: StepContext) -> ScanOut:  # pragma: no cover - not run in Phase 0
     return ScanOut(files_changed=[], head_sha="deadbeef")
 
 

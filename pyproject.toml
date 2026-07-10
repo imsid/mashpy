@@ -57,6 +57,9 @@ dev = [
   "twine>=6.1.0",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"

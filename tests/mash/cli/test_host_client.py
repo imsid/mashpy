@@ -1,8 +1,12 @@
 """Tests for remote host HTTP client behavior."""
 
+# Tests inject a recording session behind the client's private seam.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from mash.cli.client import DEFAULT_REQUEST_TIMEOUT, DEFAULT_STREAM_TIMEOUT, MashHostClient
 
@@ -32,7 +36,7 @@ class _FakeResponse:
 
 class _RecordingSession:
     def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
         self.responses: list[_FakeResponse] = []
 
     def request(self, method, url, headers=None, json=None, stream=False, timeout=None):

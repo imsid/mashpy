@@ -6,12 +6,21 @@ import os
 import time
 import unittest
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 from pydantic import BaseModel
 
-from mash.workflows import CodeStep, StepContext, WorkflowRegistry, WorkflowService, WorkflowSpec
+if TYPE_CHECKING:
+    from mash.runtime.host.host import AgentPool
+
+from mash.workflows import (
+    CodeStep,
+    StepContext,
+    WorkflowRegistry,
+    WorkflowService,
+    WorkflowSpec,
+)
 from mash.workflows import dbos as workflow_dbos
 from mash.workflows.service import WorkflowNotFoundError
 from mash.workflows.store import (
@@ -50,11 +59,19 @@ def _require_postgres() -> str:
 
 
 def _cleanup(url: str, workflow_id: str) -> None:
+    assert psycopg is not None  # guaranteed by _require_postgres in setup
     with psycopg.connect(url, autocommit=True) as conn:
         with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM workflow_step_events WHERE workflow_id = %s", (workflow_id,))
-            cursor.execute("DELETE FROM workflow_steps WHERE workflow_id = %s", (workflow_id,))
-            cursor.execute("DELETE FROM workflow_runs WHERE workflow_id = %s", (workflow_id,))
+            cursor.execute(
+                "DELETE FROM workflow_step_events WHERE workflow_id = %s",
+                (workflow_id,),
+            )
+            cursor.execute(
+                "DELETE FROM workflow_steps WHERE workflow_id = %s", (workflow_id,)
+            )
+            cursor.execute(
+                "DELETE FROM workflow_runs WHERE workflow_id = %s", (workflow_id,)
+            )
 
 
 class TriggerIn(BaseModel):
@@ -65,7 +82,9 @@ class Out(BaseModel):
     doubled: int
 
 
-def _double(inp: TriggerIn, ctx: StepContext) -> Out:  # pragma: no cover - not executed here
+def _double(
+    inp: TriggerIn, _ctx: StepContext
+) -> Out:  # pragma: no cover - not executed here
     return Out(doubled=inp.n * 2)
 
 
@@ -90,11 +109,15 @@ class WorkflowServiceV2Tests(unittest.IsolatedAsyncioTestCase):
             WorkflowSpec(
                 workflow_id=self.WF,
                 input_model=TriggerIn,
-                steps=[CodeStep(step_id="double", run=_double, input=TriggerIn, output=Out)],
+                steps=[
+                    CodeStep(step_id="double", run=_double, input=TriggerIn, output=Out)
+                ],
             )
         )
         self.service = WorkflowService(
-            self.registry, _FakePool(self.store), runner_id="svc-runner"
+            self.registry,
+            cast("AgentPool", _FakePool(self.store)),
+            runner_id="svc-runner",
         )
         self.run_id = f"mw:svc:{self.WF}:{uuid.uuid4().hex}"
 
@@ -102,7 +125,9 @@ class WorkflowServiceV2Tests(unittest.IsolatedAsyncioTestCase):
         await self.store.close()
         _cleanup(self.url, self.WF)
 
-    async def _seed(self, status: str, *, result: dict | None = None, error: str | None = None) -> None:
+    async def _seed(
+        self, status: str, *, result: dict | None = None, error: str | None = None
+    ) -> None:
         now = time.time()
         await self.store.create_run(
             WorkflowRunRecord(
@@ -149,13 +174,16 @@ class WorkflowServiceV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_runs_status_filter(self) -> None:
         await self._seed(RUN_COMPLETED, result={"doubled": 6})
-        self.assertEqual(len(await self.service.list_runs(self.WF, status=RUN_FAILED)), 0)
+        self.assertEqual(
+            len(await self.service.list_runs(self.WF, status=RUN_FAILED)), 0
+        )
 
     async def test_get_run_includes_steps(self) -> None:
         await self._seed(RUN_COMPLETED, result={"doubled": 6})
         run = await self.service.get_run(self.WF, self.run_id)
         self.assertEqual(run.status, RUN_COMPLETED)
         self.assertEqual(run.output, {"doubled": 6})
+        assert run.steps is not None
         self.assertEqual(len(run.steps), 1)
         self.assertEqual(run.steps[0]["output_snapshot"], {"doubled": 6})
 

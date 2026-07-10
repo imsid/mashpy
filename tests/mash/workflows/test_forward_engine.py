@@ -10,10 +10,13 @@ from __future__ import annotations
 import inspect
 import os
 import unittest
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from mash.runtime.host.host import AgentPool
 
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowRegistry, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
@@ -55,6 +58,7 @@ def _require_postgres() -> str:
 
 
 def _cleanup(url: str, workflow_id: str) -> None:
+    assert psycopg is not None  # guaranteed by _require_postgres in setup
     with psycopg.connect(url, autocommit=True) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -81,7 +85,7 @@ class FinalOut(BaseModel):
     message: str
 
 
-def _double(inp: TriggerIn, ctx: StepContext) -> DoubleOut:
+def _double(inp: TriggerIn, _ctx: StepContext) -> DoubleOut:
     return DoubleOut(n=inp.n, doubled=inp.n * 2)
 
 
@@ -89,7 +93,7 @@ def _finalize(inp: DoubleOut, ctx: StepContext) -> FinalOut:
     return FinalOut(doubled=inp.doubled, message=f"run={ctx.run_id[:6]}")
 
 
-def _boom(inp: DoubleOut, ctx: StepContext) -> FinalOut:
+def _boom(_inp: DoubleOut, _ctx: StepContext) -> FinalOut:
     raise ValueError("kaboom")
 
 
@@ -123,7 +127,7 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         self.store = WorkflowStore(self.url)
         await self.store.open()
         self.registry = WorkflowRegistry()
-        self.host = _FakeHost(self.registry, self.store)
+        self.host = cast("AgentPool", _FakeHost(self.registry, self.store))
         workflow_dbos.register_runner(self.RUNNER, self.host)
 
     async def asyncTearDown(self) -> None:
@@ -162,6 +166,8 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(output["result"]["message"].startswith("run="))
 
         run = await self.store.get_run(run_id)
+        assert run is not None
+        assert run.result is not None
         self.assertEqual(run.status, RUN_COMPLETED)
         self.assertEqual(run.result["doubled"], 42)
 
@@ -169,8 +175,8 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([s.step_id for s in steps], ["double", "finalize"])
         self.assertTrue(all(s.status == STEP_COMPLETED for s in steps))
         # Output of step 1 threaded into step 2's input snapshot.
-        self.assertEqual(steps[0].output_snapshot["doubled"], 42)
-        self.assertEqual(steps[1].input_snapshot["doubled"], 42)
+        self.assertEqual(steps[0].output_snapshot, {"n": 21, "doubled": 42})
+        self.assertEqual(steps[1].input_snapshot, {"n": 21, "doubled": 42})
 
         events = await self.store.list_step_events(run_id, step_id="double")
         self.assertEqual([e.event_type for e in events], [STEP_EVENT_STARTED, STEP_EVENT_COMPLETED])
@@ -189,7 +195,6 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self._execute("pipe-fail", {"n": 5})
 
-        run_id = None
         runs = await self.store.list_runs("pipe-fail", status=RUN_FAILED)
         self.assertEqual(len(runs), 1)
         run = runs[0]
@@ -205,11 +210,13 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agent_step_uses_structured_output(self) -> None:
         async def _fake_post(runner_id, *, agent_id, message, structured_output, **kwargs):
+            del runner_id, agent_id, message, kwargs
             # The agent step's output model becomes the request's schema.
             self.assertIn("doubled", structured_output.get("properties", {}))
             return "req-1"
 
         async def _fake_collect(runner_id, agent_id, request_id):
+            del runner_id, agent_id, request_id
             return {"response": {"structured_output": {"doubled": 84, "message": "from-agent"}}}
 
         self.registry.register(

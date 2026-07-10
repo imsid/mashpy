@@ -84,10 +84,16 @@ class TraceListing(BaseModel):
 
 
 def _build_list_traces(context: MasherRuntimeContext):
-    async def list_traces(inp: TraceScanInput, ctx: StepContext) -> TraceListing:
+    async def list_traces(inp: TraceScanInput, _ctx: StepContext) -> TraceListing:
         if inp.mode == "trace":
+            # The input validator guarantees both coordinates in trace mode.
             return TraceListing(
-                traces=[TraceRef(session_id=inp.session_id, trace_id=inp.trace_id)]
+                traces=[
+                    TraceRef(
+                        session_id=inp.session_id or "",
+                        trace_id=inp.trace_id or "",
+                    )
+                ]
             )
         store = context.require_runtime_store()
         traces = await list_traces_since(
@@ -141,7 +147,7 @@ class TraceDigestResult(BaseModel):
 
 
 def _build_digest_traces(context: MasherRuntimeContext):
-    async def digest_traces(inp: _AnalyzeTracesIn, ctx: StepContext) -> DigestBatch:
+    async def digest_traces(inp: _AnalyzeTracesIn, _ctx: StepContext) -> DigestBatch:
         store = context.require_runtime_store()
         digests: list[dict[str, Any]] = []
         for ref in inp.traces:
@@ -166,7 +172,7 @@ def _build_digest_traces(context: MasherRuntimeContext):
 
 
 def _build_append_digests(context: MasherRuntimeContext):
-    def append_digests(inp: _AppendDigestsIn, ctx: StepContext) -> TraceDigestResult:
+    def append_digests(inp: _AppendDigestsIn, _ctx: StepContext) -> TraceDigestResult:
         # Trace mode returns the digest inline and never writes the artifact,
         # matching the pre-v2 contract.
         if inp.mode == "trace":
@@ -240,7 +246,7 @@ class OnlineEvalResult(BaseModel):
 
 
 def _build_extract_rows(context: MasherRuntimeContext):
-    async def extract_rows(inp: _AnalyzeTracesIn, ctx: StepContext) -> EvalRowBatch:
+    async def extract_rows(inp: _AnalyzeTracesIn, _ctx: StepContext) -> EvalRowBatch:
         store = context.require_runtime_store()
         rows: list[dict[str, Any]] = []
         for ref in inp.traces:
@@ -264,7 +270,7 @@ def _build_extract_rows(context: MasherRuntimeContext):
 
 
 def _build_append_rows(context: MasherRuntimeContext):
-    def append_rows(inp: _AppendRowsIn, ctx: StepContext) -> OnlineEvalResult:
+    def append_rows(inp: _AppendRowsIn, _ctx: StepContext) -> OnlineEvalResult:
         path = context.require_online_eval_jsonl_path()
         appended = sum(1 for row in inp.rows if append_jsonl_unique(path, row))
         return OnlineEvalResult(
@@ -403,11 +409,12 @@ class GenSyntheticEvalsResult(BaseModel):
 
 
 def _build_profile_host(context: MasherRuntimeContext):
-    def profile_host(inp: GenSyntheticEvalsInput, ctx: StepContext) -> HostProfile:
+    def profile_host(inp: GenSyntheticEvalsInput, _ctx: StepContext) -> HostProfile:
         pool = context.require_pool()
         host = pool.get_host(inp.host_id)
-        members = [("primary", host.primary)] + [
-            ("subagent", agent_id) for agent_id in host.subagents
+        members: list[tuple[Literal["primary", "subagent"], str]] = [
+            ("primary", host.primary),
+            *(("subagent", agent_id) for agent_id in host.subagents),
         ]
         profiles: list[AgentProfile] = []
         for role, agent_id in members:
@@ -428,7 +435,7 @@ def _build_profile_host(context: MasherRuntimeContext):
 
 
 def _build_persist_eval(context: MasherRuntimeContext):
-    async def persist_eval(inp: _PersistEvalIn, ctx: StepContext) -> GenSyntheticEvalsResult:
+    async def persist_eval(inp: _PersistEvalIn, _ctx: StepContext) -> GenSyntheticEvalsResult:
         # The generation step's output is memoized, so a failed count here is
         # terminal for this run (resume replays the same rows) — start a fresh
         # run to regenerate.

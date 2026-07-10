@@ -604,7 +604,8 @@ def build_telemetry_router() -> APIRouter:
         analysis = analyze_trace(tree)
 
         if stitch and analysis.subagent_details:
-            from mash.agents.masher.traces import stitch_subagent_traces
+            # Deferred: only pay for the masher package when stitching is requested.
+            from mash.agents.masher.traces import stitch_subagent_traces  # pylint: disable=import-outside-toplevel
 
             analysis = await stitch_subagent_traces(agent.runtime_store, analysis)
 

@@ -35,7 +35,7 @@ from .dbos import (
     post_inline_agent_request,
     require_runner,
 )
-from .spec import StepContext, StepSpec, WorkflowSpec
+from .spec import CodeStep, StepContext, StepSpec, WorkflowSpec
 from .store import (
     RUN_COMPLETED,
     RUN_FAILED,
@@ -177,6 +177,8 @@ async def _run_code_step(
     input_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     step = _resolve_step(runner_id, workflow_id, ordinal)
+    if not isinstance(step, CodeStep):
+        raise RuntimeError(f"workflow step '{step.step_id}' is not a code step")
     inp = step.input.model_validate(input_snapshot)
     ctx = StepContext(
         run_id=run_id,
@@ -186,7 +188,7 @@ async def _run_code_step(
     )
 
     async def _invoke() -> Any:
-        result = step.run(inp, ctx)  # type: ignore[attr-defined]
+        result = step.run(inp, ctx)
         return await result if inspect.isawaitable(result) else result
 
     out = await _with_timeout(_invoke(), step.timeout_s, step.step_id)

@@ -82,7 +82,7 @@ class RuntimeStore(Protocol):
         *,
         agent_id: str | None = None,
         workflow_id: str | None = None,
-        limit: int,
+        limit: int | None = None,
     ) -> dict[str, Any]: ...
 
     async def aggregate_workflow_activity(self) -> list[dict[str, Any]]: ...

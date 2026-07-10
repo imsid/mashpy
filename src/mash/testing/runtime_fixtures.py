@@ -236,7 +236,7 @@ def build_spec(
     response_text: str = "ok",
     fail_on_message: str | None = None,
     delay_seconds: float = 0.0,
-    ) -> AgentSpec:
+    ) -> DeterministicAgentSpec:
     return DeterministicAgentSpec(
         agent_id=agent_id,
         response_text=response_text,
@@ -251,7 +251,7 @@ def build_delegating_spec(
     final_text: str,
     subagent_id: str,
     subagent_prompt: str,
-) -> AgentSpec:
+) -> DelegatingAgentSpec:
     return DelegatingAgentSpec(
         agent_id=agent_id,
         final_text=final_text,

@@ -28,6 +28,7 @@ class StepContext:
     attempt: int = 1
 
 
+@dataclass(frozen=True, init=False)
 class StepSpec:
     """Base marker for one workflow step.
 

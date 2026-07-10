@@ -268,7 +268,7 @@ class PostgresRuntimeStore(RuntimeStore):
         *,
         agent_id: str | None = None,
         workflow_id: str | None = None,
-        limit: int,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         await self.open()
         return await loaders.list_sessions(

@@ -6,6 +6,8 @@ import os
 import time
 import unittest
 import uuid
+from dataclasses import replace
+from typing import Any
 
 from mash.workflows.store import (
     RUN_COMPLETED,
@@ -46,6 +48,7 @@ def _require_postgres() -> str:
 
 
 def _cleanup(database_url: str, run_id: str) -> None:
+    assert psycopg is not None  # guaranteed by _require_postgres in setup
     with psycopg.connect(database_url, autocommit=True) as conn:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM workflow_step_events WHERE run_id = %s", (run_id,))
@@ -65,26 +68,26 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.close()
         _cleanup(self.database_url, self.run_id)
 
-    def _run(self, **overrides) -> WorkflowRunRecord:
-        base = dict(
+    def _run(self, **overrides: Any) -> WorkflowRunRecord:
+        record = WorkflowRunRecord(
             run_id=self.run_id,
             workflow_id=self.workflow_id,
             status=RUN_QUEUED,
             workflow_input={"repo_url": "https://example.com/repo"},
             created_at=time.time(),
         )
-        base.update(overrides)
-        return WorkflowRunRecord(**base)
+        return replace(record, **overrides) if overrides else record
 
     async def test_run_lifecycle(self) -> None:
         await self.store.create_run(self._run())
         fetched = await self.store.get_run(self.run_id)
-        self.assertIsNotNone(fetched)
+        assert fetched is not None
         self.assertEqual(fetched.status, RUN_QUEUED)
         self.assertEqual(fetched.workflow_input["repo_url"], "https://example.com/repo")
 
         await self.store.mark_run_started(self.run_id, time.time())
         fetched = await self.store.get_run(self.run_id)
+        assert fetched is not None
         self.assertEqual(fetched.status, RUN_RUNNING)
         self.assertIsNotNone(fetched.started_at)
 
@@ -95,8 +98,9 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
             finished_at=time.time(),
         )
         fetched = await self.store.get_run(self.run_id)
+        assert fetched is not None
         self.assertEqual(fetched.status, RUN_COMPLETED)
-        self.assertEqual(fetched.result["summary"], "done")
+        self.assertEqual(fetched.result, {"summary": "done", "head_sha": "abc"})
         self.assertIsNotNone(fetched.finished_at)
 
     async def test_create_run_is_idempotent(self) -> None:
@@ -104,6 +108,7 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         # A DBOS replay may re-attempt the insert; it must not raise or clobber.
         await self.store.create_run(self._run(status=RUN_RUNNING))
         fetched = await self.store.get_run(self.run_id)
+        assert fetched is not None
         self.assertEqual(fetched.status, RUN_QUEUED)
 
     async def test_step_upsert_threads_snapshots(self) -> None:
@@ -136,7 +141,10 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         steps = await self.store.get_run_steps(self.run_id)
         self.assertEqual(len(steps), 1)
         self.assertEqual(steps[0].status, STEP_COMPLETED)
-        self.assertEqual(steps[0].output_snapshot["head_sha"], "abc")
+        self.assertEqual(
+            steps[0].output_snapshot,
+            {"head_sha": "abc", "files_changed": ["a.py"]},
+        )
         # started_at is preserved across the upsert.
         self.assertIsNotNone(steps[0].started_at)
 

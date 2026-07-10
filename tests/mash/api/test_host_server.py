@@ -1,5 +1,8 @@
 """Integration tests for the public host API over hosted runtimes."""
 
+# Tests seed the in-memory store fakes through their private state.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import asyncio
@@ -9,9 +12,10 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mash.api import MashHostConfig, create_app
@@ -23,6 +27,11 @@ from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import AgentStep, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
 from mash.workflows import dbos as workflow_dbos
+
+
+def _runtime_state(client: TestClient) -> Any:
+    """The app is a FastAPI instance; TestClient types it as a bare ASGI callable."""
+    return cast(FastAPI, client.app).state.runtime_state
 
 
 @contextmanager
@@ -111,7 +120,7 @@ def _save_workflow_turn(
     user_message: str = "workflow input",
     agent_response: str = '{"status":"ok"}',
 ) -> str:
-    runtime = client.app.state.runtime_state.pool.get_agent("changelog-agent")
+    runtime = _runtime_state(client).pool.get_agent("changelog-agent")
     turn_id = f"trace-{run_id.replace(':', '-')}"
     asyncio.run(
         runtime.memory_store.save_turn(
@@ -316,7 +325,7 @@ def test_register_agent_skill_endpoint_registers_dynamic_skill() -> None:
                 "agent_id": "primary",
                 "skill_name": "workflow:test:v1",
             }
-            runtime = client.app.state.runtime_state.pool.get_agent("primary")
+            runtime = _runtime_state(client).pool.get_agent("primary")
             assert runtime.skills.get("workflow:test:v1") is not None
             assert "Skill" in runtime.agent.tools
 
@@ -731,7 +740,7 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
             request_id = submitted.json()["data"]["request_id"]
             _collect_terminal_response(client, "primary", request_id)
 
-            store = client.app.state.runtime_state.pool.get_agent(
+            store = _runtime_state(client).pool.get_agent(
                 "primary"
             ).runtime_store
             asyncio.run(
@@ -787,7 +796,7 @@ def test_telemetry_workflow_activity_rollup() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            store = client.app.state.runtime_state.pool.get_agent(
+            store = _runtime_state(client).pool.get_agent(
                 "primary"
             ).runtime_store
             for run_id, tokens in (("run-1", 10), ("run-2", 20)):
@@ -1209,7 +1218,7 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            host_id = client.app.state.runtime_state.pool.runner_id
+            host_id = _runtime_state(client).pool.runner_id
             run_id = f"mw:{host_id}:changelog:abc"
 
             async def get_workflow_status(_run_id):
@@ -1234,7 +1243,7 @@ def test_workflow_runs_endpoint_lists_store_runs() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            pool = client.app.state.runtime_state.pool
+            pool = _runtime_state(client).pool
             run_id = f"mw:{pool.runner_id}:changelog:abc"
             pool.get_workflow_store()._runs[run_id] = WorkflowRunRecord(
                 run_id=run_id,
@@ -1294,7 +1303,7 @@ def test_workflow_run_events_streams_step_events_from_store() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            pool = client.app.state.runtime_state.pool
+            pool = _runtime_state(client).pool
             run_id = f"mw:{pool.runner_id}:changelog:abc"
             store = pool.get_workflow_store()
             store._runs[run_id] = WorkflowRunRecord(
@@ -1346,7 +1355,7 @@ def test_workflow_run_events_respects_api_auth() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, api_key="secret", workflow_enabled=True) as client:
-            pool = client.app.state.runtime_state.pool
+            pool = _runtime_state(client).pool
             run_id = f"mw:{pool.runner_id}:changelog:abc"
             unauthorized = client.get(f"/api/v1/workflow/changelog/runs/{run_id}/events")
             assert unauthorized.status_code == 401
@@ -1401,7 +1410,7 @@ def _collect_terminal_response(
     request_id: str,
     *,
     headers: dict[str, str] | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     with client.stream(
         "GET",
         f"/api/v1/agent/{agent_id}/request/{request_id}/events",

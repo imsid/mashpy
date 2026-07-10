@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Sequence
+from typing import Callable, Sequence
 
 from mash import __version__, get_docs_url
 from mash.api.main import add_serve_parser
@@ -327,8 +327,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "compose":
         return _run_compose(args)
 
-    handler = getattr(args, "handler", None)
-    if callable(handler):
+    handler: Callable[[argparse.Namespace], int] | None = getattr(args, "handler", None)
+    if handler is not None:
         return int(handler(args))
 
     if args.command is None:

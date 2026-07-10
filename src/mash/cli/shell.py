@@ -257,7 +257,7 @@ class MashRemoteShell:
             error = error_data.get("error")
             self.renderer.error(f"    Subagent {agent_id} error: {error or 'request failed'}")
 
-    def _handle_interaction(
+    def handle_interaction(
         self,
         ctx: CLIContext,
         request_id: str,
@@ -310,7 +310,7 @@ class MashRemoteShell:
             response=response,
         )
 
-    def _render_interaction_ack(self, payload: dict[str, Any]) -> None:
+    def render_interaction_ack(self, payload: dict[str, Any]) -> None:
         interaction_id = str(payload.get("interaction_id") or "")
         response = payload.get("response")
         timed_out = payload.get("timed_out", False)
@@ -354,11 +354,11 @@ class MashRemoteShell:
                     continue
 
                 if event_name == "request.interaction.create":
-                    self._handle_interaction(ctx, request_id, payload)
+                    self.handle_interaction(ctx, request_id, payload)
                     continue
 
                 if event_name == "request.interaction.ack":
-                    self._render_interaction_ack(payload)
+                    self.render_interaction_ack(payload)
                     continue
 
                 if event_name == "request.completed":

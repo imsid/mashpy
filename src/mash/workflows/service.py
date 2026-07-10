@@ -188,12 +188,13 @@ class WorkflowService:
 
         if workflow.steps:
             store = self._workflow_store()
-            record = await store.get_run(resolved_run_id) if store is not None else None
-            if record is not None:
-                run = _run_from_record(record)
-                steps = await store.get_run_steps(resolved_run_id)
-                run.steps = [_step_to_dict(step) for step in steps]
-                return run
+            if store is not None:
+                record = await store.get_run(resolved_run_id)
+                if record is not None:
+                    run = _run_from_record(record)
+                    steps = await store.get_run_steps(resolved_run_id)
+                    run.steps = [_step_to_dict(step) for step in steps]
+                    return run
             # The store row is written once the run starts executing; before that
             # the run is only visible as DBOS status. Fall through to it.
 
