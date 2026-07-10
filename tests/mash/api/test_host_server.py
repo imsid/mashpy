@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from mash.api import MashHostConfig, create_app
 from mash.api.admin_ui import get_admin_static_dir
@@ -27,6 +28,19 @@ from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import AgentStep, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
 from mash.workflows import dbos as workflow_dbos
+
+
+class ChangelogInput(BaseModel):
+    target_agent_id: str | None = None
+    count: int = 1
+
+
+MASHER_WORKFLOW_IDS = [
+    "masher-trace-digest",
+    "masher-online-eval-curation",
+    "gen-synthetic-evals",
+    "score-evals",
+]
 
 
 def _runtime_state(client: TestClient) -> Any:
@@ -48,10 +62,12 @@ def _build_test_client(
             "MASH_DATA_DIR": str(root),
             "MASH_DATABASE_URL": "",
         },
+    ), patch(
+        "mash.agents.masher.spec.EvalAgentSpec.build_llm",
+        return_value=build_spec(agent_id="eval-agent", response_text="{}").build_llm(),
     ):
         builder = (
             HostBuilder()
-            .enable_masher(False)
             .agent(
                 build_spec(agent_id="primary", response_text="primary-ok"),
                 metadata=metadata(),
@@ -80,6 +96,7 @@ def _build_test_client(
                 builder.workflow(
                     WorkflowSpec(
                         workflow_id="changelog",
+                        input_model=ChangelogInput,
                         steps=[
                             AgentStep(
                                 step_id="scan-codebase-and-append-changelog",
@@ -152,20 +169,23 @@ def test_health_and_agent_contract() -> None:
             assert health.status_code == 200
             payload = health.json()["data"]
             assert payload["service"] == "mash-api"
-            assert len(payload["deployment"]["agents"]) == 2
+            assert len(payload["deployment"]["agents"]) == 3
             assert payload["deployment"]["hosts"] == [
                 {
                     "host_id": "assistant",
                     "primary": "primary",
                     "subagents": ["research"],
-                    "workflows": [],
+                    "workflows": MASHER_WORKFLOW_IDS,
                 }
             ]
             assert payload["observability"]["memory"]["search_available"] is True
 
             agents = client.get("/api/v1/agent")
             assert agents.status_code == 200
-            assert len(agents.json()["data"]["agents"]) == 2
+            assert len(agents.json()["data"]["agents"]) == 3
+            assert {
+                item["agent_id"] for item in agents.json()["data"]["agents"]
+            } == {"primary", "research", "eval-agent"}
 
             static_dir = get_admin_static_dir()
             asset_paths = sorted(
@@ -251,12 +271,14 @@ def test_workflow_list_host_filter() -> None:
             assert [
                 workflow["workflow_id"]
                 for workflow in unfiltered.json()["data"]["workflows"]
-            ] == ["changelog"]
+            ] == [*MASHER_WORKFLOW_IDS, "changelog"]
 
-            # The default host has no attached workflows.
-            empty = client.get("/api/v1/workflow", params={"host": "assistant"})
-            assert empty.status_code == 200
-            assert empty.json()["data"]["workflows"] == []
+            defaults = client.get("/api/v1/workflow", params={"host": "assistant"})
+            assert defaults.status_code == 200
+            assert [
+                workflow["workflow_id"]
+                for workflow in defaults.json()["data"]["workflows"]
+            ] == MASHER_WORKFLOW_IDS
 
             attached = client.put(
                 "/api/v1/hosts/assistant",
@@ -273,7 +295,7 @@ def test_workflow_list_host_filter() -> None:
             assert [
                 workflow["workflow_id"]
                 for workflow in filtered.json()["data"]["workflows"]
-            ] == ["changelog"]
+            ] == [*MASHER_WORKFLOW_IDS, "changelog"]
 
             missing = client.get("/api/v1/workflow", params={"host": "unknown"})
             assert missing.status_code == 404
@@ -792,47 +814,6 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
             )
 
 
-def test_telemetry_workflow_activity_rollup() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        with _build_test_client(root) as client:
-            store = _runtime_state(client).pool.get_agent(
-                "primary"
-            ).runtime_store
-            for run_id, tokens in (("run-1", 10), ("run-2", 20)):
-                asyncio.run(
-                    store.append_event(
-                        RuntimeEvent(
-                            event_id=0,
-                            request_id=None,
-                            request_seq=None,
-                            trace_id=f"t-{run_id}",
-                            app_id="primary",
-                            agent_id="primary",
-                            session_id=f"s-{run_id}",
-                            host_id=None,
-                            workflow_id="changelog",
-                            workflow_run_id=run_id,
-                            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
-                            loop_index=None,
-                            step_key=None,
-                            dedupe_key=None,
-                            payload={"token_usage": {"input": tokens, "output": 0}},
-                            created_at=9_999_999_990.0,
-                        )
-                    )
-                )
-
-            activity = client.get("/api/v1/telemetry/workflows")
-            assert activity.status_code == 200
-            workflows = activity.json()["data"]["workflows"]
-            changelog = next(w for w in workflows if w["workflow_id"] == "changelog")
-            assert changelog["run_count"] == 2
-            assert changelog["session_count"] == 2
-            assert changelog["total_tokens"] == 30
-            assert changelog["last_run_at"] == 9_999_999_990.0
-
-
 def test_command_events_ingest_and_list_round_trip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1092,17 +1073,23 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
             assert payload["results"][0]["preview"]
 
 
-def test_workflow_routes_are_available_without_registered_workflows() -> None:
+def test_workflow_routes_include_default_workflows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
             listed = client.get("/api/v1/workflow")
             assert listed.status_code == 200
-            assert listed.json()["data"]["workflows"] == []
+            assert [
+                workflow["workflow_id"]
+                for workflow in listed.json()["data"]["workflows"]
+            ] == MASHER_WORKFLOW_IDS
 
             submitted = client.post("/api/v1/workflow/changelog/run", json={})
             assert submitted.status_code == 404
             assert submitted.json()["error"]["code"] == "WORKFLOW_NOT_FOUND"
+
+            legacy_activity = client.get("/api/v1/telemetry/workflows")
+            assert legacy_activity.status_code == 404
 
 
 def test_workflow_routes_list_and_run_registered_workflows() -> None:
@@ -1111,17 +1098,44 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
         with _build_test_client(root, workflow_enabled=True) as client:
             listed = client.get("/api/v1/workflow")
             assert listed.status_code == 200
-            assert listed.json()["data"]["workflows"] == [
-                {
+            workflows = listed.json()["data"]["workflows"]
+            changelog = next(
+                item for item in workflows if item["workflow_id"] == "changelog"
+            )
+            assert changelog == {
                     "workflow_id": "changelog",
-                    "steps": [
+                    "display_name": "changelog",
+                    "description": "",
+                    "mode": "pipeline",
+                    "step_count": 1,
+                    "step_kinds": {"code": 0, "agent": 1},
+                    "step_preview": [
                         {
+                            "ordinal": 0,
                             "step_id": "scan-codebase-and-append-changelog",
                             "kind": "agent",
                             "agent_id": "changelog-agent",
-                            "structured_output": {"type": "object"},
                         }
                     ],
+                    "history_available": True,
+                    "latest_run": None,
+                }
+
+            described = client.get("/api/v1/workflow/changelog")
+            assert described.status_code == 200
+            definition = described.json()["data"]
+            assert definition["mode"] == "pipeline"
+            assert "target_agent_id" in definition["input_schema"]["properties"]
+            assert definition["steps"] == [
+                {
+                    "ordinal": 0,
+                    "step_id": "scan-codebase-and-append-changelog",
+                    "kind": "agent",
+                    "input_schema": None,
+                    "output_schema": {"type": "object"},
+                    "timeout_s": None,
+                    "agent_id": "changelog-agent",
+                    "skill_name": None,
                 }
             ]
 
@@ -1185,6 +1199,23 @@ def test_workflow_run_rejects_non_object_input() -> None:
             assert response.status_code == 422
 
 
+def test_workflow_run_rejects_invalid_typed_input_before_enqueue() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            with patch.object(workflow_dbos, "start_workflow_run") as start:
+                response = client.post(
+                    "/api/v1/workflow/changelog/run",
+                    json={"input": {"count": "not-an-integer"}},
+                )
+            assert response.status_code == 422
+            assert response.json()["error"]["code"] == "WORKFLOW_INPUT_INVALID"
+            assert response.json()["error"]["details"]["errors"][0]["loc"] == [
+                "count"
+            ]
+            start.assert_not_called()
+
+
 def test_workflow_run_returns_not_found_for_unknown_workflow() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1225,7 +1256,7 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
                 return _FakeWorkflowStatus(
                     workflow_id=run_id,
                     status="SUCCESS",
-                    output={"task_states": {"digest-traces": {"status": "ok"}}},
+                    output={"summary": "done"},
                     deduplication_id=None,
                 )
 
@@ -1236,7 +1267,8 @@ def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
             assert payload["run_id"] == run_id
             assert payload["workflow_id"] == "changelog"
             assert payload["status"] == "completed"
-            assert payload["output"] == {"task_states": {"digest-traces": {"status": "ok"}}}
+            assert payload["result"] == {"summary": "done"}
+            assert payload["workflow_input"] is None
 
 
 def test_workflow_runs_endpoint_lists_store_runs() -> None:
@@ -1249,7 +1281,9 @@ def test_workflow_runs_endpoint_lists_store_runs() -> None:
                 run_id=run_id,
                 workflow_id="changelog",
                 status="completed",
+                workflow_input={"count": 2},
                 result={"summary": "done"},
+                session_id="session-1",
                 created_at=1.0,
                 started_at=1.0,
                 finished_at=2.0,
@@ -1263,7 +1297,29 @@ def test_workflow_runs_endpoint_lists_store_runs() -> None:
             run = payload["runs"][0]
             assert run["run_id"] == run_id
             assert run["status"] == "completed"
-            assert run["output"] == {"summary": "done"}
+            assert "result" not in run
+            assert payload["limit"] == 50
+            assert payload["offset"] == 0
+            assert payload["has_more"] is False
+
+            detail = client.get(f"/api/v1/workflow/changelog/runs/{run_id}")
+            assert detail.status_code == 200
+            run_detail = detail.json()["data"]
+            assert run_detail["workflow_input"] == {"count": 2}
+            assert run_detail["session_id"] == "session-1"
+            assert run_detail["result"] == {"summary": "done"}
+
+            catalog = client.get("/api/v1/workflow").json()["data"]["workflows"]
+            changelog = next(
+                item for item in catalog if item["workflow_id"] == "changelog"
+            )
+            assert changelog["latest_run"] == {
+                "run_id": run_id,
+                "status": "completed",
+                "created_at": 1.0,
+                "started_at": 1.0,
+                "finished_at": 2.0,
+            }
 
 
 def test_workflow_runs_endpoint_returns_empty_for_non_completed_status() -> None:
@@ -1281,6 +1337,35 @@ def test_workflow_runs_endpoint_returns_empty_for_non_completed_status() -> None
             )
             assert response.status_code == 200
             assert response.json()["data"]["runs"] == []
+
+
+def test_workflow_runs_endpoint_reports_more_pages() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            pool = _runtime_state(client).pool
+            for index in range(2):
+                run_id = f"mw:{pool.runner_id}:changelog:{index}"
+                pool.get_workflow_store()._runs[run_id] = WorkflowRunRecord(
+                    run_id=run_id,
+                    workflow_id="changelog",
+                    status="completed",
+                    created_at=float(index + 1),
+                )
+
+            first_page = client.get(
+                "/api/v1/workflow/changelog/runs",
+                params={"limit": 1},
+            ).json()["data"]
+            second_page = client.get(
+                "/api/v1/workflow/changelog/runs",
+                params={"limit": 1, "offset": 1},
+            ).json()["data"]
+
+            assert first_page["runs"][0]["run_id"].endswith(":1")
+            assert first_page["has_more"] is True
+            assert second_page["runs"][0]["run_id"].endswith(":0")
+            assert second_page["has_more"] is False
 
 
 def test_workflow_runs_endpoint_respects_api_auth() -> None:

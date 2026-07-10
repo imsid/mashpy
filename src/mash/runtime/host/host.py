@@ -50,6 +50,7 @@ class AgentPool:
         self._shared_memory_store: MemoryStore | None = None
         self._shared_workflow_store: WorkflowStore | None = None
         self._workflow_registry = WorkflowRegistry()
+        self._default_workflow_ids: list[str] = []
         self._workflow_service = WorkflowService(
             self._workflow_registry,
             self,
@@ -103,6 +104,16 @@ class AgentPool:
         return resolved_agent_id
 
     def define_host(self, host: Host) -> Host:
+        merged_workflows = tuple(
+            dict.fromkeys((*host.workflows, *self._default_workflow_ids))
+        )
+        if merged_workflows != host.workflows:
+            host = Host(
+                host_id=host.host_id,
+                primary=host.primary,
+                subagents=host.subagents,
+                workflows=merged_workflows,
+            )
         for agent_id in (host.primary, *host.subagents):
             registered = self._registered.get(agent_id)
             if registered is None or registered.is_workflow_agent:
@@ -219,6 +230,11 @@ class AgentPool:
     def register_workflow(self, workflow: WorkflowSpec) -> None:
         self._ensure_workflow_task_agents(workflow)
         self._workflow_registry.register(workflow)
+
+    def register_default_workflow(self, workflow: WorkflowSpec) -> None:
+        """Register a workflow that is attached to every host in this pool."""
+        self.register_workflow(workflow)
+        self._default_workflow_ids.append(workflow.workflow_id)
 
     def register_agent_skill(self, agent_id: str, skill: Skill) -> None:
         resolved_agent_id = str(agent_id or "").strip()
@@ -367,7 +383,7 @@ class AgentPool:
         return self._shared_runtime_store
 
     def get_workflow_store(self) -> WorkflowStore | None:
-        """Shared v2 workflow run/step store, or None before the pool is started."""
+        """Shared workflow run/step store, or None before the pool is started."""
         return self._shared_workflow_store
 
     def get_workflow_registry(self) -> WorkflowRegistry:

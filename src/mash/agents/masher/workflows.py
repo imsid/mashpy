@@ -1,6 +1,6 @@
-"""Masher's v2 step pipelines.
+"""Masher's bundled workflow definitions.
 
-Three workflows, sorted along the judgment/computation line:
+Four workflows, sorted along the judgment/computation line:
 
 - ``masher-trace-digest`` — all code. Deterministic latency analysis over
   runtime traces; no model inference anywhere.
@@ -9,6 +9,7 @@ Three workflows, sorted along the judgment/computation line:
 - ``gen-synthetic-evals`` — code, agent, code. Deterministic host profiling,
   one agent-loop generation step (dataset rows + rubric as structured output),
   deterministic persistence into the eval store.
+- ``score-evals`` — durable strategy-driven eval execution and judging.
 
 Code steps close over a :class:`MasherRuntimeContext`; its dependencies are
 bound by ``HostBuilder.build()`` (pool) and API startup (eval service), before
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from ...workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from .context import MasherRuntimeContext
+from .score_runner import ScoreEvalsStrategy
 from .traces import (
     append_jsonl_unique,
     build_online_eval_row,
@@ -42,6 +44,7 @@ from ...runtime.spec import AgentSpec
 MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
 MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
 MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID = "gen-synthetic-evals"
+MASHER_SCORE_EVALS_WORKFLOW_ID = "score-evals"
 GEN_SYNTHETIC_EVALS_SKILL_NAME = "gen-synthetic-evals"
 
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -174,7 +177,7 @@ def _build_digest_traces(context: MasherRuntimeContext):
 def _build_append_digests(context: MasherRuntimeContext):
     def append_digests(inp: _AppendDigestsIn, _ctx: StepContext) -> TraceDigestResult:
         # Trace mode returns the digest inline and never writes the artifact,
-        # matching the pre-v2 contract.
+        # matching the trace-mode contract.
         if inp.mode == "trace":
             return TraceDigestResult(
                 mode="trace",
@@ -462,8 +465,8 @@ def _build_persist_eval(context: MasherRuntimeContext):
     return persist_eval
 
 
-def build_gen_synthetic_evals_workflow(masher_spec: AgentSpec) -> WorkflowSpec:
-    context: MasherRuntimeContext = masher_spec.runtime_context  # type: ignore[attr-defined]
+def build_gen_synthetic_evals_workflow(eval_agent_spec: AgentSpec) -> WorkflowSpec:
+    context: MasherRuntimeContext = eval_agent_spec.runtime_context  # type: ignore[attr-defined]
     return WorkflowSpec(
         workflow_id=MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
         input_model=GenSyntheticEvalsInput,
@@ -476,7 +479,7 @@ def build_gen_synthetic_evals_workflow(masher_spec: AgentSpec) -> WorkflowSpec:
             ),
             AgentStep(
                 step_id="generate",
-                agent_spec=masher_spec,
+                agent_spec=eval_agent_spec,
                 input=GenerationBrief,
                 output=GeneratedEval,
                 skill_name=GEN_SYNTHETIC_EVALS_SKILL_NAME,
@@ -489,6 +492,20 @@ def build_gen_synthetic_evals_workflow(masher_spec: AgentSpec) -> WorkflowSpec:
             ),
         ],
     )
+
+
+def build_masher_workflows(eval_agent_spec: AgentSpec) -> list[WorkflowSpec]:
+    """Build the complete workflow set attached to every host."""
+    context: MasherRuntimeContext = eval_agent_spec.runtime_context  # type: ignore[attr-defined]
+    return [
+        build_trace_digest_workflow(context),
+        build_online_eval_curation_workflow(context),
+        build_gen_synthetic_evals_workflow(eval_agent_spec),
+        WorkflowSpec(
+            workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
+            strategy=ScoreEvalsStrategy(context=context),
+        ),
+    ]
 
 
 __all__ = [
@@ -504,6 +521,7 @@ __all__ = [
     "HostProfile",
     "MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID",
     "MASHER_ONLINE_EVAL_WORKFLOW_ID",
+    "MASHER_SCORE_EVALS_WORKFLOW_ID",
     "MASHER_TRACE_DIGEST_WORKFLOW_ID",
     "OnlineEvalResult",
     "Rubric",
@@ -513,6 +531,7 @@ __all__ = [
     "TraceRef",
     "TraceScanInput",
     "build_gen_synthetic_evals_workflow",
+    "build_masher_workflows",
     "build_online_eval_curation_workflow",
     "build_trace_digest_workflow",
 ]

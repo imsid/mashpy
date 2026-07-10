@@ -119,6 +119,18 @@ class _StepRestrictedRequestEngine:
 
 
 class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._masher_llm_patch = patch(
+            "mash.agents.masher.spec.EvalAgentSpec.build_llm",
+            return_value=build_spec(
+                agent_id="eval-agent", response_text="{}"
+            ).build_llm(),
+        )
+        self._masher_llm_patch.start()
+
+    def tearDown(self) -> None:
+        self._masher_llm_patch.stop()
+
     def test_host_validation_rejects_unknown_members(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
@@ -174,7 +186,9 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .build()
                 )
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
-                self.assertEqual(sorted(described.keys()), ["primary", "research"])
+                self.assertEqual(
+                    sorted(described.keys()), ["eval-agent", "primary", "research"]
+                )
                 for item in described.values():
                     self.assertNotIn("role", item)
                     self.assertIsNotNone(item["metadata"])
@@ -203,7 +217,6 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 primary_spec = build_spec(agent_id="primary", response_text="primary-ok")
                 pool = (
                     HostBuilder()
-                    .enable_masher(False)
                     .agent(primary_spec, metadata=metadata())
                     .workflow(
                         WorkflowSpec(
@@ -226,12 +239,28 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     .build()
                 )
+                workflow_ids = {
+                    item.workflow_id for item in pool.get_workflow_registry().list()
+                }
                 self.assertEqual(
-                    [item.workflow_id for item in pool.get_workflow_registry().list()],
-                    ["changelog"],
+                    workflow_ids,
+                    {
+                        "changelog",
+                        "masher-trace-digest",
+                        "masher-online-eval-curation",
+                        "gen-synthetic-evals",
+                        "score-evals",
+                    },
                 )
                 self.assertEqual(
-                    pool.get_host("changelog-host").workflows, ("changelog",)
+                    pool.get_host("changelog-host").workflows,
+                    (
+                        "changelog",
+                        "masher-trace-digest",
+                        "masher-online-eval-curation",
+                        "gen-synthetic-evals",
+                        "score-evals",
+                    ),
                 )
 
     async def test_host_builder_registers_multiple_workflow_agents(self) -> None:
@@ -241,7 +270,6 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 worker_b = build_spec(agent_id="worker-b", response_text="{}")
                 pool = (
                     HostBuilder()
-                    .enable_masher(False)
                     .agent(
                         build_spec(agent_id="primary", response_text="primary-ok"),
                         metadata=metadata(),
@@ -262,11 +290,18 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
-                self.assertEqual(sorted(described.keys()), ["primary"])
-                self.assertEqual(pool.list_agents(), ["primary"])
+                self.assertEqual(sorted(described.keys()), ["eval-agent", "primary"])
+                self.assertEqual(pool.list_agents(), ["primary", "eval-agent"])
                 self.assertEqual(
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
-                    ["wf-a", "wf-b"],
+                    [
+                        "gen-synthetic-evals",
+                        "masher-online-eval-curation",
+                        "masher-trace-digest",
+                        "score-evals",
+                        "wf-a",
+                        "wf-b",
+                    ],
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
@@ -407,7 +442,6 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 pool = (
                     HostBuilder()
-                    .enable_masher(False)
                     .agent(primary_spec, metadata=metadata())
                     .workflow(
                         WorkflowSpec(
@@ -429,7 +463,8 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     workflow_service = pool.get_workflow_service()
                     self.assertIsNotNone(workflow_service)
                     listed = await workflow_service.list_workflows()
-                    self.assertEqual(len(listed), 1)
+                    self.assertEqual(len(listed), 5)
+                    self.assertIn("changelog", {item["workflow_id"] for item in listed})
 
                     async def start_workflow_run(**_kwargs):
                         return f"mw:{pool.runner_id}:changelog:abc"

@@ -386,6 +386,14 @@ class MashHostClient:
             return []
         return [workflow for workflow in workflows if isinstance(workflow, dict)]
 
+    def get_workflow_definition(self, workflow_id: str) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            f"/api/v1/workflow/{quote(workflow_id, safe='')}",
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     def run_workflow(
         self,
         workflow_id: str,

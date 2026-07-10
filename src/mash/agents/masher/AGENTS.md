@@ -4,22 +4,20 @@
 
 Masher is Mash's built-in observability and eval workflow package: two all-code
 trace pipelines, a code→agent→code eval-generation pipeline, a strategy-driven
-scoring workflow, and the workflow-only Masher worker agent.
+scoring workflow, and the eval agent used by their agent steps.
 
-`HostBuilder` registers the workflows by default (opt out with
-`enable_masher(False)`). The Masher agent must not be exposed as a normal
-subagent or as a delegation target for `InvokeSubagent`.
+`HostBuilder` always registers the eval agent as a normal visible agent and registers
+all four workflows. There is no opt-out or partial-registration mode.
 
 ## What Must Stay True
 
-- Masher (the agent) remains workflow-only, and it only generates and judges —
-  it has no tools. Deterministic work belongs in workflow code steps, not in
-  agent tools.
+- The eval agent only generates and judges; it has no tools. Deterministic work belongs
+  in workflow code steps, not in agent tools.
 - `masher-trace-digest` and `masher-online-eval-curation` are all-code
   pipelines: no LLM anywhere, and they register and run on keyless
   deployments. Do not add an agent step to them without a design decision.
-- `gen-synthetic-evals` and `score-evals` require the Masher agent and are
-  skipped when no LLM provider is configured.
+- `gen-synthetic-evals` and `score-evals` require the eval agent. Because it is
+  part of every pool, host startup requires a configured LLM provider.
 - Every step is typed: pydantic models on both edges of code steps; agent-step
   output models are the structured-output schema.
 - `workflow_input` is trigger input and is immutable for the run. There is no
@@ -38,7 +36,7 @@ subagent or as a delegation target for `InvokeSubagent`.
 
 - Keep step bodies deterministic; anything nondeterministic must be an agent
   step with a validated output model.
-- Do not add free-form chat or subagent usage behavior back into Masher.
+- Do not add free-form chat or subagent usage behavior to the eval agent.
 - Keep trace-mode selection based on `target_agent_id`, `session_id`, and
   `trace_id`; keep batch selection based on the caller-supplied `since_ts`.
 - If the digest or eval-row schema changes, update `README.md`, the Masher

@@ -241,7 +241,7 @@ outputs, and every step leaves an audit trail of status, input and output
 snapshots, and lifecycle events in dedicated workflow tables. Runs start and
 stream over the API (`POST /api/v1/workflow/{id}/run`, then SSE on the run's
 events endpoint) or the REPL (`/workflow run|status|resume`). Non-linear
-shapes supply a `WorkflowStrategy` instead of steps; Masher's eval scorer uses
+shapes supply a `WorkflowStrategy` instead of steps; `score-evals` uses
 one to fan dataset rows out as durable child workflows.
 [Workflows as Step Pipelines](workflows-as-step-pipelines.md) covers the layer
 in full.
@@ -252,10 +252,9 @@ in full.
 The host is the unit of deploy and the unit of evaluation. Mash evals run a
 dataset through the full composition, primary agent, delegation, and
 subagents, so what gets scored is the response the application actually
-receives. Synthetic evals ship as two workflows on Masher, Mash's built-in
-workflow agent, registered into every pool by default (opt out with
-`HostBuilder.enable_masher(False)`). Masher is a hidden workflow-only worker:
-it never appears in agent listings or `InvokeSubagent` delegation.
+receives. Synthetic evals ship as two Masher workflows backed by Mash's built-in
+eval agent. Every pool includes the eval agent and all four Masher workflows. It appears
+in agent listings so its spec and the agent steps that use it can be inspected.
 
 - **`gen-synthetic-evals`** reads a host's declared capabilities and the
   developer's guidance and generates the eval: a dataset of test scenarios
@@ -265,13 +264,13 @@ it never appears in agent listings or `InvokeSubagent` delegation.
 - **`score-evals`** runs one experiment. It snapshots the live host
   composition and the spec of every agent in it, fans the dataset rows out as
   durable child workflows over a dedicated queue, judges each output with
-  Masher against the rubric, and folds each row's session events into
+  the eval agent against the rubric, and folds each row's session events into
   operational metrics.
 
 Each run records two kinds of signal. Deterministic quantitative metrics come
 from the row's runtime events: latency, tokens with the cached read/write
 split, steps, tool calls, per-subagent breakdowns. Qualitative criteria are
-non-deterministic and scored by the Masher LLM judge, each with a rationale.
+non-deterministic and scored by the eval agent, each with a rationale.
 Comparison is computed at read time over any two experiments of the same
 eval: the agent spec delta from the snapshots, score movement per criterion
 and per row, and the operational delta side by side. Nothing derived is

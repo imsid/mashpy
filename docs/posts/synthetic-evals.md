@@ -101,22 +101,22 @@ The intended loop: define an eval, run an experiment against the current host st
 
 ## Structural Design
 
-Both flows are registered as `WorkflowSpec` definitions on the masher agent, but they execute differently. Generation is a masher workflow task backed by a SKILL. Scoring is a workflow strategy that drives its own execution in code and calls masher only to judge.
+Both flows are registered as Masher `WorkflowSpec` definitions, but they execute differently. Generation is an eval-agent workflow task backed by a SKILL. Scoring is a workflow strategy that drives its own execution in code and calls the eval agent only to judge.
 
 ### Generation: `gen-synthetic-evals`
 
-Triggered from the admin UI Evals tab with a target host, optional user guidance, and a row count (default 20, max 100). This is a single masher task, `generate-evals`, backed by the `gen-synthetic-evals` SKILL. Masher reads the host's declared capabilities, generates the dataset and rubric, then calls a persistence tool to write them.
+Triggered from the admin UI Evals tab with a target host, optional user guidance, and a row count (default 20, max 100). This is a single eval-agent task backed by the `gen-synthetic-evals` SKILL. The agent reads the host's declared capabilities and generates the dataset and rubric before a code step persists them.
 
 | Step | What It Does |
 |---|---|
-| generate (SKILL) | Masher reads the host composition and generates exactly `row_count` synthetic rows plus a weighted rubric |
+| generate (SKILL) | The eval agent reads the host composition and generates exactly `row_count` synthetic rows plus a weighted rubric |
 | persist (tool) | `run_gen_synthetic_evals_workflow` validates the rows and rubric, writes dataset, rubric, and eval to Postgres, and returns eval_id |
 
 The persistence tool does no LLM work and takes no snapshots. It validates the generated rows and rubric (including that the dataset has exactly the requested number of rows, so the size is deterministic rather than the model's judgment) and hands everything to the eval store.
 
 ### Scoring: `score-evals`
 
-Triggered from the admin UI with an eval_id. Each trigger creates and runs one new experiment. Scoring does not run as a sequential chain of masher tasks. It runs as a `WorkflowStrategy`, `ScoreEvalsStrategy`, that orchestrates in deterministic code and calls masher only as the per-row judge. The workflow spec keeps a single task entry to pin the judge agent and its output contract; the strategy replaces the generic task loop.
+Triggered from the admin UI with an eval_id. Each trigger creates and runs one new experiment. Scoring does not run as a sequential step chain. It runs as a `WorkflowStrategy`, `ScoreEvalsStrategy`, that orchestrates in deterministic code and calls the eval agent only as the per-row judge.
 
 | Stage | What It Does |
 |---|---|
@@ -131,7 +131,7 @@ The first `score-evals` run against an eval also locks it: from then on the rubr
 
 ### Judge
 
-Scoring is the only LLM step in `score-evals`. For each row the strategy builds a self-contained judge message (the rubric criteria with their scales and weights, the test input, and the agent output) and calls masher with a structured-output contract. Masher returns a per-criterion score and rationale. The strategy recomputes `weighted_score` from the rubric weights and the returned scores; it does not trust the model's own arithmetic. Because criterion names are dynamic and cannot be expressed as a closed provider schema, the judge returns a `json_text` string that the strategy parses and validates.
+Scoring is the only LLM step in `score-evals`. For each row the strategy builds a self-contained judge message (the rubric criteria with their scales and weights, the test input, and the agent output) and calls the eval agent with a structured-output contract. The agent returns a per-criterion score and rationale. The strategy recomputes `weighted_score` from the rubric weights and the returned scores; it does not trust the model's own arithmetic. Because criterion names are dynamic and cannot be expressed as a closed provider schema, the judge returns a `json_text` string that the strategy parses and validates.
 
 ### Comparison
 

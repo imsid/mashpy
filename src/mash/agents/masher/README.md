@@ -1,26 +1,25 @@
 # Masher
 
 `src/mash/agents/masher` contains Mash's built-in observability and eval
-workflows, plus the workflow-only Masher worker agent that two of them use.
+workflows, plus the eval agent that two of them use.
 
-The package is organized along the judgment/computation line the v2 workflow
+The package is organized along the judgment/computation line the workflow
 design draws:
 
-- `pipelines.py` — the workflow definitions: pydantic step models, code-step
-  bodies, and the `WorkflowSpec` builders.
+- `workflows.py` — all four workflow definitions: pydantic step models,
+  code-step bodies, strategy composition, and the `WorkflowSpec` builders.
 - `traces.py` — deterministic trace loading, span analysis, and JSONL artifact
   helpers used by the code steps. No model inference anywhere.
 - `context.py` — `MasherRuntimeContext`, the dependency holder code steps close
   over (runtime store, agent pool, eval service, artifact paths).
-- `spec.py` — the Masher agent (generation and judging only; it has no tools)
-  and `build_masher_workflow_specs`.
+- `spec.py` — only `EvalAgentSpec`, its provider selection, metadata,
+  and `gen-synthetic-evals` skill registration.
 - `judge.py` / `score_runner.py` — the score-evals judging contract and its
   durable fan-out `WorkflowStrategy`.
 
-Masher (the agent) is not a user-invokable subagent. It is hidden from public
-agent listings and from `InvokeSubagent` delegation; only workflow steps reach
-it. `HostBuilder` registers everything by default; opt out with
-`enable_masher(False)`.
+`HostBuilder` registers `eval-agent` through the normal agent path, so it appears in
+the Agents catalog and its spec can be inspected alongside the agent steps that
+use it. Every pool also receives all four workflows.
 
 ## Workflows
 
@@ -67,7 +66,7 @@ profile-host (code) -> generate (agent) -> persist-eval (code)
 (optional), `row_count` (default 20, max 100).
 
 `profile-host` reads the host composition and each member agent's declared
-`AgentMetadata` from the pool. `generate` is one Masher agent-loop run with the
+`AgentMetadata` from the pool. `generate` is one eval-agent loop run with the
 `gen-synthetic-evals` skill; its structured output is validated against
 `GeneratedEval` (row shapes, sampling categories, rubric weights summing
 to 1.0). `persist-eval` enforces the exact `row_count` and writes the eval
@@ -78,28 +77,26 @@ terminal for the run — start a fresh run to regenerate.
 ### `score-evals` — strategy (durable fan-out)
 
 Unchanged: a custom `WorkflowStrategy` that loads the eval, snapshots the host,
-fans out one durable child workflow per dataset row (host run, then Masher
+fans out one durable child workflow per dataset row (host run, then eval-agent
 judge), and persists the experiment. See `score_runner.py`.
 
-## Registration and keyless deployments
+## Registration and provider configuration
 
-`HostBuilder.build()` constructs the Masher spec, binds the pool into its
-`MasherRuntimeContext`, and registers the workflows. The two all-code pipelines
-never touch an LLM, so they register (and their steps run) even when no
-provider is configured. Only the Masher agent and its two agent-dependent
-workflows (`gen-synthetic-evals`, `score-evals`) require a provider; on a
-keyless deployment they are skipped.
+`HostBuilder.build()` constructs `EvalAgentSpec`, binds the pool into its
+`MasherRuntimeContext`, registers it as a visible agent, and registers all four
+workflows. Host startup requires a provider because the eval agent is part of every
+pool, even though the two all-code pipelines never invoke it.
 
 `build_llm()` resolves the first configured of `GEMINI_API_KEY` /
 `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, then an OSS endpoint
-via `OSS_BASE_URL` (which also requires `MASHER_OSS_MODEL`, optionally
-`OSS_API_KEY`). Per-provider model overrides: `MASHER_GEMINI_MODEL`,
-`MASHER_OPENAI_MODEL`, `MASHER_ANTHROPIC_MODEL`, `MASHER_OSS_MODEL`.
+via `OSS_BASE_URL` (which also requires `EVAL_AGENT_OSS_MODEL`, optionally
+`OSS_API_KEY`). Per-provider model overrides: `EVAL_AGENT_GEMINI_MODEL`,
+`EVAL_AGENT_OPENAI_MODEL`, `EVAL_AGENT_ANTHROPIC_MODEL`, `EVAL_AGENT_OSS_MODEL`.
 
 Registered Masher workflows are attached to every host the builder defines,
 appended after any workflows the host attached explicitly, so host
-compositions (the Hosts admin tab, `GET /workflow?host=...`) show them. Hosts
-defined dynamically after `build()` are not touched.
+compositions (the Hosts admin tab, `GET /workflow?host=...`) show them. The pool
+also applies these defaults to hosts defined dynamically after `build()`.
 
 ## Digest contents
 

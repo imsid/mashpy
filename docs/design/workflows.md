@@ -1,4 +1,4 @@
-# Workflows v2 — Design
+# Workflows — Design
 
 Status: proposal
 Author: sid (with Claude)
@@ -28,24 +28,26 @@ around a different model. The redesign changes four things at the core:
 
 1. **Steps can be code, not only agents.** Today every `TaskSpec` binds to an
    agent and runs a Mash request. Running plain code requires writing a whole
-   custom `WorkflowStrategy`. v2 makes a code step a first-class primitive.
+   custom `WorkflowStrategy`. The workflow model makes a code step a first-class
+   primitive.
 
 2. **State threads forward within a run.** Today `load_previous_task_state`
    (`dbos.py:291`) deliberately *skips the current run* and pulls each task's
    state from the latest prior successful run — a cross-run per-task checkpoint
-   model built for periodic jobs. v2 replaces this with a pure forward pipeline:
+   model built for periodic jobs. The pipeline replaces this with pure forward
+   state:
    step *n* sees `(workflow_input, output(n-1))`. `load_previous_task_state` and
    the cross-run lookup are deleted, not adapted.
 
 3. **Typed I/O via pydantic.** Today `TaskSpec.structured_output` is a
-   hand-written JSON-schema dict, validated on output only. v2 types every step
+   hand-written JSON-schema dict, validated on output only. Every step now has
    with pydantic models and validates at both edges. Pipeline adjacency is
    checked at build time.
 
 4. **Workflows own persistence.** Today run history is reconstructed from agent
    memory turns and the runtime event log; DBOS holds status and output; there
    are no workflow tables. Code steps produce no agent turns, so they would be
-   invisible under that model. v2 introduces dedicated workflow tables and reads
+   invisible under that model. Dedicated workflow tables hold and serve
    run history and events from them.
 
 What stays: DBOS remains the orchestration and recovery engine. The agent loop
@@ -293,7 +295,7 @@ workflow and must be called out in its release notes.
 The eval-scoring path is a custom `WorkflowStrategy` that uses
 `post_inline_agent_request` / `collect_terminal_payload`. The strategy escape
 hatch stays, so this keeps working. It should be revisited to use the new step
-store for its audit trail, but that is not a blocker for v2.
+store for its audit trail, but that is not a blocker for the cutover.
 
 ### Clean cutover — no compatibility shim
 
@@ -429,7 +431,7 @@ Depends on Phase 4. Move the two real users onto the new surface.
 - Point the eval `ScoreEvalsStrategy` at the new step store for its audit trail
   (still a strategy; the escape hatch is unchanged).
 
-Exit: both in-tree workflows run on the v2 engine; eval scoring shows up in the
+Exit: both in-tree workflows run on the forward engine; eval scoring shows up in the
 step audit tables.
 
 ### Phase 6 — Cutover and cleanup
@@ -442,7 +444,7 @@ Depends on Phase 5 — nothing else references the old surface.
   `CLAUDE.md` workflow examples to the `steps=[...]` API.
 
 Exit: no reference to `tasks=[...]` or cross-run task state remains; full suite
-green; docs describe only v2.
+green; docs describe only the supported workflow model.
 
 ### Sequencing notes
 

@@ -275,10 +275,6 @@ class PostgresRuntimeStore(RuntimeStore):
             self._pool, agent_id=agent_id, workflow_id=workflow_id, limit=limit
         )
 
-    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]:
-        await self.open()
-        return await loaders.aggregate_workflow_activity(self._pool)
-
     async def aggregate_usage(
         self,
         app_id: str,

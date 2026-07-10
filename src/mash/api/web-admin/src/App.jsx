@@ -7,6 +7,9 @@ import ToolDetail from './routes/ToolDetail.jsx';
 import Skills from './routes/Skills.jsx';
 import SkillDetail from './routes/SkillDetail.jsx';
 import Workflows from './routes/Workflows.jsx';
+import WorkflowDetail from './routes/WorkflowDetail.jsx';
+import WorkflowRuns from './routes/WorkflowRuns.jsx';
+import WorkflowRunDetail from './routes/WorkflowRunDetail.jsx';
 import Hosts from './routes/Hosts.jsx';
 import Logs from './routes/Logs.jsx';
 import Feedback from './routes/Feedback.jsx';
@@ -27,6 +30,9 @@ export default function App() {
         <Route path="skills" element={<Skills />} />
         <Route path="skills/:skillName" element={<SkillDetail />} />
         <Route path="workflows" element={<Workflows />} />
+        <Route path="workflows/:workflowId" element={<WorkflowDetail />} />
+        <Route path="workflows/:workflowId/runs" element={<WorkflowRuns />} />
+        <Route path="workflows/:workflowId/runs/:runId" element={<WorkflowRunDetail />} />
         <Route path="hosts" element={<Hosts />} />
         <Route path="logs" element={<Logs />} />
         <Route path="feedback" element={<Feedback />} />

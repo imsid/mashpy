@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from pydantic import ValidationError
+
 from . import dbos as workflow_dbos
 from .registry import WorkflowRegistry
 from .spec import WorkflowSpec
@@ -29,7 +31,9 @@ class WorkflowRun:
     started_at: float | None = None
     finished_at: float | None = None
     error: str | None = None
-    output: dict[str, Any] | None = None
+    workflow_input: dict[str, Any] | None = None
+    session_id: str | None = None
+    result: dict[str, Any] | None = None
     steps: list[dict[str, Any]] | None = None
 
 
@@ -44,6 +48,19 @@ class WorkflowStreamEvent:
 
 class WorkflowNotFoundError(LookupError):
     """Raised when a requested workflow is not registered."""
+
+
+class WorkflowInputValidationError(ValueError):
+    """Raised when workflow input does not satisfy the published input model."""
+
+    def __init__(
+        self,
+        workflow_id: str,
+        errors: list[dict[str, Any]],
+    ) -> None:
+        self.workflow_id = workflow_id
+        self.errors = errors
+        super().__init__(f"workflow '{workflow_id}' input validation failed")
 
 
 class DuplicateWorkflowRunError(RuntimeError):
@@ -83,7 +100,36 @@ class WorkflowService:
         return getter() if callable(getter) else None
 
     async def list_workflows(self) -> list[dict[str, Any]]:
-        return [self._serialize_workflow(item) for item in self._workflow_registry.list()]
+        workflows = self._workflow_registry.list()
+        pipeline_ids = [workflow.workflow_id for workflow in workflows if workflow.steps]
+        latest_runs: dict[str, Any] = {}
+        history_available = False
+        store = self._workflow_store()
+        if store is not None:
+            try:
+                latest_runs = await store.get_latest_runs(pipeline_ids)
+                history_available = True
+            except Exception:
+                # Definition discovery remains usable when the optional run
+                # history lookup is temporarily unavailable.
+                latest_runs = {}
+        return [
+            self._serialize_workflow_summary(
+                workflow,
+                latest_run=latest_runs.get(workflow.workflow_id),
+                history_available=history_available and bool(workflow.steps),
+            )
+            for workflow in workflows
+        ]
+
+    async def get_workflow_definition(self, workflow_id: str) -> dict[str, Any]:
+        """Return the complete registered definition projection for one workflow."""
+        resolved_workflow_id = str(workflow_id or "").strip()
+        if not resolved_workflow_id:
+            raise ValueError("workflow_id is required")
+        return self._serialize_workflow_definition(
+            self._require_workflow(resolved_workflow_id)
+        )
 
     async def list_runs(
         self,
@@ -135,6 +181,14 @@ class WorkflowService:
         normalized_workflow_input = _normalize_workflow_input(workflow_input)
         normalized_session_id = _normalize_optional_text(session_id)
         workflow = self._require_workflow(resolved_workflow_id)
+        if workflow.input_model is not None:
+            try:
+                workflow.input_model.model_validate(normalized_workflow_input)
+            except ValidationError as exc:
+                raise WorkflowInputValidationError(
+                    resolved_workflow_id,
+                    exc.errors(include_url=False, include_context=False),
+                ) from exc
         database_url = str(getattr(self._pool, "runtime_database_url", "") or "").strip()
         if not database_url:
             raise RuntimeError("MASH_DATABASE_URL is required")
@@ -345,7 +399,7 @@ class WorkflowService:
                         "workflow_id": workflow_id,
                         "run_id": run_id,
                         "status": mapped,
-                        "output": _status_output(status),
+                        "result": _status_result(status),
                     },
                 )
                 return
@@ -372,28 +426,68 @@ class WorkflowService:
             ) from exc
 
     @staticmethod
-    def _serialize_workflow(workflow: WorkflowSpec) -> dict[str, Any]:
-        def _step(step: Any) -> dict[str, Any]:
-            entry: dict[str, Any] = {"step_id": step.step_id, "kind": step.kind}
+    def _serialize_workflow_summary(
+        workflow: WorkflowSpec,
+        *,
+        latest_run: Any | None,
+        history_available: bool,
+    ) -> dict[str, Any]:
+        metadata = workflow.metadata if isinstance(workflow.metadata, dict) else {}
+        display_name = str(metadata.get("display_name") or "").strip()
+        description = str(metadata.get("description") or "").strip()
+        code_count = sum(1 for step in workflow.steps if step.kind == "code")
+        agent_count = sum(1 for step in workflow.steps if step.kind == "agent")
+        step_preview = []
+        for ordinal, step in enumerate(workflow.steps[:4]):
+            entry: dict[str, Any] = {
+                "ordinal": ordinal,
+                "step_id": step.step_id,
+                "kind": step.kind,
+            }
             if step.kind == "agent":
                 entry["agent_id"] = getattr(step, "agent_id", None)
-                skill_name = getattr(step, "skill_name", None)
-                if skill_name:
-                    entry["skill_name"] = skill_name
-            output = step.output
-            if isinstance(output, dict):
-                entry["structured_output"] = dict(output)
-            return entry
-
-        payload: dict[str, Any] = {
+            step_preview.append(entry)
+        return {
             "workflow_id": workflow.workflow_id,
-            "steps": [_step(step) for step in workflow.steps],
+            "display_name": display_name or workflow.workflow_id,
+            "description": description,
+            "mode": "pipeline" if workflow.steps else "strategy",
+            "step_count": len(workflow.steps),
+            "step_kinds": {"code": code_count, "agent": agent_count},
+            "step_preview": step_preview,
+            "history_available": history_available,
+            "latest_run": _run_record_summary(latest_run),
         }
-        if workflow.strategy is not None and not workflow.steps:
-            payload["strategy"] = type(workflow.strategy).__name__
-        if workflow.metadata:
-            payload["metadata"] = dict(workflow.metadata)
-        return payload
+
+    @staticmethod
+    def _serialize_workflow_definition(workflow: WorkflowSpec) -> dict[str, Any]:
+        steps: list[dict[str, Any]] = []
+        for ordinal, step in enumerate(workflow.steps):
+            entry: dict[str, Any] = {
+                "ordinal": ordinal,
+                "step_id": step.step_id,
+                "kind": step.kind,
+                "input_schema": _schema_for(step.input),
+                "output_schema": _schema_for(step.output),
+                "timeout_s": step.timeout_s,
+            }
+            if step.kind == "agent":
+                entry["agent_id"] = getattr(step, "agent_id", None)
+                entry["skill_name"] = getattr(step, "skill_name", None)
+            steps.append(entry)
+        strategy = (
+            type(workflow.strategy).__name__
+            if workflow.strategy is not None and not workflow.steps
+            else None
+        )
+        return {
+            "workflow_id": workflow.workflow_id,
+            "mode": "pipeline" if workflow.steps else "strategy",
+            "metadata": dict(workflow.metadata),
+            "input_schema": _schema_for(workflow.input_model),
+            "steps": steps,
+            "strategy": strategy,
+        }
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -411,6 +505,26 @@ def _normalize_workflow_input(value: dict[str, Any] | None) -> dict[str, Any]:
     return dict(value)
 
 
+def _schema_for(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    return dict(value.model_json_schema())
+
+
+def _run_record_summary(record: Any | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "run_id": record.run_id,
+        "status": record.status,
+        "created_at": float(record.created_at or 0.0),
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+    }
+
+
 def _run_from_record(record: Any) -> WorkflowRun:
     """Map a WorkflowStore run record to the public WorkflowRun projection."""
     return WorkflowRun(
@@ -422,7 +536,9 @@ def _run_from_record(record: Any) -> WorkflowRun:
         started_at=record.started_at,
         finished_at=record.finished_at,
         error=record.error,
-        output=record.result,
+        workflow_input=dict(record.workflow_input),
+        session_id=record.session_id,
+        result=record.result,
     )
 
 
@@ -461,7 +577,7 @@ def _run_from_status(
         started_at=created_at if mapped_status not in {"queued"} else None,
         finished_at=updated_at if mapped_status in {"completed", "failed", "cancelled"} else None,
         error=_status_error(status),
-        output=_status_output(status),
+        result=_status_result(status),
     )
 
 
@@ -494,7 +610,7 @@ def _status_error(status: Any) -> str | None:
     return text or None
 
 
-def _status_output(status: Any) -> dict[str, Any] | None:
+def _status_result(status: Any) -> dict[str, Any] | None:
     output = getattr(status, "output", None)
     return dict(output) if isinstance(output, dict) else None
 

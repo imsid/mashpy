@@ -23,22 +23,33 @@ def serialize_structured_output(value: Any) -> dict[str, Any] | None:
 
     raise TypeError("structured_output must be a Pydantic model or JSON-schema payload")
 
+
 def normalize_structured_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Recursively set additionalProperties=false for every object node."""
+    """Normalize a schema for strict structured-output providers.
+
+    OpenAI strict JSON schemas require every object property to appear in that
+    object's ``required`` array and reject Pydantic's ``default`` annotations.
+    Requiring defaulted fields is safe for response generation: the provider
+    emits the value explicitly and Pydantic performs the final validation.
+    """
     normalized = deepcopy(schema)
-    _close_object_nodes(normalized)
+    _normalize_schema_nodes(normalized)
     return normalized
 
 
-def _close_object_nodes(value: Any) -> None:
+def _normalize_schema_nodes(value: Any) -> None:
     if isinstance(value, dict):
+        value.pop("default", None)
         for child in value.values():
-            _close_object_nodes(child)
+            _normalize_schema_nodes(child)
         if value.get("type") == "object":
             value["additionalProperties"] = False
+            properties = value.get("properties")
+            if isinstance(properties, dict):
+                value["required"] = list(properties)
     elif isinstance(value, list):
         for item in value:
-            _close_object_nodes(item)
+            _normalize_schema_nodes(item)
 
 
 __all__ = ["normalize_structured_output_schema", "serialize_structured_output"]

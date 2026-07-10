@@ -1,4 +1,4 @@
-"""Integration tests for the v2 workflow store (requires Postgres)."""
+"""Integration tests for the workflow store (requires Postgres)."""
 
 from __future__ import annotations
 
@@ -63,10 +63,13 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.open()
         self.workflow_id = "changelog"
         self.run_id = f"mw:test:{self.workflow_id}:{uuid.uuid4().hex}"
+        self.extra_run_ids: list[str] = []
 
     async def asyncTearDown(self) -> None:
         await self.store.close()
         _cleanup(self.database_url, self.run_id)
+        for run_id in self.extra_run_ids:
+            _cleanup(self.database_url, run_id)
 
     def _run(self, **overrides: Any) -> WorkflowRunRecord:
         record = WorkflowRunRecord(
@@ -177,6 +180,19 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(r.run_id == self.run_id for r in runs))
         completed = await self.store.list_runs(self.workflow_id, status=RUN_COMPLETED)
         self.assertFalse(any(r.run_id == self.run_id for r in completed))
+
+    async def test_get_latest_runs_returns_newest_run_per_workflow(self) -> None:
+        await self.store.create_run(self._run(created_at=1.0))
+        newer_run_id = f"mw:test:{self.workflow_id}:{uuid.uuid4().hex}"
+        self.extra_run_ids.append(newer_run_id)
+        await self.store.create_run(
+            self._run(run_id=newer_run_id, created_at=2.0, status=RUN_COMPLETED)
+        )
+
+        latest = await self.store.get_latest_runs([self.workflow_id, "missing"])
+
+        self.assertEqual(latest[self.workflow_id].run_id, newer_run_id)
+        self.assertNotIn("missing", latest)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -85,8 +85,6 @@ class RuntimeStore(Protocol):
         limit: int | None = None,
     ) -> dict[str, Any]: ...
 
-    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]: ...
-
     async def aggregate_usage(
         self,
         app_id: str,

@@ -1,4 +1,4 @@
-"""Store-backed WorkflowService behavior for v2 step pipelines (requires Postgres)."""
+"""Store-backed WorkflowService behavior for step pipelines (requires Postgres)."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ class _FakePool:
         return self._store
 
 
-class WorkflowServiceV2Tests(unittest.IsolatedAsyncioTestCase):
+class WorkflowServiceStoreTests(unittest.IsolatedAsyncioTestCase):
     WF = "svc-pipe"
 
     async def asyncSetUp(self) -> None:
@@ -170,7 +170,7 @@ class WorkflowServiceV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0].run_id, self.run_id)
         self.assertEqual(runs[0].status, RUN_COMPLETED)
-        self.assertEqual(runs[0].output, {"doubled": 6})
+        self.assertEqual(runs[0].result, {"doubled": 6})
 
     async def test_list_runs_status_filter(self) -> None:
         await self._seed(RUN_COMPLETED, result={"doubled": 6})
@@ -182,7 +182,8 @@ class WorkflowServiceV2Tests(unittest.IsolatedAsyncioTestCase):
         await self._seed(RUN_COMPLETED, result={"doubled": 6})
         run = await self.service.get_run(self.WF, self.run_id)
         self.assertEqual(run.status, RUN_COMPLETED)
-        self.assertEqual(run.output, {"doubled": 6})
+        self.assertEqual(run.workflow_input, {"n": 3})
+        self.assertEqual(run.result, {"doubled": 6})
         assert run.steps is not None
         self.assertEqual(len(run.steps), 1)
         self.assertEqual(run.steps[0]["output_snapshot"], {"doubled": 6})

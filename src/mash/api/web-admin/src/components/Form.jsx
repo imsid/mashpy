@@ -23,17 +23,17 @@ export function Field({ label, hint, children }) {
 const inputBase =
   'w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-300';
 
-export function TextInput(props) {
-  return <input className={inputBase} {...props} />;
+export function TextInput({ className = '', ...props }) {
+  return <input className={`${inputBase} ${className}`} {...props} />;
 }
 
-export function TextArea(props) {
-  return <textarea className={`${inputBase} resize-y`} {...props} />;
+export function TextArea({ className = '', ...props }) {
+  return <textarea className={`${inputBase} resize-y ${className}`} {...props} />;
 }
 
-export function Select({ children, ...props }) {
+export function Select({ children, className = '', ...props }) {
   return (
-    <select className={inputBase} {...props}>
+    <select className={`${inputBase} ${className}`} {...props}>
       {children}
     </select>
   );

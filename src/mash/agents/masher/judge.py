@@ -1,7 +1,7 @@
-"""Masher-as-judge: score one agent output against an eval rubric.
+"""Eval-agent judging: score one agent output against an eval rubric.
 
 The eval scoring orchestration (``score_runner``) runs each dataset row through
-the host under test, then calls Masher once per row with a self-contained judge
+the host under test, then calls the eval agent once per row with a self-contained judge
 message and this structured-output contract. Judging is the only LLM step in
 scoring; loading rows, running the host, and persistence are deterministic code.
 """
@@ -13,11 +13,11 @@ from typing import Any
 
 from ...evals.models import CriterionScore
 
-# json_text wrapper mirrors the other Masher workflow outputs: dynamic criterion
+# json_text wrapper mirrors the other eval workflow outputs: dynamic criterion
 # names can't be expressed as a closed provider schema, so the model returns a
 # serialized JSON string we parse ourselves.
-MASHER_JUDGE_STRUCTURED_OUTPUT = {
-    "title": "MasherJudgeRowOutput",
+EVAL_JUDGE_STRUCTURED_OUTPUT = {
+    "title": "EvalJudgeRowOutput",
     "type": "object",
     "properties": {
         "json_text": {

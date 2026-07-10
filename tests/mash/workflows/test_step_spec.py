@@ -1,4 +1,4 @@
-"""Tests for the v2 workflow step specs and build-time pipeline validation."""
+"""Tests for workflow step specs and build-time pipeline validation."""
 
 from __future__ import annotations
 

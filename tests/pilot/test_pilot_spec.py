@@ -9,8 +9,9 @@ from typing import Optional
 from unittest.mock import patch
 
 import pilot.spec as pilot_spec_module
-from mash.agents import MasherAgentSpec
+from mash.agents import EvalAgentSpec
 from mash.agents.masher import (
+    EVAL_AGENT_ID,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
     MASHER_SCORE_EVALS_WORKFLOW_ID,
@@ -178,7 +179,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
@@ -197,6 +198,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             ADMIN_COPILOT_AGENT_ID,
                             API_COPILOT_AGENT_ID,
                             CLI_COPILOT_AGENT_ID,
+                            EVAL_AGENT_ID,
                             MCP_COPILOT_AGENT_ID,
                             PILOT_AGENT_ID,
                             RUNTIME_COPILOT_AGENT_ID,
@@ -220,7 +222,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         assert RUNTIME_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert WORKFLOW_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert ADMIN_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert "masher" not in str(primary.system_prompt)
+                        assert "eval-agent" not in str(primary.system_prompt)
                     finally:
                         await host.close()
 
@@ -270,7 +272,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
@@ -287,7 +289,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
                         runtime_agent = host.get_agent(RUNTIME_COPILOT_AGENT_ID)
                         workflow_agent = host.get_agent(WORKFLOW_COPILOT_AGENT_ID)
-                        masher = host.get_agent("masher")
+                        eval_agent = host.get_agent("eval-agent")
 
                         assert "bash" in primary.agent.tools
                         assert "InvokeSubagent" in primary.agent.tools
@@ -296,9 +298,9 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         assert "bash" in mcp_agent.agent.tools
                         assert "bash" in runtime_agent.agent.tools
                         assert "bash" in workflow_agent.agent.tools
-                        # Masher's deterministic work lives in workflow code
-                        # steps now; the agent keeps only the Skill meta-tool.
-                        assert sorted(masher.agent.tools.list_tools()) == ["Skill"]
+                        # Deterministic work lives in workflow code steps; the
+                        # eval agent keeps only the Skill meta-tool.
+                        assert sorted(eval_agent.agent.tools.list_tools()) == ["Skill"]
                     finally:
                         await host.close()
 
@@ -348,7 +350,7 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                     patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
-                    patch.object(MasherAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])

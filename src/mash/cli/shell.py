@@ -60,27 +60,19 @@ class MashRemoteShell:
             session_ids={self.target.agent_id: self.target.session_id},
             host_id=self.target.host_id,
         )
-        self._structured_output_renderers: dict[
-            str, Callable[[str, str, dict[str, Any]], None]
-        ] = {}
+        self._workflow_result_renderers: dict[str, Callable[[dict[str, Any]], None]] = {}
         register_default_commands(self)
 
     def register_command(self, command: Command) -> None:
         self.command_registry.register(command)
 
-    def register_structured_output_renderer(
+    def register_workflow_result_renderer(
         self,
         workflow_id: str,
-        fn: Callable[[str, str, dict[str, Any]], None],
+        fn: Callable[[dict[str, Any]], None],
     ) -> None:
-        """Register a renderer for structured_output produced by a workflow.
-
-        ``fn`` is called as ``fn(task_id, agent_id, data)`` on each
-        ``request.completed`` event that carries a structured_output payload.
-        When no renderer is registered for a workflow_id the default JSON
-        code-block render is used.
-        """
-        self._structured_output_renderers[workflow_id] = fn
+        """Register a renderer for a completed workflow result."""
+        self._workflow_result_renderers[workflow_id] = fn
 
     def render_final_response(
         self,
@@ -124,17 +116,15 @@ class MashRemoteShell:
         if not rendered and not streamed_text:
             ctx.renderer.warn("(no response)")
 
-    def render_structured_output(
+    def render_workflow_result(
         self,
         workflow_id: str,
-        task_id: str,
-        agent_id: str,
         data: dict[str, Any],
     ) -> None:
-        """Render structured_output, using a registered renderer or the JSON fallback."""
-        fn = self._structured_output_renderers.get(workflow_id)
+        """Render a workflow result using a registered renderer or JSON fallback."""
+        fn = self._workflow_result_renderers.get(workflow_id)
         if fn is not None:
-            fn(task_id, agent_id, data)
+            fn(data)
         else:
             self.renderer.markdown(
                 f"```json\n{json.dumps(data, indent=2)}\n```"

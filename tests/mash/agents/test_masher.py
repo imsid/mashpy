@@ -1,4 +1,4 @@
-"""Tests for the built-in Masher worker and its v2 step pipelines."""
+"""Tests for the built-in Masher worker and its step pipelines."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from mash.evals.service import EvalService
     from mash.runtime.events import RuntimeStore
 
-from mash.agents import MasherAgentSpec
+from mash.agents import EvalAgentSpec
 from mash.agents.masher import (
     GEN_SYNTHETIC_EVALS_SKILL_NAME,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
@@ -28,7 +28,7 @@ from mash.agents.masher import (
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
     MasherRuntimeContext,
 )
-from mash.agents.masher.pipelines import (
+from mash.agents.masher.workflows import (
     DatasetRow,
     GeneratedEval,
     Rubric,
@@ -47,6 +47,7 @@ from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.runtime import AgentMetadata, AgentSpec, Host, HostBuilder
 from mash.runtime.events import analyze_trace, build_runtime_trace, build_span_tree
 from mash.runtime.events.types import RuntimeEvent
+from mash.runtime.structured_output import serialize_structured_output
 from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.strategy import WorkflowStrategy
@@ -180,17 +181,24 @@ class MasherSpecTests(unittest.TestCase):
     def _primary_spec(self) -> AgentSpec:
         return build_spec(agent_id="primary", response_text="primary-ok")
 
-    def test_builder_enable_masher_false_leaves_builder_unchanged(self) -> None:
+    def test_builder_always_registers_masher_and_its_workflows(self) -> None:
         host = (
             HostBuilder()
             .agent(self._primary_spec(), metadata=metadata())
-            .enable_masher(False)
             .build()
         )
         try:
             described = {str(item["agent_id"]): item for item in host.describe_agents()}
-            self.assertEqual(sorted(described.keys()), ["primary"])
-            self.assertEqual(host.get_workflow_registry().list(), [])
+            self.assertEqual(sorted(described.keys()), ["eval-agent", "primary"])
+            self.assertEqual(
+                {item.workflow_id for item in host.get_workflow_registry().list()},
+                {
+                    MASHER_TRACE_DIGEST_WORKFLOW_ID,
+                    MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                    MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                    MASHER_SCORE_EVALS_WORKFLOW_ID,
+                },
+            )
         finally:
             asyncio.run(host.close())
 
@@ -201,11 +209,11 @@ class MasherSpecTests(unittest.TestCase):
                 {
                     "MASH_DATA_DIR": tmp,
                     "OSS_BASE_URL": "http://gpu-box:8000/v1",
-                    "MASHER_OSS_MODEL": "Qwen/Qwen3-32B",
+                    "EVAL_AGENT_OSS_MODEL": "Qwen/Qwen3-32B",
                 },
                 clear=True,
             ):
-                provider = MasherAgentSpec().build_llm()
+                provider = EvalAgentSpec().build_llm()
                 self.assertIsInstance(provider, OSSCompatibleProvider)
 
     def test_build_llm_raises_when_oss_base_url_set_without_model(self) -> None:
@@ -216,18 +224,18 @@ class MasherSpecTests(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(RuntimeError):
-                    MasherAgentSpec().build_llm()
+                    EvalAgentSpec().build_llm()
 
     def test_build_llm_raises_without_any_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
                 with self.assertRaises(RuntimeError):
-                    MasherAgentSpec().build_llm()
+                    EvalAgentSpec().build_llm()
 
     def test_spec_registers_no_tools_and_only_generation_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
-                spec = MasherAgentSpec()
+                spec = EvalAgentSpec()
 
                 tools = spec.build_tools()
                 skills = spec.build_skills()
@@ -265,7 +273,7 @@ class MasherSpecTests(unittest.TestCase):
                     {"MASH_DATA_DIR": ".mash", "MASH_DATABASE_URL": ""},
                     clear=False,
                 ):
-                    spec = MasherAgentSpec()
+                    spec = EvalAgentSpec()
                     self.assertEqual(
                         spec.runtime_context.require_trace_digest_jsonl_path(),
                         (Path(tmp) / ".mash" / "masher" / "trace-digests.jsonl").resolve(),
@@ -661,7 +669,7 @@ _GEN_RUBRIC = {
 
 class GenSyntheticEvalsPipelineTests(unittest.TestCase):
     def _workflow(self) -> tuple[WorkflowSpec, MasherRuntimeContext, _FakeEvalService]:
-        spec = MasherAgentSpec()
+        spec = EvalAgentSpec()
         service = _FakeEvalService()
         spec.runtime_context.bind_pool(_FakePool())
         spec.runtime_context.bind_eval_service(cast("EvalService", service))
@@ -681,9 +689,27 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
                 )
                 generate = workflow.steps[1]
                 assert isinstance(generate, AgentStep)
-                self.assertEqual(generate.agent_id, "masher")
+                self.assertEqual(generate.agent_id, "eval-agent")
                 self.assertEqual(generate.skill_name, GEN_SYNTHETIC_EVALS_SKILL_NAME)
                 self.assertIs(generate.output, GeneratedEval)
+
+    def test_generated_eval_schema_is_valid_for_strict_structured_output(self) -> None:
+        schema = serialize_structured_output(GeneratedEval)
+        assert schema is not None
+        dataset_row = schema["$defs"]["DatasetRow"]
+        rubric = schema["$defs"]["Rubric"]
+        criterion = schema["$defs"]["RubricCriterion"]
+
+        self.assertEqual(
+            set(dataset_row["required"]), set(dataset_row["properties"])
+        )
+        self.assertEqual(set(rubric["required"]), set(rubric["properties"]))
+        self.assertEqual(
+            set(criterion["required"]), set(criterion["properties"])
+        )
+        self.assertNotIn("default", rubric["properties"]["global_scoring_prompt"])
+        self.assertNotIn("default", criterion["properties"]["scale_min"])
+        self.assertNotIn("default", criterion["properties"]["scale_max"])
 
     def test_profile_host_step_collects_declared_capabilities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -803,10 +829,10 @@ class MasherBuilderTests(unittest.TestCase):
                     .build()
                 )
                 try:
-                    # The worker agent stays hidden from public listings.
                     described = {item["agent_id"] for item in host.describe_agents()}
-                    self.assertNotIn("masher", described)
-                    self.assertNotIn("masher", host.list_agents())
+                    self.assertIn("eval-agent", described)
+                    self.assertIn("eval-agent", host.list_agents())
+                    self.assertIsNotNone(host.get_agent_metadata("eval-agent"))
                     workflows = {
                         workflow.workflow_id: workflow
                         for workflow in host.get_workflow_registry().list()
@@ -831,7 +857,7 @@ class MasherBuilderTests(unittest.TestCase):
                 finally:
                     asyncio.run(host.close())
 
-    def test_builder_keyless_registers_only_code_workflows(self) -> None:
+    def test_builder_keyless_still_registers_masher_and_all_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
                 host = (
@@ -840,20 +866,19 @@ class MasherBuilderTests(unittest.TestCase):
                     .build()
                 )
                 try:
-                    self.assertNotIn("masher", host.list_agents())
-                    self.assertIsNone(host.get_registered_agent_spec("masher"))
+                    self.assertIn("eval-agent", host.list_agents())
+                    self.assertIsNotNone(host.get_registered_agent_spec("eval-agent"))
                     workflows = {
                         workflow.workflow_id
                         for workflow in host.get_workflow_registry().list()
                     }
-                    # The all-code pipelines run without an LLM, so a keyless
-                    # deployment still gets them; the agent-step workflows are
-                    # skipped.
                     self.assertEqual(
                         workflows,
                         {
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                            MASHER_SCORE_EVALS_WORKFLOW_ID,
                         },
                     )
                 finally:
@@ -898,7 +923,7 @@ class MasherBuilderTests(unittest.TestCase):
                 finally:
                     asyncio.run(pool.close())
 
-    def test_builder_keyless_attaches_code_workflows_to_hosts(self) -> None:
+    def test_builder_keyless_attaches_all_workflows_to_hosts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
                 pool = (
@@ -913,6 +938,8 @@ class MasherBuilderTests(unittest.TestCase):
                         {
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
+                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
+                            MASHER_SCORE_EVALS_WORKFLOW_ID,
                         },
                     )
                 finally:

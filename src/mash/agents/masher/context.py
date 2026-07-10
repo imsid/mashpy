@@ -44,8 +44,8 @@ class MasherRuntimeContext:
     def require_runtime_store(self) -> RuntimeStore:
         # The pool's shared store exists only after pool.start(), which always
         # precedes any workflow run — hence the lazy fallback instead of an
-        # eager bind. Keyless deployments have no Masher agent, so this is the
-        # only store path for the all-code workflows.
+        # eager bind. This keeps the all-code workflows independent from eval
+        # agent execution.
         if self.runtime_store is None and self.pool is not None:
             self.runtime_store = self.pool.get_runtime_store()
         if self.runtime_store is None:
@@ -54,7 +54,7 @@ class MasherRuntimeContext:
 
     def require_pool(self) -> Any:
         if self.pool is None:
-            raise RuntimeError("Masher agent pool is not bound")
+            raise RuntimeError("Masher workflow agent pool is not bound")
         return self.pool
 
     def require_eval_service(self) -> "EvalService":

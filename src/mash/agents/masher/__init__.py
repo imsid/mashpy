@@ -1,41 +1,35 @@
-"""Masher built-in subagent."""
+"""Masher workflow module and its built-in eval agent."""
 
 from .context import MasherRuntimeContext
-from .pipelines import (
+from .spec import EVAL_AGENT_ID, EvalAgentSpec, build_eval_agent_metadata
+from .workflows import (
     GEN_SYNTHETIC_EVALS_SKILL_NAME,
     GenSyntheticEvalsInput,
     GenSyntheticEvalsResult,
     OnlineEvalResult,
     TraceDigestResult,
     TraceScanInput,
-)
-from .spec import (
-    MASHER_AGENT_ID,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
     MASHER_SCORE_EVALS_WORKFLOW_ID,
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
-    MasherAgentSpec,
-    build_masher_workflow_specs,
-    build_masher_metadata,
-    create_masher_agent_spec,
+    build_masher_workflows,
 )
 
 __all__ = [
     "GEN_SYNTHETIC_EVALS_SKILL_NAME",
     "GenSyntheticEvalsInput",
     "GenSyntheticEvalsResult",
-    "MASHER_AGENT_ID",
+    "EVAL_AGENT_ID",
     "MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID",
     "MASHER_ONLINE_EVAL_WORKFLOW_ID",
     "MASHER_SCORE_EVALS_WORKFLOW_ID",
     "MASHER_TRACE_DIGEST_WORKFLOW_ID",
-    "MasherAgentSpec",
+    "EvalAgentSpec",
     "MasherRuntimeContext",
     "OnlineEvalResult",
     "TraceDigestResult",
     "TraceScanInput",
-    "build_masher_workflow_specs",
-    "build_masher_metadata",
-    "create_masher_agent_spec",
+    "build_masher_workflows",
+    "build_eval_agent_metadata",
 ]

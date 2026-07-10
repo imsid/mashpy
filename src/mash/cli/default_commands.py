@@ -287,7 +287,7 @@ def register_default_commands(shell) -> None:
             rows = []
             for workflow in workflows:
                 rendered_steps = []
-                steps = workflow.get("steps")
+                steps = workflow.get("step_preview")
                 if isinstance(steps, list):
                     for step in steps:
                         if not isinstance(step, dict):
@@ -295,15 +295,9 @@ def register_default_commands(shell) -> None:
                         step_id = str(step.get("step_id") or "")
                         kind = str(step.get("kind") or "")
                         rendered_steps.append(f"{step_id} ({kind})")
-                else:
-                    tasks = workflow.get("tasks")
-                    if isinstance(tasks, list):
-                        for task in tasks:
-                            if not isinstance(task, dict):
-                                continue
-                            task_id = str(task.get("task_id") or "")
-                            agent_id = str(task.get("agent_id") or "")
-                            rendered_steps.append(f"{task_id} -> {agent_id}")
+                step_count = int(workflow.get("step_count") or 0)
+                if step_count > len(rendered_steps):
+                    rendered_steps.append(f"+{step_count - len(rendered_steps)} more")
                 rows.append(
                     [
                         str(workflow.get("workflow_id") or ""),
@@ -381,71 +375,27 @@ def register_default_commands(shell) -> None:
                     payload = event.get("data")
                     if not isinstance(payload, dict):
                         continue
+                    step_id = str(payload.get("step_id") or "")
+                    step_label = f"Workflow step {step_id}" if step_id else "Workflow step"
 
-                    task_id = str(payload.get("task_id") or "")
-                    task_agent_id = str(payload.get("task_agent_id") or "")
-                    task_label = f"Workflow task {task_id}" if task_id else "Workflow task"
-
-                    if event_name == "request.interaction.create":
-                        shell.handle_interaction(
-                            ctx,
-                            str(payload.get("request_id") or ""),
-                            payload,
-                            agent_id=task_agent_id or ctx.agent_id,
-                        )
+                    if event_name == "step.started":
+                        ctx.renderer.info(f"{step_label} started")
                         continue
 
-                    if event_name == "request.interaction.ack":
-                        shell.render_interaction_ack(payload)
+                    if event_name == "step.completed":
+                        ctx.renderer.info(f"{step_label} completed")
                         continue
 
-                    if event_name == "workflow.status":
-                        status = str(payload.get("status") or "")
-                        if status:
-                            ctx.renderer.info(f"Workflow status: {status}")
+                    if event_name == "step.failed":
+                        error = (payload.get("payload") or {}).get("error")
+                        ctx.renderer.error(str(error or f"{step_label} failed"))
                         continue
 
-                    if event_name == "workflow.task.started":
-                        ctx.renderer.info(f"{task_label} started")
-                        continue
-
-                    if event_name == "workflow.task.completed":
-                        ctx.renderer.info(f"{task_label} completed")
-                        continue
-
-                    if event_name == "workflow.task.error":
-                        ctx.renderer.error(f"{task_label} error")
-                        continue
-
-                    if event_name == "agent.trace":
-                        shell.render_runtime_trace_payload(
-                            payload,
-                            trace_label=task_label,
-                            agent_id=task_agent_id or None,
-                        )
-                        continue
-
-                    if event_name == "request.completed":
-                        shell.chain_renderer.finish_trace()
-                        response_payload = payload.get("response")
-                        structured_output = None
-                        if isinstance(response_payload, dict):
-                            structured_output = response_payload.get("structured_output")
-                        if isinstance(structured_output, dict):
-                            shell.render_structured_output(
-                                workflow_id, task_id, task_agent_id, structured_output
-                            )
-                        else:
-                            chain_streamed = shell.chain_renderer.take_streamed_text()
-                            fallback = str(payload.get("text") or "")
-                            shell.render_final_response(
-                                ctx, response_payload, fallback, chain_streamed
-                            )
-                        continue
-
-                    if event_name == "request.error":
-                        error = payload.get("error")
-                        ctx.renderer.error(str(error or "workflow task request failed"))
+                    if event_name == "workflow.completed":
+                        ctx.renderer.info("Workflow status: completed")
+                        result = payload.get("result")
+                        if isinstance(result, dict):
+                            shell.render_workflow_result(workflow_id, result)
                         continue
 
                     if event_name == "workflow.error":
@@ -497,9 +447,9 @@ def register_default_commands(shell) -> None:
                     if isinstance(step, dict)
                 ]
                 ctx.renderer.table(["Step", "Kind", "Status"], step_rows)
-            output = run.get("output")
-            if isinstance(output, dict):
-                ctx.renderer.print(json.dumps(output, ensure_ascii=True, indent=2))
+            result = run.get("result")
+            if isinstance(result, dict):
+                ctx.renderer.print(json.dumps(result, ensure_ascii=True, indent=2))
             return
 
         if subcommand == "resume":

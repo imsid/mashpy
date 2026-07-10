@@ -1,4 +1,4 @@
-"""Postgres-backed store for v2 workflow runs, steps, and the step audit log.
+"""Postgres-backed store for workflow runs, steps, and the step audit log.
 
 The connection-taking functions (``insert_run``, ``upsert_step``,
 ``append_step_event`` …) are the atomic write path: Phase 2 calls them with the
@@ -418,6 +418,30 @@ class WorkflowStore:
                 )
                 row = await cursor.fetchone()
         return _run_from_row(row) if row is not None else None
+
+    async def get_latest_runs(
+        self, workflow_ids: list[str]
+    ) -> dict[str, WorkflowRunRecord]:
+        """Return the newest stored run for each requested workflow."""
+        resolved_ids = [str(workflow_id).strip() for workflow_id in workflow_ids]
+        resolved_ids = [workflow_id for workflow_id in resolved_ids if workflow_id]
+        if not resolved_ids:
+            return {}
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT DISTINCT ON (workflow_id) *
+                    FROM workflow_runs
+                    WHERE workflow_id = ANY(%s)
+                    ORDER BY workflow_id, created_at DESC, run_id DESC
+                    """,
+                    (resolved_ids,),
+                )
+                rows = await cursor.fetchall()
+        records = [_run_from_row(row) for row in rows]
+        return {record.workflow_id: record for record in records}
 
     async def list_runs(
         self,

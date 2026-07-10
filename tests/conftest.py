@@ -299,28 +299,6 @@ class _TestRuntimeStore:
             sessions = sessions[: max(1, int(limit))]
         return {"sessions": sessions, "total": total}
 
-    async def aggregate_workflow_activity(self) -> list[dict[str, Any]]:
-        async with self._lock:
-            events = list(self._events)
-        by_workflow: dict[str, list[RuntimeEvent]] = {}
-        for event in events:
-            if event.workflow_id is None:
-                continue
-            by_workflow.setdefault(event.workflow_id, []).append(event)
-        activity = []
-        for workflow_id, wf_events in by_workflow.items():
-            activity.append(
-                {
-                    "workflow_id": workflow_id,
-                    "run_count": len({e.workflow_run_id for e in wf_events if e.workflow_run_id}),
-                    "session_count": len({e.session_id for e in wf_events if e.session_id}),
-                    "last_run_at": max(float(e.created_at) for e in wf_events),
-                    "total_tokens": sum(_event_tokens(e) for e in wf_events),
-                }
-            )
-        activity.sort(key=lambda a: a["last_run_at"], reverse=True)
-        return activity
-
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()
         self._request_waiters.setdefault(request_id, set()).add(event)
@@ -790,6 +768,20 @@ class _TestWorkflowStore:
 
     async def get_run(self, run_id: str):
         return self._runs.get(run_id)
+
+    async def get_latest_runs(self, workflow_ids: list[str]):
+        latest = {}
+        for workflow_id in workflow_ids:
+            runs = [
+                run
+                for run in self._runs.values()
+                if run.workflow_id == workflow_id
+            ]
+            if runs:
+                latest[workflow_id] = max(
+                    runs, key=lambda run: (run.created_at, run.run_id)
+                )
+        return latest
 
     async def list_runs(self, workflow_id: str, *, status=None, start_time=None, end_time=None, limit=50, offset=0, sort_desc=True):
         del start_time, end_time

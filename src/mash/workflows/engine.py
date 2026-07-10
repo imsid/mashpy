@@ -1,4 +1,4 @@
-"""Forward-pipeline workflow engine (v2 default strategy).
+"""Forward-pipeline workflow engine.
 
 Runs a ``WorkflowSpec.steps`` pipeline: step *n*'s output threads into step
 *n+1*'s input (merged over the immutable ``workflow_input``), coerced and
@@ -260,7 +260,7 @@ def _agent_step_message(
 
 
 class ForwardPipelineStrategy(WorkflowStrategy):
-    """Default v2 strategy: a linear, durable, observable forward pipeline."""
+    """Default strategy: a linear, durable, observable forward pipeline."""
 
     async def run(self, ctx: WorkflowExecutionContext) -> dict[str, Any]:
         dbos_class, *_ = load_dbos_api()

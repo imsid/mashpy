@@ -41,7 +41,8 @@ agent runtime.
   failed step marking the run failed with a `step.failed` audit event
   (`tests/mash/workflows/test_forward_engine.py`).
 - Verify store-backed service reads and `resume_run`
-  (`tests/mash/workflows/test_service_v2.py`).
-- Verify API paths for `GET /workflow`, `POST /workflow/{id}/run`,
+  (`tests/mash/workflows/test_service_store.py`).
+- Verify API paths for `GET /workflow`, `GET /workflow/{id}`,
+  `POST /workflow/{id}/run`,
   `GET /workflow/{id}/runs/{run_id}`, `.../resume`, `.../step-events`,
   `.../events`, and not-found/conflict errors.

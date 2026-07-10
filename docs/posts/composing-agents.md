@@ -103,7 +103,7 @@ flowchart TD
 
 Besides pooled agents, deployments can carry **workflow-only agents**, specs registered through `HostBuilder.workflow(...)` (or `register_workflow_agent`) that exist to execute workflow tasks. They're full runtimes, but they're hidden from public agent listings and can't be named in a host: the primary can't invoke them and clients can't address them. They surface in the next post.
 
-Masher is a built-in example: the workflow-only specialist that runs Mash's trace-digest and eval-curation workflows against another agent's event logs. It's registered into every pool by default; pass `enable_masher(False)` to the builder to leave it out.
+The bundled eval agent uses the normal registration kind instead. It appears in the agent catalog so the spec behind its workflow steps is inspectable, and every pool includes it plus Masher's trace-digest, eval-curation, eval-generation, and scoring workflows.
 
 ## Shared infrastructure
 

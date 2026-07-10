@@ -279,9 +279,13 @@ validation).
 
 `GET /api/v1/workflow`
 - Lists registered host workflows.
-- Returns `workflows`; each carries `workflow_id`, `tasks`, optional `metadata`,
-  and — when the spec sets them — a workflow-level `skill_name` (from
-  `task_message`) and a per-task `structured_output` schema.
+- Returns catalog summaries with `workflow_id`, display fields, pipeline or
+  strategy mode, step counts, a step preview, history availability, and the
+  latest stored pipeline run.
+
+`GET /api/v1/workflow/{workflow_id}`
+- Returns the complete registered definition: workflow input schema, metadata,
+  ordered step schemas and execution details, or the custom strategy name.
 
 `POST /api/v1/workflow/{workflow_id}/run`
 - Starts a workflow run.
@@ -302,22 +306,29 @@ validation).
 - Path params:
   - `workflow_id`
 - Query params:
-  - `status` optional public status filter; only `completed` returns memory-backed runs
-  - `start_time`, `end_time` optional memory turn time bounds
+  - `status` optional public status filter
+  - `start_time`, `end_time` optional creation-time bounds
   - `limit` optional, default `50`, clamped to `1..200`
   - `offset` optional, default `0`
   - `sort_desc` optional, default `true`
-- Returns `workflow_id` and `runs`; each run includes `run_id`, `workflow_id`, `dedup_key`, `status`, timestamps, `error`, and `summary`.
-- Does not include run `output`; call the run detail endpoint for results.
+- Returns `workflow_id`, summary `runs`, and `limit`, `offset`, and `has_more`.
+- Does not include the run result; call the run detail endpoint for it.
 
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
-- Returns one workflow run status and output.
+- Returns one workflow run with immutable `workflow_input`, `session_id`, final
+  `result`, and ordered step snapshots.
 - Path params:
   - `workflow_id`
   - `run_id`
 
+`POST /api/v1/workflow/{workflow_id}/runs/{run_id}/resume`
+- Resumes a failed step pipeline under the same run id.
+
+`GET /api/v1/workflow/{workflow_id}/runs/{run_id}/step-events`
+- Returns the persisted step lifecycle audit, including code steps.
+
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`
-- Server-Sent Events stream for workflow task runtime events.
+- Server-Sent Events stream for step lifecycle and terminal workflow events.
 - Path params:
   - `workflow_id`
   - `run_id`

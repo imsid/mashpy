@@ -1,4 +1,4 @@
-"""Tests for the v2 workflow registry and service (DBOS-mocked, no Postgres)."""
+"""Tests for the workflow registry and service (DBOS-mocked, no Postgres)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from mash.runtime.host.host import AgentPool
 
 from mash.testing.runtime_fixtures import build_spec
 from mash.workflows import (
     AgentStep,
+    CodeStep,
     DuplicateWorkflowRunError,
+    StepContext,
+    WorkflowInputValidationError,
     WorkflowNotFoundError,
     WorkflowRegistry,
     WorkflowService,
@@ -29,6 +34,18 @@ def _agent_step(step_id: str, agent_id: str) -> AgentStep:
         agent_spec=build_spec(agent_id=agent_id, response_text="{}"),
         output={"type": "object"},
     )
+
+
+class TriggerInput(BaseModel):
+    count: int
+
+
+class StepOutput(BaseModel):
+    doubled: int
+
+
+def _double(inp: TriggerInput, _ctx: StepContext) -> StepOutput:
+    return StepOutput(doubled=inp.count * 2)
 
 
 class _DummyStrategy(WorkflowStrategy):
@@ -91,19 +108,67 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             registry, cast("AgentPool", _FakeHost(registry)), runner_id="runner-1"
         )
 
-    async def test_list_workflows_serializes_steps_and_metadata(self) -> None:
+    async def test_list_workflows_returns_catalog_summaries(self) -> None:
         service = self._service(
             WorkflowSpec(
                 workflow_id="wf",
                 steps=[_agent_step("s1", "worker")],
-                metadata={"source": "test"},
+                metadata={
+                    "display_name": "Test workflow",
+                    "description": "Runs one worker.",
+                    "source": "test",
+                },
             )
         )
         serialized = await service.list_workflows()
         self.assertEqual(serialized[0]["workflow_id"], "wf")
-        self.assertEqual(serialized[0]["steps"][0]["step_id"], "s1")
-        self.assertEqual(serialized[0]["steps"][0]["kind"], "agent")
-        self.assertEqual(serialized[0]["metadata"], {"source": "test"})
+        self.assertEqual(serialized[0]["display_name"], "Test workflow")
+        self.assertEqual(serialized[0]["description"], "Runs one worker.")
+        self.assertEqual(serialized[0]["mode"], "pipeline")
+        self.assertEqual(serialized[0]["step_count"], 1)
+        self.assertEqual(serialized[0]["step_kinds"], {"code": 0, "agent": 1})
+        self.assertEqual(serialized[0]["step_preview"][0]["step_id"], "s1")
+        self.assertFalse(serialized[0]["history_available"])
+        self.assertIsNone(serialized[0]["latest_run"])
+
+    async def test_get_workflow_definition_serializes_typed_boundaries(self) -> None:
+        service = self._service(
+            WorkflowSpec(
+                workflow_id="wf",
+                input_model=TriggerInput,
+                steps=[
+                    CodeStep(
+                        step_id="double",
+                        run=_double,
+                        input=TriggerInput,
+                        output=StepOutput,
+                        timeout_s=10,
+                    )
+                ],
+                metadata={"source": "test"},
+            )
+        )
+
+        definition = await service.get_workflow_definition("wf")
+
+        self.assertEqual(definition["mode"], "pipeline")
+        self.assertEqual(definition["metadata"], {"source": "test"})
+        self.assertIn("count", definition["input_schema"]["properties"])
+        self.assertEqual(definition["steps"][0]["ordinal"], 0)
+        self.assertEqual(definition["steps"][0]["kind"], "code")
+        self.assertIn("doubled", definition["steps"][0]["output_schema"]["properties"])
+        self.assertEqual(definition["steps"][0]["timeout_s"], 10.0)
+
+    async def test_get_strategy_definition_does_not_invent_steps(self) -> None:
+        service = self._service(
+            WorkflowSpec(workflow_id="wf", strategy=_DummyStrategy())
+        )
+
+        definition = await service.get_workflow_definition("wf")
+
+        self.assertEqual(definition["mode"], "strategy")
+        self.assertEqual(definition["strategy"], "_DummyStrategy")
+        self.assertEqual(definition["steps"], [])
 
     async def test_run_workflow_starts_dbos_and_returns_status(self) -> None:
         service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
@@ -145,6 +210,28 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await service.run_workflow("wf", workflow_input=[1, 2, 3])  # type: ignore[arg-type]
 
+    async def test_run_workflow_validates_declared_input_before_enqueue(self) -> None:
+        service = self._service(
+            WorkflowSpec(
+                workflow_id="wf",
+                input_model=TriggerInput,
+                steps=[
+                    CodeStep(
+                        step_id="double",
+                        run=_double,
+                        input=TriggerInput,
+                        output=StepOutput,
+                    )
+                ],
+            )
+        )
+        with patch.object(workflow_dbos, "start_workflow_run") as start:
+            with self.assertRaises(WorkflowInputValidationError) as raised:
+                await service.run_workflow("wf", workflow_input={"count": "bad"})
+        start.assert_not_called()
+        self.assertEqual(raised.exception.workflow_id, "wf")
+        self.assertEqual(raised.exception.errors[0]["loc"], ("count",))
+
     async def test_duplicate_dedup_key_is_rejected(self) -> None:
         service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
 
@@ -166,7 +253,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
             run = await service.get_run("wf", "mw:host-1:wf:abc")
         self.assertEqual(run.status, "completed")
-        self.assertEqual(run.output, {"ok": True})
+        self.assertEqual(run.result, {"ok": True})
 
     async def test_unknown_workflow_is_rejected(self) -> None:
         service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))

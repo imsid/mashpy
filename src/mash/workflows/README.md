@@ -112,6 +112,7 @@ workflow layer:
 HTTP (via `mash.api`):
 
 - `GET  /api/v1/workflow`
+- `GET  /api/v1/workflow/{workflow_id}`
 - `POST /api/v1/workflow/{workflow_id}/run`
 - `GET  /api/v1/workflow/{workflow_id}/runs`
 - `GET  /api/v1/workflow/{workflow_id}/runs/{run_id}`

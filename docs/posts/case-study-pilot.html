@@ -344,7 +344,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry(<span class="str">"admin-copilot"</span>,    admin.create_admin_copilot_spec, admin.build_admin_metadata),
 )</code></pre>
 
-  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, defines the default <code>guide</code> host, enables the built-in Masher, and registers the quiz workflow on the built pool.</p>
+  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, defines the default <code>guide</code> host, and registers the quiz workflow on the built pool. The builder includes Masher and its workflows automatically.</p>
 
   <pre><code><span class="cm"># pilot/spec.py</span>
 <span class="kw">def</span> <span class="fn">build_pool</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> AgentPool:
@@ -354,7 +354,6 @@ CATALOG: tuple[CatalogEntry, ...] = (
             entry.create_spec(workspace_root=ws), metadata=entry.build_metadata()
         )
     builder.host(<span class="fn">Host</span>(host_id=<span class="str">"guide"</span>, primary=<span class="str">"pilot"</span>, subagents=(...)))
-    builder.enable_masher()
     pool = builder.build()
     pool.register_workflow(<span class="fn">build_quiz_workflow_spec</span>(resolved))
     <span class="kw">return</span> pool</code></pre>

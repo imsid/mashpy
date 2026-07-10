@@ -1,4 +1,4 @@
-"""End-to-end tests for the v2 forward-pipeline engine (requires Postgres).
+"""End-to-end tests for the forward-pipeline engine (requires Postgres).
 
 Drives ``execute_registered_workflow`` with a fake DBOS (steps run inline) and a
 real ``WorkflowStore``, asserting output threading, result persistence, the step

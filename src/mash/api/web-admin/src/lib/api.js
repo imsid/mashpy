@@ -6,6 +6,14 @@
 // `data` here and raise a typed ApiError otherwise.
 
 const API_BASE = '/api/v1';
+const WORKFLOW_EVENT_NAMES = [
+  'step.started',
+  'step.completed',
+  'step.failed',
+  'step.retried',
+  'workflow.completed',
+  'workflow.error',
+];
 
 export class ApiError extends Error {
   constructor(message, { status, code, details } = {}) {
@@ -15,6 +23,28 @@ export class ApiError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+export function workflowRunEventsUrl(workflowId, runId) {
+  return `${API_BASE}/workflow/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/events`;
+}
+
+export function subscribeWorkflowRun(workflowId, runId, { onEvent, onError, onOpen } = {}) {
+  const source = new EventSource(workflowRunEventsUrl(workflowId, runId));
+  source.onopen = () => onOpen?.();
+  source.onerror = (event) => onError?.(event);
+  for (const eventName of WORKFLOW_EVENT_NAMES) {
+    source.addEventListener(eventName, (event) => {
+      let data = {};
+      try {
+        data = JSON.parse(event.data || '{}');
+      } catch {
+        data = { raw: event.data };
+      }
+      onEvent?.({ event: eventName, data });
+    });
+  }
+  return () => source.close();
 }
 
 function buildQuery(params) {
@@ -101,7 +131,6 @@ export const api = {
 
   // --- Logs / telemetry ---
   listSessionRollups: (params) => request('/telemetry/sessions', { params }),
-  workflowActivity: () => request('/telemetry/workflows'),
   listTraces: (params) => request('/telemetry/traces', { params }),
   traceAnalysis: (params) => request('/telemetry/trace/analysis', { params }),
   listEvents: (params) => request('/telemetry/events', { params }),
@@ -123,6 +152,20 @@ export const api = {
 
   // --- Workflows ---
   listWorkflows: () => request('/workflow'),
+  getWorkflow: (workflowId) =>
+    request(`/workflow/${encodeURIComponent(workflowId)}`),
+  listWorkflowRuns: (workflowId, params) =>
+    request(`/workflow/${encodeURIComponent(workflowId)}/runs`, { params }),
+  resumeWorkflowRun: (workflowId, runId) =>
+    request(
+      `/workflow/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/resume`,
+      { method: 'POST' },
+    ),
+  listWorkflowStepEvents: (workflowId, runId) =>
+    request(
+      `/workflow/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/step-events`,
+    ),
+  subscribeWorkflowRun,
 
   // --- Feedback ---
   listFeedback: (params) => request('/feedback', { params }),

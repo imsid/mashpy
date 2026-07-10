@@ -3,6 +3,7 @@
 from .registry import WorkflowRegistry
 from .service import (
     DuplicateWorkflowRunError,
+    WorkflowInputValidationError,
     WorkflowNotFoundError,
     WorkflowRun,
     WorkflowService,
@@ -25,6 +26,7 @@ __all__ = [
     "StepContext",
     "StepSpec",
     "WorkflowExecutionContext",
+    "WorkflowInputValidationError",
     "WorkflowNotFoundError",
     "WorkflowRegistry",
     "WorkflowRun",

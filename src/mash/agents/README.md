@@ -8,8 +8,8 @@
 - Keeps built-in agent prompts, tools, and module-specific behavior separate from generic runtime code.
 
 ## Current Built-In Agents
-- `masher`: bundled workflow-only trace digest worker. Registered into every pool
-  by default (opt out with `HostBuilder.enable_masher(False)`). See
+- `masher`: bundled workflow module containing `EvalAgentSpec` and four Masher
+  workflows. The eval agent is registered visibly in every pool. See
   [`masher/README.md`](masher/README.md).
 
 ## Package Boundary

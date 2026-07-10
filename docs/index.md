@@ -11,7 +11,7 @@ hide:
 **Build self-hosted agent applications on frontier and open source models.**
 
 [Mash](posts/product-brief.md) is a Python SDK and a host runtime for building,
-composing, and evaluating agents.
+composing, and evaluating agents and workflows.
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
 standardizes interactions between user applications and agents. 
 

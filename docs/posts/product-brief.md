@@ -61,7 +61,7 @@ flowchart TD
 ## Mash
 
 Mash is a Python SDK that implements the H2A protocol. You use it to build
-agents, to deploy the Host that governs them and the interface to interact whether 
+agents and workflows, to deploy the Host that governs them and the interface to interact whether
 running on a consumer home server or an enterprise platform.
 
 Mash gives you three primitives, anchored to H2A:
@@ -139,7 +139,7 @@ records the results.
 Every experiment measures two kinds of signal. Deterministic quantitative
 metrics come from each row's runtime events: latency, tokens, steps, tool
 calls, per-subagent breakdowns. Qualitative criteria are non-deterministic and
-scored by Masher, the built-in LLM judge, against the rubric: task completion,
+scored by the built-in eval agent against the rubric: task completion,
 subagent coordination, response quality, each with a rationale. Comparing two
 experiments answers three questions in one view: what changed in the agent
 specs, how quality moved per criterion and per row, and what the change costs
