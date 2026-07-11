@@ -22,8 +22,8 @@ Key concepts users should learn about:
   roles live in the host, not on the agents
 - **AgentRuntime / RequestEngine**: Manages request lifecycle, event sourcing,
   and durable execution
-- **Workflows**: DBOS-backed orchestration with TaskSpec, WorkflowSpec, and
-  durable checkpointing
+- **Workflows**: DBOS-backed step pipelines with WorkflowSpec, CodeStep,
+  AgentStep, and durable resume
 - **Skills**: Markdown-based instructions loaded via the Skill meta-tool;
   can be static or dynamically registered
 - **MCP Integration**: Connect to external tool servers via MCPServerConfig
