@@ -106,21 +106,6 @@ function StepContract({ label, schema, fallback }) {
 }
 
 export function Pipeline({ definition, steps, onStepClick }) {
-  if (definition.mode === 'strategy') {
-    return (
-      <Card className="p-4">
-        <div className="flex items-center gap-2">
-          <Chip tone="amber">custom strategy</Chip>
-          <Mono>{definition.strategy}</Mono>
-        </div>
-        <p className="mt-3 text-sm leading-relaxed text-slate-600">
-          This workflow owns a non-linear execution shape and its own result surface.
-          Generic step inspection and run history are not available here.
-        </p>
-      </Card>
-    );
-  }
-
   const rows = steps || definition.steps || [];
   return (
     <div className="space-y-2">

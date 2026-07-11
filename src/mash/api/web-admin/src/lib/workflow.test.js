@@ -8,7 +8,6 @@ import {
   parseJsonObject,
   schemaFields,
   validateWorkflowInput,
-  workflowCatalogEntries,
   workflowEventKey,
   workflowType,
 } from './workflow.js';
@@ -70,21 +69,11 @@ test('stored historical steps are not hidden by the current definition', () => {
 });
 
 test('catalog types and event keys are deterministic', () => {
-  assert.equal(workflowType({ mode: 'pipeline', step_kinds: { code: 1, agent: 1 } }), 'mixed');
-  assert.equal(workflowType({ mode: 'strategy' }), 'strategy');
+  assert.equal(workflowType({ step_kinds: { code: 1, agent: 1 } }), 'mixed');
+  assert.equal(workflowType({ step_kinds: { agent: 2 } }), 'agent');
   assert.equal(
     workflowEventKey({ step_id: 'scan', attempt: 1, event_type: 'step.started', seq: 2 }),
     'scan:1:step.started:2',
-  );
-});
-
-test('workflow catalog excludes custom strategies', () => {
-  assert.deepEqual(
-    workflowCatalogEntries([
-      { workflow_id: 'pipeline', mode: 'pipeline' },
-      { workflow_id: 'strategy', mode: 'strategy' },
-    ]),
-    [{ workflow_id: 'pipeline', mode: 'pipeline' }],
   );
 });
 

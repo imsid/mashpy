@@ -38,24 +38,18 @@ export default function WorkflowDetail() {
               <PageHeader
                 title={displayName}
                 description={metadata.description}
-                actions={definition.mode === 'pipeline' ? (
-                  <Button variant="primary" onClick={() => setRunOpen(true)}>Run workflow</Button>
-                ) : null}
+                actions={<Button variant="primary" onClick={() => setRunOpen(true)}>Run workflow</Button>}
               />
               <div className="space-y-6">
                 <Card className="p-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Chip tone={definition.mode === 'strategy' ? 'amber' : 'indigo'}>
-                      {definition.mode === 'strategy' ? 'custom strategy' : 'pipeline'}
-                    </Chip>
+                    <Chip tone="indigo">pipeline</Chip>
                     <Mono>{definition.workflow_id}</Mono>
-                    {definition.mode === 'pipeline' ? (
-                      <span className="text-sm text-slate-500">
-                        {definition.steps.length} step{definition.steps.length === 1 ? '' : 's'} ·{' '}
-                        {definition.steps.filter((step) => step.kind === 'code').length} code ·{' '}
-                        {definition.steps.filter((step) => step.kind === 'agent').length} agent
-                      </span>
-                    ) : <Mono>{definition.strategy}</Mono>}
+                    <span className="text-sm text-slate-500">
+                      {definition.steps.length} step{definition.steps.length === 1 ? '' : 's'} ·{' '}
+                      {definition.steps.filter((step) => step.kind === 'code').length} code ·{' '}
+                      {definition.steps.filter((step) => step.kind === 'agent').length} agent
+                    </span>
                   </div>
                   {Object.keys(metadata).length ? (
                     <div className="mt-3">
@@ -69,35 +63,31 @@ export default function WorkflowDetail() {
                 <SchemaSummary schema={definition.input_schema} title="Workflow input" />
 
                 <section>
-                  <h2 className="mb-3 font-display text-base font-semibold">
-                    {definition.mode === 'pipeline' ? 'Pipeline' : 'Execution'}
-                  </h2>
+                  <h2 className="mb-3 font-display text-base font-semibold">Pipeline</h2>
                   <Pipeline definition={definition} />
                 </section>
 
-                {definition.mode === 'pipeline' ? (
-                  <section>
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <h2 className="font-display text-base font-semibold">Recent runs</h2>
-                      <Link
-                        to={`/workflows/${encodeURIComponent(definition.workflow_id)}/runs`}
-                        className="text-sm font-medium text-indigo-600 hover:underline"
-                      >
-                        View all runs →
-                      </Link>
-                    </div>
-                    <Async state={runsState}>
-                      {(data) => data.runs?.length ? (
-                        <RunTable
-                          runs={data.runs}
-                          onSelect={(run) => navigate(
-                            `/workflows/${encodeURIComponent(definition.workflow_id)}/runs/${encodeURIComponent(run.run_id)}`,
-                          )}
-                        />
-                      ) : <Empty>This workflow has not run yet.</Empty>}
-                    </Async>
-                  </section>
-                ) : null}
+                <section>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h2 className="font-display text-base font-semibold">Recent runs</h2>
+                    <Link
+                      to={`/workflows/${encodeURIComponent(definition.workflow_id)}/runs`}
+                      className="text-sm font-medium text-indigo-600 hover:underline"
+                    >
+                      View all runs →
+                    </Link>
+                  </div>
+                  <Async state={runsState}>
+                    {(data) => data.runs?.length ? (
+                      <RunTable
+                        runs={data.runs}
+                        onSelect={(run) => navigate(
+                          `/workflows/${encodeURIComponent(definition.workflow_id)}/runs/${encodeURIComponent(run.run_id)}`,
+                        )}
+                      />
+                    ) : <Empty>This workflow has not run yet.</Empty>}
+                  </Async>
+                </section>
               </div>
 
               <RunWorkflowDrawer
