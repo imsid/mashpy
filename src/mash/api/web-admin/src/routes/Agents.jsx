@@ -84,9 +84,7 @@ export default function Agents() {
       api.listWorkflows(),
     ]);
     const definitions = await Promise.all(
-      (catalog.workflows || [])
-        .filter((workflow) => workflow.mode === 'pipeline')
-        .map((workflow) => api.getWorkflow(workflow.workflow_id)),
+      (catalog.workflows || []).map((workflow) => api.getWorkflow(workflow.workflow_id)),
     );
     return { ...deployment, workflowDefinitions: definitions };
   }, []);

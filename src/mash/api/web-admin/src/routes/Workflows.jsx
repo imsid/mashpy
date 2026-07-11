@@ -8,7 +8,7 @@ import { KindBadge, StatusBadge } from '../components/workflows/WorkflowUI.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { formatTime } from '../lib/format.js';
-import { workflowCatalogEntries, workflowType } from '../lib/workflow.js';
+import { workflowType } from '../lib/workflow.js';
 
 const TYPE_LABELS = {
   all: 'All workflows',
@@ -76,10 +76,7 @@ export default function Workflows() {
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
 
-  const catalog = useMemo(
-    () => workflowCatalogEntries(state.data?.workflows),
-    [state.data],
-  );
+  const catalog = useMemo(() => state.data?.workflows || [], [state.data]);
   const workflows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return catalog.filter((workflow) => {

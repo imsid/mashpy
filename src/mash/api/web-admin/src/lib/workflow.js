@@ -9,16 +9,11 @@ export function statusTone(status) {
 }
 
 export function workflowType(workflow) {
-  if (workflow.mode === 'strategy') return 'strategy';
   const kinds = workflow.step_kinds || {};
   if (kinds.code && kinds.agent) return 'mixed';
   if (kinds.code) return 'code';
   if (kinds.agent) return 'agent';
   return 'pipeline';
-}
-
-export function workflowCatalogEntries(workflows = []) {
-  return workflows.filter((workflow) => workflow.mode === 'pipeline');
 }
 
 export function resolveSchema(schema, rootSchema) {
