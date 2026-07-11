@@ -9,6 +9,27 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.17.0](https://github.com/imsid/mashpy/compare/mashpy-v0.16.1...mashpy-v0.17.0) (2026-07-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workflows:** remove WorkflowStrategy; every workflow is a step pipeline ([#145](https://github.com/imsid/mashpy/issues/145))
+
+### Features
+
+* **eval:** run eval scoring as a standard workflow ([#142](https://github.com/imsid/mashpy/issues/142)) ([2b48e72](https://github.com/imsid/mashpy/commit/2b48e72f8be367d7b96e2fb46aad317b01eefea0))
+* **pilot:** split build-mash-agent into agent, workflow, and host skills ([#144](https://github.com/imsid/mashpy/issues/144)) ([db69455](https://github.com/imsid/mashpy/commit/db69455172f067658691ab74823c8fc97513cb12))
+* **runtime:** inject caller-supplied per-request context into the system prompt ([#137](https://github.com/imsid/mashpy/issues/137)) ([cb41fe8](https://github.com/imsid/mashpy/commit/cb41fe866a44b8979c460ef52604d1945805774f))
+* **telemetry:** trace status in the traces list and Sessions tab ([#143](https://github.com/imsid/mashpy/issues/143)) ([1f4d526](https://github.com/imsid/mashpy/commit/1f4d52628ac7ba39bf29097dac633c78e809b6e8))
+* **workflows:** durable, observable step pipelines ([#139](https://github.com/imsid/mashpy/issues/139)) ([cc20540](https://github.com/imsid/mashpy/commit/cc2054029fbe109daaf97a850e1da3576f4439bd))
+* **workflows:** remove WorkflowStrategy; every workflow is a step pipeline ([#145](https://github.com/imsid/mashpy/issues/145)) ([635a98c](https://github.com/imsid/mashpy/commit/635a98cc82dcb4ad4a78229a26ad96a9f4061fbe))
+
+
+### Documentation
+
+* **readme:** update readme with worfklows ([#147](https://github.com/imsid/mashpy/issues/147)) ([06a2652](https://github.com/imsid/mashpy/commit/06a2652c157c9224f2c4edc041d5a338fc0070fe))
+
 ## [0.16.1](https://github.com/imsid/mashpy/compare/mashpy-v0.16.0...mashpy-v0.16.1) (2026-07-06)
 
 
