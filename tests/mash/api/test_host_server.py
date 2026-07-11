@@ -45,12 +45,17 @@ MASHER_WORKFLOW_IDS = [
 
 
 @pytest.fixture(autouse=True)
-def _stub_eval_agent_llm():
+def _stub_eval_agent_llms():
     """Keep API tests independent from developer and CI provider credentials."""
     with patch(
         "mash.agents.masher.spec.EvalAgentSpec.build_llm",
         side_effect=lambda: build_spec(
             agent_id="eval-agent", response_text="{}"
+        ).build_llm(),
+    ), patch(
+        "mash.agents.masher.spec.EvalJudgeAgentSpec.build_llm",
+        side_effect=lambda: build_spec(
+            agent_id="eval-judge-agent", response_text="{}"
         ).build_llm(),
     ):
         yield

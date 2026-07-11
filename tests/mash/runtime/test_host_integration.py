@@ -136,9 +136,17 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="eval-agent", response_text="{}"
             ).build_llm(),
         )
+        self._masher_judge_llm_patch = patch(
+            "mash.agents.masher.spec.EvalJudgeAgentSpec.build_llm",
+            return_value=build_spec(
+                agent_id="eval-judge-agent", response_text="{}"
+            ).build_llm(),
+        )
         self._masher_llm_patch.start()
+        self._masher_judge_llm_patch.start()
 
     def tearDown(self) -> None:
+        self._masher_judge_llm_patch.stop()
         self._masher_llm_patch.stop()
 
     def test_host_validation_rejects_unknown_members(self) -> None:

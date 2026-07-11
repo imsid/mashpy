@@ -9,7 +9,7 @@ from typing import Optional
 from unittest.mock import patch
 
 import pilot.spec as pilot_spec_module
-from mash.agents import EvalAgentSpec
+from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
 from mash.agents.masher import (
     EVAL_AGENT_ID,
     EVAL_JUDGE_AGENT_ID,
@@ -183,6 +183,13 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                     patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
+                    patch.object(
+                        EvalJudgeAgentSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
                 )
 
@@ -277,6 +284,13 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
                 )
                 stack.enter_context(
+                    patch.object(
+                        EvalJudgeAgentSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
+                )
+                stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
                 )
 
@@ -353,6 +367,13 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
                 )
                 stack.enter_context(
                     patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
+                )
+                stack.enter_context(
+                    patch.object(
+                        EvalJudgeAgentSpec,
+                        "build_llm",
+                        return_value=_FakeLLMProvider(),
+                    )
                 )
                 stack.enter_context(
                     patch("pilot.catalog._base._cached_docs_for_scope", return_value=[])
