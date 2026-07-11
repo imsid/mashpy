@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, cast
 from unittest.mock import patch
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     from mash.evals.service import EvalService
@@ -50,7 +50,6 @@ from mash.runtime.events.types import RuntimeEvent
 from mash.runtime.structured_output import serialize_structured_output
 from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
-from mash.workflows.strategy import WorkflowStrategy
 
 
 class _FakeLLMProvider(LLMProvider):
@@ -908,7 +907,14 @@ class MasherBuilderTests(unittest.TestCase):
             ):
                 explicit = WorkflowSpec(
                     workflow_id="custom-chain",
-                    strategy=_NoopStrategy(),
+                    steps=[
+                        CodeStep(
+                            step_id="noop",
+                            run=_noop_step,
+                            input=_NoopModel,
+                            output=_NoopModel,
+                        )
+                    ],
                 )
                 pool = (
                     HostBuilder()
@@ -961,10 +967,12 @@ class MasherBuilderTests(unittest.TestCase):
                     asyncio.run(pool.close())
 
 
-class _NoopStrategy(WorkflowStrategy):
-    async def run(self, ctx: Any) -> dict[str, Any]:
-        del ctx
-        return {}
+class _NoopModel(BaseModel):
+    pass
+
+
+def _noop_step(inp: _NoopModel, _ctx: StepContext) -> _NoopModel:
+    return inp
 
 
 if __name__ == "__main__":

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 from pydantic import BaseModel
 
 from mash.runtime.spec import AgentSpec
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .strategy import WorkflowStrategy
 
 
 @dataclass(frozen=True)
@@ -157,30 +154,21 @@ class CodeStep(StepSpec):
 
 @dataclass(frozen=True)
 class WorkflowSpec:
-    """One workflow, run as an ordered step pipeline or by a strategy.
+    """One workflow, run as an ordered step pipeline.
 
     ``steps`` is the forward pipeline: each step's ``output`` threads into the
     next step's ``input`` (merged over the immutable ``workflow_input``), and the
     final step's output is the run result. ``input_model``, when set, types
     ``workflow_input`` and turns on strict build-time adjacency checks.
-
-    ``strategy`` is the escape hatch for non-linear shapes (fan-out, branching).
-    When set it owns both its DBOS registration and its run body, so the generic
-    engine stays agnostic to any one workflow. A workflow supplies ``steps`` or a
-    ``strategy`` (at least one).
     """
 
     workflow_id: str
     steps: list[StepSpec] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-    strategy: "WorkflowStrategy | None" = None
     input_model: type[BaseModel] | None = None
 
     def __post_init__(self) -> None:
-        if self.steps:
-            validate_step_pipeline(self.workflow_id, self.steps, self.input_model)
-        elif self.strategy is None:
-            raise ValueError("workflow requires steps or a strategy")
+        validate_step_pipeline(self.workflow_id, self.steps, self.input_model)
 
 
 def _require_step_id(step_id: str) -> str:

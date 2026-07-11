@@ -242,7 +242,7 @@ snapshots, and lifecycle events in dedicated workflow tables. Runs start and
 stream over the API (`POST /api/v1/workflow/{id}/run`, then SSE on the run's
 events endpoint) or the REPL (`/workflow run|status|resume`). Code steps can
 express dynamic control flow such as the async row fan-outs in
-`run-experiment`; `WorkflowStrategy` remains an extension escape hatch.
+`run-experiment`.
 [Workflows as Step Pipelines](workflows-as-step-pipelines.md) covers the layer
 in full.
 

@@ -17,7 +17,7 @@ Synthetic evals are also useful beyond cold start. As a host evolves, there will
 
 This is not a substitute for evaluating against live traces, which carry their own value: real distribution, real user intent, real failure modes. Synthetic and live evals are complementary; this post covers the synthetic side.
 
-The system lives entirely inside Mash. Generation runs as a masher workflow; scoring runs as a durable workflow strategy that uses masher only as an LLM judge. Evals persist to a dedicated Postgres store that ships with Mash. No external eval infrastructure is required.
+The system lives entirely inside Mash. Generation runs as a masher workflow; scoring runs as a durable workflow that uses masher only as an LLM judge. Evals persist to a dedicated Postgres store that ships with Mash. No external eval infrastructure is required.
 
 ---
 
@@ -276,7 +276,7 @@ One row per dataset row per experiment. This is the leaf-level record; all scori
 
 ### Operational Metrics
 
-Every dataset row runs through the host under a single session id shared by the primary agent and all of its subagents. That session's runtime events are a self-contained record of what the run cost, independent of the qualitative score. After a row finishes, the strategy folds those events into a `metrics` object and stores it on the run:
+Every dataset row runs through the host under a single session id shared by the primary agent and all of its subagents. That session's runtime events are a self-contained record of what the run cost, independent of the qualitative score. After a row finishes, the workflow folds those events into a `metrics` object and stores it on the run:
 
 ```python
 {

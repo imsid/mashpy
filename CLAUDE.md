@@ -47,7 +47,7 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
   endpoint, with `GemmaProvider`/`QwenProvider`/`DeepSeekProvider`/`LlamaProvider`
   presets).
 - **WorkflowSpec / CodeStep / AgentStep** — durable, observable ordered step
-  pipelines (or a `WorkflowStrategy` for fan-out) orchestrated by DBOS.
+  pipelines orchestrated by DBOS.
 
 ## Minimal Agent Scaffold
 
@@ -453,8 +453,9 @@ pool = (
 - An `AgentStep`'s `output` may be a pydantic model or a JSON-schema dict; either
   becomes the request's structured-output schema. `input` may be `None`
   (passthrough) for agents that read `workflow_input` directly.
-- Non-linear shapes (fan-out, branching) supply a `WorkflowStrategy` instead of
-  `steps`; the strategy owns its own DBOS registration and run body.
+- Dynamic control flow (fan-out over rows, branching) lives inside a `CodeStep`
+  body, deduped on stable keys from `StepContext`; there is no other execution
+  shape.
 - Run, resume, inspect, and stream over the API (`POST /workflow/{id}/run`,
   `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
   the REPL (`/workflow run|status|resume`).

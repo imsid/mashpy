@@ -5,13 +5,10 @@ runtime. A workflow guarantees the execution of a deterministic, ordered set of
 steps, is durable (a run resumes from the failed step), and is observable (a
 per-step audit trail in a dedicated store).
 
-A workflow runs as either:
-
-- a **step pipeline** — an ordered `steps` list, the default; or
-- a **strategy** — a `WorkflowStrategy` that owns its own DBOS registration and
-  run body, for non-linear shapes (fan-out, branching). See
-  [`strategy.py`](./strategy.py). Mash's bundled workflows use step pipelines;
-  strategies remain an extension escape hatch.
+Every workflow is a **step pipeline**: an ordered `steps` list run by the
+forward-pipeline engine ([`engine.py`](./engine.py)). There is no alternative
+execution shape. Dynamic control flow (fan-out over rows, conditional work)
+lives inside a `CodeStep` body, guarded by stable replay identities.
 
 ## Steps
 
@@ -116,11 +113,11 @@ workflow layer:
 `WorkflowService`:
 
 - `list_workflows()` / `list_runs(workflow_id, ...)` / `get_run(workflow_id, run_id)`
-  — step runs read from the store; strategy runs project from DBOS status.
-- `resume_run(workflow_id, run_id)` — resume a failed step pipeline.
+  — runs read from the store; a run not yet in the store (still queued)
+  projects from DBOS status.
+- `resume_run(workflow_id, run_id)` — resume a failed run.
 - `list_run_step_events(...)` — the step audit trail.
-- `stream_run_events(...)` — SSE; store-backed for step pipelines (code steps
-  visible), DBOS-status-polled for strategy workflows.
+- `stream_run_events(...)` — SSE from the store, so code steps are visible.
 
 HTTP (via `mash.api`):
 

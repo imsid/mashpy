@@ -78,8 +78,8 @@ class DuplicateWorkflowRunError(RuntimeError):
 class WorkflowService:
     """Host-level workflow execution service.
 
-    Step pipelines own their run history in the workflow store; strategy
-    workflows (fan-out, branching) are projected from DBOS status.
+    Runs own their history in the workflow store; before the store row is
+    written a queued run is projected from DBOS status.
     """
 
     def __init__(
@@ -101,13 +101,13 @@ class WorkflowService:
 
     async def list_workflows(self) -> list[dict[str, Any]]:
         workflows = self._workflow_registry.list()
-        pipeline_ids = [workflow.workflow_id for workflow in workflows if workflow.steps]
+        workflow_ids = [workflow.workflow_id for workflow in workflows]
         latest_runs: dict[str, Any] = {}
         history_available = False
         store = self._workflow_store()
         if store is not None:
             try:
-                latest_runs = await store.get_latest_runs(pipeline_ids)
+                latest_runs = await store.get_latest_runs(workflow_ids)
                 history_available = True
             except Exception:
                 # Definition discovery remains usable when the optional run
@@ -117,7 +117,7 @@ class WorkflowService:
             self._serialize_workflow_summary(
                 workflow,
                 latest_run=latest_runs.get(workflow.workflow_id),
-                history_available=history_available and bool(workflow.steps),
+                history_available=history_available,
             )
             for workflow in workflows
         ]
@@ -145,12 +145,7 @@ class WorkflowService:
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
-        workflow = self._require_workflow(resolved_workflow_id)
-
-        # Strategy workflows keep their own result surface (e.g. experiments) and
-        # do not populate the workflow run store.
-        if not workflow.steps:
-            return []
+        self._require_workflow(resolved_workflow_id)
 
         store = self._workflow_store()
         if store is None:
@@ -235,23 +230,21 @@ class WorkflowService:
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
-        workflow = self._require_workflow(resolved_workflow_id)
+        self._require_workflow(resolved_workflow_id)
         resolved_run_id = str(run_id or "").strip()
         if not resolved_run_id:
             raise ValueError("run_id is required")
 
-        if workflow.steps:
-            store = self._workflow_store()
-            if store is not None:
-                record = await store.get_run(resolved_run_id)
-                if record is not None:
-                    run = _run_from_record(record)
-                    steps = await store.get_run_steps(resolved_run_id)
-                    run.steps = [_step_to_dict(step) for step in steps]
-                    return run
-            # The store row is written once the run starts executing; before that
-            # the run is only visible as DBOS status. Fall through to it.
-
+        store = self._workflow_store()
+        if store is not None:
+            record = await store.get_run(resolved_run_id)
+            if record is not None:
+                run = _run_from_record(record)
+                steps = await store.get_run_steps(resolved_run_id)
+                run.steps = [_step_to_dict(step) for step in steps]
+                return run
+        # The store row is written once the run starts executing; before that
+        # the run is only visible as DBOS status. Fall through to it.
         status = await _get_workflow_status_or_none(resolved_run_id)
         if status is None:
             raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
@@ -262,13 +255,11 @@ class WorkflowService:
         )
 
     async def resume_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
-        """Resume a failed step-pipeline run from its failed step (same run_id)."""
+        """Resume a failed run from its failed step (same run_id)."""
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
-        workflow = self._require_workflow(resolved_workflow_id)
-        if not workflow.steps:
-            raise ValueError("resume_run is only supported for step pipelines")
+        self._require_workflow(resolved_workflow_id)
         resolved_run_id = str(run_id or "").strip()
         if not resolved_run_id:
             raise ValueError("run_id is required")
@@ -316,27 +307,17 @@ class WorkflowService:
     ) -> AsyncIterator[WorkflowStreamEvent]:
         resolved_workflow_id = str(workflow_id or "").strip()
         resolved_run_id = str(run_id or "").strip()
-        workflow = self._require_workflow(resolved_workflow_id)
+        self._require_workflow(resolved_workflow_id)
         if not resolved_run_id:
             raise ValueError("run_id is required")
 
-        if workflow.steps:
-            store = self._workflow_store()
-            if store is None or await store.get_run(resolved_run_id) is None:
-                raise WorkflowNotFoundError(
-                    f"workflow run '{resolved_run_id}' was not found"
-                )
-            return self._stream_step_run_events(
-                resolved_workflow_id, resolved_run_id, store, poll_interval
-            )
-
-        # Strategy workflows: poll DBOS status to a terminal event.
-        if await _get_workflow_status_or_none(resolved_run_id) is None:
+        store = self._workflow_store()
+        if store is None or await store.get_run(resolved_run_id) is None:
             raise WorkflowNotFoundError(
                 f"workflow run '{resolved_run_id}' was not found"
             )
-        return self._stream_strategy_run_events(
-            resolved_workflow_id, resolved_run_id, poll_interval
+        return self._stream_step_run_events(
+            resolved_workflow_id, resolved_run_id, store, poll_interval
         )
 
     async def _stream_step_run_events(
@@ -383,40 +364,6 @@ class WorkflowService:
             yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
             await _sleep(poll_interval)
 
-    async def _stream_strategy_run_events(
-        self,
-        workflow_id: str,
-        run_id: str,
-        poll_interval: float,
-    ) -> AsyncIterator[WorkflowStreamEvent]:
-        while True:
-            status = await _get_workflow_status_or_none(run_id)
-            mapped = _map_dbos_status(str(getattr(status, "status", "") or "")) if status else ""
-            if mapped == "completed":
-                yield WorkflowStreamEvent(
-                    event="workflow.completed",
-                    data={
-                        "workflow_id": workflow_id,
-                        "run_id": run_id,
-                        "status": mapped,
-                        "result": _status_result(status),
-                    },
-                )
-                return
-            if mapped in {"failed", "cancelled"}:
-                yield WorkflowStreamEvent(
-                    event="workflow.error",
-                    data={
-                        "workflow_id": workflow_id,
-                        "run_id": run_id,
-                        "status": mapped,
-                        "error": _status_error(status) or f"workflow {mapped}",
-                    },
-                )
-                return
-            yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
-            await _sleep(poll_interval)
-
     def _require_workflow(self, workflow_id: str) -> WorkflowSpec:
         try:
             return self._workflow_registry.get(workflow_id)
@@ -451,7 +398,7 @@ class WorkflowService:
             "workflow_id": workflow.workflow_id,
             "display_name": display_name or workflow.workflow_id,
             "description": description,
-            "mode": "pipeline" if workflow.steps else "strategy",
+            "mode": "pipeline",
             "step_count": len(workflow.steps),
             "step_kinds": {"code": code_count, "agent": agent_count},
             "step_preview": step_preview,
@@ -480,18 +427,12 @@ class WorkflowService:
                 entry["agent_id"] = getattr(step, "agent_id", None)
                 entry["skill_name"] = getattr(step, "skill_name", None)
             steps.append(entry)
-        strategy = (
-            type(workflow.strategy).__name__
-            if workflow.strategy is not None and not workflow.steps
-            else None
-        )
         return {
             "workflow_id": workflow.workflow_id,
-            "mode": "pipeline" if workflow.steps else "strategy",
+            "mode": "pipeline",
             "metadata": dict(workflow.metadata),
             "input_schema": _schema_for(workflow.input_model),
             "steps": steps,
-            "strategy": strategy,
         }
 
 

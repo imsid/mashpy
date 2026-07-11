@@ -279,13 +279,12 @@ validation).
 
 `GET /api/v1/workflow`
 - Lists registered host workflows.
-- Returns catalog summaries with `workflow_id`, display fields, pipeline or
-  strategy mode, step counts, a step preview, history availability, and the
-  latest stored pipeline run.
+- Returns catalog summaries with `workflow_id`, display fields, step counts,
+  a step preview, history availability, and the latest stored run.
 
 `GET /api/v1/workflow/{workflow_id}`
 - Returns the complete registered definition: workflow input schema, metadata,
-  ordered step schemas and execution details, or the custom strategy name.
+  and ordered step schemas and execution details.
 
 `POST /api/v1/workflow/{workflow_id}/run`
 - Starts a workflow run.
