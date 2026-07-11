@@ -483,6 +483,80 @@ class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["host_id"] == "ops" for item in only_ops))
 
 
+class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.app_id = f"traces-{uuid.uuid4().hex[:8]}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+        _delete_app_rows(self.database_url, self.app_id)
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_app_rows(self.database_url, self.app_id)
+
+    async def _append(
+        self, *, trace_id: str, event_type: str, created_at: float
+    ) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                session_id="session-1",
+                trace_id=trace_id,
+                host_id="assistant",
+                event_type=event_type,
+                created_at=created_at,
+                payload={},
+            )
+        )
+
+    async def test_status_derived_from_latest_terminal_event(self) -> None:
+        started = RuntimeEventType.TRACE_STARTED.value
+        completed = RuntimeEventType.REQUEST_COMPLETED.value
+        failed = RuntimeEventType.REQUEST_FAILED.value
+
+        await self._append(trace_id="t-done", event_type=started, created_at=100.0)
+        await self._append(trace_id="t-done", event_type=completed, created_at=101.0)
+        await self._append(trace_id="t-failed", event_type=started, created_at=200.0)
+        await self._append(trace_id="t-failed", event_type=failed, created_at=201.0)
+        await self._append(trace_id="t-open", event_type=started, created_at=300.0)
+        # A failure followed by a completed retry: the latest terminal wins.
+        await self._append(trace_id="t-retried", event_type=failed, created_at=400.0)
+        await self._append(trace_id="t-retried", event_type=completed, created_at=401.0)
+
+        traces = await self.store.list_recent_traces(self.app_id)
+        by_trace = {item["trace_id"]: item["status"] for item in traces}
+        self.assertEqual(by_trace["t-done"], "completed")
+        self.assertEqual(by_trace["t-failed"], "error")
+        self.assertEqual(by_trace["t-open"], "in_progress")
+        self.assertEqual(by_trace["t-retried"], "completed")
+
+    async def test_status_filter(self) -> None:
+        started = RuntimeEventType.TRACE_STARTED.value
+        await self._append(trace_id="t-done", event_type=started, created_at=100.0)
+        await self._append(
+            trace_id="t-done",
+            event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+            created_at=101.0,
+        )
+        await self._append(trace_id="t-open", event_type=started, created_at=200.0)
+
+        only_done = await self.store.list_recent_traces(
+            self.app_id, status="completed"
+        )
+        self.assertEqual([item["trace_id"] for item in only_done], ["t-done"])
+
+        only_open = await self.store.list_recent_traces(
+            self.app_id, status="in_progress"
+        )
+        self.assertEqual([item["trace_id"] for item in only_open], ["t-open"])
+
+        none = await self.store.list_recent_traces(self.app_id, status="error")
+        self.assertEqual(none, [])
+
+
 class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
     DAY = 86400.0
 

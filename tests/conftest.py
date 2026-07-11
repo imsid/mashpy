@@ -24,6 +24,22 @@ from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEvent
 from mash.workflows.store import WorkflowStepEventRecord
 
 
+def _trace_status(trace_events: list[RuntimeEvent]) -> str:
+    """Latest terminal lifecycle event wins, mirroring the Postgres rollup."""
+    terminal = {
+        RuntimeEventType.REQUEST_COMPLETED.value: "completed",
+        RuntimeEventType.REQUEST_FAILED.value: "error",
+    }
+    for event in sorted(
+        trace_events,
+        key=lambda item: (float(item.created_at), int(item.event_id)),
+        reverse=True,
+    ):
+        if event.event_type in terminal:
+            return terminal[event.event_type]
+    return "in_progress"
+
+
 def _event_tokens(event: RuntimeEvent) -> int:
     """Input+output tokens on one event, mirroring the Postgres token SUM."""
     payload = event.payload or {}
@@ -207,6 +223,7 @@ class _TestRuntimeStore:
         *,
         session_id: str | None = None,
         host_id: str | None = None,
+        status: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         del host_id
@@ -244,8 +261,11 @@ class _TestRuntimeStore:
                     "started_at": float(trace_events[0].created_at),
                     "latest_event_at": float(trace_events[-1].created_at),
                     "latest_event_id": int(trace_events[-1].event_id),
+                    "status": _trace_status(trace_events),
                 }
             )
+        if status is not None:
+            summaries = [item for item in summaries if item["status"] == status]
         summaries.sort(
             key=lambda item: (item["latest_event_at"], item["latest_event_id"]),
             reverse=True,

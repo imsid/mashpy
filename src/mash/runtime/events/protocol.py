@@ -74,6 +74,7 @@ class RuntimeStore(Protocol):
         *,
         session_id: str | None = None,
         host_id: str | None = None,
+        status: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]: ...
 

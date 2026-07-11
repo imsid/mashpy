@@ -748,6 +748,23 @@ def test_telemetry_sessions_rollup_from_events() -> None:
             assert traces and all("total_tokens" in t for t in traces)
             assert sum(t["total_tokens"] for t in traces) == rolled["total_tokens"]
 
+            # A finished request's trace reports completed status, and the
+            # list filters by it.
+            assert all(t["status"] == "completed" for t in traces)
+            filtered = client.get(
+                "/api/v1/telemetry/traces?session_id=s-roll&status=completed&limit=100"
+            ).json()["data"]["traces"]
+            assert [t["trace_id"] for t in filtered] == [t["trace_id"] for t in traces]
+            errored = client.get(
+                "/api/v1/telemetry/traces?session_id=s-roll&status=error&limit=100"
+            ).json()["data"]["traces"]
+            assert errored == []
+            invalid = client.get(
+                "/api/v1/telemetry/traces?session_id=s-roll&status=bogus"
+            )
+            assert invalid.status_code == 400
+            assert invalid.json()["error"]["code"] == "INVALID_STATUS"
+
             # /session (get_session) reports the same event-log total.
             info = client.get("/api/v1/agent/primary/sessions/s-roll").json()["data"]
             assert info["total_tokens"] == rolled["total_tokens"]

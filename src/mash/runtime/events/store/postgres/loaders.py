@@ -80,6 +80,7 @@ def trace_row_to_summary(row: dict[str, Any]) -> dict[str, Any]:
         "started_at": float(row["started_at"]),
         "latest_event_at": float(row["latest_event_at"]),
         "latest_event_id": int(row["latest_event_id"]),
+        "status": str(row["status"]),
     }
 
 
@@ -443,6 +444,7 @@ async def list_recent_traces(
     *,
     session_id: str | None = None,
     host_id: str | None = None,
+    status: str | None = None,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     # app_id=None lists a session's traces across every executing agent
@@ -458,42 +460,59 @@ async def list_recent_traces(
     if host_id is not None:
         filters.append("host_id = %s")
         params.append(host_id)
+    status_filter = ""
+    if status is not None:
+        status_filter = "WHERE status = %s"
+        params.append(status)
     params.append(max(1, int(limit)))
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
+            # status mirrors _extract_boundary_events in spans.py: the trace's
+            # latest terminal lifecycle event wins, else it is still running.
             await cursor.execute(
                 f"""
-                SELECT
-                    trace_id,
-                    session_id,
-                    MAX(host_id) AS host_id,
-                    MAX(agent_id) AS agent_id,
-                    MAX(workflow_id) AS workflow_id,
-                    MAX(workflow_run_id) AS workflow_run_id,
-                    MIN(created_at) AS started_at,
-                    MAX(created_at) AS latest_event_at,
-                    MAX(event_id) AS latest_event_id,
-                    COUNT(*) AS event_count,
-                    COALESCE(SUM(
-                        CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                            COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
-                            + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
-                        ELSE 0 END
-                    ), 0) AS total_tokens,
-                    COALESCE(SUM(
-                        CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                            COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
-                        ELSE 0 END
-                    ), 0) AS cache_read_tokens,
-                    COALESCE(SUM(
-                        CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                            COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
-                        ELSE 0 END
-                    ), 0) AS cache_write_tokens
-                FROM runtime_event_log
-                WHERE {' AND '.join(filters)}
-                GROUP BY trace_id, session_id
-                ORDER BY MAX(created_at) DESC, MAX(event_id) DESC
+                SELECT * FROM (
+                    SELECT
+                        trace_id,
+                        session_id,
+                        MAX(host_id) AS host_id,
+                        MAX(agent_id) AS agent_id,
+                        MAX(workflow_id) AS workflow_id,
+                        MAX(workflow_run_id) AS workflow_run_id,
+                        MIN(created_at) AS started_at,
+                        MAX(created_at) AS latest_event_at,
+                        MAX(event_id) AS latest_event_id,
+                        COUNT(*) AS event_count,
+                        CASE (ARRAY_AGG(event_type ORDER BY created_at DESC, event_id DESC)
+                              FILTER (WHERE event_type IN (
+                                  'runtime.request.completed', 'runtime.request.failed'
+                              )))[1]
+                            WHEN 'runtime.request.failed' THEN 'error'
+                            WHEN 'runtime.request.completed' THEN 'completed'
+                            ELSE 'in_progress'
+                        END AS status,
+                        COALESCE(SUM(
+                            CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                                COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
+                                + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                            ELSE 0 END
+                        ), 0) AS total_tokens,
+                        COALESCE(SUM(
+                            CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                                COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                            ELSE 0 END
+                        ), 0) AS cache_read_tokens,
+                        COALESCE(SUM(
+                            CASE WHEN event_type = 'runtime.llm.think.completed' THEN
+                                COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                            ELSE 0 END
+                        ), 0) AS cache_write_tokens
+                    FROM runtime_event_log
+                    WHERE {' AND '.join(filters)}
+                    GROUP BY trace_id, session_id
+                ) traces
+                {status_filter}
+                ORDER BY latest_event_at DESC, latest_event_id DESC
                 LIMIT %s
                 """,
                 tuple(params),

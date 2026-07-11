@@ -252,6 +252,7 @@ class PostgresRuntimeStore(RuntimeStore):
         *,
         session_id: str | None = None,
         host_id: str | None = None,
+        status: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         await self.open()
@@ -260,6 +261,7 @@ class PostgresRuntimeStore(RuntimeStore):
             app_id,
             session_id=session_id,
             host_id=host_id,
+            status=status,
             limit=limit,
         )
 
