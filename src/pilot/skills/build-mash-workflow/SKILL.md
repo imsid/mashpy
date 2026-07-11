@@ -96,13 +96,6 @@ The framework never invents a key.
 A step may declare `timeout_s`; exceeding it fails the step, and the run stays
 resumable.
 
-### Non-linear shapes
-
-Fan-out and branching supply a `WorkflowStrategy` instead of `steps`; the
-strategy owns its own DBOS registration and run body. See
-`src/mash/workflows/strategy.py`. Prefer step pipelines unless the shape
-demands it.
-
 ## Step 2: Register the Workflow
 
 ```python
