@@ -24,6 +24,7 @@ import asyncio
 import inspect
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from mash.runtime.structured_output import serialize_structured_output
@@ -50,7 +51,18 @@ from .store import (
     WorkflowStepRecord,
     WorkflowStore,
 )
-from .strategy import WorkflowExecutionContext, WorkflowStrategy
+
+
+@dataclass(frozen=True)
+class WorkflowExecutionContext:
+    """Inputs the engine needs to execute one workflow run."""
+
+    runner_id: str
+    workflow: WorkflowSpec
+    run_id: str
+    workflow_input: dict[str, Any]
+    session_id: str | None = None
+
 
 # Per-step attempt is fixed at 1 for now. DBOS recovery attempts are not yet
 # surfaced into the step body; when they are, this becomes the recovery count so
@@ -277,8 +289,8 @@ def _agent_step_message(
     return json.dumps(payload, ensure_ascii=True)
 
 
-class ForwardPipelineStrategy(WorkflowStrategy):
-    """Default strategy: a linear, durable, observable forward pipeline."""
+class ForwardPipelineStrategy:
+    """The one shape every workflow runs: a linear, durable, observable forward pipeline."""
 
     async def run(self, ctx: WorkflowExecutionContext) -> dict[str, Any]:
         dbos_class, *_ = load_dbos_api()
@@ -412,4 +424,8 @@ class ForwardPipelineStrategy(WorkflowStrategy):
 FORWARD_PIPELINE_STRATEGY = ForwardPipelineStrategy()
 
 
-__all__ = ["ForwardPipelineStrategy", "FORWARD_PIPELINE_STRATEGY"]
+__all__ = [
+    "ForwardPipelineStrategy",
+    "FORWARD_PIPELINE_STRATEGY",
+    "WorkflowExecutionContext",
+]

@@ -14,7 +14,6 @@ from mash.runtime.requests import append_runtime_event
 from mash.runtime.structured_output import normalize_structured_output_schema
 
 from .spec import WorkflowSpec
-from .strategy import WorkflowExecutionContext
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import AgentPool
@@ -107,9 +106,6 @@ def require_runner(runner_id: str) -> "AgentPool":
 
 def register_workflow(dbos_class: Any) -> None:
     if _STATE.registered_workflow is not None:
-        # Generic workflow already registered; still give strategies a chance to
-        # register (idempotent) in case a pool's workflows appeared afterward.
-        _register_strategies(dbos_class)
         return
     _, queue_class, _, _, _ = _load_dbos_api()
     _STATE.queue = queue_class(_QUEUE_NAME, concurrency=8)
@@ -130,22 +126,6 @@ def register_workflow(dbos_class: Any) -> None:
         )
 
     _STATE.registered_workflow = dbos_class.workflow(name=_WORKFLOW_NAME)(_workflow)
-    _register_strategies(dbos_class)
-
-
-def _register_strategies(dbos_class: Any) -> None:
-    """Let each registered workflow's strategy register its DBOS objects.
-
-    Runs before ``DBOS.launch()`` (register_workflow is called from
-    ``ensure_dbos_ready`` prior to launch). Driven by the strategies the pools'
-    ``WorkflowSpec``s already carry, so this module never imports any concrete
-    strategy. Strategy ``register`` implementations must be idempotent.
-    """
-    for pool in list(_STATE.runner_registry.values()):
-        for workflow in pool.get_workflow_registry().list():
-            strategy = workflow.strategy
-            if strategy is not None:
-                strategy.register(dbos_class)
 
 
 async def start_workflow_run(
@@ -234,6 +214,12 @@ async def execute_registered_workflow(
 ) -> dict[str, Any]:
     pool = require_runner(runner_id)
     workflow = pool.get_workflow_registry().get(workflow_id)
+    # Lazy import: engine imports helpers from this module.
+    from .engine import (  # pylint: disable=import-outside-toplevel
+        FORWARD_PIPELINE_STRATEGY,
+        WorkflowExecutionContext,
+    )
+
     ctx = WorkflowExecutionContext(
         runner_id=runner_id,
         workflow=workflow,
@@ -241,17 +227,7 @@ async def execute_registered_workflow(
         workflow_input=_normalize_workflow_input(workflow_input),
         session_id=session_id,
     )
-    strategy = workflow.strategy
-    if strategy is None:
-        if not workflow.steps:
-            raise RuntimeError(
-                f"workflow '{workflow_id}' has neither steps nor a strategy"
-            )
-        # Lazy import: engine imports helpers from this module.
-        from .engine import FORWARD_PIPELINE_STRATEGY  # pylint: disable=import-outside-toplevel
-
-        strategy = FORWARD_PIPELINE_STRATEGY
-    return await strategy.run(ctx)
+    return await FORWARD_PIPELINE_STRATEGY.run(ctx)
 
 
 async def post_inline_agent_request(
@@ -393,8 +369,8 @@ async def _collect_terminal_payload(
     raise RuntimeError("workflow task stream ended without a terminal event")
 
 
-# Public alias so code steps and strategies await request results through the
-# same terminal collector the forward engine uses.
+# Public alias so code steps await request results through the same terminal
+# collector the forward engine uses.
 collect_terminal_payload = _collect_terminal_payload
 
 

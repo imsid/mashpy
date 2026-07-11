@@ -1,14 +1,14 @@
 # AGENTS Guide for `src/mash/workflows`
 
 ## Scope
-Durable, observable host-level workflows: ordered step pipelines (or an
-application-defined `WorkflowStrategy`) orchestrated by DBOS on top of the Mash
-agent runtime. Dynamic fan-out may be ordinary Python inside a `CodeStep` when
-its external effects use stable replay identities.
+Durable, observable host-level workflows: ordered step pipelines orchestrated
+by DBOS on top of the Mash agent runtime. Dynamic fan-out may be ordinary
+Python inside a `CodeStep` when its external effects use stable replay
+identities.
 
 ## What Must Stay True
-- A `WorkflowSpec` supplies `steps` (a forward pipeline) or a `strategy` — one of
-  the two. Step pipelines validate themselves at build time.
+- A `WorkflowSpec` supplies `steps` (a forward pipeline); it is the only
+  execution shape. Step pipelines validate themselves at build time.
 - Steps are `CodeStep` (deterministic Python, pydantic-typed) or `AgentStep`
   (one agent-loop run; pydantic-or-JSON-schema output, optional passthrough
   input and `skill_name`).

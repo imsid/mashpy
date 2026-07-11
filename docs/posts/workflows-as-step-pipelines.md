@@ -96,8 +96,8 @@ Runs stream the same way requests do. `POST /api/v1/workflow/{id}/run` returns a
 A step pipeline is a straight line, but a `CodeStep` may use ordinary Python
 control flow internally. The [experiment runner](synthetic-evals.md) uses three
 linear CodeSteps; its execution and judging steps use async fan-out over a
-durable experiment-row ledger. `WorkflowStrategy` remains available as an
-extension escape hatch when application code truly needs a different runtime.
+durable experiment-row ledger. The pipeline is the only execution shape the
+workflow layer runs; anything dynamic happens inside a step body.
 
 Masher's built-in workflows (trace digest, synthetic eval generation, online eval curation) are step pipelines on this same layer. Workflows, like requests, are driven entirely over the host's HTTP surface. That surface, and the CLI built on it, is the next post.
 

@@ -34,8 +34,7 @@ def _validate_workflow(workflow: WorkflowSpec) -> str:
     workflow_id = str(workflow.workflow_id or "").strip()
     if not workflow_id:
         raise ValueError("workflow_id is required")
-    # Step pipelines validate themselves in WorkflowSpec.__post_init__; a
-    # strategy owns its own execution. One of the two must be present.
-    if not workflow.steps and workflow.strategy is None:
-        raise ValueError("workflow requires steps or a strategy")
+    # Step pipelines validate themselves in WorkflowSpec.__post_init__.
+    if not workflow.steps:
+        raise ValueError("workflow steps are required")
     return workflow_id

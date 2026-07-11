@@ -23,7 +23,6 @@ from mash.workflows import (
     WorkflowRegistry,
     WorkflowService,
     WorkflowSpec,
-    WorkflowStrategy,
 )
 from mash.workflows import dbos as workflow_dbos
 
@@ -46,11 +45,6 @@ class StepOutput(BaseModel):
 
 def _double(inp: TriggerInput, _ctx: StepContext) -> StepOutput:
     return StepOutput(doubled=inp.count * 2)
-
-
-class _DummyStrategy(WorkflowStrategy):
-    async def run(self, ctx: Any) -> dict[str, Any]:  # pragma: no cover - not executed
-        return {}
 
 
 @dataclass
@@ -90,12 +84,7 @@ class WorkflowRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             registry.register(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
 
-    def test_strategy_only_workflow_is_valid(self) -> None:
-        registry = WorkflowRegistry()
-        registry.register(WorkflowSpec(workflow_id="wf", strategy=_DummyStrategy()))
-        self.assertEqual([w.workflow_id for w in registry.list()], ["wf"])
-
-    def test_workflow_without_steps_or_strategy_is_rejected(self) -> None:
+    def test_workflow_without_steps_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             WorkflowSpec(workflow_id="wf")
 
@@ -160,17 +149,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(definition["steps"][0]["orchestration"])
         self.assertIn("doubled", definition["steps"][0]["output_schema"]["properties"])
         self.assertEqual(definition["steps"][0]["timeout_s"], 10.0)
-
-    async def test_get_strategy_definition_does_not_invent_steps(self) -> None:
-        service = self._service(
-            WorkflowSpec(workflow_id="wf", strategy=_DummyStrategy())
-        )
-
-        definition = await service.get_workflow_definition("wf")
-
-        self.assertEqual(definition["mode"], "strategy")
-        self.assertEqual(definition["strategy"], "_DummyStrategy")
-        self.assertEqual(definition["steps"], [])
+        self.assertNotIn("strategy", definition)
 
     async def test_run_workflow_starts_dbos_and_returns_status(self) -> None:
         service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
@@ -244,8 +223,9 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(DuplicateWorkflowRunError):
                 await service.run_workflow("wf", dedup_key="manual")
 
-    async def test_get_run_maps_strategy_dbos_status(self) -> None:
-        service = self._service(WorkflowSpec(workflow_id="wf", strategy=_DummyStrategy()))
+    async def test_get_run_falls_back_to_dbos_status(self) -> None:
+        # No store record yet (queued run): the run projects from DBOS status.
+        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
 
         async def get_workflow_status(run_id):
             return _FakeWorkflowStatus(
