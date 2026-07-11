@@ -1,4 +1,4 @@
-"""Agent specification for synthetic eval generation and eval judging."""
+"""Agent specifications for synthetic eval generation and judging."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from mash.runtime.service import AgentRuntime
 
 EVAL_AGENT_ID = "eval-agent"
+EVAL_JUDGE_AGENT_ID = "eval-judge-agent"
 
 
 def _select_eval_agent_provider_kind() -> str | None:
@@ -44,7 +45,7 @@ def _select_eval_agent_provider_kind() -> str | None:
     return None
 
 
-_PROMPT = """You are Mash's built-in synthetic eval generator and eval judge.
+_GENERATOR_PROMPT = """You are Mash's built-in synthetic eval generator.
 
 You are invoked only by Mash workflows. Do not answer free-form chat.
 
@@ -54,9 +55,15 @@ needs; each run is a clean slate — there is no cross-run state. When the
 request names a skill_name, call the standard Skill tool with it exactly once
 before doing the step's work, then follow the loaded skill.
 
-Judge requests (from the score-evals workflow) are self-contained scoring
-messages carrying a rubric and an output to evaluate; follow the message's
-scoring instructions exactly.
+Always answer with the structured output the request demands.
+"""
+
+_JUDGE_PROMPT = """You are Mash's built-in eval judge.
+
+You are invoked only by the run-experiment workflow. Do not answer free-form
+chat and do not attempt the task yourself. Judge the supplied agent input and
+output only against the supplied rubric. Follow every criterion's integer
+scale and scoring instructions exactly.
 
 Always answer with the structured output the request demands.
 """
@@ -65,15 +72,77 @@ Always answer with the structured output the request demands.
 def build_eval_agent_metadata() -> AgentMetadata:
     return AgentMetadata(
         display_name="Eval Agent",
-        description="Built-in eval generation and judging agent.",
-        capabilities=[
-            "synthetic eval dataset and rubric generation",
-            "rubric-based eval output judging",
-        ],
+        description="Built-in synthetic eval dataset and rubric generator.",
+        capabilities=["synthetic eval dataset and rubric generation"],
         usage_guidance=(
-            "This agent powers the gen-synthetic-evals and score-evals workflows. "
-            "Inspect its spec to understand the agent steps used by those pipelines."
+            "This agent powers the gen-synthetic-evals workflow. Inspect its spec "
+            "to understand the generation step."
         ),
+    )
+
+
+def build_eval_judge_agent_metadata() -> AgentMetadata:
+    return AgentMetadata(
+        display_name="Eval Judge",
+        description="Built-in rubric-based evaluator for experiment outputs.",
+        capabilities=["rubric-based eval output judging"],
+        usage_guidance=(
+            "This agent is invoked by the run-experiment workflow to score one "
+            "host output against an eval rubric."
+        ),
+    )
+
+
+def _model_override(prefix: str, provider: str, fallback: str) -> str:
+    return os.getenv(
+        f"{prefix}_{provider}_MODEL",
+        os.getenv(f"EVAL_AGENT_{provider}_MODEL", fallback),
+    )
+
+
+def _build_eval_llm(*, agent_id: str, prefix: str, label: str) -> LLMProvider:
+    kind = _select_eval_agent_provider_kind()
+    if kind == "gemini":
+        return GeminiProvider(
+            app_id=agent_id,
+            model=_model_override(
+                prefix, "GEMINI", os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+            ),
+        )
+    if kind == "openai":
+        return OpenAIProvider(
+            app_id=agent_id,
+            model=_model_override(
+                prefix, "OPENAI", os.getenv("OPENAI_MODEL", "gpt-5-mini")
+            ),
+        )
+    if kind == "anthropic":
+        return AnthropicProvider(
+            app_id=agent_id,
+            model=_model_override(
+                prefix,
+                "ANTHROPIC",
+                os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+            ),
+        )
+    if kind == "oss":
+        oss_model = os.getenv(
+            f"{prefix}_OSS_MODEL", os.getenv("EVAL_AGENT_OSS_MODEL", "")
+        ).strip()
+        if not oss_model:
+            raise RuntimeError(
+                f"The {label} OSS endpoint requires {prefix}_OSS_MODEL or "
+                "EVAL_AGENT_OSS_MODEL to name the served model."
+            )
+        return OSSCompatibleProvider(
+            app_id=agent_id,
+            model=oss_model,
+            base_url=os.getenv("OSS_BASE_URL", "").strip(),
+            api_key=os.getenv("OSS_API_KEY", "").strip() or None,
+        )
+    raise RuntimeError(
+        f"The {label} requires GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, "
+        "ANTHROPIC_API_KEY, or OSS_BASE_URL to be configured."
     )
 
 
@@ -101,55 +170,16 @@ class EvalAgentSpec(AgentSpec):
         return skills
 
     def build_llm(self) -> LLMProvider:
-        kind = _select_eval_agent_provider_kind()
-        if kind == "gemini":
-            return GeminiProvider(
-                app_id=EVAL_AGENT_ID,
-                model=os.getenv(
-                    "EVAL_AGENT_GEMINI_MODEL",
-                    os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
-                ),
-            )
-        if kind == "openai":
-            return OpenAIProvider(
-                app_id=EVAL_AGENT_ID,
-                model=os.getenv(
-                    "EVAL_AGENT_OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-5-mini")
-                ),
-            )
-        if kind == "anthropic":
-            return AnthropicProvider(
-                app_id=EVAL_AGENT_ID,
-                model=os.getenv(
-                    "EVAL_AGENT_ANTHROPIC_MODEL",
-                    os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
-                ),
-            )
-        if kind == "oss":
-            # Generic OSS endpoints have no universal model name. The served
-            # model must be named explicitly and support native tool calling.
-            oss_model = os.getenv("EVAL_AGENT_OSS_MODEL", "").strip()
-            if not oss_model:
-                raise RuntimeError(
-                    "The eval agent's OSS endpoint requires EVAL_AGENT_OSS_MODEL "
-                    "to name the served model (must support native tool calling)."
-                )
-            return OSSCompatibleProvider(
-                app_id=EVAL_AGENT_ID,
-                model=oss_model,
-                base_url=os.getenv("OSS_BASE_URL", "").strip(),
-                api_key=os.getenv("OSS_API_KEY", "").strip() or None,
-            )
-        raise RuntimeError(
-            "The eval agent requires GEMINI_API_KEY, GOOGLE_API_KEY, "
-            "OPENAI_API_KEY, ANTHROPIC_API_KEY, or OSS_BASE_URL (with "
-            "EVAL_AGENT_OSS_MODEL) to be configured."
+        return _build_eval_llm(
+            agent_id=EVAL_AGENT_ID,
+            prefix="EVAL_AGENT",
+            label="eval agent",
         )
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
             app_id=EVAL_AGENT_ID,
-            system_prompt=_PROMPT,
+            system_prompt=_GENERATOR_PROMPT,
             max_steps=20,
         )
 
@@ -160,8 +190,41 @@ class EvalAgentSpec(AgentSpec):
         self.runtime_context.bind_runtime_store(runtime.runtime_store)
 
 
+class EvalJudgeAgentSpec(AgentSpec):
+    """Tool-less worker that judges one experiment row against a rubric."""
+
+    def get_agent_id(self) -> str:
+        return EVAL_JUDGE_AGENT_ID
+
+    def build_tools(self) -> ToolRegistry:
+        return ToolRegistry()
+
+    def build_skills(self) -> SkillRegistry:
+        return SkillRegistry()
+
+    def build_llm(self) -> LLMProvider:
+        return _build_eval_llm(
+            agent_id=EVAL_JUDGE_AGENT_ID,
+            prefix="EVAL_JUDGE_AGENT",
+            label="eval judge agent",
+        )
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=EVAL_JUDGE_AGENT_ID,
+            system_prompt=_JUDGE_PROMPT,
+            max_steps=4,
+        )
+
+    def enable_runtime_tools(self) -> bool:
+        return False
+
+
 __all__ = [
     "EVAL_AGENT_ID",
+    "EVAL_JUDGE_AGENT_ID",
     "EvalAgentSpec",
+    "EvalJudgeAgentSpec",
     "build_eval_agent_metadata",
+    "build_eval_judge_agent_metadata",
 ]

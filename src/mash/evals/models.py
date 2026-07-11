@@ -56,6 +56,11 @@ class Experiment:
     status: str
     created_at: datetime
     completed_at: datetime | None
+    # Workflow identity and immutable inputs captured when the experiment is
+    # prepared. Older rows may not have these fields populated.
+    workflow_run_id: str | None = None
+    target_host_id: str | None = None
+    rubric_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -82,3 +87,7 @@ class ExperimentRun:
     # Operational metrics (tokens, steps, tool calls, latency, subagent
     # breakdown) aggregated from the host session; see evals.metrics.RowMetrics.
     metrics: dict[str, Any] | None = None
+    # Durable row-work state used by the run-experiment workflow.
+    status: str = "pending"
+    ordinal: int = 0
+    updated_at: datetime | None = None

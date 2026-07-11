@@ -214,20 +214,28 @@ CREATE TABLE IF NOT EXISTS eval_rubric (
 CREATE TABLE IF NOT EXISTS eval_experiment (
     experiment_id       TEXT PRIMARY KEY,
     eval_id             TEXT NOT NULL REFERENCES eval(eval_id) ON DELETE CASCADE,
+    workflow_run_id     TEXT,
+    target_host_id      TEXT,
     agent_spec_snapshot JSONB NOT NULL,
     host_composition    JSONB NOT NULL DEFAULT '{}',
+    rubric_snapshot     JSONB NOT NULL DEFAULT '{}',
     status              TEXT NOT NULL DEFAULT 'pending',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at        TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS eval_experiment_eval_id_idx ON eval_experiment (eval_id);
+CREATE UNIQUE INDEX IF NOT EXISTS eval_experiment_workflow_run_idx
+    ON eval_experiment(workflow_run_id)
+    WHERE workflow_run_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS eval_experiment_run (
     run_id         TEXT PRIMARY KEY,
     experiment_id  TEXT NOT NULL REFERENCES eval_experiment(experiment_id) ON DELETE CASCADE,
     row_id         TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL DEFAULT 0,
     input          TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'pending',
     actual_output  TEXT,
     weighted_score NUMERIC(5,4),
     scores         JSONB NOT NULL DEFAULT '{}',
@@ -242,10 +250,14 @@ CREATE TABLE IF NOT EXISTS eval_experiment_run (
     -- the metric set grows; promote hot keys to columns only if experiments
     -- later need to sort by them.
     metrics        JSONB,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (experiment_id, row_id)
 );
 
 CREATE INDEX IF NOT EXISTS eval_experiment_run_experiment_idx ON eval_experiment_run (experiment_id);
+CREATE INDEX IF NOT EXISTS eval_experiment_run_status_idx
+    ON eval_experiment_run(experiment_id, status, ordinal);
 
 -- Workflows store ------------------------------------------------------------
 -- Durable, observable forward-pipeline runs. Workflows own their run history and

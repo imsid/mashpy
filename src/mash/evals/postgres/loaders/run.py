@@ -55,6 +55,13 @@ def row_to_run(row: dict[str, Any]) -> ExperimentRun:
         session_id=str(row["session_id"]) if row.get("session_id") is not None else None,
         error=str(row["error"]) if row.get("error") is not None else None,
         metrics=_parse_metrics(row.get("metrics")),
+        status=str(row.get("status") or "pending"),
+        ordinal=int(row.get("ordinal") or 0),
+        updated_at=(
+            _parse_dt(row["updated_at"])
+            if row.get("updated_at") is not None
+            else None
+        ),
     )
 
 
@@ -74,15 +81,21 @@ async def upsert_run(pool: Any, run: ExperimentRun) -> ExperimentRun:
                 """
                 INSERT INTO eval_experiment_run
                     (run_id, experiment_id, row_id, input, actual_output,
-                     weighted_score, scores, session_id, error, metrics)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb)
+                     weighted_score, scores, session_id, error, metrics,
+                     status, ordinal, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
+                        %s::jsonb, %s, %s, %s)
                 ON CONFLICT (run_id) DO UPDATE SET
+                    input          = EXCLUDED.input,
                     actual_output  = EXCLUDED.actual_output,
                     weighted_score = EXCLUDED.weighted_score,
                     scores         = EXCLUDED.scores,
                     session_id     = EXCLUDED.session_id,
                     error          = EXCLUDED.error,
-                    metrics        = EXCLUDED.metrics
+                    metrics        = EXCLUDED.metrics,
+                    status         = EXCLUDED.status,
+                    ordinal        = EXCLUDED.ordinal,
+                    updated_at     = EXCLUDED.updated_at
                 RETURNING *
                 """,
                 (
@@ -96,6 +109,9 @@ async def upsert_run(pool: Any, run: ExperimentRun) -> ExperimentRun:
                     run.session_id,
                     run.error,
                     json.dumps(run.metrics) if run.metrics is not None else None,
+                    run.status,
+                    run.ordinal,
+                    run.updated_at or run.created_at,
                 ),
             )
             return row_to_run(await cursor.fetchone())
@@ -119,7 +135,7 @@ async def list_runs(
                 """
                 SELECT * FROM eval_experiment_run
                 WHERE experiment_id = %s
-                ORDER BY created_at
+                ORDER BY ordinal, created_at
                 LIMIT %s OFFSET %s
                 """,
                 (experiment_id, limit, offset),

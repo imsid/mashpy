@@ -287,7 +287,7 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
     if (!job || DONE_STATUSES.has(job.status)) return;
     const timer = setTimeout(async () => {
       try {
-        const run = await api.getWorkflowRun('score-evals', job.runId);
+        const run = await api.getWorkflowRun('run-experiment', job.runId);
         setJob((j) => ({ ...j, status: run.status, jobError: run.error }));
         if (run.status === 'completed') onDone();
       } catch (err) {
@@ -301,7 +301,9 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
     setError(null);
     setJob(null);
     try {
-      const run = await api.runWorkflow('score-evals', { input: { eval_id: evalId } });
+      const run = await api.runWorkflow('run-experiment', {
+        input: { eval_id: evalId, host_id: hostId },
+      });
       setJob({ runId: run.run_id, status: run.status });
     } catch (err) {
       setError(err.message || 'Failed to start workflow.');

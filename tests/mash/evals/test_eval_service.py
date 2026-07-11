@@ -95,6 +95,41 @@ class EvalLockingTests(_ServiceCase):
             _run(self.service.update_rubric(eval_.eval_id, criteria=_RUBRIC["criteria"]))
 
 
+class ExperimentLedgerTests(_ServiceCase):
+    def test_prepare_experiment_is_idempotent_and_seeds_rows(self) -> None:
+        eval_ = self._make_eval()
+        kwargs = {
+            "experiment_id": "exp_workflow_1",
+            "workflow_run_id": "workflow-1",
+            "eval_id": eval_.eval_id,
+            "target_host_id": "guide",
+            "host_composition": {
+                "host_id": "guide",
+                "primary": "pilot",
+                "subagents": [],
+            },
+            "agent_spec_snapshot": {"pilot": {"model": "m1"}},
+            "rubric_snapshot": dict(_RUBRIC),
+            "rows": [dict(row) for row in _ROWS],
+        }
+
+        first = _run(self.service.prepare_experiment(**kwargs))
+        second = _run(self.service.prepare_experiment(**kwargs))
+
+        self.assertEqual(first.experiment_id, second.experiment_id)
+        self.assertEqual(first.workflow_run_id, "workflow-1")
+        self.assertEqual(first.target_host_id, "guide")
+        self.assertEqual(first.rubric_snapshot, _RUBRIC)
+        runs = _run(self.service.list_runs(first.experiment_id, limit=1000))
+        self.assertEqual(len(runs), 2)
+        self.assertEqual([run.ordinal for run in runs], [0, 1])
+        self.assertTrue(all(run.status == "pending" for run in runs))
+        self.assertEqual(
+            [run.session_id for run in runs],
+            ["eval:workflow-1:row-1", "eval:workflow-1:row-2"],
+        )
+
+
 class CompareExperimentsTests(_ServiceCase):
     def test_compare_diffs_snapshots_and_pairs_rows(self) -> None:
         eval_ = self._make_eval()

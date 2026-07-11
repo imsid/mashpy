@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
 from .models import DatasetRow, Eval, Experiment, ExperimentRun, ScoringRubric
@@ -144,6 +145,12 @@ class EvalService:
             "aggregate": _compute_aggregate(runs),
         }
 
+    async def get_experiment(self, experiment_id: str) -> Experiment:
+        experiment = await self._store.get_experiment(experiment_id)
+        if experiment is None:
+            raise ExperimentNotFoundError(experiment_id)
+        return experiment
+
     async def compare_experiments(
         self, eval_id: str, *, baseline_id: str, control_id: str
     ) -> dict[str, Any]:
@@ -190,13 +197,67 @@ class EvalService:
         eval_id: str,
         host_composition: dict[str, Any],
         agent_spec_snapshot: dict[str, Any],
+        experiment_id: str | None = None,
+        workflow_run_id: str | None = None,
+        target_host_id: str | None = None,
+        rubric_snapshot: dict[str, Any] | None = None,
     ) -> Experiment:
-        experiment_id = f"exp_{uuid.uuid4().hex}"
+        resolved_experiment_id = experiment_id or f"exp_{uuid.uuid4().hex}"
         return await self._store.insert_experiment(
-            experiment_id=experiment_id,
+            experiment_id=resolved_experiment_id,
             eval_id=eval_id,
             host_composition=host_composition,
             agent_spec_snapshot=agent_spec_snapshot,
+            workflow_run_id=workflow_run_id,
+            target_host_id=target_host_id,
+            rubric_snapshot=rubric_snapshot,
+        )
+
+    async def prepare_experiment(
+        self,
+        *,
+        experiment_id: str,
+        workflow_run_id: str,
+        eval_id: str,
+        target_host_id: str,
+        host_composition: dict[str, Any],
+        agent_spec_snapshot: dict[str, Any],
+        rubric_snapshot: dict[str, Any],
+        rows: list[dict[str, Any]],
+    ) -> Experiment:
+        """Atomically snapshot an experiment and seed its row work ledger."""
+        now = datetime.now(timezone.utc)
+        experiment = Experiment(
+            experiment_id=experiment_id,
+            eval_id=eval_id,
+            host_composition=dict(host_composition),
+            agent_spec_snapshot=dict(agent_spec_snapshot),
+            status="running",
+            created_at=now,
+            completed_at=None,
+            workflow_run_id=workflow_run_id,
+            target_host_id=target_host_id,
+            rubric_snapshot=dict(rubric_snapshot),
+        )
+        runs = [
+            ExperimentRun(
+                run_id=f"run:{experiment_id}:{str(row.get('row_id') or '')}",
+                experiment_id=experiment_id,
+                row_id=str(row.get("row_id") or ""),
+                input=str(row.get("input") or ""),
+                actual_output=None,
+                weighted_score=None,
+                scores={},
+                created_at=now,
+                session_id=f"eval:{workflow_run_id}:{str(row.get('row_id') or '')}",
+                status="pending",
+                ordinal=ordinal,
+                updated_at=now,
+            )
+            for ordinal, row in enumerate(rows)
+        ]
+        return await self._store.create_experiment_with_runs(
+            experiment=experiment, runs=runs
         )
 
     async def update_experiment_status(
@@ -224,7 +285,15 @@ class EvalService:
         return await self._store.list_runs(experiment_id, limit=limit, offset=offset)
 
     async def persist_run(self, run: ExperimentRun) -> ExperimentRun:
-        return await self._store.upsert_run(run)
+        normalized = run
+        if run.status == "pending":
+            if run.weighted_score is not None:
+                normalized = replace(run, status="scored")
+            elif run.error is not None:
+                normalized = replace(run, status="scoring_failed")
+            elif run.actual_output is not None:
+                normalized = replace(run, status="executed")
+        return await self._store.upsert_run(normalized)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +350,9 @@ def experiment_to_dict(e: Experiment) -> dict[str, Any]:
         "eval_id": e.eval_id,
         "host_composition": e.host_composition,
         "agent_spec_snapshot": e.agent_spec_snapshot,
+        "workflow_run_id": e.workflow_run_id,
+        "target_host_id": e.target_host_id,
+        "rubric_snapshot": e.rubric_snapshot or {},
         "status": e.status,
         "created_at": e.created_at.isoformat(),
         "completed_at": e.completed_at.isoformat() if e.completed_at else None,
@@ -367,6 +439,7 @@ def _run_details(run: ExperimentRun | None) -> dict[str, Any] | None:
         },
         "session_id": run.session_id,
         "error": run.error,
+        "status": run.status,
     }
 
 

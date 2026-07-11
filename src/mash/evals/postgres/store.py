@@ -162,6 +162,9 @@ class _InMemoryEvalStore:
         eval_id: str,
         host_composition: dict[str, Any],
         agent_spec_snapshot: dict[str, Any],
+        workflow_run_id: str | None = None,
+        target_host_id: str | None = None,
+        rubric_snapshot: dict[str, Any] | None = None,
     ) -> Experiment:
         experiment = Experiment(
             experiment_id=experiment_id,
@@ -171,9 +174,23 @@ class _InMemoryEvalStore:
             status="pending",
             created_at=_now(),
             completed_at=None,
+            workflow_run_id=workflow_run_id,
+            target_host_id=target_host_id,
+            rubric_snapshot=dict(rubric_snapshot or {}),
         )
         self._experiments[experiment_id] = experiment
         return experiment
+
+    async def create_experiment_with_runs(
+        self, *, experiment: Experiment, runs: list[ExperimentRun]
+    ) -> Experiment:
+        existing = self._experiments.get(experiment.experiment_id)
+        if existing is None:
+            self._experiments[experiment.experiment_id] = experiment
+            existing = experiment
+        for run in runs:
+            self._runs.setdefault(run.run_id, run)
+        return existing
 
     async def list_experiments(
         self, eval_id: str, *, limit: int = 20, offset: int = 0
@@ -203,6 +220,9 @@ class _InMemoryEvalStore:
             status=status,
             created_at=existing.created_at,
             completed_at=completed_at,
+            workflow_run_id=existing.workflow_run_id,
+            target_host_id=existing.target_host_id,
+            rubric_snapshot=existing.rubric_snapshot,
         )
 
     # Experiment Run ---------------------------------------------------
@@ -215,7 +235,7 @@ class _InMemoryEvalStore:
         self, experiment_id: str, *, limit: int = 100, offset: int = 0
     ) -> list[ExperimentRun]:
         rows = [r for r in self._runs.values() if r.experiment_id == experiment_id]
-        rows.sort(key=lambda r: r.created_at)
+        rows.sort(key=lambda r: (r.ordinal, r.created_at))
         return rows[offset : offset + limit]
 
 
@@ -373,6 +393,18 @@ class PostgresEvalStore:
         if self._mem is not None:
             return await self._mem.insert_experiment(**kwargs)
         return await loaders.insert_experiment(self._pool, **kwargs)
+
+    async def create_experiment_with_runs(
+        self, *, experiment: Experiment, runs: list[ExperimentRun]
+    ) -> Experiment:
+        await self.open()
+        if self._mem is not None:
+            return await self._mem.create_experiment_with_runs(
+                experiment=experiment, runs=runs
+            )
+        return await loaders.create_experiment_with_runs(
+            self._pool, experiment=experiment, runs=runs
+        )
 
     async def list_experiments(
         self, eval_id: str, *, limit: int = 20, offset: int = 0

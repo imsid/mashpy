@@ -241,12 +241,10 @@ A Code step never exposes the Python callable or pretends that it can be edited
 in the browser. An Agent step with `input: None` is labelled **Pass-through
 input** rather than **No input**.
 
-The eval agent uses the ordinary visible agent registration path. Every pool registers
-the `eval-agent` agent and the `masher-trace-digest`,
-`masher-online-eval-curation`, `gen-synthetic-evals`, and `score-evals`
-workflows as host defaults. Hosts defined at build time or later through the
-control API inherit those defaults, so an Agent step that targets `eval-agent`
-always has a corresponding inspectable entry in Agents.
+The generation and judge agents use the ordinary visible registration path.
+Every pool registers `eval-agent`, `eval-judge-agent`, and the
+`masher-trace-digest`, `masher-online-eval-curation`,
+`gen-synthetic-evals`, and `run-experiment` workflows as host defaults.
 
 ```mermaid
 flowchart TB
@@ -281,9 +279,9 @@ the current service deliberately does not write strategy runs or steps to the
 workflow store. The UI must not draw a fake linear pipeline or imply that run
 history is complete.
 
-Strategy definitions are excluded from the Workflows catalog. Retain their
-product-specific execution surfaces, such as score-eval execution in Evals,
-without presenting them as inspectable step pipelines.
+Strategy definitions are excluded from the Workflows catalog. Bundled
+experiment execution is a normal step pipeline and therefore uses the standard
+definition, run-history, and run-detail surfaces.
 
 Giving strategies full generic run management is a workflow-runtime change, not
 an admin-only task. It can be designed separately if strategies later adopt the

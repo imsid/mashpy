@@ -85,7 +85,7 @@ export default function Agents() {
     ]);
     const definitions = await Promise.all(
       (catalog.workflows || [])
-        .filter((workflow) => workflow.step_kinds?.agent)
+        .filter((workflow) => workflow.mode === 'pipeline')
         .map((workflow) => api.getWorkflow(workflow.workflow_id)),
     );
     return { ...deployment, workflowDefinitions: definitions };

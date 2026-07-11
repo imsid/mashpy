@@ -19,12 +19,12 @@ if TYPE_CHECKING:
     from mash.evals.service import EvalService
     from mash.runtime.events import RuntimeStore
 
-from mash.agents import EvalAgentSpec
+from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
 from mash.agents.masher import (
     GEN_SYNTHETIC_EVALS_SKILL_NAME,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
-    MASHER_SCORE_EVALS_WORKFLOW_ID,
+    MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
     MasherRuntimeContext,
 )
@@ -189,14 +189,16 @@ class MasherSpecTests(unittest.TestCase):
         )
         try:
             described = {str(item["agent_id"]): item for item in host.describe_agents()}
-            self.assertEqual(sorted(described.keys()), ["eval-agent", "primary"])
+            self.assertEqual(
+                sorted(described.keys()), ["eval-agent", "eval-judge-agent", "primary"]
+            )
             self.assertEqual(
                 {item.workflow_id for item in host.get_workflow_registry().list()},
                 {
                     MASHER_TRACE_DIGEST_WORKFLOW_ID,
                     MASHER_ONLINE_EVAL_WORKFLOW_ID,
                     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                    MASHER_SCORE_EVALS_WORKFLOW_ID,
+                    MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                 },
             )
         finally:
@@ -241,8 +243,7 @@ class MasherSpecTests(unittest.TestCase):
                 skills = spec.build_skills()
 
                 # The deterministic work moved into workflow code steps;
-                # Masher itself only generates and judges via structured
-                # output, so it has no workflow tools left.
+                # Generation uses structured output and no workflow tools.
                 self.assertEqual(tools.list_tools(), [])
                 agent = Agent(
                     llm=_FakeLLMProvider(),
@@ -258,10 +259,18 @@ class MasherSpecTests(unittest.TestCase):
                 prompt = spec.build_agent_config().system_prompt
                 self.assertIn("workflow_input", prompt)
                 self.assertIn("skill_name", prompt)
-                self.assertIn("score-evals", prompt)
                 self.assertIn("structured output", prompt)
                 self.assertNotIn("trace-digest", prompt)
                 self.assertNotIn("online-eval-curation", prompt)
+
+    def test_judge_spec_is_toolless_skillless_and_focused(self) -> None:
+        spec = EvalJudgeAgentSpec()
+        self.assertEqual(spec.build_tools().list_tools(), [])
+        self.assertEqual(spec.build_skills().list_skills(), [])
+        prompt = spec.build_agent_config().system_prompt
+        self.assertIn("run-experiment", prompt)
+        self.assertIn("rubric", prompt)
+        self.assertNotIn("skill_name", prompt)
 
     def test_relative_data_dir_resolves_once_for_masher_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -831,6 +840,7 @@ class MasherBuilderTests(unittest.TestCase):
                 try:
                     described = {item["agent_id"] for item in host.describe_agents()}
                     self.assertIn("eval-agent", described)
+                    self.assertIn("eval-judge-agent", described)
                     self.assertIn("eval-agent", host.list_agents())
                     self.assertIsNotNone(host.get_agent_metadata("eval-agent"))
                     workflows = {
@@ -843,7 +853,7 @@ class MasherBuilderTests(unittest.TestCase):
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
                             MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                            MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                         },
                     )
                     digest = workflows[MASHER_TRACE_DIGEST_WORKFLOW_ID]
@@ -853,6 +863,10 @@ class MasherBuilderTests(unittest.TestCase):
                     gen = workflows[MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID]
                     self.assertEqual(
                         [step.kind for step in gen.steps], ["code", "agent", "code"]
+                    )
+                    run_experiment = workflows[MASHER_RUN_EXPERIMENT_WORKFLOW_ID]
+                    self.assertEqual(
+                        [step.kind for step in run_experiment.steps], ["code"] * 3
                     )
                 finally:
                     asyncio.run(host.close())
@@ -867,6 +881,7 @@ class MasherBuilderTests(unittest.TestCase):
                 )
                 try:
                     self.assertIn("eval-agent", host.list_agents())
+                    self.assertIn("eval-judge-agent", host.list_agents())
                     self.assertIsNotNone(host.get_registered_agent_spec("eval-agent"))
                     workflows = {
                         workflow.workflow_id
@@ -878,7 +893,7 @@ class MasherBuilderTests(unittest.TestCase):
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
                             MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                            MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                         },
                     )
                 finally:
@@ -916,7 +931,7 @@ class MasherBuilderTests(unittest.TestCase):
                         MASHER_TRACE_DIGEST_WORKFLOW_ID,
                         MASHER_ONLINE_EVAL_WORKFLOW_ID,
                         MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                        MASHER_SCORE_EVALS_WORKFLOW_ID,
+                        MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                     ):
                         self.assertIn(workflow_id, attached)
                     self.assertEqual(len(attached), len(set(attached)))
@@ -939,7 +954,7 @@ class MasherBuilderTests(unittest.TestCase):
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
                             MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                            MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                         },
                     )
                 finally:

@@ -10,14 +10,19 @@ A workflow runs as either:
 - a **step pipeline** — an ordered `steps` list, the default; or
 - a **strategy** — a `WorkflowStrategy` that owns its own DBOS registration and
   run body, for non-linear shapes (fan-out, branching). See
-  [`strategy.py`](./strategy.py) and the eval `ScoreEvalsStrategy`.
+  [`strategy.py`](./strategy.py). Mash's bundled workflows use step pipelines;
+  strategies remain an extension escape hatch.
 
 ## Steps
 
 Each step is one of:
 
 - **`CodeStep`** — deterministic Python: `run(inp, ctx) -> output`, sync or async.
-  Pydantic-typed on both edges. Authored in Python only.
+  Pydantic-typed on both edges. Authored in Python only. The default body is a
+  memoized DBOS step. An opt-in `orchestration=True` body instead runs in the
+  parent workflow context so it can start durable child workflows. Declare any
+  statically known agent dependencies with `agent_ids=[...]`, independently of
+  execution mode; registration validates them and tooling can discover them.
 - **`AgentStep`** — one run of a registered agent's loop. `output` may be a
   pydantic model or a JSON-schema dict; either becomes the request's
   structured-output schema. `input` may be a pydantic model or `None`
@@ -70,11 +75,19 @@ stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`, and
 `attempt`, all stable across retries. The framework never invents a key or
 classifies steps.
 
+An orchestration CodeStep is replayed as part of the parent workflow and is not
+memoized as one opaque DBOS step. Use it only for dynamic orchestration, keep
+child starts serial and deterministic, and record per-item progress under stable
+identities in a durable ledger. Completed ledger items must be skipped when the
+body is replayed. Terminal waits may run concurrently after their child
+workflows have been started in deterministic order.
+
 ## Durability and resume
 
-DBOS orchestrates and recovers runs. Each step body and each store write is its
-own memoized DBOS step, so a replay skips completed work; store writes are
-idempotent so the crash-after-effect window converges rather than duplicating.
+DBOS orchestrates and recovers runs. Each ordinary step body and each workflow
+store write is its own memoized DBOS step, so a replay skips completed work;
+store writes are idempotent so the crash-after-effect window converges rather
+than duplicating. Orchestration CodeSteps recover from their application ledger.
 
 - `resume_run(run_id)` — replay completed steps and re-drive from the failed
   step (same `run_id`). Agent steps interlock with their own durable request

@@ -40,17 +40,22 @@ MASHER_WORKFLOW_IDS = [
     "masher-trace-digest",
     "masher-online-eval-curation",
     "gen-synthetic-evals",
-    "score-evals",
+    "run-experiment",
 ]
 
 
 @pytest.fixture(autouse=True)
-def _stub_eval_agent_llm():
+def _stub_eval_agent_llms():
     """Keep API tests independent from developer and CI provider credentials."""
     with patch(
         "mash.agents.masher.spec.EvalAgentSpec.build_llm",
         side_effect=lambda: build_spec(
             agent_id="eval-agent", response_text="{}"
+        ).build_llm(),
+    ), patch(
+        "mash.agents.masher.spec.EvalJudgeAgentSpec.build_llm",
+        side_effect=lambda: build_spec(
+            agent_id="eval-judge-agent", response_text="{}"
         ).build_llm(),
     ):
         yield
@@ -179,7 +184,7 @@ def test_health_and_agent_contract() -> None:
             assert health.status_code == 200
             payload = health.json()["data"]
             assert payload["service"] == "mash-api"
-            assert len(payload["deployment"]["agents"]) == 3
+            assert len(payload["deployment"]["agents"]) == 4
             assert payload["deployment"]["hosts"] == [
                 {
                     "host_id": "assistant",
@@ -192,10 +197,10 @@ def test_health_and_agent_contract() -> None:
 
             agents = client.get("/api/v1/agent")
             assert agents.status_code == 200
-            assert len(agents.json()["data"]["agents"]) == 3
+            assert len(agents.json()["data"]["agents"]) == 4
             assert {
                 item["agent_id"] for item in agents.json()["data"]["agents"]
-            } == {"primary", "research", "eval-agent"}
+            } == {"primary", "research", "eval-agent", "eval-judge-agent"}
 
             static_dir = get_admin_static_dir()
             asset_paths = sorted(

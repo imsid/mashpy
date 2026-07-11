@@ -3,21 +3,20 @@
 ## Scope
 
 Masher is Mash's built-in observability and eval workflow package: two all-code
-trace pipelines, a code→agent→code eval-generation pipeline, a strategy-driven
-scoring workflow, and the eval agent used by their agent steps.
+trace pipelines, a code→agent→code eval-generation pipeline, a three-code-step
+experiment workflow, and dedicated generation and judging agents.
 
-`HostBuilder` always registers the eval agent as a normal visible agent and registers
-all four workflows. There is no opt-out or partial-registration mode.
+`HostBuilder` always registers both eval agents as normal visible agents and
+registers all four workflows. There is no opt-out or partial-registration mode.
 
 ## What Must Stay True
 
-- The eval agent only generates and judges; it has no tools. Deterministic work belongs
-  in workflow code steps, not in agent tools.
+- The eval agent only generates and the eval judge only judges; neither has tools.
 - `masher-trace-digest` and `masher-online-eval-curation` are all-code
   pipelines: no LLM anywhere, and they register and run on keyless
   deployments. Do not add an agent step to them without a design decision.
-- `gen-synthetic-evals` and `score-evals` require the eval agent. Because it is
-  part of every pool, host startup requires a configured LLM provider.
+- `gen-synthetic-evals` and `run-experiment` require the generation and judge
+  agents respectively. Both are part of every pool.
 - Every step is typed: pydantic models on both edges of code steps; agent-step
   output models are the structured-output schema.
 - `workflow_input` is trigger input and is immutable for the run. There is no
@@ -34,8 +33,8 @@ all four workflows. There is no opt-out or partial-registration mode.
 
 ## Change Rules
 
-- Keep step bodies deterministic; anything nondeterministic must be an agent
-  step with a validated output model.
+- Code steps may orchestrate deterministic inline agent requests, but their
+  task IDs and persistence keys must remain stable across replay.
 - Do not add free-form chat or subagent usage behavior to the eval agent.
 - Keep trace-mode selection based on `target_agent_id`, `session_id`, and
   `trace_id`; keep batch selection based on the caller-supplied `since_ts`.

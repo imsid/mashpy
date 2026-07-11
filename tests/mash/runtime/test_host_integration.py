@@ -11,6 +11,8 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from pydantic import BaseModel
+
 from mash.runtime.client import AgentClientError
 from mash.runtime.engine.dbos import register_runtime, require_runtime, unregister_runtime
 from mash.runtime.engine.workflow import execute_request_workflow
@@ -21,13 +23,21 @@ from mash.testing.runtime_fixtures import (
     build_spec,
     metadata,
 )
-from mash.workflows import AgentStep, WorkflowSpec
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
 
 _IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "in_fake_dbos_step",
     default=False,
 )
+
+
+class _CodeInput(BaseModel):
+    value: str
+
+
+def _code_passthrough(inp: _CodeInput, _ctx: StepContext) -> _CodeInput:
+    return inp
 
 
 class _FakeWorkflowDBOS:
@@ -126,9 +136,17 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="eval-agent", response_text="{}"
             ).build_llm(),
         )
+        self._masher_judge_llm_patch = patch(
+            "mash.agents.masher.spec.EvalJudgeAgentSpec.build_llm",
+            return_value=build_spec(
+                agent_id="eval-judge-agent", response_text="{}"
+            ).build_llm(),
+        )
         self._masher_llm_patch.start()
+        self._masher_judge_llm_patch.start()
 
     def tearDown(self) -> None:
+        self._masher_judge_llm_patch.stop()
         self._masher_llm_patch.stop()
 
     def test_host_validation_rejects_unknown_members(self) -> None:
@@ -187,7 +205,8 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
-                    sorted(described.keys()), ["eval-agent", "primary", "research"]
+                    sorted(described.keys()),
+                    ["eval-agent", "eval-judge-agent", "primary", "research"],
                 )
                 for item in described.values():
                     self.assertNotIn("role", item)
@@ -249,7 +268,7 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "masher-trace-digest",
                         "masher-online-eval-curation",
                         "gen-synthetic-evals",
-                        "score-evals",
+                        "run-experiment",
                     },
                 )
                 self.assertEqual(
@@ -259,9 +278,66 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "masher-trace-digest",
                         "masher-online-eval-curation",
                         "gen-synthetic-evals",
-                        "score-evals",
+                        "run-experiment",
                     ),
                 )
+
+    def test_code_step_declared_agents_must_be_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "workflow agent 'worker' declared by code step 'dispatch' is not registered",
+                ):
+                    (
+                        HostBuilder()
+                        .workflow(
+                            WorkflowSpec(
+                                workflow_id="dispatch-work",
+                                input_model=_CodeInput,
+                                steps=[
+                                    CodeStep(
+                                        step_id="dispatch",
+                                        run=_code_passthrough,
+                                        input=_CodeInput,
+                                        output=_CodeInput,
+                                        agent_ids=["worker"],
+                                    )
+                                ],
+                            )
+                        )
+                        .build()
+                    )
+
+    def test_code_step_declared_agents_use_pool_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool = (
+                    HostBuilder()
+                    .agent(
+                        build_spec(agent_id="worker", response_text="ok"),
+                        metadata=metadata(),
+                    )
+                    .workflow(
+                        WorkflowSpec(
+                            workflow_id="dispatch-work",
+                            input_model=_CodeInput,
+                            steps=[
+                                CodeStep(
+                                    step_id="dispatch",
+                                    run=_code_passthrough,
+                                    input=_CodeInput,
+                                    output=_CodeInput,
+                                    agent_ids=["worker"],
+                                )
+                            ],
+                        )
+                    )
+                    .build()
+                )
+
+                workflow = pool.get_workflow_registry().get("dispatch-work")
+                self.assertEqual(workflow.steps[0].agent_ids, ("worker",))
 
     async def test_host_builder_registers_multiple_workflow_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,15 +366,20 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
-                self.assertEqual(sorted(described.keys()), ["eval-agent", "primary"])
-                self.assertEqual(pool.list_agents(), ["primary", "eval-agent"])
+                self.assertEqual(
+                    sorted(described.keys()),
+                    ["eval-agent", "eval-judge-agent", "primary"],
+                )
+                self.assertEqual(
+                    pool.list_agents(), ["primary", "eval-agent", "eval-judge-agent"]
+                )
                 self.assertEqual(
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
                     [
                         "gen-synthetic-evals",
                         "masher-online-eval-curation",
                         "masher-trace-digest",
-                        "score-evals",
+                        "run-experiment",
                         "wf-a",
                         "wf-b",
                     ],

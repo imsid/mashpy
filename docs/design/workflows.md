@@ -52,7 +52,8 @@ around a different model. The redesign changes four things at the core:
 
 What stays: DBOS remains the orchestration and recovery engine. The agent loop
 keeps its own durable request workflow. The `WorkflowStrategy` escape hatch stays
-for non-linear shapes (fan-out, branching, eval scoring); the linear typed
+for application-defined non-linear runtimes; ordinary Python fan-out can live
+inside a typed CodeStep, as in experiment execution. The linear typed
 pipeline is the default path.
 
 ## Authoring API
@@ -290,19 +291,18 @@ boundary: the caller (cron/scheduler) passes the last watermark in as
 the next invocation. This is a behavior change for whoever schedules the
 workflow and must be called out in its release notes.
 
-### Eval scoring strategy
+### Experiment execution
 
-The eval-scoring path is a custom `WorkflowStrategy` that uses
-`post_inline_agent_request` / `collect_terminal_payload`. The strategy escape
-hatch stays, so this keeps working. It should be revisited to use the new step
-store for its audit trail, but that is not a blocker for the cutover.
+Experiment execution is a normal three-CodeStep pipeline. The execution and
+judging steps use deterministic inline agent requests and ordinary async Python
+fan-out over a durable experiment-row ledger.
 
 ### Clean cutover — no compatibility shim
 
 This is a hard cutover. `TaskSpec` and `WorkflowSpec(tasks=[...])` are removed
 outright; there is no shim adapting the old cross-run semantics. Every existing
 workflow is rewritten to `WorkflowSpec(steps=[...])` with `AgentStep`/`CodeStep`.
-The only in-tree callers are `changelog` and the eval strategy, both handled
+The only in-tree callers are `changelog` and the eval workflows, both handled
 above, so there is no external surface to preserve.
 
 ## Level of effort
@@ -314,7 +314,7 @@ above, so there is no external surface to preserve.
 | Code-step execution as a DBOS step (memoized output; `StepContext`) | S |
 | `workflow_runs` / `workflow_steps` / `workflow_step_events` tables | L |
 | Observability rework: store-backed `list_runs` / `get_run` / `stream_run_events` | L |
-| API / CLI / serialization; migrate `changelog`, revisit eval strategy | M |
+| API / CLI / serialization; migrate `changelog` and experiment execution | M |
 | Tests + docs | M |
 
 Rough total: ~5–6 focused weeks. The engine and typing are ~1 week; the
@@ -428,8 +428,8 @@ Depends on Phase 4. Move the two real users onto the new surface.
 - Rewrite `changelog` to `steps=[...]`; move the `last_run_ts` watermark to the
   trigger boundary (in via `workflow_input`, out via run `result`). Update its
   scheduler/release notes.
-- Point the eval `ScoreEvalsStrategy` at the new step store for its audit trail
-  (still a strategy; the escape hatch is unchanged).
+- Migrate experiment execution to `prepare-experiment -> execute-rows ->
+  judge-rows` and remove its custom strategy.
 
 Exit: both in-tree workflows run on the forward engine; eval scoring shows up in the
 step audit tables.

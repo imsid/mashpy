@@ -111,16 +111,20 @@ class CodeStep(StepSpec):
     """A step executed by deterministic Python.
 
     ``run`` is ``run(inp: input, ctx: StepContext) -> output`` and may be sync or
-    async. Idempotency of any external effect is the author's responsibility (see
-    ``StepContext``); the framework only memoizes the returned output. Code steps
-    are pydantic-typed on both edges — they are authored in Python, never over
-    the wire.
+    async. By default DBOS memoizes the body as an opaque step. Set
+    ``orchestration=True`` only when the body must start durable child workflows;
+    that mode runs in the parent workflow context and may replay, so its external
+    work must be guarded by a durable, idempotent ledger. Code steps are
+    pydantic-typed on both edges — they are authored in Python, never over the
+    wire.
     """
 
     step_id: str
     input: type[BaseModel]
     output: type[BaseModel]
     run: Callable[..., Any]
+    agent_ids: tuple[str, ...]
+    orchestration: bool
     timeout_s: float | None
     kind: str
 
@@ -131,6 +135,8 @@ class CodeStep(StepSpec):
         run: Callable[..., Any],
         input: type[BaseModel],
         output: type[BaseModel],
+        agent_ids: tuple[str, ...] | list[str] = (),
+        orchestration: bool = False,
         timeout_s: float | None = None,
     ) -> None:
         resolved_step_id = _require_step_id(step_id)
@@ -143,6 +149,8 @@ class CodeStep(StepSpec):
         object.__setattr__(self, "input", input)
         object.__setattr__(self, "output", output)
         object.__setattr__(self, "run", run)
+        object.__setattr__(self, "agent_ids", _normalize_agent_ids(agent_ids))
+        object.__setattr__(self, "orchestration", bool(orchestration))
         object.__setattr__(self, "timeout_s", _normalize_timeout(timeout_s))
         object.__setattr__(self, "kind", "code")
 
@@ -200,6 +208,19 @@ def _normalize_timeout(timeout_s: float | None) -> float | None:
     if value <= 0:
         raise ValueError("timeout_s must be positive")
     return value
+
+
+def _normalize_agent_ids(agent_ids: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    if isinstance(agent_ids, (str, bytes)):
+        raise ValueError("CodeStep agent_ids must be a sequence of agent ids")
+    resolved: list[str] = []
+    for raw_agent_id in agent_ids:
+        agent_id = str(raw_agent_id or "").strip()
+        if not agent_id:
+            raise ValueError("CodeStep agent_ids cannot contain an empty agent id")
+        if agent_id not in resolved:
+            resolved.append(agent_id)
+    return tuple(resolved)
 
 
 def _required_fields(model: type[BaseModel]) -> set[str]:

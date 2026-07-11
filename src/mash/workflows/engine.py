@@ -176,6 +176,24 @@ async def _run_code_step(
     workflow_input: dict[str, Any],
     input_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
+    return await _invoke_code_step(
+        runner_id,
+        run_id,
+        workflow_id,
+        ordinal,
+        workflow_input,
+        input_snapshot,
+    )
+
+
+async def _invoke_code_step(
+    runner_id: str,
+    run_id: str,
+    workflow_id: str,
+    ordinal: int,
+    workflow_input: dict[str, Any],
+    input_snapshot: dict[str, Any],
+) -> dict[str, Any]:
     step = _resolve_step(runner_id, workflow_id, ordinal)
     if not isinstance(step, CodeStep):
         raise RuntimeError(f"workflow step '{step.step_id}' is not a code step")
@@ -315,12 +333,31 @@ class ForwardPipelineStrategy(WorkflowStrategy):
                 )
 
                 if step.kind == "code":
-                    output_snapshot = await dbos_class.run_step_async(
-                        {"name": f"{step.step_id}.run"},
-                        _run_code_step,
-                        runner_id, run_id, wf_id, ordinal,
-                        ctx.workflow_input, input_snapshot,
-                    )
+                    if getattr(step, "orchestration", False):
+                        # Orchestration code must run in the workflow context so
+                        # it can start durable child agent workflows. It is
+                        # replayed after recovery and therefore owns a durable,
+                        # idempotent work ledger rather than relying on DBOS to
+                        # memoize the code body as one opaque step.
+                        output_snapshot = await _invoke_code_step(
+                            runner_id,
+                            run_id,
+                            wf_id,
+                            ordinal,
+                            ctx.workflow_input,
+                            input_snapshot,
+                        )
+                    else:
+                        output_snapshot = await dbos_class.run_step_async(
+                            {"name": f"{step.step_id}.run"},
+                            _run_code_step,
+                            runner_id,
+                            run_id,
+                            wf_id,
+                            ordinal,
+                            ctx.workflow_input,
+                            input_snapshot,
+                        )
                 else:
                     payload = await _with_timeout(
                         dbos_class.run_step_async(

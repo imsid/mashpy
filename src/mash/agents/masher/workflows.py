@@ -9,7 +9,8 @@ Four workflows, sorted along the judgment/computation line:
 - ``gen-synthetic-evals`` — code, agent, code. Deterministic host profiling,
   one agent-loop generation step (dataset rows + rubric as structured output),
   deterministic persistence into the eval store.
-- ``score-evals`` — durable strategy-driven eval execution and judging.
+- ``run-experiment`` — code-driven host execution and judging fan-outs backed
+  by the durable experiment-row ledger.
 
 Code steps close over a :class:`MasherRuntimeContext`; its dependencies are
 bound by ``HostBuilder.build()`` (pool) and API startup (eval service), before
@@ -23,13 +24,23 @@ trigger boundary, never inside the workflow).
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from ...workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from ...workflows.dbos import (
+    collect_terminal_payload,
+    post_inline_agent_request,
+)
+from ...evals.metrics import METRIC_EVENT_TYPES, compute_row_metrics
 from .context import MasherRuntimeContext
-from .score_runner import ScoreEvalsStrategy
+from .judge import EVAL_JUDGE_STRUCTURED_OUTPUT, build_judge_message, parse_judge_output
+from .spec import EVAL_JUDGE_AGENT_ID
 from .traces import (
     append_jsonl_unique,
     build_online_eval_row,
@@ -44,7 +55,7 @@ from ...runtime.spec import AgentSpec
 MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
 MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
 MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID = "gen-synthetic-evals"
-MASHER_SCORE_EVALS_WORKFLOW_ID = "score-evals"
+MASHER_RUN_EXPERIMENT_WORKFLOW_ID = "run-experiment"
 GEN_SYNTHETIC_EVALS_SKILL_NAME = "gen-synthetic-evals"
 
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -494,6 +505,338 @@ def build_gen_synthetic_evals_workflow(eval_agent_spec: AgentSpec) -> WorkflowSp
     )
 
 
+# --- run-experiment ----------------------------------------------------------
+
+
+class RunExperimentInput(BaseModel):
+    eval_id: _Text
+    host_id: _Text
+
+
+class ExperimentRef(BaseModel):
+    experiment_id: str
+
+
+class RunExperimentResult(BaseModel):
+    experiment_id: str
+    eval_id: str
+    host_id: str
+    status: Literal["completed", "failed"]
+    row_count: int
+    scored_count: int
+    failed_count: int
+    mean_score: float | None = None
+
+
+def _experiment_id(run_id: str) -> str:
+    return f"exp_{uuid.uuid5(uuid.NAMESPACE_URL, f'mash.eval.experiment:{run_id}').hex}"
+
+
+def _response_text(payload: dict[str, Any]) -> str | None:
+    response = payload.get("response")
+    text = response.get("text") if isinstance(response, dict) else None
+    return text if isinstance(text, str) and text.strip() else None
+
+
+def _response_json_text(payload: dict[str, Any]) -> str:
+    response = payload.get("response")
+    structured = response.get("structured_output") if isinstance(response, dict) else None
+    if not isinstance(structured, dict) or not isinstance(structured.get("json_text"), str):
+        raise ValueError("judge response did not return json_text")
+    return structured["json_text"]
+
+
+def _error_text(exc: BaseException) -> str:
+    return str(exc).strip() or exc.__class__.__name__
+
+
+async def _fan_out_after_warmup(
+    rows: list[Any], start: Any, finish: Any, concurrency: int = 8
+) -> None:
+    """Warm one row, then start deterministic batches and await each concurrently.
+
+    Starting child workflows mutates the parent DBOS workflow's function
+    sequence, so starts remain serial and deterministic. Once a batch is
+    started, terminal collection and row persistence can run concurrently.
+    """
+    if not rows:
+        return
+    first = await start(rows[0])
+    if first is not None:
+        await finish(*first)
+
+    width = max(1, int(concurrency))
+    for offset in range(1, len(rows), width):
+        started = []
+        for row in rows[offset : offset + width]:
+            operation = await start(row)
+            if operation is not None:
+                started.append(operation)
+        await asyncio.gather(*(finish(*operation) for operation in started))
+
+
+async def _collect_experiment_metrics(
+    context: MasherRuntimeContext,
+    *,
+    session_id: str,
+    primary_agent_id: str,
+) -> dict[str, Any] | None:
+    try:
+        store = context.require_runtime_store()
+        events = await store.list_session_events(
+            session_id, event_types=list(METRIC_EVENT_TYPES)
+        )
+        return compute_row_metrics(
+            events, primary_agent_id=primary_agent_id
+        ).to_dict()
+    except Exception:  # noqa: BLE001 - metrics never fail experiment work
+        return None
+
+
+def _build_prepare_experiment(context: MasherRuntimeContext):
+    async def prepare_experiment(
+        inp: RunExperimentInput, ctx: StepContext
+    ) -> ExperimentRef:
+        service = context.require_eval_service()
+        pool = context.require_pool()
+        detail = await service.get_eval_detail(inp.eval_id)
+        eval_meta = detail.get("eval") or {}
+        source_host_id = str(eval_meta.get("host_id") or "").strip()
+        if source_host_id != inp.host_id:
+            raise ValueError(
+                f"eval '{inp.eval_id}' belongs to host '{source_host_id}', not '{inp.host_id}'"
+            )
+        rows = list(detail.get("rows") or [])
+        rubric = detail.get("rubric") or {}
+        if not rows:
+            raise ValueError(f"eval '{inp.eval_id}' has no dataset rows")
+        if not rubric:
+            raise ValueError(f"eval '{inp.eval_id}' has no rubric")
+        host = pool.get_host(inp.host_id)
+        experiment_id = _experiment_id(ctx.run_id)
+        await service.prepare_experiment(
+            experiment_id=experiment_id,
+            workflow_run_id=ctx.run_id,
+            eval_id=inp.eval_id,
+            target_host_id=inp.host_id,
+            host_composition=pool.snapshot_for(host),
+            agent_spec_snapshot=pool.snapshot_host_agent_specs(inp.host_id),
+            rubric_snapshot=rubric,
+            rows=rows,
+        )
+        return ExperimentRef(experiment_id=experiment_id)
+
+    return prepare_experiment
+
+
+def _build_execute_experiment_rows(context: MasherRuntimeContext):
+    async def execute_rows(inp: ExperimentRef, ctx: StepContext) -> ExperimentRef:
+        service = context.require_eval_service()
+        pool = context.require_pool()
+        experiment = await service.get_experiment(inp.experiment_id)
+        host_snapshot = dict(experiment.host_composition)
+        primary_agent_id = str(host_snapshot.get("primary") or "").strip()
+        if not primary_agent_id:
+            raise ValueError("experiment host snapshot has no primary agent")
+        rows = await service.list_runs(inp.experiment_id, limit=1000)
+        pending = [row for row in rows if row.status in {"pending", "executing"}]
+
+        async def finish(
+            active: Any,
+            request_id: str | None,
+            initial_error: str | None = None,
+        ) -> None:
+            error = initial_error
+            actual_output: str | None = None
+            if request_id is not None:
+                try:
+                    payload = await collect_terminal_payload(
+                        pool.runner_id, primary_agent_id, request_id
+                    )
+                    actual_output = _response_text(payload)
+                except Exception as exc:  # noqa: BLE001 - row failure
+                    error = _error_text(exc)
+            metrics = await _collect_experiment_metrics(
+                context,
+                session_id=active.session_id
+                or f"eval:{ctx.run_id}:{active.row_id}",
+                primary_agent_id=primary_agent_id,
+            )
+            await service.persist_run(
+                replace(
+                    active,
+                    status=(
+                        "execution_failed" if error is not None else "executed"
+                    ),
+                    actual_output=actual_output,
+                    error=error,
+                    metrics=metrics,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        async def start(row: Any) -> tuple[Any, str] | None:
+            now = datetime.now(timezone.utc)
+            active = replace(row, status="executing", error=None, updated_at=now)
+            await service.persist_run(active)
+            try:
+                request_id = await post_inline_agent_request(
+                    pool.runner_id,
+                    agent_id=primary_agent_id,
+                    message=row.input,
+                    structured_output=None,
+                    workflow_id=MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
+                    workflow_run_id=ctx.run_id,
+                    task_id=f"execute:{row.row_id}",
+                    session_id=row.session_id or f"eval:{ctx.run_id}:{row.row_id}",
+                    host_snapshot=host_snapshot,
+                )
+            except Exception as exc:  # noqa: BLE001 - row failures are isolated
+                await finish(active, None, _error_text(exc))
+                return None
+            return active, request_id
+
+        await _fan_out_after_warmup(pending, start, finish)
+        return inp
+
+    return execute_rows
+
+
+def _build_judge_experiment_rows(context: MasherRuntimeContext):
+    async def judge_rows(inp: ExperimentRef, ctx: StepContext) -> RunExperimentResult:
+        service = context.require_eval_service()
+        pool = context.require_pool()
+        experiment = await service.get_experiment(inp.experiment_id)
+        rubric = dict(experiment.rubric_snapshot or {})
+        if not rubric:
+            raise ValueError("experiment has no rubric snapshot")
+        rows = await service.list_runs(inp.experiment_id, limit=1000)
+        pending = [row for row in rows if row.status in {"executed", "judging"}]
+
+        async def finish(
+            active: Any,
+            request_id: str | None,
+            initial_error: str | None = None,
+        ) -> None:
+            if request_id is None:
+                updated = replace(
+                    active,
+                    status="scoring_failed",
+                    error=initial_error or "judge request failed",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            else:
+                try:
+                    payload = await collect_terminal_payload(
+                        pool.runner_id, EVAL_JUDGE_AGENT_ID, request_id
+                    )
+                    scores, weighted_score = parse_judge_output(
+                        _response_json_text(payload), rubric
+                    )
+                    updated = replace(
+                        active,
+                        status="scored",
+                        scores=scores,
+                        weighted_score=weighted_score,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                except Exception as exc:  # noqa: BLE001 - row failure
+                    updated = replace(
+                        active,
+                        status="scoring_failed",
+                        error=_error_text(exc),
+                        updated_at=datetime.now(timezone.utc),
+                    )
+            await service.persist_run(updated)
+
+        async def start(row: Any) -> tuple[Any, str] | None:
+            active = replace(
+                row,
+                status="judging",
+                error=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+            await service.persist_run(active)
+            try:
+                request_id = await post_inline_agent_request(
+                    pool.runner_id,
+                    agent_id=EVAL_JUDGE_AGENT_ID,
+                    message=build_judge_message(
+                        row_input=row.input,
+                        actual_output=row.actual_output,
+                        rubric=rubric,
+                    ),
+                    structured_output=EVAL_JUDGE_STRUCTURED_OUTPUT,
+                    workflow_id=MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
+                    workflow_run_id=ctx.run_id,
+                    task_id=f"judge:{row.row_id}",
+                    session_id=row.session_id or f"eval:{ctx.run_id}:{row.row_id}",
+                )
+            except Exception as exc:  # noqa: BLE001 - row failures are isolated
+                await finish(active, None, _error_text(exc))
+                return None
+            return active, request_id
+
+        await _fan_out_after_warmup(pending, start, finish)
+
+        final_rows = await service.list_runs(inp.experiment_id, limit=1000)
+        scored = [row for row in final_rows if row.status == "scored"]
+        failed = [
+            row
+            for row in final_rows
+            if row.status in {"execution_failed", "scoring_failed"}
+        ]
+        values = [float(row.weighted_score) for row in scored if row.weighted_score is not None]
+        status: Literal["completed", "failed"] = "completed" if values else "failed"
+        await service.update_experiment_status(
+            inp.experiment_id,
+            status,
+            completed_at=datetime.now(timezone.utc),
+        )
+        return RunExperimentResult(
+            experiment_id=inp.experiment_id,
+            eval_id=experiment.eval_id,
+            host_id=experiment.target_host_id or "",
+            status=status,
+            row_count=len(final_rows),
+            scored_count=len(scored),
+            failed_count=len(failed),
+            mean_score=sum(values) / len(values) if values else None,
+        )
+
+    return judge_rows
+
+
+def build_run_experiment_workflow(context: MasherRuntimeContext) -> WorkflowSpec:
+    return WorkflowSpec(
+        workflow_id=MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
+        input_model=RunExperimentInput,
+        steps=[
+            CodeStep(
+                step_id="prepare-experiment",
+                run=_build_prepare_experiment(context),
+                input=RunExperimentInput,
+                output=ExperimentRef,
+            ),
+            CodeStep(
+                step_id="execute-rows",
+                run=_build_execute_experiment_rows(context),
+                input=ExperimentRef,
+                output=ExperimentRef,
+                orchestration=True,
+            ),
+            CodeStep(
+                step_id="judge-rows",
+                run=_build_judge_experiment_rows(context),
+                input=ExperimentRef,
+                output=RunExperimentResult,
+                agent_ids=[EVAL_JUDGE_AGENT_ID],
+                orchestration=True,
+            ),
+        ],
+    )
+
+
 def build_masher_workflows(eval_agent_spec: AgentSpec) -> list[WorkflowSpec]:
     """Build the complete workflow set attached to every host."""
     context: MasherRuntimeContext = eval_agent_spec.runtime_context  # type: ignore[attr-defined]
@@ -501,10 +844,7 @@ def build_masher_workflows(eval_agent_spec: AgentSpec) -> list[WorkflowSpec]:
         build_trace_digest_workflow(context),
         build_online_eval_curation_workflow(context),
         build_gen_synthetic_evals_workflow(eval_agent_spec),
-        WorkflowSpec(
-            workflow_id=MASHER_SCORE_EVALS_WORKFLOW_ID,
-            strategy=ScoreEvalsStrategy(context=context),
-        ),
+        build_run_experiment_workflow(context),
     ]
 
 
@@ -521,11 +861,13 @@ __all__ = [
     "HostProfile",
     "MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID",
     "MASHER_ONLINE_EVAL_WORKFLOW_ID",
-    "MASHER_SCORE_EVALS_WORKFLOW_ID",
+    "MASHER_RUN_EXPERIMENT_WORKFLOW_ID",
     "MASHER_TRACE_DIGEST_WORKFLOW_ID",
     "OnlineEvalResult",
     "Rubric",
     "RubricCriterion",
+    "RunExperimentInput",
+    "RunExperimentResult",
     "TraceDigestResult",
     "TraceListing",
     "TraceRef",
@@ -533,5 +875,6 @@ __all__ = [
     "build_gen_synthetic_evals_workflow",
     "build_masher_workflows",
     "build_online_eval_curation_workflow",
+    "build_run_experiment_workflow",
     "build_trace_digest_workflow",
 ]

@@ -10,7 +10,7 @@ from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
 from mash.skills.base import Skill
 from mash.skills.tool import SkillTool
-from mash.workflows import AgentStep, WorkflowRegistry, WorkflowService, WorkflowSpec
+from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import make_runner_id
 from mash.workflows.dbos import register_runner as register_workflow_runner
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
@@ -531,6 +531,7 @@ class AgentPool:
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
         # Agent steps bind an agent id (optionally with a spec to auto-register).
+        # Code steps declare string-only dependencies through agent_ids.
         # Strategy-only workflows register their agents separately.
         bindings = [
             (step.agent_id, step.agent_spec)
@@ -553,6 +554,15 @@ class AgentPool:
                     f"workflow agent '{agent_id}' is already registered "
                     "with a different spec"
                 )
+        for step in workflow.steps:
+            if not isinstance(step, CodeStep):
+                continue
+            for agent_id in step.agent_ids:
+                if self.get_registered_agent_spec(agent_id) is None:
+                    raise ValueError(
+                        f"workflow agent '{agent_id}' declared by code step "
+                        f"'{step.step_id}' is not registered"
+                    )
 
     def _require_registered_agent(self, agent_id: str) -> None:
         if agent_id not in self._registered:
