@@ -254,8 +254,9 @@ The `pilot-data` volume keeps the database durable across restarts.
 | `runtime-copilot` | `src/mash/runtime` — request lifecycle, event sourcing, durability |
 | `workflow-copilot` | `src/mash/workflows` — DBOS orchestration, task state, run status |
 
-**Scaffolding your own app:** the guide carries a `build-mash-agent` skill so
-it goes beyond explaining Mash to scaffolding your application:
+**Scaffolding your own app:** the guide carries `build-mash-agent`,
+`build-mash-workflow`, and `build-mash-host` skills so it goes beyond
+explaining Mash to scaffolding your application:
 
 ```text
 > Build me a support agent with a knowledge base search tool and human approval for refunds.
@@ -272,8 +273,9 @@ a reference when structuring your own multi-agent app.
 This repo includes [`CLAUDE.md`](CLAUDE.md) so coding agents like Claude Code,
 Codex, and Cursor can scaffold a Mash-powered agent from a natural language
 prompt. Copy it into your project or point your agent at this repo to get
-started. The Pilot guide (above) also carries a `build-mash-agent` skill for
-interactive scaffolding from the REPL.
+started. The Pilot guide (above) also carries the `build-mash-agent`,
+`build-mash-workflow`, and `build-mash-host` skills for interactive
+scaffolding from the REPL.
 
 ## Documentation
 

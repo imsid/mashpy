@@ -503,6 +503,8 @@ pilot/
   prompt.py     # System prompt construction
   skills/
     build-mash-agent/SKILL.md
+    build-mash-host/SKILL.md
+    build-mash-workflow/SKILL.md
     mash-quiz/SKILL.md
 ```
 

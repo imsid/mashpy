@@ -91,9 +91,9 @@ entry in the host config file:
 
 The primary delegates by reading the copilots' metadata and synthesizes
 across them when a question spans modules; the shell renders the subagent
-trace frames live, so you watch the routing happen. It also carries a
-`build-mash-agent` skill, so it can scaffold a new Mash application from a
-description.
+trace frames live, so you watch the routing happen. It also carries the
+`build-mash-agent`, `build-mash-workflow`, and `build-mash-host` skills, so it
+can scaffold a new Mash application from a description.
 
 ## The /quiz command
 
