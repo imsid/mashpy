@@ -22,11 +22,10 @@ narrative.
   weighted criteria, each with its own `scoring_prompt` and a 1–5 scale by
   default.
 - `Experiment` — one full run of the dataset against the host. Captures
-  `host_composition` and `agent_spec_snapshot` at run start, so results stay
-  interpretable after the host evolves.
+  `host_composition`, `agent_spec_snapshot`, and `rubric_snapshot` at run start.
 - `ExperimentRun` — one row's result: `actual_output`, `weighted_score`,
   per-criterion `CriterionScore`s with rationales, the `session_id` it
-  executed under, `error` when scoring failed, and operational `metrics`.
+  executed under, lifecycle `status`, `error`, and operational `metrics`.
 
 ## Lifecycle
 
@@ -38,11 +37,9 @@ narrative.
    an experiment. From then on the eval is locked (`is_eval_locked` — derived,
    not stored) so scores stay comparable across experiments; measuring
    something different means generating a new eval.
-3. **Score** — the `score-evals` workflow runs each dataset row through the
-   host and judges the output with masher (`agents/masher/score_runner.py`,
-   a `WorkflowStrategy`: deterministic orchestration, one durable child
-   workflow per row, masher used only as the per-row judge). Results persist
-   as an experiment via `persist_experiment`.
+3. **Run** — the `run-experiment` workflow prepares a durable row ledger,
+   executes unfinished rows through the snapshotted host, then judges executed
+   rows with `eval-judge-agent`. All three phases are ordinary `CodeStep`s.
 4. **Read and compare** — `get_experiment_summary` aggregates mean and
    per-criterion scores plus operational rollups; `compare_experiments` pairs
    two experiments row-by-row and includes the agent-spec diff

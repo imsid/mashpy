@@ -6,6 +6,7 @@ from .dataset import (
 )
 from .eval import delete_eval, get_eval, insert_eval, list_evals, row_to_eval
 from .experiment import (
+    create_experiment_with_runs,
     get_experiment,
     insert_experiment,
     list_experiments,
@@ -16,6 +17,7 @@ from .rubric import get_rubric, insert_rubric, row_to_rubric, update_rubric_crit
 from .run import list_runs, row_to_run, upsert_run
 
 __all__ = [
+    "create_experiment_with_runs",
     "delete_eval",
     "get_dataset_rows",
     "get_eval",

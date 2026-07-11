@@ -98,8 +98,11 @@ def _boom(_inp: DoubleOut, _ctx: StepContext) -> FinalOut:
 
 
 class _FakeDBOS:
+    step_names: list[str] = []
+
     @staticmethod
-    async def run_step_async(_config, func, *args, **kwargs):
+    async def run_step_async(config, func, *args, **kwargs):
+        _FakeDBOS.step_names.append(config["name"])
         result = func(*args, **kwargs)
         if inspect.isawaitable(result):
             return await result
@@ -123,6 +126,7 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
     RUNNER = "runner-engine"
 
     async def asyncSetUp(self) -> None:
+        _FakeDBOS.step_names = []
         self.url = _require_postgres()
         self.store = WorkflowStore(self.url)
         await self.store.open()
@@ -133,7 +137,7 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         workflow_dbos.unregister_runner(self.RUNNER, self.host)
         await self.store.close()
-        for wf in ("pipe", "pipe-fail", "pipe-agent"):
+        for wf in ("pipe", "pipe-fail", "pipe-agent", "pipe-orchestration"):
             _cleanup(self.url, wf)
 
     async def _execute(self, workflow_id: str, workflow_input: dict[str, Any]) -> tuple[str, Any]:
@@ -180,6 +184,35 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
 
         events = await self.store.list_step_events(run_id, step_id="double")
         self.assertEqual([e.event_type for e in events], [STEP_EVENT_STARTED, STEP_EVENT_COMPLETED])
+
+    async def test_orchestration_code_runs_in_workflow_context(self) -> None:
+        self.registry.register(
+            WorkflowSpec(
+                workflow_id="pipe-orchestration",
+                input_model=TriggerIn,
+                steps=[
+                    CodeStep(
+                        step_id="double",
+                        run=_double,
+                        input=TriggerIn,
+                        output=DoubleOut,
+                    ),
+                    CodeStep(
+                        step_id="fan-out",
+                        run=_finalize,
+                        input=DoubleOut,
+                        output=FinalOut,
+                        orchestration=True,
+                    ),
+                ],
+            )
+        )
+
+        _, output = await self._execute("pipe-orchestration", {"n": 3})
+
+        self.assertEqual(output["result"]["doubled"], 6)
+        self.assertIn("double.run", _FakeDBOS.step_names)
+        self.assertNotIn("fan-out.run", _FakeDBOS.step_names)
 
     async def test_failed_step_marks_run_failed(self) -> None:
         self.registry.register(

@@ -268,9 +268,9 @@ async def post_inline_agent_request(
 ) -> str:
     """Start one agent request inline from within a workflow and return its id.
 
-    Reused by custom strategies (e.g. eval scoring) to run a host request or a
-    judge request as a child of the orchestrating workflow. Pair with
-    ``collect_terminal_payload`` inside a DBOS step to await the result.
+    Used by the forward engine and orchestration-heavy code steps to run an
+    agent request as a child of the workflow. Pair with
+    ``collect_terminal_payload`` to await the result.
     """
     pool = require_runner(runner_id)
     runtime = _resolve_inline_runtime(pool, agent_id)
@@ -393,8 +393,8 @@ async def _collect_terminal_payload(
     raise RuntimeError("workflow task stream ended without a terminal event")
 
 
-# Public alias so strategies await request results through the same terminal
-# collector the sequential engine uses.
+# Public alias so code steps and strategies await request results through the
+# same terminal collector the forward engine uses.
 collect_terminal_payload = _collect_terminal_payload
 
 
@@ -421,8 +421,7 @@ class WorkflowDeduplicatedError(RuntimeError):
         super().__init__("workflow run was deduplicated")
 
 
-# Public accessor so strategies in other packages can reach the DBOS API through
-# the same centralized loader (error handling, capability check) the engine uses.
+# Public accessor for extensions that need the same centralized DBOS loader.
 load_dbos_api = _load_dbos_api
 
 

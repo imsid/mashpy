@@ -93,7 +93,11 @@ Runs stream the same way requests do. `POST /api/v1/workflow/{id}/run` returns a
 
 ## Fan-out
 
-A step pipeline is a straight line. A workflow that needs another shape supplies a `WorkflowStrategy` instead of `steps`; the strategy owns its own DBOS registration and run body. The [eval scorer](synthetic-evals.md) is the shipped example: `score-evals` fans dataset rows out as durable child workflows over a dedicated queue and folds the results back into one experiment.
+A step pipeline is a straight line, but a `CodeStep` may use ordinary Python
+control flow internally. The [experiment runner](synthetic-evals.md) uses three
+linear CodeSteps; its execution and judging steps use async fan-out over a
+durable experiment-row ledger. `WorkflowStrategy` remains available as an
+extension escape hatch when application code truly needs a different runtime.
 
 Masher's built-in workflows (trace digest, synthetic eval generation, online eval curation) are step pipelines on this same layer. Workflows, like requests, are driven entirely over the host's HTTP surface. That surface, and the CLI built on it, is the next post.
 

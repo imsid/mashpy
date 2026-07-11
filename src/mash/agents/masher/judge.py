@@ -1,9 +1,9 @@
 """Eval-agent judging: score one agent output against an eval rubric.
 
-The eval scoring orchestration (``score_runner``) runs each dataset row through
-the host under test, then calls the eval agent once per row with a self-contained judge
-message and this structured-output contract. Judging is the only LLM step in
-scoring; loading rows, running the host, and persistence are deterministic code.
+The ``run-experiment`` workflow runs each dataset row through the host under
+test, then calls the dedicated eval judge once per row with a self-contained
+message and this structured-output contract. Loading rows, score arithmetic,
+and persistence remain deterministic code.
 """
 
 from __future__ import annotations

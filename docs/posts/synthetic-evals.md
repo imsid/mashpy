@@ -101,7 +101,9 @@ The intended loop: define an eval, run an experiment against the current host st
 
 ## Structural Design
 
-Both flows are registered as Masher `WorkflowSpec` definitions, but they execute differently. Generation is an eval-agent workflow task backed by a SKILL. Scoring is a workflow strategy that drives its own execution in code and calls the eval agent only to judge.
+Both flows are normal Masher `WorkflowSpec` step pipelines. Generation uses an
+eval-agent step backed by a SKILL. Experiment execution uses three CodeSteps;
+the latter two drive durable host and judge requests with async Python fan-out.
 
 ### Generation: `gen-synthetic-evals`
 
@@ -114,24 +116,33 @@ Triggered from the admin UI Evals tab with a target host, optional user guidance
 
 The persistence tool does no LLM work and takes no snapshots. It validates the generated rows and rubric (including that the dataset has exactly the requested number of rows, so the size is deterministic rather than the model's judgment) and hands everything to the eval store.
 
-### Scoring: `score-evals`
+### Running an experiment: `run-experiment`
 
-Triggered from the admin UI with an eval_id. Each trigger creates and runs one new experiment. Scoring does not run as a sequential step chain. It runs as a `WorkflowStrategy`, `ScoreEvalsStrategy`, that orchestrates in deterministic code and calls the eval agent only as the per-row judge.
+Triggered from the admin UI with an `eval_id` and `host_id`, each invocation is
+a normal three-CodeStep workflow. The experiment tables are the durable handoff
+between preparation, host execution, and judging.
 
 | Stage | What It Does |
 |---|---|
-| load | Reads dataset rows, rubric, and host_id for the eval_id |
-| create | Snapshots the live host composition and the current AgentSpec of every agent in it, then writes the experiment row with status `pending`, so `created_at` marks the start of scoring |
-| score rows | Fans out one durable child workflow per dataset row over a dedicated DBOS queue (`mash.eval.rows`, concurrency 8) |
-| finalize | Persists one run per row, stamps `completed_at`, and sets status to `completed` (or `failed` if no row scored) |
+| prepare-experiment | Validates the eval and host, snapshots the host, AgentSpecs, rubric, and dataset, and atomically seeds the row ledger |
+| execute-rows | Runs unfinished rows through the snapshotted host with async fan-out and persists outputs, failures, sessions, and metrics |
+| judge-rows | Scores executed rows with `eval-judge-agent`, updates the ledger, and finalizes the experiment aggregate |
 
-Each per-row child workflow runs the row input through the live host (full composition, under a session id unique to that row), judges the output with masher, and folds the row's session events into operational metrics. The first row runs to completion before the rest fan out, so the shared prompt-cache prefix is written once instead of once per concurrent worker. Child workflow ids and run ids are deterministic, keyed by experiment and row, so a partial retry upserts rather than duplicating. A row that errors records its failure reason and a null score; it does not fail the experiment. The experiment is `completed` if any row scored, and `failed` only if none did.
+Each phase runs its first unfinished row alone before the rest fan out, so both
+the host and judge prompt prefixes are warmed once. Row records move through an
+explicit state machine and agent task IDs are deterministic, so replay skips
+terminal rows and rejoins requests that completed before their row update was
+committed. A row error records its stage and reason without failing other rows.
 
-The first `score-evals` run against an eval also locks it: from then on the rubric can no longer be edited.
+The first `run-experiment` invocation also locks the eval.
 
 ### Judge
 
-Scoring is the only LLM step in `score-evals`. For each row the strategy builds a self-contained judge message (the rubric criteria with their scales and weights, the test input, and the agent output) and calls the eval agent with a structured-output contract. The agent returns a per-criterion score and rationale. The strategy recomputes `weighted_score` from the rubric weights and the returned scores; it does not trust the model's own arithmetic. Because criterion names are dynamic and cannot be expressed as a closed provider schema, the judge returns a `json_text` string that the strategy parses and validates.
+For each row, `judge-rows` builds a self-contained message from the snapshotted
+rubric, input, and host output, then calls `eval-judge-agent` with a structured
+output contract. Python validates every criterion and recomputes
+`weighted_score`; it never trusts the model's arithmetic. Dynamic criterion
+names remain wrapped in a `json_text` string that deterministic code parses.
 
 ### Comparison
 
@@ -327,7 +338,10 @@ Result: `eval_id = eval-001`. The developer bumps `task_completion` to 0.45 and 
 
 **Step 2: Run the first experiment.**
 
-The developer runs `score-evals` with `eval_id = eval-001`. The strategy snapshots the live composition and AgentSpecs, and the 100 inputs run through the host in parallel over the row queue, each under its own session; every output is judged and every session is folded into operational metrics. This first experiment also locks `eval-001`: the rubric can no longer change.
+The developer runs `run-experiment` with `eval_id = eval-001` and the target
+host. The workflow snapshots the live composition, AgentSpecs, rubric, and
+dataset, then executes and judges the 100 durable row records. This first
+experiment also locks `eval-001`.
 
 Result: `experiment_id = exp-001`. 100 `experiment_runs` written, one per dataset row, each carrying its score and its metrics.
 
@@ -337,7 +351,9 @@ The developer rewrites TravelConcierge's system prompt to explicitly handle budg
 
 **Step 4: Run a second experiment.**
 
-The developer runs `score-evals` again with `eval_id = eval-001`. A new experiment snapshots the host as it is now and runs the same 100 inputs through it, scored against the same rubric.
+The developer runs `run-experiment` again with `eval_id = eval-001`. A new
+experiment snapshots the host as it is now and runs the same 100 inputs through
+it, scored against the same rubric.
 
 Result: `experiment_id = exp-002`. 100 `experiment_runs` written.
 

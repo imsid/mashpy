@@ -19,6 +19,9 @@ def load_masher_components():
         masher.EVAL_AGENT_ID,
         masher.EvalAgentSpec,
         masher.build_eval_agent_metadata,
+        masher.EVAL_JUDGE_AGENT_ID,
+        masher.EvalJudgeAgentSpec,
+        masher.build_eval_judge_agent_metadata,
         masher.build_masher_workflows,
     )
 
@@ -68,6 +71,9 @@ class HostBuilder:
             eval_agent_id,
             eval_agent_spec_type,
             build_eval_agent_metadata,
+            eval_judge_agent_id,
+            eval_judge_agent_spec_type,
+            build_eval_judge_agent_metadata,
             build_masher_workflows,
         ) = load_masher_components()
         eval_agent_spec = eval_agent_spec_type()
@@ -76,6 +82,12 @@ class HostBuilder:
             eval_agent_spec,
             metadata=build_eval_agent_metadata(),
             agent_id=eval_agent_id,
+        )
+        eval_judge_agent_spec = eval_judge_agent_spec_type()
+        pool.register_agent(
+            eval_judge_agent_spec,
+            metadata=build_eval_judge_agent_metadata(),
+            agent_id=eval_judge_agent_id,
         )
         for workflow in build_masher_workflows(eval_agent_spec):
             pool.register_default_workflow(workflow)

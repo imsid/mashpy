@@ -368,7 +368,7 @@ Read/manage surface for synthetic evals (see `src/mash/evals/README.md` for the
 data model). These endpoints do not depend on `enable_observability`, but they
 require a configured `MASH_DATABASE_URL`; without one every route returns `503
 EVALS_NOT_AVAILABLE`. Generation and scoring are not HTTP-native: they run as
-the `gen-synthetic-evals` and `score-evals` workflows through the normal
+the `gen-synthetic-evals` and `run-experiment` workflows through the normal
 `POST /api/v1/workflow/{workflow_id}/run` route.
 
 `GET /api/v1/evals`

@@ -1,6 +1,6 @@
 ---
 title: Prompt Caching and the Token Meter
-description: What Anthropic's prompt cache shares between requests, how cache reads and writes appear on the platform dashboard, and what a concurrent eval fan-out pays on a cold cache. All numbers from real score-evals workflow runs.
+description: What Anthropic's prompt cache shares between requests, how cache reads and writes appear on the platform dashboard, and what a concurrent eval fan-out pays on a cold cache. All numbers from real experiment runs.
 date: 2026-07-04
 author: imsid
 tags:
@@ -10,7 +10,7 @@ tags:
 
 # Prompt Caching and the Token Meter
 
-A 19-row eval run through the `score-evals` workflow took four minutes of wall clock. The Claude platform dashboard reported 1.97M input tokens for the day. Both numbers are correct, and the gap between "four minutes of work" and "two million tokens" is entirely explained by prompt caching. This post walks through the accounting, using the runtime event log from two real scoring runs.
+A 19-row eval run through the experiment workflow took four minutes of wall clock. The Claude platform dashboard reported 1.97M input tokens for the day. Both numbers are correct, and the gap between "four minutes of work" and "two million tokens" is entirely explained by prompt caching. This post walks through the accounting, using the runtime event log from two real scoring runs.
 
 The runtime logs one `llm.request.complete` event per LLM call, and its payload carries the provider's usage block. Summing them across the first run:
 
@@ -92,7 +92,9 @@ Zero read and a full write. The question for the rest of the run is how many mor
 
 ## A concurrent fan-out on a cold cache
 
-The `score-evals` runner fans out one durable child workflow per dataset row over a DBOS queue with a concurrency of 8. Each child runs its row through the host, then judges the output. In the first run all rows were enqueued at once, and the queue started 8 of them within seconds of each other.
+The experiment runner's execution CodeStep fans dataset rows out with a
+concurrency of 8. In the first implementation all rows started at once, and
+the first 8 requests entered the provider within seconds of each other.
 
 A cache entry only becomes readable once the request writing it has started streaming its response. Eight requests in flight with the same prefix and no finished writer means eight misses. The event log shows it directly, first call per row session:
 
@@ -125,23 +127,19 @@ flowchart LR
 
 ## Warming the cache with the first row
 
-The fix in the scoring runner is to run the first row alone and fan out the rest once it completes. Row 0 does real work, so the one unavoidable cache write is attached to a row that was going to run anyway, and there is no throwaway warm-up request cluttering the event log. The child workflow IDs are unchanged, so the durable recovery semantics are too:
+The fix is to run the first unfinished row alone and fan out the rest once it
+completes. That row does real work, so the unavoidable cache write is attached
+to a real experiment row and there is no throwaway warm-up request:
 
 ```python
-scored_rows: list[dict[str, Any]] = []
-handles = []
-for index, row in enumerate(rows):
-    child_id = f"{run_id}:row:{index}"
-    with set_workflow_id(child_id):
-        handle = await _STATE.queue.enqueue_async(
-            _STATE.workflow, ctx.runner_id, run_id, host_id,
-            host_snapshot, host.primary, row, rubric,
-        )
-    if index == 0:
-        scored_rows.append(await handle.get_result())
-    else:
-        handles.append(handle)
-scored_rows.extend([await handle.get_result() for handle in handles])
+await execute(rows[0])
+semaphore = asyncio.Semaphore(8)
+
+async def limited(row):
+    async with semaphore:
+        await execute(row)
+
+await asyncio.gather(*(limited(row) for row in rows[1:]))
 ```
 
 The second run, 20 rows through the same host, confirms the shape. The same first-call-per-row query that showed eight writers in run 1 now shows one:

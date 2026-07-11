@@ -193,4 +193,6 @@ def _run_to_dict(r: Any) -> dict[str, Any]:
         "session_id": r.session_id,
         "error": r.error,
         "metrics": r.metrics,
+        "status": r.status,
+        "ordinal": r.ordinal,
     }

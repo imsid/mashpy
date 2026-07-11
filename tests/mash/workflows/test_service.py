@@ -156,6 +156,8 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("count", definition["input_schema"]["properties"])
         self.assertEqual(definition["steps"][0]["ordinal"], 0)
         self.assertEqual(definition["steps"][0]["kind"], "code")
+        self.assertEqual(definition["steps"][0]["agent_ids"], [])
+        self.assertFalse(definition["steps"][0]["orchestration"])
         self.assertIn("doubled", definition["steps"][0]["output_schema"]["properties"])
         self.assertEqual(definition["steps"][0]["timeout_s"], 10.0)
 

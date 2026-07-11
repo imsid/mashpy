@@ -12,9 +12,10 @@ import pilot.spec as pilot_spec_module
 from mash.agents import EvalAgentSpec
 from mash.agents.masher import (
     EVAL_AGENT_ID,
+    EVAL_JUDGE_AGENT_ID,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
     MASHER_ONLINE_EVAL_WORKFLOW_ID,
-    MASHER_SCORE_EVALS_WORKFLOW_ID,
+    MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
     MASHER_TRACE_DIGEST_WORKFLOW_ID,
 )
 from mash.core.llm import LLMProvider
@@ -199,6 +200,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             API_COPILOT_AGENT_ID,
                             CLI_COPILOT_AGENT_ID,
                             EVAL_AGENT_ID,
+                            EVAL_JUDGE_AGENT_ID,
                             MCP_COPILOT_AGENT_ID,
                             PILOT_AGENT_ID,
                             RUNTIME_COPILOT_AGENT_ID,
@@ -210,7 +212,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                         } == {
                             MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
                             MASHER_ONLINE_EVAL_WORKFLOW_ID,
-                            MASHER_SCORE_EVALS_WORKFLOW_ID,
+                            MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             QUIZ_WORKFLOW_ID,
                         }

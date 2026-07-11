@@ -1,5 +1,5 @@
 """Built-in Mash agents."""
 
-from .masher import EvalAgentSpec
+from .masher import EvalAgentSpec, EvalJudgeAgentSpec
 
-__all__ = ["EvalAgentSpec"]
+__all__ = ["EvalAgentSpec", "EvalJudgeAgentSpec"]

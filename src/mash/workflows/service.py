@@ -471,6 +471,11 @@ class WorkflowService:
                 "output_schema": _schema_for(step.output),
                 "timeout_s": step.timeout_s,
             }
+            if step.kind == "code":
+                entry["agent_ids"] = list(getattr(step, "agent_ids", ()))
+                entry["orchestration"] = bool(
+                    getattr(step, "orchestration", False)
+                )
             if step.kind == "agent":
                 entry["agent_id"] = getattr(step, "agent_id", None)
                 entry["skill_name"] = getattr(step, "skill_name", None)

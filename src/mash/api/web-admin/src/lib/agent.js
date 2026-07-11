@@ -23,6 +23,13 @@ export function buildAgentUsage(hosts = [], workflows = []) {
           role: step.step_id,
         });
       }
+      for (const agentId of step.agent_ids || []) {
+        add(agentId, {
+          type: 'workflow',
+          id: workflow.workflow_id,
+          role: step.step_id,
+        });
+      }
     }
   }
   return usage;
