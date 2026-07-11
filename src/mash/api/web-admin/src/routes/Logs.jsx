@@ -25,6 +25,13 @@ const COMMAND_EVENT = {
   'command.error': { label: 'error', tone: 'rose' },
 };
 
+// Wire values match /telemetry/trace/analysis; only the label is prettified.
+const TRACE_STATUS = {
+  completed: { label: 'completed', tone: 'emerald' },
+  error: { label: 'error', tone: 'rose' },
+  in_progress: { label: 'running', tone: 'indigo' },
+};
+
 // Refresh control that spins its glyph while the request is in flight.
 function RefreshButton({ state }) {
   return (
@@ -57,6 +64,15 @@ function WorkflowCell({ trace }) {
 const TRACE_COLUMNS = [
   { key: 'started', header: 'Started', render: (r) => formatTime(r.started_at) },
   { key: 'trace_id', header: 'Trace ID', render: (r) => <CopyId value={r.trace_id} /> },
+  {
+    key: 'status',
+    header: 'Status',
+    render: (r) => {
+      const status = TRACE_STATUS[r.status];
+      if (!status) return <span className="text-slate-300">—</span>;
+      return <Chip tone={status.tone}>{status.label}</Chip>;
+    },
+  },
   {
     key: 'agent',
     header: 'Ran on',
@@ -95,13 +111,17 @@ const TRACE_COLUMNS = [
 // One session row: a table row that toggles open, revealing its traces lazily.
 // Traces are listed across the whole pool (a session can span agents) by
 // session id alone.
-function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, activeTraceId }) {
+function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, activeTraceId, statusFilter }) {
   const tracesState = useApi(
     () =>
       expanded
-        ? api.listTraces({ session_id: session.session_id, limit: 100 })
+        ? api.listTraces({
+            session_id: session.session_id,
+            status: statusFilter || undefined,
+            limit: 100,
+          })
         : Promise.resolve(null),
-    [expanded, session.session_id],
+    [expanded, session.session_id, statusFilter],
   );
 
   const traces = useMemo(() => {
@@ -163,7 +183,11 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
                 onRowClick={(t) => onSelectTrace({ ...t, __agentId: t.agent_id })}
               />
             ) : (
-              <p className="py-3 text-center text-xs text-slate-400">No traces in this session.</p>
+              <p className="py-3 text-center text-xs text-slate-400">
+                {statusFilter
+                  ? `No ${TRACE_STATUS[statusFilter]?.label || statusFilter} traces in this session.`
+                  : 'No traces in this session.'}
+              </p>
             )}
           </td>
         </tr>
@@ -192,6 +216,7 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   const [selected, setSelected] = useState(null);
   const [sessionQuery, setSessionQuery] = useState(initialSession || '');
   const [traceQuery, setTraceQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const [jumpError, setJumpError] = useState('');
   const openedTrace = useRef('');
 
@@ -265,6 +290,19 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
             </Button>
           </div>
         </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-600">Status</span>
+          <div className="w-40">
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="">All statuses</option>
+              {Object.entries(TRACE_STATUS).map(([value, { label }]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </label>
         <RefreshButton state={state} />
         {jumpError ? <span className="pb-1.5 text-xs text-rose-600">{jumpError}</span> : null}
       </div>
@@ -313,6 +351,7 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
                       }
                       onSelectTrace={setSelected}
                       activeTraceId={selected?.trace_id}
+                      statusFilter={statusFilter}
                     />
                   ))}
                 </tbody>

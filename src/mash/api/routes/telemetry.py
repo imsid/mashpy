@@ -329,6 +329,7 @@ def build_telemetry_router() -> APIRouter:
         agent_id: Optional[str] = Query(default=None),
         session_id: Optional[str] = Query(default=None),
         host_id: Optional[str] = Query(default=None),
+        status: Optional[str] = Query(default=None),
         limit: int = Query(default=5),
     ) -> dict[str, Any]:
         state = state_from_request(request)
@@ -344,6 +345,19 @@ def build_telemetry_router() -> APIRouter:
                 status_code=400,
             )
 
+        resolved_status = normalize_optional_text(status)
+        if resolved_status is not None and resolved_status not in {
+            "completed",
+            "error",
+            "in_progress",
+        }:
+            raise APIError(
+                code="INVALID_STATUS",
+                message="status must be 'completed', 'error', or 'in_progress'",
+                status_code=400,
+                details={"param": "status"},
+            )
+
         # With a session but no agent, list a session's traces across the pool
         # (subagents / cross-agent workflow tasks). Use any agent's shared store.
         store_agent_id = resolved_agent_id or state.pool.list_agents()[0]
@@ -357,6 +371,7 @@ def build_telemetry_router() -> APIRouter:
             resolved_agent_id,
             session_id=resolved_session_id,
             host_id=resolved_host_id,
+            status=resolved_status,
             limit=max(1, min(limit, 100)),
         )
         return success(
@@ -365,6 +380,7 @@ def build_telemetry_router() -> APIRouter:
                 "agent_id": resolved_agent_id,
                 "session_id": resolved_session_id,
                 "host_id": resolved_host_id,
+                "status": resolved_status,
             }
         )
 
