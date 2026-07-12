@@ -30,6 +30,7 @@ async def submit_request(
     structured_output: Any = None,
     host_snapshot: dict[str, Any] | None = None,
     context: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_structured_output = serialize_structured_output(structured_output)
     request_metadata: dict[str, Any] = {}
@@ -39,6 +40,8 @@ async def submit_request(
         request_metadata["host"] = dict(host_snapshot)
     if context is not None and str(context).strip():
         request_metadata["context"] = str(context)
+    if metadata:
+        request_metadata["metadata"] = dict(metadata)
     return await _submit_request(
         self,
         message=message,
@@ -56,17 +59,21 @@ async def submit_subagent_request(
     primary_app_id: str,
     subagent_id: str,
     subagent_invoke_opts: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    request_metadata: dict[str, Any] = {
+        "primary_session_id": primary_session_id,
+        "primary_app_id": primary_app_id,
+        "subagent_id": subagent_id,
+        "subagent_invoke_opts": dict(subagent_invoke_opts),
+    }
+    if metadata:
+        request_metadata["metadata"] = dict(metadata)
     return await _submit_request(
         self,
         message=message,
         session_id=session_id,
-        request_metadata={
-            "primary_session_id": primary_session_id,
-            "primary_app_id": primary_app_id,
-            "subagent_id": subagent_id,
-            "subagent_invoke_opts": dict(subagent_invoke_opts),
-        },
+        request_metadata=request_metadata,
     )
 
 
@@ -101,6 +108,15 @@ def host_id_from_request_metadata(
         return None
     host_id = str(host.get("host_id") or "").strip()
     return host_id or None
+
+
+def caller_metadata_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    metadata = dict(request_metadata or {}).get("metadata")
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+    return metadata
 
 
 async def _submit_request_inner(

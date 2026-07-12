@@ -29,6 +29,7 @@ class AgentClientLike(Protocol):
         *,
         session_id: str,
         structured_output: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str: ...
 
@@ -163,6 +164,7 @@ class AgentClient:
         *,
         session_id: str,
         structured_output: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str:
         payload: Dict[str, Any] = {
@@ -173,6 +175,8 @@ class AgentClient:
             payload["structured_output"] = serialize_structured_output(
                 structured_output
             )
+        if metadata:
+            payload["metadata"] = dict(metadata)
 
         try:
             async with httpx.AsyncClient(headers=self._headers) as client:
@@ -360,6 +364,7 @@ class InProcessAgentClient:
         *,
         session_id: str,
         structured_output: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str:
         del timeout
@@ -367,6 +372,7 @@ class InProcessAgentClient:
             message=message,
             session_id=session_id,
             structured_output=structured_output,
+            metadata=metadata,
         )
         request_id = str(accepted.get("request_id") or "").strip()
         if not request_id:
@@ -399,6 +405,7 @@ class InProcessAgentClient:
         primary_app_id: str,
         subagent_id: str,
         subagent_invoke_opts: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str:
         del timeout
@@ -409,6 +416,7 @@ class InProcessAgentClient:
             primary_app_id=primary_app_id,
             subagent_id=subagent_id,
             subagent_invoke_opts=subagent_invoke_opts,
+            metadata=metadata,
         )
         request_id = str(accepted.get("request_id") or "").strip()
         if not request_id:

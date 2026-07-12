@@ -142,6 +142,7 @@ def build_agent_router() -> APIRouter:
             require_message(body.message),
             session_id=require_session_id(body.session_id),
             structured_output=structured_output,
+            metadata=body.metadata,
         )
         return success({"request_id": request_id})
 

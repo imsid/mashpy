@@ -7,7 +7,7 @@ import json
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
-from ..logging import AgentTraceEvent, get_trace_id
+from ..logging import AgentTraceEvent, get_request_metadata, get_trace_id
 from ..runtime.errors import classify_error
 from .base import ToolResult
 
@@ -27,6 +27,7 @@ class SupportsSubagentStream(Protocol):
         primary_app_id: str,
         subagent_id: str,
         subagent_invoke_opts: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Submit one subagent request with parent-call context."""
 
@@ -239,6 +240,10 @@ class InvokeSubagentTool:
             if not callable(getattr(client, "stream_response", None)):
                 raise RuntimeError("subagent client does not support request streaming")
 
+            # The parent request's caller metadata is bound for the duration of
+            # its run; forward it so the subagent request inherits the context.
+            inherited_metadata = get_request_metadata()
+
             async def _invoke() -> Dict[str, Any] | None:
                 nonlocal request_id
                 request_id = await client.post_subagent_request(
@@ -248,6 +253,7 @@ class InvokeSubagentTool:
                     primary_app_id=self._primary_app_id,
                     subagent_id=agent_id,
                     subagent_invoke_opts=dict(opts),
+                    metadata=inherited_metadata or None,
                 )
                 timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
 

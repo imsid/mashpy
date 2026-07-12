@@ -187,6 +187,7 @@ class AgentRuntime:
         structured_output: Any = None,
         host_snapshot: dict[str, Any] | None = None,
         context: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
@@ -195,6 +196,7 @@ class AgentRuntime:
             structured_output=structured_output,
             host_snapshot=host_snapshot,
             context=context,
+            metadata=metadata,
         )
 
     async def submit_subagent_request(
@@ -206,6 +208,7 @@ class AgentRuntime:
         primary_app_id: str,
         subagent_id: str,
         subagent_invoke_opts: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_subagent_request(
             self,
@@ -215,6 +218,7 @@ class AgentRuntime:
             primary_app_id=primary_app_id,
             subagent_id=subagent_id,
             subagent_invoke_opts=subagent_invoke_opts,
+            metadata=metadata,
         )
 
     async def stream_response_events(

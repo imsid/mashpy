@@ -5,9 +5,12 @@ from typing import Any
 
 import pytest
 
-from mash.logging import bound_host_id, bound_request_id
+from mash.logging import bound_host_id, bound_request_id, bound_request_metadata
 from mash.runtime import context as context_helpers
-from mash.runtime.requests import host_id_from_request_metadata
+from mash.runtime.requests import (
+    caller_metadata_from_request_metadata,
+    host_id_from_request_metadata,
+)
 from mash.runtime.engine.dbos import register_runtime, unregister_runtime
 from mash.runtime.engine.steps import (
     commit_request_step,
@@ -365,6 +368,8 @@ async def _execute_request_inline(
     trace_id: str | None = None
     with bound_request_id(request_id), bound_host_id(
         host_id_from_request_metadata(request_metadata)
+    ), bound_request_metadata(
+        caller_metadata_from_request_metadata(request_metadata)
     ):
         try:
             trace_id = await start_request_trace(
