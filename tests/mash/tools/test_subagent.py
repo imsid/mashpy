@@ -7,7 +7,7 @@ import json
 import unittest
 from typing import Any, AsyncIterator, Dict, Optional
 
-from mash.logging import clear_trace_id, set_trace_id
+from mash.logging import bound_request_metadata, clear_trace_id, set_trace_id
 from mash.tools.subagent import InvokeSubagentTool
 
 
@@ -51,6 +51,7 @@ class _FakeClient:
         primary_app_id: str,
         subagent_id: str,
         subagent_invoke_opts: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         self.last_call = {
             "message": message,
@@ -60,6 +61,7 @@ class _FakeClient:
             "primary_app_id": primary_app_id,
             "subagent_id": subagent_id,
             "subagent_invoke_opts": subagent_invoke_opts,
+            "metadata": metadata,
         }
         return self._request_id
 
@@ -137,6 +139,25 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
             self.event_logger.events[0].payload["primary_session_id"],
             "s1",
         )
+
+    async def test_forwards_bound_request_metadata_to_subagent(self) -> None:
+        with bound_request_metadata({"tenant": "acme", "user_id": "u-1"}):
+            result = await self.tool.execute(
+                {"agent_id": "research", "prompt": "Summarize issue"}
+            )
+        self.assertFalse(result.is_error)
+        assert self.client.last_call is not None
+        self.assertEqual(
+            self.client.last_call["metadata"], {"tenant": "acme", "user_id": "u-1"}
+        )
+
+    async def test_no_bound_request_metadata_sends_none(self) -> None:
+        result = await self.tool.execute(
+            {"agent_id": "research", "prompt": "Summarize issue"}
+        )
+        self.assertFalse(result.is_error)
+        assert self.client.last_call is not None
+        self.assertIsNone(self.client.last_call["metadata"])
 
     async def test_success_without_active_trace_skips_stream_event_logging(self) -> None:
         result = await self.tool.execute(

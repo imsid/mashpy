@@ -7,11 +7,19 @@ from typing import Any
 
 from dbos import DBOS
 
-from ...logging import bound_host_id, bound_request_id, bound_session_id
+from ...logging import (
+    bound_host_id,
+    bound_request_id,
+    bound_request_metadata,
+    bound_session_id,
+)
 from ...logging.trace_context import bound_workflow_ids
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
-from ..requests import host_id_from_request_metadata
+from ..requests import (
+    caller_metadata_from_request_metadata,
+    host_id_from_request_metadata,
+)
 from .steps import (
     commit_request_step,
     complete_request,
@@ -221,6 +229,8 @@ async def execute_request_workflow(
     ), bound_workflow_ids(
         request_metadata.get("workflow_id"),
         request_metadata.get("workflow_run_id"),
+    ), bound_request_metadata(
+        caller_metadata_from_request_metadata(request_metadata)
     ):
         try:
             trace_id = await DBOS.run_step_async(

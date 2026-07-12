@@ -216,6 +216,7 @@ class AgentPool:
         session_id: str,
         structured_output: Any = None,
         context: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         host = self.get_host(host_id)
         runtime = self.get_agent(host.primary)
@@ -225,6 +226,7 @@ class AgentPool:
             structured_output=structured_output,
             host_snapshot=self.snapshot_for(host),
             context=context,
+            metadata=metadata,
         )
 
     def register_workflow(self, workflow: WorkflowSpec) -> None:

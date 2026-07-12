@@ -113,6 +113,7 @@ def build_host_router() -> APIRouter:
                 session_id=require_session_id(body.session_id),
                 structured_output=structured_output,
                 context=body.context,
+                metadata=body.metadata,
             )
         except ValueError as exc:
             raise APIError(

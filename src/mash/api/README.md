@@ -119,11 +119,16 @@ validation).
 - Submits a request to the host: it routes to the host's primary agent with
   the host's composition snapshotted onto the request.
 - Body: `HostSubmitRequest` (`message`, `session_id`, optional
-  `structured_output`, optional `context`)
+  `structured_output`, optional `context`, optional `metadata`)
 - `context` is a freeform string the host appends to the primary agent's
   system prompt for this request only (after the subagent routing block).
   Use it to pass per-request/session facts like user profile, workspace
   state, or the current date.
+- `metadata` is an opaque JSON object for code, not the model: it never
+  reaches the prompt. It is stored on the request (a crash-replayed request
+  reruns with the same metadata), bound for the duration of the run so tools
+  can read it via `mash.logging.get_request_metadata()`, and inherited by
+  subagent requests made through `InvokeSubagent`.
 - Returns `request_id`, `agent_id` (the primary), and `session_id`. Stream
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
@@ -146,6 +151,9 @@ validation).
 - Optionally accepts a `structured_output` JSON-schema object on the body; when
   set, the response stream's `request.completed` payload includes a
   `structured_output` field alongside `text`.
+- Optionally accepts a `metadata` JSON object — opaque caller context that
+  never reaches the model. Readable during execution via
+  `mash.logging.get_request_metadata()` and inherited by subagent requests.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
 - Server-Sent Events stream for async request progress.

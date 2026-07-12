@@ -384,6 +384,12 @@ results from the existing `GET /v1/agent/{agent_id}/request/{request_id}/events`
 Requests snapshot the host composition at submit time, so redefining a host
 never affects in-flight requests.
 
+Submit bodies also take an optional `metadata` JSON object: opaque caller
+context for code, never shown to the model (the inverse of `context`, which is
+prompt text). It is stored on the request, so a crash-replayed request reruns
+with the same metadata; tools read it during execution via
+`mash.logging.get_request_metadata()`, and subagent requests inherit it.
+
 From the CLI, `mash compose` defines the host on the deployment (idempotent
 PUT) and pins later commands to it:
 

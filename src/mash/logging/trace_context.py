@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 _trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_trace_id",
@@ -29,6 +29,12 @@ _workflow_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _workflow_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_workflow_run_id",
     default=None,
+)
+_request_metadata: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar(
+        "mash_request_metadata",
+        default=None,
+    )
 )
 
 
@@ -119,6 +125,28 @@ def bound_host_id(host_id: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _host_id.reset(token)
+
+
+def get_request_metadata() -> dict[str, Any]:
+    """Get the caller-supplied metadata bound for the current request, if any.
+
+    Returns a copy of the opaque ``metadata`` object the caller attached when
+    submitting the request (empty when none was supplied). Tools and other code
+    running inside a request can call this to read caller context that never
+    reaches the model.
+    """
+    value = _request_metadata.get()
+    return dict(value) if value else {}
+
+
+@contextmanager
+def bound_request_metadata(metadata: Optional[dict[str, Any]]) -> Iterator[None]:
+    """Temporarily bind caller-supplied request metadata for the current task."""
+    token = _request_metadata.set(dict(metadata) if metadata else None)
+    try:
+        yield
+    finally:
+        _request_metadata.reset(token)
 
 
 def get_workflow_id() -> Optional[str]:

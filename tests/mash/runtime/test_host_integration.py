@@ -13,16 +13,29 @@ from unittest.mock import patch
 
 from pydantic import BaseModel
 
+from mash.core.config import AgentConfig
+from mash.core.context import ToolCall
+from mash.core.llm import LLMProvider
+from mash.core.llm.types import (
+    LLMContentBlock,
+    LLMRequest,
+    LLMResponse,
+    LLMTokenUsage,
+)
+from mash.logging import get_request_metadata
 from mash.runtime.client import AgentClientError
 from mash.runtime.engine.dbos import register_runtime, require_runtime, unregister_runtime
 from mash.runtime.engine.workflow import execute_request_workflow
-from mash.runtime import Host, HostBuilder
+from mash.runtime import AgentSpec, Host, HostBuilder
 from mash.skills import Skill
+from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import (
     build_delegating_spec,
     build_spec,
     metadata,
 )
+from mash.tools.base import ToolResult
+from mash.tools.registry import ToolRegistry
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
 
@@ -126,6 +139,110 @@ class _StepRestrictedRequestEngine:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+
+class _MetadataReadingTool:
+    """Tool that records the caller metadata bound for the running request."""
+
+    name = "read_metadata"
+    description = "Read the bound request metadata."
+    requires_approval = False
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.seen: list[dict[str, Any]] = []
+
+    async def execute(self, args: dict[str, Any]) -> ToolResult:
+        del args
+        self.seen.append(get_request_metadata())
+        return ToolResult.success("recorded")
+
+    def to_llm_format(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters,
+        }
+
+
+class _ToolCallingLLMProvider(LLMProvider):
+    """Calls read_metadata once, then finishes with a fixed answer."""
+
+    def __init__(self, *, final_text: str) -> None:
+        self._final_text = final_text
+        self.last_session_id: str | None = None
+        self.last_system: Any = None
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.last_system = request.system
+        saw_tool_result = any(
+            block.type == "tool_result"
+            for message in request.messages
+            if message.role == "tool"
+            for block in message.content
+        )
+        if not saw_tool_result:
+            return LLMResponse(
+                text="Reading metadata.",
+                tool_calls=[
+                    ToolCall(id="call-1", name="read_metadata", arguments={})
+                ],
+                content_blocks=[
+                    LLMContentBlock.text("Reading metadata."),
+                    LLMContentBlock.tool_call(
+                        tool_call_id="call-1", name="read_metadata", arguments={}
+                    ),
+                ],
+                stop_reason="tool_call",
+                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+            )
+        return LLMResponse(
+            text=self._final_text,
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text(self._final_text)],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, app_id
+        self.last_session_id = session_id
+
+    def set_trace_id(self, trace_id) -> None:
+        del trace_id
+
+    def get_event_logger_session_id(self) -> str | None:
+        return self.last_session_id
+
+
+class _MetadataReadingAgentSpec(AgentSpec):
+    def __init__(self, *, agent_id: str, final_text: str = "meta-ok") -> None:
+        self.agent_id = agent_id
+        self.provider = _ToolCallingLLMProvider(final_text=final_text)
+        self.tool = _MetadataReadingTool()
+
+    def get_agent_id(self) -> str:
+        return self.agent_id
+
+    def build_tools(self) -> ToolRegistry:
+        tools = ToolRegistry()
+        tools.register(self.tool)
+        return tools
+
+    def build_skills(self) -> SkillRegistry:
+        return SkillRegistry()
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=self.agent_id, system_prompt=f"You are {self.agent_id}."
+        )
 
 
 class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -811,6 +928,97 @@ class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(
                         "User timezone: PST. Workspace: mashpy.",
                         str(primary_spec.provider.last_system),
+                    )
+                finally:
+                    await pool.close()
+
+    async def test_request_metadata_is_readable_by_tools_and_invisible_to_model(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                primary_spec = _MetadataReadingAgentSpec(agent_id="primary-app")
+                pool = (
+                    HostBuilder()
+                    .agent(primary_spec, metadata=metadata())
+                    .host(Host(host_id="assistant", primary="primary-app"))
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    accepted = await pool.submit_host_request(
+                        "assistant",
+                        message="hello",
+                        session_id="s-meta",
+                        metadata={"tenant": "acme", "user_id": "u-1"},
+                    )
+                    client = pool.get_client("primary-app")
+                    result = await _collect_terminal_payload(
+                        client, accepted["request_id"], timeout=5
+                    )
+                    self.assertEqual(result["response"]["text"], "meta-ok")
+
+                    # The tool observed the caller metadata during the run.
+                    self.assertEqual(
+                        primary_spec.tool.seen,
+                        [{"tenant": "acme", "user_id": "u-1"}],
+                    )
+                    # Opaque to the model: metadata never enters the prompt.
+                    self.assertNotIn("acme", str(primary_spec.provider.last_system))
+                finally:
+                    await pool.close()
+
+    async def test_subagent_request_inherits_caller_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                primary_spec = build_delegating_spec(
+                    agent_id="primary-app",
+                    final_text="delegated-ok",
+                    subagent_id="research",
+                    subagent_prompt="analyze",
+                )
+                pool = (
+                    HostBuilder()
+                    .agent(primary_spec, metadata=metadata())
+                    .agent(
+                        build_spec(agent_id="research", response_text="research-ok"),
+                        metadata=metadata(),
+                    )
+                    .host(
+                        Host(
+                            host_id="assistant",
+                            primary="primary-app",
+                            subagents=("research",),
+                        )
+                    )
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    accepted = await pool.submit_host_request(
+                        "assistant",
+                        message="delegate",
+                        session_id="s-1",
+                        metadata={"tenant": "acme"},
+                    )
+                    client = pool.get_client("primary-app")
+                    result = await _collect_terminal_payload(
+                        client, accepted["request_id"], timeout=5
+                    )
+                    self.assertEqual(result["response"]["text"], "delegated-ok")
+
+                    # The subagent request ran with the parent's caller metadata.
+                    research = pool.get_agent("research")
+                    turns = await research.store.get_turns(
+                        session_id="s-1",
+                        app_id=research.app_id,
+                        limit=1,
+                    )
+                    self.assertEqual(turns[-1]["user_message"], "analyze")
+                    self.assertEqual(
+                        turns[-1]["metadata"]["metadata"], {"tenant": "acme"}
                     )
                 finally:
                     await pool.close()
