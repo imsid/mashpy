@@ -177,7 +177,7 @@ def configure_remote_tools(
                         result = manager.call_tool(srv_name, tool_name, args)
                         return extract_mcp_text(result)
                     except Exception as exc:  # pragma: no cover
-                        return f"Error: {exc}"
+                        return f"Error: {exc}", True
 
                 return executor
 
@@ -237,7 +237,7 @@ def configure_web_search_tools(
                         result = manager.call_tool(srv_name, tool_name, args)
                         return extract_mcp_text(result)
                     except Exception as exc:  # pragma: no cover
-                        return f"Error: {exc}"
+                        return f"Error: {exc}", True
 
                 return executor
 
@@ -286,9 +286,15 @@ def configure_subagent_tools(
     )
 
 
-def extract_mcp_text(result: Any) -> str:
-    """Extract plain text output from an MCP tool result payload."""
+def extract_mcp_text(result: Any) -> tuple[str, bool]:
+    """Extract text output and the error flag from an MCP tool result payload.
+
+    Returns a ``(text, is_error)`` tuple. ``is_error`` mirrors the MCP
+    ``isError`` field so an error the server reports is surfaced as a failed
+    tool result rather than silently recorded as a success.
+    """
     if isinstance(result, dict):
+        is_error = bool(result.get("isError", False))
         content = result.get("content", [])
         if content and isinstance(content, list):
             texts = []
@@ -297,5 +303,6 @@ def extract_mcp_text(result: Any) -> str:
                     texts.append(item.get("text", ""))
                 elif isinstance(item, str):
                     texts.append(item)
-            return "\n".join(texts) if texts else str(result)
-    return str(result)
+            return ("\n".join(texts) if texts else str(result)), is_error
+        return str(result), is_error
+    return str(result), False
