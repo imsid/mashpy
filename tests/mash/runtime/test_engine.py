@@ -1519,6 +1519,19 @@ class ErrorClassificationTests(unittest.TestCase):
         result = self._classify("401 unauthorized")
         self.assertFalse(result["retryable"])
 
+    def test_explicit_attributes_override_text_matching(self) -> None:
+        from mash.runtime.errors import classify_error
+
+        class _Terminal(RuntimeError):
+            retryable = False
+            error_code = "custom_terminal"
+
+        # The message contains a retryable pattern ("429"), but the exception's
+        # explicit attributes take precedence and mark it terminal.
+        result = classify_error(_Terminal("429 too many requests"))
+        self.assertFalse(result["retryable"])
+        self.assertEqual(result["error_code"], "custom_terminal")
+
 
 class RetryTransientLoggingTests(unittest.IsolatedAsyncioTestCase):
     """retry_transient emits a warning log on each retryable failure."""

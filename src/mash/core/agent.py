@@ -33,6 +33,21 @@ if TYPE_CHECKING:
     from ..tools.registry import ToolRegistry
 
 
+class TruncatedToolCallError(RuntimeError):
+    """A ``max_tokens`` stop truncated the model mid-tool-call.
+
+    The incomplete ``tool_call`` cannot be executed or paired with a
+    ``tool_result``, so the turn cannot proceed. Finishing here would persist
+    the request as *completed* with a partial or empty answer, silently
+    dropping the action the model intended to take. Instead this surfaces as a
+    terminal failure. It is non-retryable: re-running the step re-issues the
+    same over-length generation, so the real remedy is a larger ``max_tokens``.
+    """
+
+    retryable = False
+    error_code = "truncated_tool_call"
+
+
 @dataclass
 class StepPlan:
     """One planned agent step after a think phase."""
@@ -759,6 +774,18 @@ class Agent:
         if tool_calls:
             return Action.from_tool_calls(tool_calls, metadata=action_metadata)
 
+        # A max_tokens stop that discarded an in-progress tool call means the
+        # model's intended action was lost. Finishing here would persist the
+        # request as completed with a partial or empty answer, hiding the
+        # dropped action, so surface it as a terminal failure instead.
+        if stop_reason == "max_tokens" and dropped_tool_call:
+            raise TruncatedToolCallError(
+                "Response truncated mid-tool-call on a max_tokens stop; the "
+                "incomplete tool call was discarded and the turn cannot "
+                "proceed. Increase `max_tokens` so the model can finish "
+                "emitting the call."
+            )
+
         # A max_tokens stop on a text response is terminal. The truncated
         # assistant message has already been appended to context above, so
         # continuing the loop would build a follow-up request that ends with an
@@ -769,12 +796,6 @@ class Agent:
             action_metadata["truncated"] = True
             context.metadata["truncated"] = True
             context.metadata["stop_reason"] = stop_reason
-            # Distinguish "the answer text was cut off" from "an in-progress
-            # tool call was discarded" so callers can tell that an action was
-            # dropped rather than just a reply trimmed.
-            if dropped_tool_call:
-                action_metadata["truncated_tool_call"] = True
-                context.metadata["truncated_tool_call"] = True
             return Action.finish(metadata=action_metadata)
 
         # Only known continuation signals may loop into an assistant-terminated
