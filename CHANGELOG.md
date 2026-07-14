@@ -9,6 +9,14 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.18.1](https://github.com/imsid/mashpy/compare/mashpy-v0.18.0...mashpy-v0.18.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **mcp:** surface MCP isError as a failed tool result ([#155](https://github.com/imsid/mashpy/issues/155)) ([2131af2](https://github.com/imsid/mashpy/commit/2131af2e298e0c5c728426359f6b3f3df8800fc7))
+* **runtime:** surface truncated tool call on max_tokens as a failed request ([#152](https://github.com/imsid/mashpy/issues/152)) ([4229006](https://github.com/imsid/mashpy/commit/422900614e40f53f07a3009623ab265e911f813d))
+
 ## [0.18.0](https://github.com/imsid/mashpy/compare/mashpy-v0.17.0...mashpy-v0.18.0) (2026-07-12)
 
 
