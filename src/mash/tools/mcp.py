@@ -16,7 +16,7 @@ class MCPToolAdapter:
         name: str,
         description: str,
         parameters: Dict[str, Any],
-        executor: Callable[[Dict[str, Any]], str],
+        executor: Callable[[Dict[str, Any]], Any],
     ) -> None:
         """Initialize MCP tool adapter.
 
@@ -45,9 +45,25 @@ class MCPToolAdapter:
             result = self._executor(args)
             if inspect.isawaitable(result):
                 result = await result
-            return ToolResult.success(result)
+            text, is_error = self._unpack(result)
+            if is_error:
+                return ToolResult.error(text)
+            return ToolResult.success(text)
         except Exception as e:
             return ToolResult.error(f"Error executing MCP tool: {str(e)}")
+
+    @staticmethod
+    def _unpack(result: Any) -> tuple[str, bool]:
+        """Normalize an executor return into ``(text, is_error)``.
+
+        Executors may return a ``(text, is_error)`` tuple (so a server-reported
+        MCP error surfaces as a failed tool result) or a bare string, which is
+        treated as a success.
+        """
+        if isinstance(result, tuple) and len(result) == 2:
+            text, is_error = result
+            return str(text), bool(is_error)
+        return str(result), False
 
     def to_llm_format(self) -> Dict[str, Any]:
         """Convert tool definition to LLM API format."""
@@ -61,7 +77,7 @@ class MCPToolAdapter:
     def from_mcp_tool(
         cls,
         mcp_tool: Dict[str, Any],
-        executor: Callable[[Dict[str, Any]], str],
+        executor: Callable[[Dict[str, Any]], Any],
         prefix: str = "mcp_",
     ) -> MCPToolAdapter:
         """Create an adapter from an MCP tool definition.
