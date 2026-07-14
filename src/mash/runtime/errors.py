@@ -52,7 +52,18 @@ def classify_error(error: object) -> Dict[str, Any]:
     error_code = None
     retryable = None
 
+    # An exception may declare its own classification (e.g. a terminal error
+    # that must not be retried). Honor explicit attributes over text matching.
+    explicit_code = getattr(error, "error_code", None)
+    if isinstance(explicit_code, str) and explicit_code:
+        error_code = explicit_code
+    explicit_retryable = getattr(error, "retryable", None)
+    if isinstance(explicit_retryable, bool):
+        retryable = explicit_retryable
+
     for patterns, code in _RETRYABLE_PATTERNS:
+        if error_code is not None:
+            break
         if any(p in lowered for p in patterns):
             error_code = code
             retryable = True

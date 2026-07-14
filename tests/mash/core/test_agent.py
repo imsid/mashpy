@@ -8,7 +8,7 @@ import time
 import unittest
 from typing import Optional
 
-from mash.core.agent import Agent
+from mash.core.agent import Agent, TruncatedToolCallError
 from mash.core.config import AgentConfig
 from mash.core.context import Context, ToolCall
 from mash.core.llm import BaseLLMProvider, LLMProvider
@@ -19,6 +19,7 @@ from mash.core.llm.types import (
     LLMTokenUsage,
 )
 from mash.memory.signals import build_default_signal_collector
+from mash.runtime.errors import classify_error
 from mash.skills.registry import SkillRegistry
 from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
@@ -532,9 +533,10 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         # A plain text truncation is not a dropped tool call.
         self.assertIsNone(response.metadata.get("truncated_tool_call"))
 
-    async def test_run_flags_truncated_tool_call_on_max_tokens(self) -> None:
-        # A max_tokens stop mid-tool-call must not execute the incomplete call;
-        # it ends the turn and flags that an action was dropped.
+    async def test_run_raises_on_truncated_tool_call_on_max_tokens(self) -> None:
+        # A max_tokens stop mid-tool-call must not execute the incomplete call
+        # nor finish the turn as completed — the model's intended action was
+        # dropped, so the turn surfaces a terminal error instead.
         async def search(_args) -> ToolResult:
             raise AssertionError("truncated tool call must not execute")
 
@@ -561,26 +563,19 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("look something up")
 
-        response = await agent.run(context)
+        with self.assertRaises(TruncatedToolCallError):
+            await agent.run(context)
 
         # The loop stopped after one generation; the tool was never called.
         self.assertEqual(llm.call_count, 1)
-        self.assertTrue(response.metadata.get("truncated"))
-        self.assertTrue(response.metadata.get("truncated_tool_call"))
-        self.assertEqual(response.metadata.get("stop_reason"), "max_tokens")
-        # The truncated tool_call block is stripped from the *stored* assistant
-        # message too, so a later turn in the same session never replays an
-        # orphan tool_use with no matching tool_result.
-        assistant_messages = [
-            msg for msg in response.context.messages if msg.role.value == "assistant"
-        ]
-        self.assertEqual(len(assistant_messages), 1)
-        stored_block_types = {
-            block.get("type")
-            for block in assistant_messages[0].content
-            if isinstance(block, dict)
-        }
-        self.assertNotIn("tool_call", stored_block_types)
+
+    async def test_truncated_tool_call_error_is_non_retryable(self) -> None:
+        # The runtime must treat the truncation as terminal, not retry it: an
+        # identical re-request re-truncates. classify_error keys off the
+        # exception's explicit retryable/error_code attributes.
+        classified = classify_error(TruncatedToolCallError("boom"))
+        self.assertFalse(classified["retryable"])
+        self.assertEqual(classified["error_code"], "truncated_tool_call")
 
     async def test_run_surfaces_invalid_tool_call_without_assistant_prefill(
         self,
