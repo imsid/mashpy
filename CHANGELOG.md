@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.18.0](https://github.com/imsid/mashpy/compare/mashpy-v0.17.0...mashpy-v0.18.0) (2026-07-12)
+
+
+### Features
+
+* **runtime:** pass caller metadata on submit and expose it to tools ([#149](https://github.com/imsid/mashpy/issues/149)) ([41ef310](https://github.com/imsid/mashpy/commit/41ef310b281ed19681b43d33c0e9e37e398c3a45))
+
 ## [0.17.0](https://github.com/imsid/mashpy/compare/mashpy-v0.16.1...mashpy-v0.17.0) (2026-07-11)
 
 
