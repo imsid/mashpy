@@ -56,7 +56,6 @@ def build_api_metadata() -> AgentMetadata:
             "/telemetry/trace/analysis",
             "/telemetry/usage",
             "/telemetry/events",
-            "/telemetry/events/stream",
             "/telemetry/memory/search",
         ],
         usage_guidance=(

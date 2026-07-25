@@ -200,18 +200,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         events = await self.store.list_request_events(self.request_id)
         self.assertEqual(len(events), 1)
 
-    async def test_global_waiter_wakes_on_append(self) -> None:
-        waiter = self.store.register_global_waiter()
-        try:
-            append_task = asyncio.create_task(self._delayed_append(0.1))
-            try:
-                await asyncio.wait_for(waiter.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                self.fail("global waiter was not woken by append_event")
-            await append_task
-        finally:
-            self.store.unregister_global_waiter(waiter)
-
     async def _delayed_append(self, delay: float) -> None:
         await asyncio.sleep(delay)
         await self.store.append_event(

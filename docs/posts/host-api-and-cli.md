@@ -62,7 +62,6 @@ Each group of endpoints projects one subsystem from earlier in the series.
 | Path (under `/api/v1/telemetry`) | Purpose |
 |---|---|
 | `GET /events` | recent runtime events, paginated by cursor |
-| `GET /events/stream` | live SSE tail of incoming runtime events |
 | `GET /traces` | recent trace summaries |
 | `GET /trace/analysis` | span tree and timing breakdown for one trace |
 | `GET /usage` | token and request usage aggregated by time bucket |

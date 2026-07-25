@@ -332,7 +332,6 @@ The telemetry API exposes both raw events and structured analysis:
 
 ```
 GET /telemetry/events                  # flat runtime events
-GET /telemetry/events/stream           # tail events (SSE)
 GET /telemetry/traces                  # list recent traces (lightweight)
 GET /telemetry/trace/analysis          # span tree + latency analysis
 GET /telemetry/api/events              # backend API request logs

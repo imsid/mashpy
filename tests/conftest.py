@@ -61,7 +61,6 @@ class _TestRuntimeStore:
         self._events_by_request: dict[str, list[RuntimeEvent]] = {}
         self._lock = asyncio.Lock()
         self._request_waiters: dict[str, set[asyncio.Event]] = {}
-        self._global_waiters: set[asyncio.Event] = set()
         self._feedback: list[FeedbackRecord] = []
 
     async def open(self) -> None:
@@ -336,20 +335,10 @@ class _TestRuntimeStore:
             if not waiters:
                 del self._request_waiters[request_id]
 
-    def register_global_waiter(self) -> asyncio.Event:
-        event = asyncio.Event()
-        self._global_waiters.add(event)
-        return event
-
-    def unregister_global_waiter(self, event: asyncio.Event) -> None:
-        self._global_waiters.discard(event)
-
     def _wake_waiters(self, request_id: str | None) -> None:
         if request_id:
             for ev in self._request_waiters.get(request_id, ()):
                 ev.set()
-        for ev in self._global_waiters:
-            ev.set()
 
 
 async def _execute_request_inline(
