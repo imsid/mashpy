@@ -39,7 +39,6 @@ class PostgresRuntimeStore(RuntimeStore):
         self._pool: Any = None
         self._open_lock = asyncio.Lock()
         self._request_waiters: dict[str, set[asyncio.Event]] = defaultdict(set)
-        self._global_waiters: set[asyncio.Event] = set()
         self._listener_conn: Any = None
         self._listener_task: asyncio.Task | None = None
 
@@ -111,8 +110,6 @@ class PostgresRuntimeStore(RuntimeStore):
                     if request_id:
                         for ev in self._request_waiters.get(request_id, ()):
                             ev.set()
-                    for ev in self._global_waiters:
-                        ev.set()
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -134,8 +131,6 @@ class PostgresRuntimeStore(RuntimeStore):
         for waiters in self._request_waiters.values():
             for ev in waiters:
                 ev.set()
-        for ev in self._global_waiters:
-            ev.set()
 
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()
@@ -148,14 +143,6 @@ class PostgresRuntimeStore(RuntimeStore):
             waiters.discard(event)
             if not waiters:
                 del self._request_waiters[request_id]
-
-    def register_global_waiter(self) -> asyncio.Event:
-        event = asyncio.Event()
-        self._global_waiters.add(event)
-        return event
-
-    def unregister_global_waiter(self, event: asyncio.Event) -> None:
-        self._global_waiters.discard(event)
 
     async def append_event(self, event: RuntimeEvent) -> RuntimeEvent:
         await self.open()

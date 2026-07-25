@@ -462,15 +462,6 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `session_id`, `trace_id`, `host_id`
   - `limit`
 
-`GET /api/v1/telemetry/events/stream`
-- Tails canonical runtime events as SSE.
-- Query params:
-  - `agent_id` required
-- Response type: `text/event-stream`
-- Emits:
-  - `data: <serialized runtime event>`
-- Emits `: keep-alive` frames while idle.
-
 `GET /api/v1/telemetry/api/events`
 - Reads recent backend API request/response events.
 - Query params:
