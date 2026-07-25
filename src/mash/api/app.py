@@ -66,7 +66,6 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
             api_event_store=api_event_store,
             eval_service=eval_service,
             api_key=resolved_config.resolved_api_key(),
-            observability_enabled=resolved_config.enable_observability,
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
             default_search_limit=max(1, int(resolved_config.default_search_limit)),
         )

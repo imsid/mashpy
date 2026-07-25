@@ -25,7 +25,6 @@ class MashHostConfig:
     runtime_database_url: Optional[str] = None
     api_key: Optional[str] = None
     cors_allow_origins: Sequence[str] = field(default_factory=lambda: _DEFAULT_CORS_ORIGINS)
-    enable_observability: bool = True
     default_events_limit: int = 2000
     default_search_limit: int = 10
     api_logging_enabled: bool = True

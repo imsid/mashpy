@@ -50,9 +50,6 @@ def build_telemetry_router() -> APIRouter:
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         try:
             agent = state.pool.get_agent(agent_id)
         except ValueError as exc:
@@ -93,8 +90,6 @@ def build_telemetry_router() -> APIRouter:
         after_event_id: int = Query(default=0),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
         filters = build_api_filters(
             method=method,
             path=path,
@@ -116,8 +111,6 @@ def build_telemetry_router() -> APIRouter:
     @router.post("/telemetry/api/events/search")
     async def search_api_events(request: Request, body: APIEventSearchRequest) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
         filters = build_api_filters(
             method=body.method,
             path=body.path,
@@ -149,9 +142,6 @@ def build_telemetry_router() -> APIRouter:
         to_ts: Optional[float] = Query(default=None),
     ) -> StreamingResponse:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         async def _generate() -> AsyncIterator[str]:
             latest_filters = build_api_filters(
                 method=method,
@@ -201,9 +191,6 @@ def build_telemetry_router() -> APIRouter:
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         query_text = q.strip()
         if not query_text:
             raise APIError(code="MISSING_QUERY", message="q is required", status_code=400, details={"param": "q"})
@@ -266,9 +253,6 @@ def build_telemetry_router() -> APIRouter:
         limit: int = Query(default=5),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         resolved_agent_id = normalize_optional_text(agent_id)
         resolved_session_id = normalize_optional_text(session_id)
         if resolved_agent_id is None and resolved_session_id is None:
@@ -328,9 +312,6 @@ def build_telemetry_router() -> APIRouter:
         to_ts: Optional[float] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         normalized_bucket = str(bucket or "day").strip().lower()
         if normalized_bucket not in {"hour", "day"}:
             raise APIError(
@@ -374,8 +355,6 @@ def build_telemetry_router() -> APIRouter:
         to_ts: Optional[float] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
         invocations = await state.pool.aggregate_tool_invocations(from_ts=from_ts, to_ts=to_ts)
         return success({"invocations": invocations, "from_ts": from_ts, "to_ts": to_ts})
 
@@ -386,8 +365,6 @@ def build_telemetry_router() -> APIRouter:
         to_ts: Optional[float] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
         invocations = await state.pool.aggregate_skill_invocations(from_ts=from_ts, to_ts=to_ts)
         return success({"invocations": invocations, "from_ts": from_ts, "to_ts": to_ts})
 
@@ -399,9 +376,6 @@ def build_telemetry_router() -> APIRouter:
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         participant_agent_id = normalize_optional_text(agent_id)
         resolved_workflow_id = normalize_optional_text(workflow_id)
         # The runtime event log is shared across the pool, so any agent's store
@@ -439,9 +413,6 @@ def build_telemetry_router() -> APIRouter:
         body: CommandEventIngest,
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         event_type = str(body.event_type or "").strip()
         if not event_type.startswith("command."):
             raise APIError(
@@ -483,9 +454,6 @@ def build_telemetry_router() -> APIRouter:
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         try:
             agent = state.pool.get_agent(agent_id)
         except ValueError as exc:
@@ -520,9 +488,6 @@ def build_telemetry_router() -> APIRouter:
         stitch: bool = False,
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        if not state.observability_enabled:
-            raise APIError(code="OBSERVABILITY_DISABLED", message="telemetry endpoints are disabled", status_code=503)
-
         try:
             agent = state.pool.get_agent(agent_id)
         except ValueError as exc:

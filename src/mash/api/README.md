@@ -342,7 +342,7 @@ validation).
 
 ### Feedback
 
-These endpoints are always available; they do not depend on `enable_observability`. Feedback is stored in the `runtime_feedback` table next to the runtime event log.
+Feedback is stored in the `runtime_feedback` table next to the runtime event log.
 
 `POST /api/v1/feedback`
 - Records one piece of user feedback with its session context.
@@ -372,7 +372,7 @@ These endpoints are always available; they do not depend on `enable_observabilit
 ### Evals
 
 Read/manage surface for synthetic evals (see `src/mash/evals/README.md` for the
-data model). These endpoints do not depend on `enable_observability`, but they
+data model). These endpoints
 require a configured `MASH_DATABASE_URL`; without one every route returns `503
 EVALS_NOT_AVAILABLE`. Generation and scoring are not HTTP-native: they run as
 the `gen-synthetic-evals` and `run-experiment` workflows through the normal
@@ -444,7 +444,7 @@ the `gen-synthetic-evals` and `run-experiment` workflows through the normal
 
 ### Observability
 
-These endpoints require `enable_observability = True`. Memory search uses the target agent's `memory_store`.
+Memory search uses the target agent's `memory_store`.
 
 Backend API request logs are persisted separately in `api_event_log` when `api_logging_enabled = True`.
 
@@ -590,7 +590,6 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - `401 UNAUTHORIZED`: missing or wrong API key
 - `404 AGENT_NOT_FOUND`: unknown `agent_id`
 - `400 INVALID_REQUEST`: blank required path/body values after trimming
-- `503 OBSERVABILITY_DISABLED`: telemetry APIs disabled
 - `503 MEMORY_SEARCH_UNAVAILABLE`: memory search unavailable for the target agent
 - `400 SEARCH_VALIDATION_ERROR`: invalid memory search arguments
 - `503 SEARCH_UNAVAILABLE`: search backend not available

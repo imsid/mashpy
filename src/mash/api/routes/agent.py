@@ -19,7 +19,6 @@ from .common import (
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
-    memory_search_available,
     normalize_optional_text,
     require_agent_id,
     require_message,
@@ -40,12 +39,6 @@ def build_agent_router() -> APIRouter:
     @router.get("/health")
     async def health(request: Request) -> dict[str, Any]:
         state = state_from_request(request)
-        agent_ids = state.pool.list_agents()
-        search_available = False
-        if agent_ids:
-            search_available = memory_search_available(
-                state.pool.get_agent(agent_ids[0])
-            )
         return success(
             {
                 "status": "ok",
@@ -54,15 +47,6 @@ def build_agent_router() -> APIRouter:
                 "deployment": {
                     "agents": state.pool.describe_agents(),
                     "hosts": state.pool.describe_hosts(),
-                },
-                "observability": {
-                    "enabled": state.observability_enabled,
-                    "memory": {
-                        "search_available": (
-                            state.observability_enabled and search_available
-                        ),
-                        "default_limit": state.default_search_limit,
-                    },
                 },
             }
         )

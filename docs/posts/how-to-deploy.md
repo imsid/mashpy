@@ -518,7 +518,6 @@ The baseline (`001_baseline.sql`) is idempotent — all `CREATE TABLE` and `CREA
 | `MASH_API_HOST` | No | `127.0.0.1` | Bind host (`0.0.0.0` for containers) |
 | `MASH_API_PORT` | No | `8000` | Bind port |
 | `MASH_DATA_DIR` | No | `/var/lib/mash` | Persistent data directory |
-| `MASH_DISABLE_OBSERVABILITY` | No | — | Set to disable telemetry endpoints |
 | `ANTHROPIC_API_KEY` | Provider-dependent | — | Anthropic API key |
 | `OPENAI_API_KEY` | Provider-dependent | — | OpenAI API key |
 | `GEMINI_API_KEY` | Provider-dependent | — | Google Gemini API key |
