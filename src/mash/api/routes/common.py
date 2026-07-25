@@ -45,7 +45,6 @@ class AppRuntimeState:
     api_event_store: Any
     eval_service: Any
     api_key: Optional[str]
-    observability_enabled: bool
     default_events_limit: int
     default_search_limit: int
 

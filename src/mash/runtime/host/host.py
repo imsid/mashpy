@@ -381,7 +381,7 @@ class AgentPool:
         return agent
 
     def get_runtime_store(self) -> RuntimeStore | None:
-        """Shared runtime event store, or None if observability is disabled."""
+        """Shared runtime event store, or None before the pool is started."""
         return self._shared_runtime_store
 
     def get_workflow_store(self) -> WorkflowStore | None:

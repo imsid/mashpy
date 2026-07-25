@@ -7,16 +7,10 @@ export function Loading({ label = 'Loading…' }) {
 
 export function ErrorState({ error, onRetry }) {
   const message = error?.message || 'Something went wrong.';
-  const disabled = error?.code === 'OBSERVABILITY_DISABLED';
   return (
     <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-6 text-center">
       <p className="text-sm font-medium text-rose-700">{message}</p>
-      {disabled ? (
-        <p className="mt-1 text-xs text-rose-500">
-          Telemetry endpoints are disabled for this deployment.
-        </p>
-      ) : null}
-      {onRetry && !disabled ? (
+      {onRetry ? (
         <button
           onClick={onRetry}
           className="mt-3 rounded-md border border-rose-300 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"

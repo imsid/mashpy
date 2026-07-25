@@ -193,7 +193,6 @@ def test_health_and_agent_contract() -> None:
                     "workflows": MASHER_WORKFLOW_IDS,
                 }
             ]
-            assert payload["observability"]["memory"]["search_available"] is True
 
             agents = client.get("/api/v1/agent")
             assert agents.status_code == 200

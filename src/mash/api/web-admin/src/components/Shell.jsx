@@ -1,6 +1,4 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { api } from '../lib/api.js';
-import { useApi } from '../lib/useApi.js';
 
 // Grouped by the domain model: the deployed pool and its compositions,
 // then runtime activity, then docs. Agents and Workflows precede Hosts
@@ -33,29 +31,6 @@ const NAV = [
   },
 ];
 
-function ObservabilityBadge() {
-  const { data, error } = useApi(() => api.health(), []);
-  const enabled = data?.observability?.enabled;
-  const label = error
-    ? 'API unreachable'
-    : data
-      ? enabled
-        ? 'Observability on'
-        : 'Observability off'
-      : 'Checking…';
-  const tone = error
-    ? 'bg-rose-50 text-rose-700'
-    : enabled
-      ? 'bg-emerald-50 text-emerald-700'
-      : 'bg-slate-100 text-slate-500';
-  return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${tone}`}>
-      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-      {label}
-    </span>
-  );
-}
-
 export default function Shell() {
   return (
     <div className="min-h-screen">
@@ -64,7 +39,6 @@ export default function Shell() {
           <span className="font-display text-lg font-semibold tracking-tight">Mash</span>
           <span className="text-sm text-slate-400">Admin</span>
         </div>
-        <ObservabilityBadge />
       </header>
       <div className="mx-auto flex max-w-7xl">
         <nav className="w-48 shrink-0 px-3 py-5">

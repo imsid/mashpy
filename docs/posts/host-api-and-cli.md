@@ -16,7 +16,7 @@ Everything in this series so far ran inside the host process. This post covers t
 
 The API is REST plus SSE, composed in `src/mash/api`. Three conventions apply across all of it.
 
-**Envelopes.** Success responses arrive as `{"data": ...}`. Errors arrive as `{"error": {"code": ..., "message": ..., "details": ...}}` with stable codes (`AGENT_NOT_FOUND`, `HOST_NOT_FOUND`, `REQUEST_NOT_FOUND`, `OBSERVABILITY_DISABLED`), so client code matches on the code rather than the message.
+**Envelopes.** Success responses arrive as `{"data": ...}`. Errors arrive as `{"error": {"code": ..., "message": ..., "details": ...}}` with stable codes (`AGENT_NOT_FOUND`, `HOST_NOT_FOUND`, `REQUEST_NOT_FOUND`), so client code matches on the code rather than the message.
 
 **Auth.** With no API key configured, routes are open, which suits local development. With `MASH_API_KEY` set, every `/api/v1/*` route requires `Authorization: Bearer <key>` or `X-API-Key: <key>`. The admin dashboard sets a `mash_api_key` cookie on load so the browser SPA can call the protected routes too.
 
@@ -55,9 +55,9 @@ Each group of endpoints projects one subsystem from earlier in the series.
 
 **Workflows.** `GET /workflow` lists definition summaries, `GET /workflow/{workflow_id}` returns a complete definition, `POST /workflow/{workflow_id}/run` starts a run with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its result and step snapshots, and `GET .../runs/{run_id}/events` streams step lifecycle events over SSE.
 
-**Feedback.** Two routes that stay open whether or not observability is enabled. `POST /feedback` records a free-form note with its session context, and `GET /feedback` lists notes for an agent, narrowed by a required `after` timestamp and an optional full-text `q` over the message. The runtime store keeps them in a `runtime_feedback` table beside the event log.
+**Feedback.** Two routes for capturing user notes. `POST /feedback` records a free-form note with its session context, and `GET /feedback` lists notes for an agent, narrowed by a required `after` timestamp and an optional full-text `q` over the message. The runtime store keeps them in a `runtime_feedback` table beside the event log.
 
-**Telemetry.** Gated by `enable_observability`, with disabled routes returning `503 OBSERVABILITY_DISABLED`:
+**Telemetry.**
 
 | Path (under `/api/v1/telemetry`) | Purpose |
 |---|---|

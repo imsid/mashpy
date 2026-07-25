@@ -603,17 +603,6 @@
                 "required": false,
                 "default": null,
                 "choices": null
-              },
-              {
-                "flags": [
-                  "--disable-observability"
-                ],
-                "name": "disable_observability",
-                "help": "Disable telemetry endpoints.",
-                "positional": false,
-                "required": false,
-                "default": false,
-                "choices": null
               }
             ],
             "subcommands": []
@@ -689,7 +678,7 @@
       },
       {
         "name": "workflow",
-        "help": "List, run, and inspect workflows; bare `/workflow` lists (host-attached only when connected through a host)",
+        "help": "List, run, inspect, and resume workflows; bare `/workflow` lists (host-attached only when connected through a host)",
         "aliases": []
       }
     ]

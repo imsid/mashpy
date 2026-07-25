@@ -14,11 +14,6 @@ from .config import MashHostConfig
 from .types import MashHostApp
 
 
-def _env_flag(name: str) -> bool:
-    value = os.environ.get(name, "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
-
-
 def _load_target(app_ref: str) -> Any:
     module_name, sep, attr_name = app_ref.partition(":")
     if not sep or not module_name.strip() or not attr_name.strip():
@@ -79,11 +74,6 @@ def add_serve_parser(subparsers) -> None:
         default=None,
         help="Allowed CORS origin; repeat for multiple values.",
     )
-    parser.add_argument(
-        "--disable-observability",
-        action="store_true",
-        help="Disable telemetry endpoints.",
-    )
 
 
 def _run_serve_command(args) -> int:
@@ -104,7 +94,6 @@ def _run_serve_command(args) -> int:
             if args.cors_origin is not None
             else MashHostConfig().cors_allow_origins
         ),
-        enable_observability=not (args.disable_observability or _env_flag("MASH_DISABLE_OBSERVABILITY")),
     )
     pool = _resolve_host(args.host_app)
     run_host(pool, config=config)

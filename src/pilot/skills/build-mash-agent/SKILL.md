@@ -368,7 +368,7 @@ curl "http://127.0.0.1:8000/api/v1/feedback?agent_id=assistant&after=0&q=trace"
 ```
 
 `POST /api/v1/feedback` records feedback programmatically (`agent_id` and
-`message` required). Neither route depends on `enable_observability`.
+`message` required).
 
 ## Structured Output
 
