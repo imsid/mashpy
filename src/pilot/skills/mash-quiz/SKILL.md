@@ -11,7 +11,7 @@ understand Mash internals and overcome the cold-start problem.
 
 ## Background Context
 
-Mash is an open-source SDK for building multi-agent applications in Python.
+Mash is an open-source, self-hosted, durable runtime for code-authored agents and workflows in Python.
 Key concepts users should learn about:
 
 - **AgentSpec**: Defines an agent's identity, tools, skills, LLM provider,

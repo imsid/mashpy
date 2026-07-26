@@ -1,9 +1,11 @@
 # Workflows
 
 `src/mash/workflows` is a DBOS-backed workflow layer on top of the Mash agent
-runtime. A workflow guarantees the execution of a deterministic, ordered set of
-steps, is durable (a run resumes from the failed step), and is observable (a
-per-step audit trail in a dedicated store).
+runtime. A workflow is an ordered pipeline of typed steps with deterministic,
+code-owned control flow; nondeterminism (an agent run, an external call) is
+contained inside steps with schema-checked boundaries. Runs are durable (a run
+resumes from the failed step) and observable (a per-step audit trail in a
+dedicated store).
 
 Every workflow is a **step pipeline**: an ordered `steps` list run by the
 forward-pipeline engine ([`engine.py`](./engine.py)). There is no alternative

@@ -484,7 +484,7 @@ on:
   <p>Session history, durability, streaming, and structured output come from the host. The new agent file contains only what's specific to that agent's behavior.</p>
 
   <div class="callout">
-    The <code>mash connect</code> CLI speaks the same H2A protocol as Moma's Node backend. During development, <code>mash connect --api-base-url http://127.0.0.1:8000 --agent chat</code> opens an interactive REPL against the local container — the same session management, streaming, and history that Moma's production users see.
+    The <code>mash connect</code> CLI speaks the same H2A protocol as Moma's Node backend. During development, <code>mash connect --api-base-url http://127.0.0.1:8000</code> then <code>mash repl --agent chat</code> opens an interactive REPL against the local container — the same session management, streaming, and history that Moma's production users see.
   </div>
 
 </div>

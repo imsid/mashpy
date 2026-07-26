@@ -105,8 +105,9 @@ agent instead of Pilot, change `MASH_HOST_APP` to point at your module (e.g.
 code and installs `mashpy` as a dependency.
 
 ```bash
-# Connect from another terminal
-mash connect --api-base-url http://127.0.0.1:8000 --api-key dev-key --agent pilot
+# Connect from another terminal, then target the agent per command
+mash connect --api-base-url http://127.0.0.1:8000 --api-key dev-key
+mash repl --agent pilot
 ```
 
 ## 2. Horizontal Scaling (Multiple Replicas)
@@ -336,8 +337,8 @@ databases:
 ```bash
 mash connect \
   --api-base-url https://my-agent.onrender.com \
-  --api-key <your-mash-api-key> \
-  --agent my-agent
+  --api-key <your-mash-api-key>
+mash repl --agent my-agent
 ```
 
 Render handles TLS, health checks, and zero-downtime deploys out of the box.
@@ -469,8 +470,8 @@ with httpx.stream(
 ```bash
 mash connect \
   --api-base-url http://your-host:8000 \
-  --api-key your-api-key \
-  --agent pilot
+  --api-key your-api-key
+mash repl --agent pilot
 ```
 
 ### CORS Configuration
