@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # model/provider configuration from the environment at import time.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-from mash.runtime import AgentMetadata, AgentSpec  # noqa: E402
+from mash import AgentMetadata, AgentSpec  # noqa: E402
 
 from .agents import admin, api, cli, mcp, pilot, runtime, workflow  # noqa: E402
 

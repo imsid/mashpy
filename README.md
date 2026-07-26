@@ -340,7 +340,7 @@ The `pilot-data` volume keeps the database durable across restarts.
 | `api-copilot` | `src/mash/api` — HTTP routes, FastAPI |
 | `mcp-copilot` | `src/mash/mcp` — MCP client/server, transport, tool adaptation |
 | `runtime-copilot` | `src/mash/runtime` — request lifecycle, event sourcing, durability |
-| `workflow-copilot` | `src/mash/workflows` — DBOS orchestration, task state, run status |
+| `workflow-copilot` | `src/mash/workflows` — step pipelines, DBOS orchestration, resume, run status |
 
 **Scaffolding your own app:** the guide carries `build-mash-agent`,
 `build-mash-workflow`, and `build-mash-host` skills so it goes beyond

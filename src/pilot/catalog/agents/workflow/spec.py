@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from mash.core.config import AgentConfig
-from mash.runtime import AgentMetadata
+from mash import AgentMetadata
 from mash.tools.registry import ToolRegistry
 
 from ..._base import CopilotAgentSpec, build_bash_tool
@@ -41,21 +41,23 @@ def build_workflow_metadata() -> AgentMetadata:
     return AgentMetadata(
         display_name="Mash Workflow Copilot",
         description=(
-            "Specialist for Mash host-level workflow specs, registry, DBOS-backed "
-            "workflow orchestration, run status, deduplication, and task state handoff."
+            "Specialist for Mash workflow step pipelines: WorkflowSpec, CodeStep "
+            "and AgentStep, output threading, DBOS-backed run orchestration, "
+            "resume, deduplication, and the per-step audit trail."
         ),
         capabilities=[
             "src/mash/workflows",
             "workflow registry",
             "workflow service",
             "DBOS workflow orchestration",
-            "workflow run status",
-            "task state handoff",
+            "workflow run status and resume",
+            "step audit trail",
         ],
         usage_guidance=(
-            "Use for questions centered on code-defined workflows, workflow "
-            "registration, DBOS-backed run orchestration, workflow task state, "
-            "or other behavior implemented under `src/mash/workflows`."
+            "Use for questions centered on code-defined workflow step pipelines, "
+            "workflow registration, DBOS-backed run orchestration, resume, the "
+            "step audit trail, or other behavior implemented under "
+            "`src/mash/workflows`."
         ),
     )
 

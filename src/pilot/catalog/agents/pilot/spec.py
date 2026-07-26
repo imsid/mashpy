@@ -12,7 +12,7 @@ from typing import Any
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.mcp.types import MCPServerConfig
-from mash.runtime import AgentMetadata, AgentSpec
+from mash import AgentMetadata, AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.ask_user import AskUserTool
 from mash.tools.registry import ToolRegistry

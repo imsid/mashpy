@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from mash.core.config import AgentConfig
-from mash.runtime import AgentMetadata
+from mash import AgentMetadata
 from mash.tools.registry import ToolRegistry
 
 from ..._base import CopilotAgentSpec, build_bash_tool

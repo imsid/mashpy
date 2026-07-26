@@ -23,7 +23,7 @@ step's output is the run result.
 
 ```python
 from pydantic import BaseModel
-from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from mash import AgentStep, CodeStep, StepContext, WorkflowSpec
 
 
 class ScanIn(BaseModel):
@@ -111,6 +111,10 @@ Registration validates that every `agent_id` a step names exists in the pool.
 No other wiring is needed; the API routes and REPL commands below work as soon
 as the pool serves.
 
+A pool needs no agents. A workflow of pure `CodeStep`s references none, and
+`HostBuilder().workflow(workflow).build()` with zero `.agent()` calls is a
+supported deploy that serves only workflow runs.
+
 ## Step 3: Run, Resume, Inspect
 
 Over the API:
@@ -138,6 +142,9 @@ Resume replays completed steps from their stored outputs and re-drives the
 pipeline from the failed step under the same `run_id`. Agent steps interlock
 with their own durable request through a deterministic `request_id`, so a
 resumed agent step continues mid-loop rather than resubmitting.
+
+From the CLI, `mash workflows` lists the deployment's workflows (id, step
+count, step kinds).
 
 From the REPL:
 

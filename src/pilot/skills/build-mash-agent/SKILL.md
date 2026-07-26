@@ -55,9 +55,9 @@ Create this file structure:
 Every Mash agent implements `AgentSpec`. Here is the minimal scaffold:
 
 ```python
+from mash import AgentMetadata, AgentSpec, HostBuilder
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
@@ -324,8 +324,11 @@ class MyAgent(AgentSpec):
 # Start the host server
 mash host serve --host-app {project_name}.spec:build_pool --port 8000
 
-# Connect straight to the agent (bare mode, no delegation)
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent assistant
+# Save the connection (validates the URL and key against /health)
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret
+
+# Talk to the agent directly (bare mode, no delegation)
+mash repl --agent assistant
 ```
 
 Or run programmatically:
