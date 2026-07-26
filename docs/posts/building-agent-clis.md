@@ -20,7 +20,7 @@ then teach it to compose a host and carry custom REPL commands.
 A Mash agent CLI has four layers:
 
 1. **Agent definitions**: `AgentSpec` subclasses plus a `build_pool()`
-   function that registers them into an `AgentPool`.
+   function that registers them into a `Pool`.
 2. **Host server**: `mash host serve` (or programmatic `run_host`) exposes
    the pool over HTTP.
 3. **CLI client**: a Python entrypoint that creates a `MashRemoteShell` and
@@ -531,7 +531,7 @@ interactions the quiz asks its questions through.
 | What you write | What it does |
 |---|---|
 | `AgentSpec` subclasses | Define each agent's tools, skills, LLM, and system prompt |
-| `build_pool()` function | Registers agents and workflows into an `AgentPool` |
+| `build_pool()` function | Registers agents and workflows into a `Pool` |
 | CLI entrypoint | Defines the host composition, creates `MashRemoteShell` pinned to it, registers commands |
 | Custom `Command` handlers | Domain-specific slash commands using `CLIContext`, routed through the shell's target |
 | Workflow commands | Start workflows and stream real-time execution traces |

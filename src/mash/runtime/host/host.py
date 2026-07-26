@@ -1,4 +1,4 @@
-"""Agent pool managing in-process per-agent runtime servers and clients."""
+"""Deployed pool managing in-process per-agent runtimes and registered workflows."""
 
 from __future__ import annotations
 
@@ -26,12 +26,14 @@ from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
 
 
-class AgentPool:
-    """Deployed pool of role-less agents and the hosts composed over them.
+class Pool:
+    """Deployed pool of role-less agents, workflows, and the hosts composed over them.
 
     The pool is the unit of deploy; a :class:`Host` is the unit of
     composition. Hosts are in-memory values: define them in code at build
     time or over the control API, and re-define them after a restart.
+    Workflows are registered on the pool directly and served pool-wide; a
+    pool with no user agents is a valid, workflow-only deploy.
     """
 
     def __init__(
@@ -341,7 +343,7 @@ class AgentPool:
                 allowed = set(host.subagents)
 
                 def _make_client_resolver(
-                    _pool: "AgentPool", _allowed: frozenset[str], _host_id: str
+                    _pool: "Pool", _allowed: frozenset[str], _host_id: str
                 ):
                     def _resolver(agent_id: str) -> Any:
                         if agent_id not in _allowed:
@@ -582,7 +584,7 @@ class AgentPool:
         runtime.tools = runtime.agent.tools
         runtime.skills = runtime.agent.skills
 
-    async def __aenter__(self) -> "AgentPool":
+    async def __aenter__(self) -> "Pool":
         await self.start()
         return self
 
@@ -591,4 +593,4 @@ class AgentPool:
         await self.close()
 
 
-__all__ = ["AgentPool"]
+__all__ = ["Pool"]

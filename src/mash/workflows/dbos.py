@@ -16,7 +16,7 @@ from mash.runtime.structured_output import normalize_structured_output_schema
 from .spec import WorkflowSpec
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentPool
+    from mash.runtime.host.host import Pool
 
 
 _WORKFLOW_NAME = "mash.workflow.execute"
@@ -37,7 +37,7 @@ _WORKFLOW_TASK_STRUCTURED_OUTPUT = {
 class _DBOSWorkflowState:
     registered_workflow: Any = None
     queue: Any = None
-    runner_registry: dict[str, "AgentPool"] = field(default_factory=dict)
+    runner_registry: dict[str, "Pool"] = field(default_factory=dict)
 
 
 _STATE = _DBOSWorkflowState()
@@ -84,20 +84,20 @@ def make_run_id(runner_id: str, workflow_id: str) -> str:
     return f"{workflow_run_id_prefix(runner_id, workflow_id)}{_compact_token(12)}"
 
 
-def register_runner(runner_id: str, pool: "AgentPool") -> None:
+def register_runner(runner_id: str, pool: "Pool") -> None:
     resolved = str(runner_id or "").strip()
     if not resolved:
         raise ValueError("runner_id is required")
     _STATE.runner_registry[resolved] = pool
 
 
-def unregister_runner(runner_id: str, pool: "AgentPool") -> None:
+def unregister_runner(runner_id: str, pool: "Pool") -> None:
     existing = _STATE.runner_registry.get(runner_id)
     if existing is pool:
         _STATE.runner_registry.pop(runner_id, None)
 
 
-def require_runner(runner_id: str) -> "AgentPool":
+def require_runner(runner_id: str) -> "Pool":
     pool = _STATE.runner_registry.get(runner_id)
     if pool is None:
         raise RuntimeError(f"workflow runner '{runner_id}' is not registered")
@@ -275,7 +275,7 @@ async def post_inline_agent_request(
     )
 
 
-def _resolve_inline_runtime(pool: "AgentPool", agent_id: str) -> Any | None:
+def _resolve_inline_runtime(pool: "Pool", agent_id: str) -> Any | None:
     get_agent = getattr(pool, "get_agent", None)
     if not callable(get_agent):
         return None

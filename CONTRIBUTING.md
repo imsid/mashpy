@@ -311,7 +311,7 @@ durable request engine, and back out as replayable runtime events:
 sequenceDiagram
     participant User
     participant API as mash.api
-    participant Pool as AgentPool
+    participant Pool
     participant Client as AgentClient
     participant Server as AgentServer
     participant Runtime as AgentRuntime

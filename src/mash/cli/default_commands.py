@@ -562,7 +562,7 @@ def register_default_commands(shell) -> None:
     shell.command_registry.register(
         Command(
             name="host",
-            help="List defined hosts (retarget with `mash compose` or `mash connect`)",
+            help="List defined hosts (retarget with `mash compose`)",
             handler=hosts_command,
         )
     )

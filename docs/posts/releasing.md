@@ -70,7 +70,7 @@ Or with a `BREAKING CHANGE:` footer in the commit body:
 ```
 feat(runtime): restructure host composition API
 
-BREAKING CHANGE: HostBuilder.build() now returns AgentPool directly.
+BREAKING CHANGE: HostBuilder.build() now returns Pool directly.
 ```
 
 Either form triggers a minor bump (pre-1.0) and a "Breaking Changes" section

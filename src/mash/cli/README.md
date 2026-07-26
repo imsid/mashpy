@@ -10,8 +10,8 @@ Global
 
 Connection bootstrap
 
-- `connect --api-base-url URL [--api-key KEY] [--agent ID | --host ID]`: persist a default deployment connection and target used by the other commands. `--host` targets an existing composition (validated against the deployment).
-- `compose --host ID --primary AGENT [--subagents a,b] [--workflows w1,w2]`: define (or replace) the host composition on the deployment, then pin it as the target. The `PUT` is idempotent; re-run `compose` to recompose. `--api-base-url` falls back to env or the saved config, and the saved `--agent` target is cleared so the host takes effect.
+- `connect --api-base-url URL [--api-key KEY]`: validate and persist the deployment connection used by the other commands. `connect` checks `GET /health` before saving, so a wrong URL or key fails here. It saves the connection only; targeting lives in per-command `--agent`/`--host` flags and `mash compose`.
+- `compose --host ID --primary AGENT [--subagents a,b] [--workflows w1,w2]`: define (or replace) the host composition on the deployment, then pin it as the target. The `PUT` is idempotent; re-run `compose` to recompose. `--api-base-url` falls back to env or the saved config.
 
 Common options shared by most host-facing commands
 
@@ -25,10 +25,11 @@ Host-facing commands
 - `status [common]`: show deployment base URL, agent count, and defined hosts.
 - `browse [common]`: browse the pool in one view — agents, pool-wide workflows (unfiltered by host), and defined host compositions.
 - `agents [common]`: list pooled agents and their display names.
+- `workflows [common]`: list the deployment's workflows with step count and step kinds.
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the connected target. To change the composition, exit and run `mash compose` (or `mash connect --agent`) again.
+- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the resolved target. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
 
 Host management
 

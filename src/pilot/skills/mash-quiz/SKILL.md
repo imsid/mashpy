@@ -16,8 +16,8 @@ Key concepts users should learn about:
 
 - **AgentSpec**: Defines an agent's identity, tools, skills, LLM provider,
   and system prompt
-- **HostBuilder / AgentPool**: Registers role-less agents (each with
-  AgentMetadata), workflows, and Host compositions into an AgentPool
+- **HostBuilder / Pool**: Registers role-less agents (each with
+  AgentMetadata), workflows, and Host compositions into a Pool
 - **Host**: Composition over the pool naming a primary and subagents;
   roles live in the host, not on the agents
 - **AgentRuntime / RequestEngine**: Manages request lifecycle, event sourcing,

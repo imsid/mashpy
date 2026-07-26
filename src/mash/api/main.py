@@ -7,7 +7,7 @@ import os
 from typing import Any, Sequence
 
 from mash.core.database import resolve_database_url
-from mash.runtime import AgentPool, HostBuilder
+from mash.runtime import Pool, HostBuilder
 
 from .app import run_host
 from .config import MashHostConfig
@@ -25,7 +25,7 @@ def _load_target(app_ref: str) -> Any:
     return getattr(module, attr_name)
 
 
-def _resolve_host(app_ref: str) -> AgentPool:
+def _resolve_host(app_ref: str) -> Pool:
     target = _load_target(app_ref)
     resolved = target() if callable(target) else target
 
@@ -33,9 +33,9 @@ def _resolve_host(app_ref: str) -> AgentPool:
         resolved = resolved.factory()
     if isinstance(resolved, HostBuilder):
         return resolved.build()
-    if isinstance(resolved, AgentPool):
+    if isinstance(resolved, Pool):
         return resolved
-    raise ValueError("host target must resolve to AgentPool, HostBuilder, or MashHostApp")
+    raise ValueError("host target must resolve to Pool, HostBuilder, or MashHostApp")
 
 
 def add_serve_parser(subparsers) -> None:

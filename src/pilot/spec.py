@@ -1,7 +1,7 @@
 """Pilot pool assembly: register the catalog as a flat pool.
 
 Spec classes live in their catalog sub-packages; this module wires them into
-an AgentPool, defines the default ``guide`` host, and re-exports the names
+a Pool, defines the default ``guide`` host, and re-exports the names
 the test suite imports from ``pilot.spec``.
 """
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Sequence
 
 from mash.api import MashHostConfig, run_host
-from mash.runtime import AgentPool, HostBuilder
+from mash.runtime import Pool, HostBuilder
 from mash.runtime.host.types import Host
 
 from .catalog.workflows.quiz import build_quiz_workflow_spec
@@ -58,7 +58,7 @@ __all__ = [
 ]
 
 
-def build_pool(workspace_root: Path | None = None) -> AgentPool:
+def build_pool(workspace_root: Path | None = None) -> Pool:
     """Build the Pilot agent pool from the catalog.
 
     Registers all catalog agents and defines a default ``guide`` host that

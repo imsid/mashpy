@@ -28,7 +28,7 @@ identities.
   terminal collection may fan out concurrently.
 - Idempotency of a step's external effects is the author's job (`StepContext`
   exposes stable `run_id`/`step_id`); the framework never invents keys.
-- `AgentPool` owns workflow registration, the shared `WorkflowStore`, and
+- `Pool` owns workflow registration, the shared `WorkflowStore`, and
   `WorkflowService` construction.
 
 ## Change Rules
@@ -41,7 +41,7 @@ identities.
   together.
 - If the store schema changes, update the migration, `store.py`, `WorkflowService`
   reads, and tests together.
-- If registration semantics change, update `HostBuilder`/`AgentPool` tests together.
+- If registration semantics change, update `HostBuilder`/`Pool` tests together.
 
 ## Minimal Validation
 - `python -m compileall src/mash/workflows`

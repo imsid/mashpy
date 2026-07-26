@@ -16,7 +16,7 @@ from unittest.mock import patch
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentPool
+    from mash.runtime.host.host import Pool
 
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowRegistry, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
@@ -131,7 +131,7 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         self.store = WorkflowStore(self.url)
         await self.store.open()
         self.registry = WorkflowRegistry()
-        self.host = cast("AgentPool", _FakeHost(self.registry, self.store))
+        self.host = cast("Pool", _FakeHost(self.registry, self.store))
         workflow_dbos.register_runner(self.RUNNER, self.host)
 
     async def asyncTearDown(self) -> None:

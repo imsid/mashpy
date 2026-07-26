@@ -4,7 +4,7 @@ This package is the Mash codebase root. The SDK/runtime remains the core layer, 
 
 ## What Must Stay True
 - `AgentSpec` is the single-agent SDK contract.
-- `HostBuilder` composes a flat pool of agents and optional `Host` definitions into an `AgentPool`.
+- `HostBuilder` composes a flat pool of agents and optional `Host` definitions into a `Pool`.
 - `AgentServer` exposes one per-agent runtime over HTTP + SSE.
 - Hosted APIs live in `mash.api`; remote terminal UX lives in `mash.cli`.
 - Tool definitions exposed to the model keep the expected schema contract.

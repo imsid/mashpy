@@ -22,7 +22,7 @@ Import the public API from `mash.runtime`:
 - `AgentSpec`: build contract for one agent
 - `AgentRuntime`: per-agent execution core
 - `AgentServer`: per-agent HTTP/SSE adapter
-- `AgentPool`: deployed pool of role-less agents
+- `Pool`: deployed pool of role-less agents
 - `Host`: immutable composition over the pool (primary + subagents + workflows)
 - `HostBuilder`: pool construction API
 - `AgentClient`: client for one addressable runtime
@@ -82,7 +82,7 @@ events:
 sequenceDiagram
     participant User
     participant API as mash.api
-    participant Pool as AgentPool
+    participant Pool
     participant Client as AgentClient
     participant Server as AgentServer
     participant Runtime as AgentRuntime
@@ -216,7 +216,7 @@ This is the execution/durability boundary. It decides how work starts and resume
 
 Direct runtime usage is explicit:
 
-- hosted paths (`AgentServer`, `AgentPool`) call `open()` during startup
+- hosted paths (`AgentServer`, `Pool`) call `open()` during startup
 - direct callers should `await runtime.open()` before submitting or streaming requests
 
 ## Stores
@@ -264,7 +264,7 @@ This is intentionally append-only and request-scoped.
 `AgentRuntime` does not create or close its stores — callers own that
 lifecycle. This design enables connection sharing across agents:
 
-- **`AgentPool`** creates one shared `PostgresRuntimeStore` and one shared
+- **`Pool`** creates one shared `PostgresRuntimeStore` and one shared
   `PostgresStore` for all agents that use the default `build_memory_store()`.
   Agents whose spec overrides `build_memory_store()` get their own instance.
   The pool opens the shared stores before creating runtimes and closes them
@@ -367,7 +367,7 @@ scaling linearly per agent.
 ### `host/`
 
 - `host/host.py`
-  - `AgentPool`
+  - `Pool`
   - in-process runtime lifecycle and the host (composition) registry
 
 - `host/builder.py`
@@ -634,7 +634,7 @@ These rules should keep the package understandable over time.
 
 - `AgentRuntime` is the per-agent execution core.
 - `AgentServer` is the per-agent transport wrapper.
-- `AgentPool` is agent lifecycle; `Host` values are composition. Roles are
+- `Pool` is agent lifecycle; `Host` values are composition. Roles are
   per-request (from the host snapshot), never runtime state.
 - `RuntimeStore` is the append-only runtime event log boundary.
 - `RequestEngine` is the workflow durability boundary.

@@ -64,6 +64,13 @@ CHANGELOG = WorkflowSpec(
 Register with `HostBuilder().workflow(CHANGELOG)`. Agent-step agents are
 auto-registered from their `agent_spec`.
 
+A pool built from workflows alone is a supported deploy shape:
+`HostBuilder().workflow(spec).build()` with zero `.agent()` calls serves only
+workflow runs. A `WorkflowSpec` of pure `CodeStep`s references no agents;
+`AgentStep`s still require their `agent_id` to resolve in the pool. Hosts are
+unrelated to this shape — workflow run endpoints are pool-level, and a `Host`
+always names a primary agent.
+
 ## Idempotency
 
 Step execution is at-least-once (DBOS recovery re-runs an interrupted step).
@@ -106,7 +113,7 @@ workflow layer:
   `(run_id, step_id, attempt, event_type)`. This is what makes **code** steps
   observable, since they emit no agent runtime events.
 
-`WorkflowStore` ([`store.py`](./store.py)) is opened and shared by `AgentPool`.
+`WorkflowStore` ([`store.py`](./store.py)) is opened and shared by `Pool`.
 
 ## Service and API
 

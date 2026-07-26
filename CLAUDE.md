@@ -28,8 +28,8 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
 - **AgentMetadata** — self-description supplied when an agent is registered
   (display name, description, capabilities, usage guidance). Role-independent.
 - **HostBuilder** — fluent builder that composes a flat pool of agents,
-  optional workflows, and optional host definitions into an `AgentPool`.
-- **AgentPool** — the deployed pool of role-less agents that the API server
+  optional workflows, and optional host definitions into a `Pool`.
+- **Pool** — the deployed pool of role-less agents that the API server
   runs. The pool is the unit of deploy.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
@@ -403,7 +403,7 @@ mash repl                                           # pinned to 'assistant'
 The REPL target is fixed for its lifetime; to change composition, exit and
 `mash compose` again (or `mash connect --agent <id>` for a bare agent).
 
-**Connection sharing:** `AgentPool` creates one shared Postgres connection
+**Connection sharing:** `Pool` creates one shared Postgres connection
 pool and one shared memory store for all agents that use the default
 `build_memory_store()`. This keeps the total database connection count
 constant regardless of agent count. Agents that override

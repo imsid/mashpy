@@ -26,7 +26,7 @@ def _resolve_connection(
     saved = load_config()
     base_url = (getattr(args, "api_base_url", None) or os.environ.get("MASH_API_BASE_URL") or (saved.api_base_url if saved else "")).strip()
     api_key = getattr(args, "api_key", None) or os.environ.get("MASH_API_KEY") or (saved.api_key if saved else None)
-    agent_id = getattr(args, "agent", None) or (saved.agent_id if saved else None)
+    agent_id = getattr(args, "agent", None)
     host_id = getattr(args, "host_id", None) or (saved.host_id if saved else None)
     if not base_url:
         raise ValueError("API base URL is required. Use --api-base-url or `mash connect`.")
@@ -177,25 +177,18 @@ def _run_connect(args: argparse.Namespace) -> int:
         return 1
     base_url, api_key = connection
 
-    if args.host_id:
-        client = MashHostClient(base_url, api_key=api_key)
-        try:
-            described = client.get_host(args.host_id)
-        except Exception as exc:
-            renderer.error(str(exc))
-            return 1
-        finally:
-            client.close()
-        _render_host_view(renderer, described)
+    # Validate the connection before saving so a wrong URL or key fails here,
+    # not on the next command.
+    client = MashHostClient(base_url, api_key=api_key)
+    try:
+        client.health()
+    except Exception as exc:
+        renderer.error(f"could not connect to {base_url}: {exc}")
+        return 1
+    finally:
+        client.close()
 
-    path = save_config(
-        CLIConfig(
-            api_base_url=base_url,
-            api_key=api_key,
-            agent_id=args.agent,
-            host_id=args.host_id,
-        )
-    )
+    path = save_config(CLIConfig(api_base_url=base_url, api_key=api_key))
     print(f"Saved connection to {path}")
     return 0
 
@@ -222,13 +215,11 @@ def _run_compose(args: argparse.Namespace) -> int:
         client.close()
     _render_host_view(renderer, described)
 
-    # Pin the composition as the current target. The saved agent_id is
-    # cleared because an explicit agent outranks the host at resolve time.
+    # Pin the composition as the current target.
     path = save_config(
         CLIConfig(
             api_base_url=base_url,
             api_key=api_key,
-            agent_id=None,
             host_id=args.host_id,
         )
     )
@@ -247,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     connect = subparsers.add_parser(
         "connect",
-        help="Persist a deployment connection and target",
+        help="Validate and persist a deployment connection",
     )
     connect.add_argument(
         "--api-base-url",
@@ -255,8 +246,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mash host base URL, e.g. http://127.0.0.1:8000 (falls back to saved config)",
     )
     connect.add_argument("--api-key", default=None, help="Optional bearer API key")
-    connect.add_argument("--agent", default=None, help="Target a bare agent id (no composition)")
-    connect.add_argument("--host", dest="host_id", default=None, help="Target an existing host id")
 
     compose = subparsers.add_parser(
         "compose",
@@ -294,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Browse the pool: agents, workflows, and hosts",
     )
     subparsers.add_parser("agents", parents=[common], help="List deployment agents")
+    subparsers.add_parser("workflows", parents=[common], help="List deployment workflows")
     subparsers.add_parser("hosts", parents=[common], help="List defined hosts")
 
     subparsers.add_parser("sessions", parents=[common], help="List sessions for an agent")
@@ -376,6 +366,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ]
                 )
             renderer.table(["Agent", "Name"], rows)
+            return 0
+
+        if args.command == "workflows":
+            workflows = client.list_workflows()
+            rows = []
+            for workflow in sorted(
+                workflows, key=lambda w: str(w.get("workflow_id") or "")
+            ):
+                kinds = workflow.get("step_kinds") or {}
+                rendered_kinds = ", ".join(
+                    f"{count} {kind}"
+                    for kind, count in sorted(kinds.items())
+                    if isinstance(count, int) and count > 0
+                )
+                rows.append(
+                    [
+                        str(workflow.get("workflow_id") or ""),
+                        str(workflow.get("step_count") or 0),
+                        rendered_kinds,
+                    ]
+                )
+            renderer.table(["Workflow", "Steps", "Kinds"], rows)
             return 0
 
         if args.command == "hosts":
