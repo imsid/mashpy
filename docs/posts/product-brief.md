@@ -1,6 +1,6 @@
 ---
 title: Mash Product Brief
-description: Mash is a self-hosted, durable runtime for code-authored automations. Agents and workflows deploy behind one API, on your own Postgres.
+description: Mash is a self-hosted, durable runtime for code-authored worklows with agents behind one API.
 date: 2026-07-25
 author: imsid
 tags:

@@ -5,8 +5,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/mashpy.svg)](https://pypi.org/project/mashpy/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Mash is a self-hosted, durable runtime for code-authored automations: deploy
-agents and workflows behind one API, on your own Postgres. A workflow is an
+Mash is a self-hosted durable runtime for code-authored automations using workflows with agents. A workflow is an
 ordered pipeline of typed steps, a step is deterministic Python or one run of a
 harnessed agent, and control flow stays in code.
 

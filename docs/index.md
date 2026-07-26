@@ -1,6 +1,6 @@
 ---
 title: Mash
-description: Self-hosted, durable runtime for code-authored automations. Deploy agents and workflows behind one API, on your own Postgres.
+description: Self-hosted, durable runtime for code-authored worklows with agents behind one API.
 hide:
   - navigation
   - toc
@@ -8,8 +8,7 @@ hide:
 
 # Mash
 
-**A self-hosted, durable runtime for code-authored automations: agents and
-workflows behind one API, on your own Postgres.**
+**A self-hosted, durable runtime for code-authored worklows with agents.**
 
 A workflow is an ordered pipeline of typed steps; a step is deterministic
 Python or one run of a harnessed agent. Control flow stays in code.
