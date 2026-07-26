@@ -16,7 +16,7 @@ from .spec import WorkflowSpec
 from .store import RUN_QUEUED, RUN_TERMINAL
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentPool
+    from mash.runtime.host.host import Pool
 
 
 @dataclass
@@ -85,7 +85,7 @@ class WorkflowService:
     def __init__(
         self,
         workflow_registry: WorkflowRegistry,
-        pool: "AgentPool",
+        pool: "Pool",
         *,
         runner_id: str,
     ) -> None:

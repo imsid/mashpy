@@ -270,8 +270,8 @@ mash repl --host assistant
 | Concept | What it is |
 |---|---|
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
-| **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into an AgentPool |
-| **AgentPool** | The deployed pool of role-less agents the API server runs |
+| **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
+| **Pool** | The deployed pool of role-less agents the API server runs |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
 | **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |

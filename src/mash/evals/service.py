@@ -365,7 +365,7 @@ def diff_agent_specs(
     """Per-agent field-level delta between two agent-spec snapshots.
 
     Both inputs map ``agent_id -> spec-snapshot`` (see
-    ``AgentPool.snapshot_host_agent_specs``). Returns one entry per agent that
+    ``Pool.snapshot_host_agent_specs``). Returns one entry per agent that
     changed, was added, or was removed, listing the fields that differ.
     Computed at comparison time only — deltas are never stored.
     """

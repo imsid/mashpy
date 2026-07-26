@@ -10,7 +10,7 @@ from unittest.mock import patch
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentPool
+    from mash.runtime.host.host import Pool
 
 from mash.testing.runtime_fixtures import build_spec
 from mash.workflows import (
@@ -94,7 +94,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         registry = WorkflowRegistry()
         registry.register(workflow)
         return WorkflowService(
-            registry, cast("AgentPool", _FakeHost(registry)), runner_id="runner-1"
+            registry, cast("Pool", _FakeHost(registry)), runner_id="runner-1"
         )
 
     async def test_list_workflows_returns_catalog_summaries(self) -> None:

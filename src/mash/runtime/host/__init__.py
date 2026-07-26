@@ -12,15 +12,15 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .builder import HostBuilder
-    from .host import AgentPool
+    from .host import Pool
     from .subagents import AgentMetadata
     from .types import Host
 
-__all__ = ["AgentMetadata", "AgentPool", "Host", "HostBuilder"]
+__all__ = ["AgentMetadata", "Pool", "Host", "HostBuilder"]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     "AgentMetadata": (".subagents", "AgentMetadata"),
-    "AgentPool": (".host", "AgentPool"),
+    "Pool": (".host", "Pool"),
     "Host": (".types", "Host"),
     "HostBuilder": (".builder", "HostBuilder"),
 }

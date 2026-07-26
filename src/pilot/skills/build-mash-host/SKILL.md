@@ -10,10 +10,10 @@ application. The model to keep in mind:
 
 | Concept | Role |
 |---|---|
-| `AgentPool` | The deployed flat pool of role-less agents — the unit of deploy |
+| `Pool` | The deployed flat pool of role-less agents — the unit of deploy |
 | `Host` | A composition over the pool naming a primary and subagents — the unit of composition |
 | `AgentMetadata` | Required self-description registered with every agent; the routing surface delegation decisions are made from |
-| `HostBuilder` | Fluent builder producing an `AgentPool` from agents, workflows, and host definitions |
+| `HostBuilder` | Fluent builder producing a `Pool` from agents, workflows, and host definitions |
 
 Agents never carry roles. "Primary" and "subagent" only exist inside a `Host`,
 so the same agent can be primary in one host and a subagent in another. One

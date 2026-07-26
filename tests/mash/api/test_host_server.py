@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import tempfile
@@ -26,7 +27,7 @@ from mash.api.routes.common import API_KEY_COOKIE
 from mash.runtime import Host, HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec, metadata
-from mash.workflows import AgentStep, WorkflowSpec
+from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
 from mash.workflows import dbos as workflow_dbos
 
@@ -34,6 +35,31 @@ from mash.workflows import dbos as workflow_dbos
 class ChangelogInput(BaseModel):
     target_agent_id: str | None = None
     count: int = 1
+
+
+class DoublerInput(BaseModel):
+    n: int
+
+
+class DoublerOutput(BaseModel):
+    n: int
+    doubled: int
+
+
+def _double_code_step(inp: DoublerInput, _ctx: StepContext) -> DoublerOutput:
+    return DoublerOutput(n=inp.n, doubled=inp.n * 2)
+
+
+class _InlineDBOS:
+    """Runs engine steps inline, standing in for DBOS in workflow tests."""
+
+    @staticmethod
+    async def run_step_async(config, func, *args, **kwargs):
+        del config
+        result = func(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 MASHER_WORKFLOW_IDS = [
@@ -1191,6 +1217,98 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
             assert payload["workflow_id"] == "changelog"
             assert payload["status"] == "queued"
             assert payload["run_id"] == "mw:host-1:changelog:abc"
+
+
+def test_workflow_only_pool_serves_and_completes_runs() -> None:
+    """A pool with one code-only workflow and no user agents is a valid deploy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch.dict(
+            os.environ,
+            {"MASH_DATA_DIR": str(root), "MASH_DATABASE_URL": ""},
+        ):
+            pool = (
+                HostBuilder()
+                .workflow(
+                    WorkflowSpec(
+                        workflow_id="doubler",
+                        input_model=DoublerInput,
+                        steps=[
+                            CodeStep(
+                                step_id="double",
+                                run=_double_code_step,
+                                input=DoublerInput,
+                                output=DoublerOutput,
+                            )
+                        ],
+                    )
+                )
+                .build()
+            )
+            app = create_app(
+                pool,
+                config=MashHostConfig(
+                    runtime_database_url="postgresql://test/runtime"
+                ),
+            )
+            with TestClient(app) as client:
+                # Only the always-registered masher eval agents are in the pool.
+                listed_agents = client.get("/api/v1/agent")
+                assert listed_agents.status_code == 200
+                agent_ids = {
+                    agent["agent_id"]
+                    for agent in listed_agents.json()["data"]["agents"]
+                }
+                assert agent_ids == {"eval-agent", "eval-judge-agent"}
+
+                listed = client.get("/api/v1/workflow")
+                assert listed.status_code == 200
+                workflow_ids = [
+                    workflow["workflow_id"]
+                    for workflow in listed.json()["data"]["workflows"]
+                ]
+                assert "doubler" in workflow_ids
+
+                inline_dbos = (_InlineDBOS, None, None, None, None)
+
+                async def start_workflow_run(**kwargs):
+                    run_id = workflow_dbos.make_run_id(
+                        kwargs["runner_id"], kwargs["workflow"].workflow_id
+                    )
+                    with patch.object(
+                        workflow_dbos, "_load_dbos_api", return_value=inline_dbos
+                    ), patch(
+                        "mash.workflows.engine.load_dbos_api",
+                        return_value=inline_dbos,
+                    ):
+                        await workflow_dbos.execute_registered_workflow(
+                            kwargs["runner_id"],
+                            kwargs["workflow"].workflow_id,
+                            run_id,
+                            workflow_input=kwargs["workflow_input"],
+                            session_id=kwargs["session_id"],
+                        )
+                    return run_id
+
+                async def get_workflow_status(_run_id):
+                    return None
+
+                with patch.object(
+                    workflow_dbos, "start_workflow_run", start_workflow_run
+                ), patch.object(
+                    workflow_dbos, "get_workflow_status", get_workflow_status
+                ):
+                    submitted = client.post(
+                        "/api/v1/workflow/doubler/run", json={"input": {"n": 21}}
+                    )
+                assert submitted.status_code == 200
+                run_id = submitted.json()["data"]["run_id"]
+
+                detail = client.get(f"/api/v1/workflow/doubler/runs/{run_id}")
+                assert detail.status_code == 200
+                run = detail.json()["data"]
+                assert run["status"] == "completed"
+                assert run["result"] == {"n": 21, "doubled": 42}
 
 
 def test_workflow_run_accepts_input_object() -> None:

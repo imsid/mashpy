@@ -17,7 +17,7 @@
     "commands": [
       {
         "name": "connect",
-        "help": "Persist a deployment connection and target",
+        "help": "Validate and persist a deployment connection",
         "args": [
           {
             "flags": [
@@ -36,28 +36,6 @@
             ],
             "name": "api_key",
             "help": "Optional bearer API key",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target a bare agent id (no composition)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
-              "--host"
-            ],
-            "name": "host_id",
-            "help": "Target an existing host id",
             "positional": false,
             "required": false,
             "default": null,
@@ -244,6 +222,57 @@
       {
         "name": "agents",
         "help": "List deployment agents",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "workflows",
+        "help": "List deployment workflows",
         "args": [
           {
             "flags": [
@@ -653,7 +682,7 @@
       },
       {
         "name": "host",
-        "help": "List defined hosts (retarget with `mash compose` or `mash connect`)",
+        "help": "List defined hosts (retarget with `mash compose`)",
         "aliases": []
       },
       {

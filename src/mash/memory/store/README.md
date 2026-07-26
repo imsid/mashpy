@@ -177,7 +177,7 @@ Behavior:
 - `AgentSpec.build_memory_store()` requires `MASH_DATABASE_URL` to be set.
 - When `MASH_DATABASE_URL` is unset, `build_memory_store()` raises `RuntimeError`. Set the variable to a Postgres connection string before starting the agent.
 - Override `build_memory_store()` in your `AgentSpec` subclass to supply a custom store implementation.
-- In multi-agent pools, `AgentPool` shares a single `PostgresStore` instance
+- In multi-agent pools, `Pool` shares a single `PostgresStore` instance
   across all agents that use the default `build_memory_store()`. Agents that
   override `build_memory_store()` get their own store instance. Store lifecycle
   (open/close) is owned by the host, not by individual runtimes.

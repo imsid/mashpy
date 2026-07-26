@@ -28,7 +28,7 @@ from mash.api.routes.telemetry import build_telemetry_router
 from mash.api.routes.workflow import build_workflow_router
 from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
-from mash.runtime import AgentClientError, AgentPool
+from mash.runtime import AgentClientError, Pool
 from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
@@ -39,7 +39,7 @@ from .config import MashHostConfig
 from .admin_ui import mount_admin_ui
 
 
-def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> FastAPI:
+def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     """Build a FastAPI app that exposes one hosted Mash deployment."""
 
     resolved_config = config or MashHostConfig()
@@ -196,7 +196,7 @@ def create_app(pool: AgentPool, *, config: MashHostConfig | None = None) -> Fast
     return app
 
 
-def run_host(pool: AgentPool, *, config: MashHostConfig | None = None) -> None:
+def run_host(pool: Pool, *, config: MashHostConfig | None = None) -> None:
     """Run the Mash host API service with uvicorn."""
 
     resolved_config = config or MashHostConfig()

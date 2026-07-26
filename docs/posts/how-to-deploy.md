@@ -137,7 +137,7 @@ same Postgres instance.
 ```
 
 Each replica independently runs `build_pool()`, creating its own
-`AgentPool` with all agents in-process. Every replica
+`Pool` with all agents in-process. Every replica
 is a fully self-contained, identical copy.
 
 **Why this works:**

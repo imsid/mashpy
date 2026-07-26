@@ -12,7 +12,7 @@ from unittest.mock import patch
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from mash.runtime.host.host import AgentPool
+    from mash.runtime.host.host import Pool
 
 from mash.workflows import (
     CodeStep,
@@ -116,7 +116,7 @@ class WorkflowServiceStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         self.service = WorkflowService(
             self.registry,
-            cast("AgentPool", _FakePool(self.store)),
+            cast("Pool", _FakePool(self.store)),
             runner_id="svc-runner",
         )
         self.run_id = f"mw:svc:{self.WF}:{uuid.uuid4().hex}"

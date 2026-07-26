@@ -8,7 +8,7 @@ from mash.core.database import resolve_database_url
 from mash.workflows import WorkflowSpec
 
 from ..spec import AgentSpec
-from .host import AgentPool
+from .host import Pool
 from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
 
@@ -59,8 +59,8 @@ class HostBuilder:
         self._workflows.append(workflow)
         return self
 
-    def build(self) -> AgentPool:
-        pool = AgentPool(runtime_database_url=resolve_database_url())
+    def build(self) -> Pool:
+        pool = Pool(runtime_database_url=resolve_database_url())
         for registered in self._agents:
             pool.register_agent(
                 registered.definition,

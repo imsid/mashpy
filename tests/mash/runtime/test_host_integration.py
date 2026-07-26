@@ -245,7 +245,7 @@ class _MetadataReadingAgentSpec(AgentSpec):
         )
 
 
-class AgentPoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
+class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._masher_llm_patch = patch(
             "mash.agents.masher.spec.EvalAgentSpec.build_llm",

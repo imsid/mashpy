@@ -13,7 +13,7 @@ from mash.api.logging import build_api_event_filter
 from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
-from mash.runtime import AgentPool
+from mash.runtime import Pool
 from mash.runtime.client import AgentClientLike
 
 # Cookie the admin SPA sets so its same-origin API calls authenticate without
@@ -41,7 +41,7 @@ class APIError(RuntimeError):
 
 @dataclass
 class AppRuntimeState:
-    pool: AgentPool
+    pool: Pool
     api_event_store: Any
     eval_service: Any
     api_key: Optional[str]
