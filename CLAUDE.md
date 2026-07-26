@@ -1,9 +1,11 @@
-# Mash — Building Agents
+# Mash — Building Agents and Workflows
 
-Mash is a Python SDK and host runtime for building self-hosted multi-agent
-applications. This file gives coding agents (Claude Code, Codex, Cursor, etc.)
-everything they need to scaffold and build a Mash-powered agent from a user
-prompt.
+Mash is a self-hosted, durable runtime for code-authored automations: agents
+and workflows deployed behind one API, on your own Postgres. A workflow is an
+ordered pipeline of typed steps, a step is deterministic Python or one run of
+a harnessed agent, and control flow stays in code. This file gives coding
+agents (Claude Code, Codex, Cursor, etc.) everything they need to scaffold and
+build a Mash-powered automation from a user prompt.
 
 **Install:**
 
@@ -28,9 +30,10 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
 - **AgentMetadata** — self-description supplied when an agent is registered
   (display name, description, capabilities, usage guidance). Role-independent.
 - **HostBuilder** — fluent builder that composes a flat pool of agents,
-  optional workflows, and optional host definitions into a `Pool`.
-- **Pool** — the deployed pool of role-less agents that the API server
-  runs. The pool is the unit of deploy.
+  workflows, and optional host definitions into a `Pool`.
+- **Pool** — the deployed pool of role-less agents and workflows that the API
+  server runs. The pool is the unit of deploy; a pool with no user agents is a
+  valid, workflow-only deploy.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -47,7 +50,17 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
   endpoint, with `GemmaProvider`/`QwenProvider`/`DeepSeekProvider`/`LlamaProvider`
   presets).
 - **WorkflowSpec / CodeStep / AgentStep** — durable, observable ordered step
-  pipelines orchestrated by DBOS.
+  pipelines. Code owns the control flow; nondeterminism is contained inside
+  typed steps with schema-checked boundaries.
+
+The authoring surface imports from the package root:
+
+```python
+from mash import (
+    AgentSpec, AgentMetadata, Host, HostBuilder, Pool,
+    WorkflowSpec, CodeStep, AgentStep, StepContext,
+)
+```
 
 ## Minimal Agent Scaffold
 
@@ -55,9 +68,9 @@ This is the starting template. Every Mash app follows this structure:
 
 ```python
 # my_agent/spec.py
+from mash import AgentMetadata, AgentSpec, HostBuilder
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
@@ -104,11 +117,52 @@ Run it:
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
-Connect:
+Connect and talk to it:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --agent assistant
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret
+mash repl --agent assistant
 ```
+
+## Minimal Workflow-Only Scaffold
+
+A pool needs no user agents. A workflow of pure `CodeStep`s deploys the same
+way and serves only workflow runs:
+
+```python
+# my_workflow/spec.py
+from mash import CodeStep, HostBuilder, StepContext, WorkflowSpec
+from pydantic import BaseModel
+
+
+class ExportIn(BaseModel):
+    table: str
+
+class ExportOut(BaseModel):
+    rows: int
+
+
+def export(inp: ExportIn, ctx: StepContext) -> ExportOut:
+    ...
+
+
+def build_pool():
+    return (
+        HostBuilder()
+        .workflow(
+            WorkflowSpec(
+                workflow_id="export",
+                input_model=ExportIn,
+                steps=[CodeStep(step_id="export", run=export, input=ExportIn, output=ExportOut)],
+            )
+        )
+        .build()
+    )
+```
+
+Run it the same way, then start runs over the API
+(`POST /api/v1/workflow/export/run`) or the CLI. `mash workflows` lists the
+deployment's workflows.
 
 ## AgentSpec Contract
 
@@ -332,7 +386,7 @@ names one agent as primary and a set of subagents; roles live in the host,
 not on the agents.
 
 ```python
-from mash.runtime import AgentMetadata, Host, HostBuilder
+from mash import AgentMetadata, Host, HostBuilder
 
 pool = (
     HostBuilder()
@@ -401,7 +455,7 @@ mash repl                                           # pinned to 'assistant'
 ```
 
 The REPL target is fixed for its lifetime; to change composition, exit and
-`mash compose` again (or `mash connect --agent <id>` for a bare agent).
+`mash compose` again (or `mash repl --agent <id>` for a bare agent).
 
 **Connection sharing:** `Pool` creates one shared Postgres connection
 pool and one shared memory store for all agents that use the default
@@ -420,7 +474,7 @@ per-step audit trail in the workflow store).
 
 ```python
 from pydantic import BaseModel
-from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from mash import AgentStep, CodeStep, StepContext, WorkflowSpec
 
 
 class ScanIn(BaseModel):

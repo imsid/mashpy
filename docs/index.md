@@ -1,6 +1,6 @@
 ---
 title: Mash
-description: Build self-hosted agent applications on frontier and open source models.
+description: Self-hosted, durable runtime for code-authored automations. Deploy agents and workflows behind one API, on your own Postgres.
 hide:
   - navigation
   - toc
@@ -8,17 +8,19 @@ hide:
 
 # Mash
 
-**Build self-hosted agent applications on frontier and open source models.**
+**A self-hosted, durable runtime for code-authored automations: agents and
+workflows behind one API, on your own Postgres.**
 
-[Mash](posts/product-brief.md) is a Python SDK and a host runtime for building,
-composing, and evaluating agents and workflows.
-It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
-standardizes interactions between user applications and agents. 
+A workflow is an ordered pipeline of typed steps; a step is deterministic
+Python or one run of a harnessed agent. Control flow stays in code.
+[Mash](posts/product-brief.md) is designed around the
+[Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that
+standardizes interactions between user applications and agents.
 
-It runs on both frontier and open source models. The harness includes web search,
-local and remote (MCP) tools, skills, context and memory management,
-human-in-the-loop (HITL), pre-built commands and workflows, synthetic evals,
-an API/CLI for access, observability, and a durable runtime.
+Workflows run durably with a per-step audit trail. The agent harness includes
+web search, local and remote (MCP) tools, skills, context and memory
+management, human-in-the-loop (HITL), synthetic evals, an API/CLI for access,
+and observability. It runs on both frontier and open source models.
 
 **Try it now with Pilot:**
 
@@ -63,9 +65,9 @@ declares a system prompt, tools, skills and agent config.
 ```python
 ## my_app/agents.py
 
+from mash import AgentSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentSpec
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
@@ -113,17 +115,18 @@ class ResearchAgent(AgentSpec):
         )
 ```
 
-**Add a workflow:**
+**Author the workflow:**
 
-A workflow is an ordered pipeline of typed steps. Use a `CodeStep` for
-deterministic Python and an `AgentStep` when the work needs an agent.
+The workflow is the automation: an ordered pipeline of typed steps that code
+owns end to end. Use a `CodeStep` for deterministic Python and an `AgentStep`
+when the work needs an agent.
 
 ```python
 ## my_app/workflows.py
 
 from pydantic import BaseModel
 
-from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from mash import AgentStep, CodeStep, StepContext, WorkflowSpec
 
 
 class ResearchRequest(BaseModel):
@@ -176,12 +179,14 @@ RESEARCH_BRIEF = WorkflowSpec(
 The `CodeStep` output becomes the `AgentStep` input. Mash validates both edges,
 runs each step durably, and uses the last step's output as the workflow result.
 
-**Build Mash host with an Agent pool:**
+**Build the pool:**
+
+The pool is the unit of deploy: agents and workflows registered together.
 
 ```python
 ## my_app/host.py
 
-from mash.runtime import AgentMetadata, HostBuilder
+from mash import AgentMetadata, HostBuilder
 
 from .agents import ConciergeAgent, ResearchAgent
 from .workflows import RESEARCH_BRIEF
@@ -214,6 +219,15 @@ def build_pool():
     return pool
 ```
 
+A pool can also be workflows alone. A workflow of pure `CodeStep`s references
+no agents, and the resulting pool serves only workflow runs:
+
+```python
+def build_pool():
+    # EXPORT_METRICS is a WorkflowSpec of pure CodeSteps; no agents needed.
+    return HostBuilder().workflow(EXPORT_METRICS).build()
+```
+
 **Configure the environment:**
 
 The host needs an LLM key and a Postgres URL for its durable runtime. Put
@@ -238,7 +252,7 @@ mash browse
 
 **Compose an assistant host with primary and subagents:**
 ```bash
-mash compose assistant --primary concierge --subagents research \
+mash compose --host assistant --primary concierge --subagents research \
   --workflows research-brief
 ```
 
