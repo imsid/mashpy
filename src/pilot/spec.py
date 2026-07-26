@@ -12,9 +12,8 @@ import os
 from pathlib import Path
 from typing import Sequence
 
+from mash import Host, HostBuilder, Pool
 from mash.api import MashHostConfig, run_host
-from mash.runtime import Pool, HostBuilder
-from mash.runtime.host.types import Host
 
 from .catalog.workflows.quiz import build_quiz_workflow_spec
 
@@ -67,8 +66,7 @@ def build_pool(workspace_root: Path | None = None) -> Pool:
     """
     _repo_root = Path(__file__).resolve().parents[2]
     resolved = (
-        workspace_root
-        or Path(os.environ.get("PILOT_WORKSPACE_ROOT", str(_repo_root)))
+        workspace_root or Path(os.environ.get("PILOT_WORKSPACE_ROOT", str(_repo_root)))
     ).resolve()
     ws = str(resolved)
 

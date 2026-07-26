@@ -29,7 +29,7 @@ Register every agent role-less into the flat pool, then compose a `Host` over
 it:
 
 ```python
-from mash.runtime import AgentMetadata, Host, HostBuilder
+from mash import AgentMetadata, Host, HostBuilder
 
 pool = (
     HostBuilder()

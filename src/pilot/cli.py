@@ -187,9 +187,7 @@ def _workflow_rows(workflows: list[dict[str, Any]]) -> list[list[str]]:
                 rendered_steps.append(
                     f"{step.get('step_id') or ''} ({step.get('kind') or ''})"
                 )
-        rows.append(
-            [str(workflow.get("workflow_id") or ""), ", ".join(rendered_steps)]
-        )
+        rows.append([str(workflow.get("workflow_id") or ""), ", ".join(rendered_steps)])
     return rows
 
 

@@ -11,7 +11,7 @@ from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.core.llm.anthropic import AnthropicProvider
 from mash.core.llm.openai import OpenAIProvider
-from mash.runtime import AgentSpec
+from mash import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.bash import BashTool
 
