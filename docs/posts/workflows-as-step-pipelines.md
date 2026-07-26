@@ -10,11 +10,11 @@ tags:
 
 # Workflows as Step Pipelines
 
-A Mash workflow is an ordered pipeline of steps. A step is either a `CodeStep`, a deterministic Python function, or an `AgentStep`, one run of a registered agent's loop. Every step declares a pydantic input and output, data threads from each step into the next, and the last step's output is the run result.
+A Mash workflow is an ordered pipeline of steps. A step is either a `CodeStep`, a deterministic Python function, or an `AgentStep`, one run of a registered agent's loop. Every step declares a pydantic input and output, data threads from each step into the next, and the last step's output is the run result. Workflows register on the pool as peers of agents, and the pipeline is the automation itself: control flow lives in the `steps` list, and the model reasons inside its step.
 
 ```python
 from pydantic import BaseModel
-from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from mash import AgentStep, CodeStep, HostBuilder, StepContext, WorkflowSpec
 
 class ScanIn(BaseModel):
     repo_url: str
@@ -45,6 +45,8 @@ pool = HostBuilder().agent(WriterSpec(), metadata=...).workflow(CHANGELOG).build
 The changelog job above has one deterministic part and one part that needs a model. Scanning the repo is Python: it should run exactly as written, and a retry should re-run the function, with no LLM in the path. Writing the summary is agent work. The two step kinds keep that boundary explicit in the definition, and two of the Masher workflows that ship with Mash (trace digest, online eval curation) are all `CodeStep`.
 
 An `AgentStep` targets an agent already in the pool by `agent_id`, or carries its own `agent_spec`, which the builder registers as a [workflow-only agent](composing-agents.md) hidden from listings and delegation. When the step runs, that agent receives a normal request and executes it through the [same durable loop](durable-agent-loop.md) as everything else.
+
+A pool needs no agents at all. A workflow of pure `CodeStep`s references none, and `HostBuilder().workflow(spec).build()` with zero `.agent()` calls is a supported deploy that serves only workflow runs. Hosts are unchanged: a `Host` still names a primary agent, and workflow runs never go through a host.
 
 ## Output threading
 

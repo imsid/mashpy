@@ -2,7 +2,7 @@
 # Docs: https://zensical.org/docs/setup/basics/
 [project]
 site_name = "Mash"
-site_description = "Mash — a self-hosted runtime and SDK for building multi-agent applications."
+site_description = "Mash is a self-hosted, durable runtime for code-authored automations: agents and workflows behind one API, on your own Postgres."
 site_author = "imsid"
 site_url = "https://imsid.github.io/mashpy/"
 docs_dir = "docs"
@@ -16,6 +16,7 @@ nav = [
         { "Start Here" = [
             { "General Concepts" = "posts/concepts.md" },
             { "Mash Product Brief" = "posts/product-brief.md" },
+            { "Code as the Source of Truth" = "posts/code-as-the-source-of-truth.md" },
             { "Mash Under the Hood" = "posts/mash-under-the-hood.md" },
             { "Host-to-Agent Protocol (H2A)" = "rfcs/host-to-agent-protocol.md" },
             { "Case Study: Moma" = "posts/case-study-moma.html" },
