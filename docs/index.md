@@ -1,6 +1,6 @@
 ---
 title: Mash
-description: Self-hosted, durable runtime for code-authored automations. Deploy agents and workflows behind one API, on your own Postgres.
+description: Self-hosted, durable runtime for code-authored worklows with agents behind one API.
 hide:
   - navigation
   - toc
@@ -8,8 +8,7 @@ hide:
 
 # Mash
 
-**A self-hosted, durable runtime for code-authored automations: agents and
-workflows behind one API, on your own Postgres.**
+**A self-hosted, durable runtime for code-authored worklows with agents.**
 
 A workflow is an ordered pipeline of typed steps; a step is deterministic
 Python or one run of a harnessed agent. Control flow stays in code.
@@ -299,6 +298,6 @@ mash repl --host assistant
 
 ## Applications
 
-- [**Pilot CLI**](https://github.com/imsid/mashpy/src/pilot) - a multi-agent CLI guide to build and deploy Mash agents.
-- [**PA CLI**](https://github.com/imsid/mash-pa) - a self-hosted store of personal agents that help run your day.
+- [**Pilot**](https://github.com/imsid/mashpy/src/pilot) - a multi-agent CLI guide to build and deploy Mash agents.
+- [**Masher**](https://github.com/imsid/mashpy/src/mash/agents/masher) - Mash's built-in observability and eval workflows.
 - [**Crew**](https://github.com/imsid/crew) - a self-hosted crew of role-based agents for analytics and product work, with a CLI and a web UI.

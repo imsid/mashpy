@@ -76,3 +76,6 @@ dist/
 # Zensical docs site
 .venv-docs/
 /site/
+
+# Design docs (local only)
+docs/design/
