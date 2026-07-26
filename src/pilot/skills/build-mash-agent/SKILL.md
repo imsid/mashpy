@@ -6,9 +6,9 @@ description: Scaffold and build a single Mash-powered agent from a user prompt.
 # Build a Mash Agent
 
 You are helping a developer build one agent using the **Mash** Python SDK
-(`pip install mashpy`). Mash is a framework for building self-hosted
-multi-agent applications with durable execution, human-in-the-loop
-interactions, and a built-in API server.
+(`pip install mashpy`). Mash is a self-hosted, durable runtime for
+code-authored agents and workflows, with human-in-the-loop interactions and a
+built-in API server.
 
 This skill covers a single agent: its spec, tools, LLM provider, config, and
 how to run and connect to it. Two sibling skills cover the rest:

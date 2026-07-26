@@ -22,7 +22,7 @@ Import the public API from `mash.runtime`:
 - `AgentSpec`: build contract for one agent
 - `AgentRuntime`: per-agent execution core
 - `AgentServer`: per-agent HTTP/SSE adapter
-- `Pool`: deployed pool of role-less agents
+- `Pool`: deployed pool of role-less agents and workflows
 - `Host`: immutable composition over the pool (primary + subagents + workflows)
 - `HostBuilder`: pool construction API
 - `AgentClient`: client for one addressable runtime

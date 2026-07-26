@@ -1,6 +1,6 @@
 # Mash Package
 
-`src/mash` is the main library package for Mash. It holds the SDK/runtime contract for agents plus the hosted surfaces that make those agents usable in practice.
+`src/mash` is the main library package for Mash, a self-hosted, durable runtime for code-authored automations. It holds the SDK/runtime contracts for agents and workflows plus the hosted surfaces that make them usable in practice.
 
 ## What Lives Here
 - `core`: single-agent execution loop, config, context, and LLM provider contracts.
@@ -18,15 +18,16 @@
 
 ## How The Pieces Fit Together
 1. A user implements `mash.runtime.AgentSpec` to define one agent.
-2. `mash.runtime.HostBuilder` composes one primary agent, optional subagents, and code-defined workflows into a host; every pool also includes Masher and its workflows.
-3. `mash.workflows.WorkflowService` can orchestrate ordered task chains by sending normal Mash requests to registered or internal workflow agents.
+2. `mash.runtime.HostBuilder` registers role-less agents and code-defined workflows into a `Pool`, with optional `Host` compositions; every pool also includes Masher and its workflows. A pool with no user agents is a valid, workflow-only deploy.
+3. `mash.workflows.WorkflowService` runs workflows as ordered step pipelines; agent steps send normal Mash requests to registered or internal workflow agents.
 4. `mash.runtime.AgentServer` exposes each per-agent runtime over HTTP + SSE.
 5. `mash.api` exposes that host over HTTP, including workflow routes, and `mash.cli` talks to it as a remote client.
 6. Primary agents can delegate focused work through the runtime host and `InvokeSubagent`.
 
 ## Public Entry Points
+- `mash`: top-level authoring exports (`AgentSpec`, `AgentMetadata`, `Host`, `HostBuilder`, `Pool`, `WorkflowSpec`, `CodeStep`, `AgentStep`, `StepContext`).
 - `mash.runtime.AgentSpec`: single-agent build contract.
-- `mash.runtime.HostBuilder`: host composition entrypoint.
+- `mash.runtime.HostBuilder`: pool composition entrypoint.
 - `mash.workflows.WorkflowSpec` and `mash.workflows.WorkflowService`: code-defined workflow definitions and orchestration.
 - `mash.api.create_app` and `mash.api.run_host`: hosted HTTP surface.
 - `mash.cli`: CLI client, shell, and command helpers for remote operation.

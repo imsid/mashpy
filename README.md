@@ -5,39 +5,46 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/mashpy.svg)](https://pypi.org/project/mashpy/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-A Python SDK and host runtime for building self-hosted multi-agent applications.
+Mash is a self-hosted, durable runtime for code-authored automations: deploy
+agents and workflows behind one API, on your own Postgres. A workflow is an
+ordered pipeline of typed steps, a step is deterministic Python or one run of a
+harnessed agent, and control flow stays in code.
 
-Mash gives you a Python `AgentSpec` contract for defining agents, a `HostBuilder`
-for composing them into a multi-agent host, a FastAPI server for deployment, and
-a CLI/API for interacting with a running host.
+Mash gives you a Python `AgentSpec` contract for defining agents, a
+`WorkflowSpec` for authoring step pipelines, a `HostBuilder` that composes both
+into a deployable pool, a FastAPI server for deployment, and a CLI/API for
+interacting with a running host.
 
 It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
 standardizes interactions between user applications and agents. 
 
 ## What Mash Provides
 
-- **Multi-agent composition** — define a primary agent, add specialized subagents,
-  and compose workflows behind a single host. Agents delegate to each other
-  without a separate coordination layer.
-- **Frontier and open-source models** — built-in adapters for Anthropic, OpenAI,
+- **Workflows**: ordered pipelines of typed steps, durable and observable.
+  A step is deterministic Python or one agent run; each step's output threads
+  into the next step's input with schema checks at every edge. The pipeline is
+  code you can read, diff, test, and replay.
+- **Agent harness**: the agent loop runs inside a durable request engine with
+  tools, skills, memory, and structured output. Requests are recorded as
+  replayable runtime events; retries, restarts, and long-running work just
+  work.
+- **Frontier and open-source models**: built-in adapters for Anthropic, OpenAI,
   and Gemini, and any open-source model served over a Chat Completions endpoint,
   self-hosted with vLLM or Ollama or hosted on OpenRouter. Each agent picks its
   model in one line of `build_llm()`.
-- **Durable harness** — requests execute through a durable engine and are recorded
-  as replayable runtime events. Retries, restarts, and long-running work just
-  work.
-- **Human-in-the-loop** — agents can pause for approval or ask users questions
+- **Self-hosted interfaces**: HTTP API with streaming, CLI, and interactive REPL,
+  all on one Postgres. Deploy locally, in Docker, or on any cloud.
+- **Multi-agent composition**: define a primary agent, add specialized subagents,
+  and compose workflows behind a single host. Agents delegate to each other
+  without a separate coordination layer.
+- **Human-in-the-loop**: agents can pause for approval or ask users questions
   mid-execution. Interactions survive host restarts.
-- **Workflows** — ordered task sequences with structured output, defined in code
-  or published dynamically at runtime.
-- **Observability** — span trees, trace analysis, telemetry API, built-in
+- **Observability**: span trees, trace analysis, telemetry API, built-in
   dashboard, and CLI trace inspection. No external APM needed.
-- **Synthetic evals** — generate a test dataset and scoring rubric from a
+- **Synthetic evals**: generate a test dataset and scoring rubric from a
   host's declared capabilities, run experiments that snapshot the live host,
-  and compare quality and cost across runs — before the first user message.
+  and compare quality and cost across runs before the first user message.
   Datasets, rubrics, and experiment results live in the built-in dashboard.
-- **Self-hosted interfaces** — HTTP API with streaming, CLI, and interactive REPL.
-  Deploy locally, in Docker, or on any cloud.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -49,13 +56,15 @@ request ────────► │   │     Agent Loop        │ ──�
 (cli/api)         │   │ think → act → observe │      │      │
                   │   │                       │      ▼      │
                   │   └─ tools ───── skills ──┘  structured │
-workflow ───────► │        ▲                      output    │
-(schedule/trigger)│        │ user interaction               │
+workflow step ──► │        ▲                      output    │
+(api/cli)         │        │ user interaction               │
                   │        ▼ (approval / ask-user)          │
                   │                                         │
                   │       resumable · replayable            │
                   └─────────────────────────────────────────┘
 ```
+
+A request from a user and a step in a workflow ride the same durable loop.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
 at each capability, and the [product brief](docs/posts/product-brief.md) for
@@ -81,9 +90,9 @@ declares a system prompt, tools, skills and agent config.
 ```python
 ## my_app/agents.py
 
+from mash import AgentSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentSpec
 from mash.skills import SkillRegistry
 from mash.tools import ToolRegistry
 
@@ -131,17 +140,18 @@ class ResearchAgent(AgentSpec):
         )
 ```
 
-**Add a workflow:**
+**Author the workflow:**
 
-A workflow is an ordered pipeline of typed steps. Use a `CodeStep` for
-deterministic Python and an `AgentStep` when the work needs an agent.
+The workflow is the automation: an ordered pipeline of typed steps that code
+owns end to end. Use a `CodeStep` for deterministic Python and an `AgentStep`
+when the work needs an agent.
 
 ```python
 ## my_app/workflows.py
 
 from pydantic import BaseModel
 
-from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
+from mash import AgentStep, CodeStep, StepContext, WorkflowSpec
 
 
 class ResearchRequest(BaseModel):
@@ -194,12 +204,14 @@ RESEARCH_BRIEF = WorkflowSpec(
 The `CodeStep` output becomes the `AgentStep` input. Mash validates both edges,
 runs each step durably, and uses the last step's output as the workflow result.
 
-**Build Mash host with an Agent pool:**
+**Build the pool:**
+
+The pool is the unit of deploy: agents and workflows registered together.
 
 ```python
 ## my_app/host.py
 
-from mash.runtime import AgentMetadata, HostBuilder
+from mash import AgentMetadata, HostBuilder
 
 from .agents import ConciergeAgent, ResearchAgent
 from .workflows import RESEARCH_BRIEF
@@ -232,6 +244,15 @@ def build_pool():
     return pool
 ```
 
+A pool can also be workflows alone. A workflow of pure `CodeStep`s references
+no agents, and the resulting pool serves only workflow runs:
+
+```python
+def build_pool():
+    # EXPORT_METRICS is a WorkflowSpec of pure CodeSteps; no agents needed.
+    return HostBuilder().workflow(EXPORT_METRICS).build()
+```
+
 **Configure the environment:**
 
 The host needs an LLM key and a Postgres URL for its durable runtime. Put
@@ -256,7 +277,7 @@ mash browse
 
 **Compose an assistant host with primary and subagents:**
 ```bash
-mash compose assistant --primary concierge --subagents research \
+mash compose --host assistant --primary concierge --subagents research \
   --workflows research-brief
 ```
 
@@ -277,7 +298,7 @@ mash repl --host assistant
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
-| **WorkflowSpec** | Ordered task chains with structured output, orchestrated by DBOS |
+| **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
 
 ## Mash Pilot
