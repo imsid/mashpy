@@ -9,6 +9,31 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.19.0](https://github.com/imsid/mashpy/compare/mashpy-v0.18.1...mashpy-v0.19.0) (2026-07-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** rename AgentPool to Pool, workflow-only deploys, top-level exports, CLI parity ([#159](https://github.com/imsid/mashpy/issues/159))
+
+### Features
+
+* **runtime:** rename AgentPool to Pool, workflow-only deploys, top-level exports, CLI parity ([#159](https://github.com/imsid/mashpy/issues/159)) ([c52c3e3](https://github.com/imsid/mashpy/commit/c52c3e31d27dc7fd709913cca2993e024c49ddc2))
+
+
+### Documentation
+
+* **blog:** positioning post, product-brief rewrite, workflow-only shape ([#161](https://github.com/imsid/mashpy/issues/161)) ([e9a55de](https://github.com/imsid/mashpy/commit/e9a55deac7930a981a502e4c475f7e8343e4a946))
+* reframe README, docs index, CLAUDE.md, and PyPI tagline around the workflow runtime ([#163](https://github.com/imsid/mashpy/issues/163)) ([edbbb3d](https://github.com/imsid/mashpy/commit/edbbb3d403448c83e6aabfd8a9ecb1905988509e))
+* update docs and gitignore design docs ([#164](https://github.com/imsid/mashpy/issues/164)) ([dff17c4](https://github.com/imsid/mashpy/commit/dff17c4299bd94cb8403279d520bf64423e78ef6))
+
+
+### Refactors
+
+* **api:** remove enable_observability flag; observability always on ([#158](https://github.com/imsid/mashpy/issues/158)) ([44ca48d](https://github.com/imsid/mashpy/commit/44ca48d9ac92e5a3828f97daca62ec04dd0d04f7))
+* **pilot:** align pilot and its skills with the workflow-runtime design ([#162](https://github.com/imsid/mashpy/issues/162)) ([dc3c819](https://github.com/imsid/mashpy/commit/dc3c8194c7f6b60d020b79d6f659bd6af4d0f17a))
+* **runtime:** remove global event waiter and telemetry stream endpoint ([#156](https://github.com/imsid/mashpy/issues/156)) ([689f71c](https://github.com/imsid/mashpy/commit/689f71c3adfeab03420a93ab6664e75cc9a76283))
+
 ## [0.18.1](https://github.com/imsid/mashpy/compare/mashpy-v0.18.0...mashpy-v0.18.1) (2026-07-14)
 
 
