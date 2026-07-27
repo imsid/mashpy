@@ -187,7 +187,15 @@ async def stream_response_events(
     if not await self.runtime_store.has_request(request_id):
         raise KeyError(request_id)
 
-    public_events, next_cursor, done = await _read_events_since(self, request_id, cursor)
+    stored_events = await self.runtime_store.list_request_events(
+        request_id,
+        after_seq=max(0, int(cursor)),
+    )
+    public_events = [to_public_event(event) for event in stored_events]
+    next_cursor = int(cursor)
+    if stored_events:
+        next_cursor = int(stored_events[-1].request_seq or 0)
+    done = await self.runtime_store.is_request_terminal(request_id)
     if public_events or done or wait_timeout <= 0:
         return public_events, next_cursor, done
 
@@ -197,62 +205,17 @@ async def stream_response_events(
             await asyncio.wait_for(waiter.wait(), timeout=wait_timeout)
         except asyncio.TimeoutError:
             pass
-        return await _read_events_since(self, request_id, cursor)
+        stored_events = await self.runtime_store.list_request_events(
+            request_id,
+            after_seq=max(0, int(cursor)),
+        )
+        public_events = [to_public_event(event) for event in stored_events]
+        if stored_events:
+            next_cursor = int(stored_events[-1].request_seq or 0)
+        done = await self.runtime_store.is_request_terminal(request_id)
+        return public_events, next_cursor, done
     finally:
         self.runtime_store.unregister_request_waiter(request_id, waiter)
-
-
-async def _read_events_since(
-    self: "AgentRuntime", request_id: str, cursor: int
-) -> tuple[list[dict[str, Any]], int, bool]:
-    """Read the event tail after ``cursor`` and decide if the stream is done.
-
-    ``done`` must imply the terminal event has been *delivered*, never just that
-    the request's status is terminal. ``list_request_events`` returns the whole
-    tail after ``cursor``, so a page ending in a terminal event delivers it now.
-    A separate status query is only consulted when the page is empty — and then
-    the tail is re-read (strictly after confirming terminal) so a terminal event
-    written just after the first read is still included before ``done`` is
-    reported. Otherwise the stream could end on a page that never carried the
-    terminal event, and the client would see "stream ended without a terminal
-    event".
-    """
-    after_seq = max(0, int(cursor))
-    stored_events = await self.runtime_store.list_request_events(
-        request_id, after_seq=after_seq
-    )
-    done = _events_reached_terminal(stored_events)
-    if not stored_events and not done and await self.runtime_store.is_request_terminal(
-        request_id
-    ):
-        # Terminal but this page is empty: the terminal event is already
-        # delivered (seq <= cursor) or landed just after the read above. Re-read
-        # so a just-written terminal event is included, then the stream is done.
-        stored_events = await self.runtime_store.list_request_events(
-            request_id, after_seq=after_seq
-        )
-        done = True
-
-    public_events = [to_public_event(event) for event in stored_events]
-    next_cursor = (
-        int(stored_events[-1].request_seq or 0) if stored_events else int(cursor)
-    )
-    return public_events, next_cursor, done
-
-
-def _events_reached_terminal(stored_events: list[Any]) -> bool:
-    """True when the last fetched event is a terminal request event.
-
-    ``list_request_events`` returns the whole tail after the cursor in seq
-    order, so the last element is the latest event; if it is terminal the
-    caller has just been handed the terminal event.
-    """
-    if not stored_events:
-        return False
-    return str(stored_events[-1].event_type) in {
-        RuntimeEventType.REQUEST_COMPLETED.value,
-        RuntimeEventType.REQUEST_FAILED.value,
-    }
 
 
 async def append_runtime_event(
