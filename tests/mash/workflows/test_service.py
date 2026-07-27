@@ -242,6 +242,48 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WorkflowNotFoundError):
             await service.list_runs("missing")
 
+    def _service_with_store(self, workflow: WorkflowSpec, store: Any) -> WorkflowService:
+        registry = WorkflowRegistry()
+        registry.register(workflow)
+        host = _FakeHost(registry)
+        host.get_workflow_store = lambda: store  # type: ignore[method-assign]
+        return WorkflowService(registry, cast("Pool", host), runner_id="runner-1")
+
+    async def test_stream_run_events_accepts_queued_run_via_dbos_status(self) -> None:
+        # The store row is written only once the run starts executing; a client
+        # streaming right after enqueue must not 404 on a run DBOS knows about.
+        workflow = WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+
+        class _FakeStore:
+            async def get_run(self, _run_id):
+                return None  # row not written yet
+
+        service = self._service_with_store(workflow, _FakeStore())
+
+        async def get_workflow_status(run_id):
+            return _FakeWorkflowStatus(workflow_id=run_id, status="PENDING")
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            events = await service.stream_run_events("wf", "mw:host-1:wf:abc")
+        # Returned the poll iterator instead of raising; nothing consumed yet.
+        self.assertTrue(hasattr(events, "__anext__"))
+
+    async def test_stream_run_events_rejects_run_unknown_to_store_and_dbos(self) -> None:
+        workflow = WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+
+        class _FakeStore:
+            async def get_run(self, _run_id):
+                return None
+
+        service = self._service_with_store(workflow, _FakeStore())
+
+        async def get_workflow_status(_run_id):
+            return None
+
+        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            with self.assertRaises(WorkflowNotFoundError):
+                await service.stream_run_events("wf", "mw:host-1:wf:abc")
+
 
 class WorkflowIdHelperTests(unittest.TestCase):
     def test_run_id_carries_prefix(self) -> None:
