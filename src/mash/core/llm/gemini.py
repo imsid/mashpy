@@ -255,16 +255,6 @@ class GeminiProvider(BaseLLMProvider):
                     })
         return steps
 
-    @staticmethod
-    def _thought_has_text(step: Any) -> bool:
-        """True if ``step`` is a thought carrying at least some summary text."""
-        if getattr(step, "type", None) != "thought":
-            return False
-        return any(
-            getattr(item, "type", None) == "text" and getattr(item, "text", "")
-            for item in getattr(step, "summary", None) or []
-        )
-
     def _parse_interaction_response(  # pylint: disable=too-many-locals,too-many-branches
         self, interaction: Any
     ) -> LLMResponse:
@@ -282,14 +272,8 @@ class GeminiProvider(BaseLLMProvider):
         response_steps = steps[last_input_idx + 1:]
 
         status = getattr(interaction, "status", None)
-        # A completed turn may carry only a thought (gemini-3.5-flash emits
-        # thinking steps): that is a valid ``end_turn`` — the thinking becomes a
-        # content block and the loop finishes — so count it as content. Only a
-        # turn with no model output, no tool call, and no thought text is truly
-        # empty and worth surfacing as an error.
         has_content = any(
             getattr(s, "type", None) in ("model_output", "function_call")
-            or self._thought_has_text(s)
             for s in response_steps
         )
         if status == "completed" and not has_content:

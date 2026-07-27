@@ -928,51 +928,6 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.text, "Here is my answer.")
         self.assertEqual(parsed.usage.metadata["thought_tokens"], 50)
 
-    def test_parse_interaction_thought_only_completed_finishes(self) -> None:
-        # A completed turn carrying only a thought (no model_output) is a valid
-        # end_turn — it must not raise, so the agent loop can finish.
-        provider = object.__new__(GeminiProvider)
-        provider._web_search = False
-        interaction = SimpleNamespace(
-            id="i-thought-only",
-            status="completed",
-            steps=[
-                SimpleNamespace(type="function_result", call_id="c1", result="r"),
-                SimpleNamespace(
-                    type="thought",
-                    summary=[SimpleNamespace(type="text", text="The subagent already answered.")],
-                ),
-            ],
-            usage=SimpleNamespace(
-                total_input_tokens=10, total_output_tokens=0, total_tokens=10,
-                total_cached_tokens=None, total_thought_tokens=8,
-            ),
-        )
-        parsed = provider._parse_interaction_response(interaction)
-
-        self.assertEqual(parsed.stop_reason, "end_turn")
-        self.assertEqual(parsed.text, "")
-        self.assertEqual(parsed.tool_calls, [])
-        self.assertEqual(len(parsed.content_blocks), 1)
-        self.assertEqual(parsed.content_blocks[0].type, "thinking")
-
-    def test_parse_interaction_empty_thought_completed_still_raises(self) -> None:
-        # A thought step with no text is not content: a truly empty completion
-        # still surfaces as an error.
-        provider = object.__new__(GeminiProvider)
-        provider._web_search = False
-        interaction = SimpleNamespace(
-            id="i-empty-thought",
-            status="completed",
-            steps=[
-                SimpleNamespace(type="function_result", call_id="c1", result="r"),
-                SimpleNamespace(type="thought", summary=[]),
-            ],
-            usage=None,
-        )
-        with self.assertRaises(RuntimeError):
-            provider._parse_interaction_response(interaction)
-
     async def test_stream_response_text(self) -> None:
         provider = self._make_provider()
 
