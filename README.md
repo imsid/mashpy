@@ -341,6 +341,13 @@ The `pilot-data` volume keeps the database durable across restarts.
 | `runtime-copilot` | `src/mash/runtime` — request lifecycle, event sourcing, durability |
 | `workflow-copilot` | `src/mash/workflows` — step pipelines, DBOS orchestration, resume, run status |
 
+**A workflow it ships:** beyond answering questions, Pilot registers the
+`pilot-changelog` workflow — a `CodeStep` reads `CHANGELOG.md` and an
+`AgentStep` summarizes the most recent release, scanning the source when an
+entry is too terse to explain on its own. It's attached to the `guide` host, so
+`/workflow run pilot-changelog` runs it from the REPL. See
+[`src/pilot/catalog/workflows/`](src/pilot/catalog/workflows/) for the spec.
+
 **Scaffolding your own app:** the guide carries `build-mash-agent`,
 `build-mash-workflow`, and `build-mash-host` skills so it goes beyond
 explaining Mash to scaffolding your application:

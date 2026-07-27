@@ -344,7 +344,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry(<span class="str">"admin-copilot"</span>,    admin.create_admin_copilot_spec, admin.build_admin_metadata),
 )</code></pre>
 
-  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, defines the default <code>guide</code> host, and registers the quiz workflow on the built pool. The builder includes Masher and its workflows automatically.</p>
+  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, defines the default <code>guide</code> host, and registers the quiz and changelog workflows on the built pool. The builder includes Masher and its workflows automatically.</p>
 
   <pre><code><span class="cm"># pilot/spec.py</span>
 <span class="kw">def</span> <span class="fn">build_pool</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> Pool:
@@ -356,6 +356,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
     builder.host(<span class="fn">Host</span>(host_id=<span class="str">"guide"</span>, primary=<span class="str">"pilot"</span>, subagents=(...)))
     pool = builder.build()
     pool.register_workflow(<span class="fn">build_quiz_workflow_spec</span>(resolved))
+    pool.register_workflow(<span class="fn">build_changelog_workflow_spec</span>(resolved))
     <span class="kw">return</span> pool</code></pre>
 
   <p>The <code>guide</code> composition ships in code as the default. Further hosts belong to the CLI's config file (<code>~/.pilot/hosts.json</code>) and are published to the deployment as idempotent PUTs when the CLI connects. Which agents work together is user configuration.</p>
@@ -418,7 +419,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
   <p>The <code>update_docs</code> tool has <code>requires_approval = True</code>, which causes the runtime to pause and surface an approval event before the tool runs. In the REPL this appears as an interactive prompt; over the API it emits a <code>request.waiting</code> event that the client polls. The user approves or rejects; the runtime resumes or aborts. This is the human-in-the-loop flow exercised live.</p>
 
   <h2>Workflows</h2>
-  <p>Pilot ships one workflow. <code>pilot-quiz</code> is a Mash step pipeline: <code>build_quiz_workflow_spec()</code> returns a <code>WorkflowSpec</code> whose single <code>AgentStep</code> carries <code>QuizAgentSpec</code> as its <code>agent_spec</code>, so registering the workflow also registers the quiz agent as a workflow-only runtime, hidden from listings and delegation.</p>
+  <p>Pilot ships two workflows. <code>pilot-quiz</code> is a Mash step pipeline: <code>build_quiz_workflow_spec()</code> returns a <code>WorkflowSpec</code> whose single <code>AgentStep</code> carries <code>QuizAgentSpec</code> as its <code>agent_spec</code>, so registering the workflow also registers the quiz agent as a workflow-only runtime, hidden from listings and delegation.</p>
 
   <pre><code><span class="cm"># pilot/catalog/workflows/quiz.py</span>
 <span class="kw">def</span> <span class="fn">build_quiz_workflow_spec</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> WorkflowSpec:
@@ -434,6 +435,29 @@ CATALOG: tuple[CatalogEntry, ...] = (
     )</code></pre>
 
   <p>A host config that includes <code>"workflows": ["pilot-quiz"]</code> makes the <code>/quiz</code> REPL command available to anyone who enters that host. The command starts a run over the workflow API and streams it: the quiz agent loads its <code>mash-quiz</code> skill, asks its questions through durable <code>AskUser</code> interactions, and the REPL renders each one as an interactive prompt. The run survives a host restart mid-question the same way any durable request does.</p>
+
+  <p><code>pilot-changelog</code> is the second workflow, and shows the mixed-step shape: a <code>CodeStep</code> reads <code>CHANGELOG.md</code> and slices out the most recent release section(s) in deterministic Python, then an <code>AgentStep</code> summarizes that excerpt — reaching into the source with bash only when an entry is too terse to explain. Its <code>ChangelogSummarizerSpec</code> rides the same <code>agent_spec</code> path, so registering the workflow registers the summarizer as a workflow-only runtime. <code>guide</code> attaches it too, but it has no dedicated command: <code>/workflow run pilot-changelog</code> runs it over the standard workflow surface.</p>
+
+  <pre><code><span class="cm"># pilot/catalog/workflows/changelog.py</span>
+<span class="kw">def</span> <span class="fn">build_changelog_workflow_spec</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> WorkflowSpec:
+    <span class="kw">return</span> <span class="fn">WorkflowSpec</span>(
+        workflow_id=<span class="str">"pilot-changelog"</span>,
+        input_model=ChangelogIn,
+        steps=[
+            <span class="fn">CodeStep</span>(
+                step_id=<span class="str">"read-changelog"</span>,
+                run=<span class="fn">_make_read_changelog</span>(resolved),
+                input=ChangelogIn,
+                output=ChangelogExtract,
+            ),
+            <span class="fn">AgentStep</span>(
+                step_id=<span class="str">"summarize"</span>,
+                agent_spec=<span class="fn">ChangelogSummarizerSpec</span>(resolved),
+                input=ChangelogExtract,
+                output=ChangelogSummary,
+            ),
+        ],
+    )</code></pre>
 
   <h2>Every piece exercises a Mash feature</h2>
 
