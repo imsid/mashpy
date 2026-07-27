@@ -69,6 +69,44 @@ class MashHostClientTests(unittest.TestCase):
         self.assertEqual(events[-1]["event"], "request.completed")
         self.assertEqual(session.calls[-1]["timeout"], DEFAULT_STREAM_TIMEOUT)
 
+    def test_stream_request_flushes_final_event_without_trailing_blank(self) -> None:
+        # requests.iter_lines drops the trailing blank line of the final
+        # "\n\n" at EOF, and the server closes right after the terminal event.
+        # The parser must flush the buffered event at stream end, else the
+        # caller never sees request.completed.
+        class _NoTrailingBlank(_FakeResponse):
+            def iter_lines(self, chunk_size=1, decode_unicode=True):
+                del chunk_size, decode_unicode
+                yield "event: agent.trace"
+                yield 'data: {"event_type": "x"}'
+                yield ""
+                yield "event: request.completed"
+                yield 'data: {"status": "completed"}'
+                # stream closes here — no trailing blank line
+
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        session.responses.append(_NoTrailingBlank())
+        client._session = session  # type: ignore[assignment]
+
+        events = list(client.stream_request("primary", "req-1"))
+
+        self.assertEqual(
+            [e["event"] for e in events], ["agent.trace", "request.completed"]
+        )
+        self.assertEqual(events[-1]["data"]["status"], "completed")
+
+    def test_stream_request_does_not_double_emit_on_trailing_blank(self) -> None:
+        # A normal stream that does end with a blank line must not yield the
+        # final event twice (the end-of-stream flush is a no-op there).
+        client = MashHostClient("http://localhost:8000")
+        session = _RecordingSession()
+        client._session = session  # type: ignore[assignment]
+
+        events = list(client.stream_request("primary", "req-1"))
+
+        self.assertEqual([e["event"] for e in events], ["request.completed"])
+
     def test_non_stream_requests_keep_default_timeout(self) -> None:
         client = MashHostClient("http://localhost:8000")
         session = _RecordingSession()

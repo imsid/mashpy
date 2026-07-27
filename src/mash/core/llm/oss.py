@@ -358,6 +358,20 @@ class OSSCompatibleProvider(BaseLLMProvider):
         if caps.reasoning_content and message is not None:
             text, reasoning = self._split_reasoning(message, text)
 
+        # When structured output was requested but the backend ignored the
+        # ``response_format`` constraint (common on hosted OSS routes — e.g.
+        # OpenRouter's Gemma), the model free-forms the JSON wrapped in a
+        # ```json ... ``` fence or with surrounding prose. Downstream parses the
+        # text with a bare ``json.loads``, which then fails on the leading
+        # fence. Unwrap it here so the JSON reaches the caller cleanly. Gated on
+        # a text-only response so a genuine tool call is never touched.
+        if (
+            request is not None
+            and not raw_tool_calls
+            and isinstance(request.provider_options.get("structured_output"), dict)
+        ):
+            text = self._unwrap_structured_json(text)
+
         tool_calls: List[ToolCall] = []
         blocks: List[LLMContentBlock] = []
         if text:
@@ -451,6 +465,40 @@ class OSSCompatibleProvider(BaseLLMProvider):
             stripped = (text[: match.start()] + text[match.end() :]).strip()
             return stripped, match.group(1).strip()
         return text, None
+
+    def _unwrap_structured_json(self, text: str) -> str:
+        """Extract a JSON value the model wrapped in a fence or prose.
+
+        Handles the two shapes an OSS backend emits when it ignores the
+        ``response_format`` constraint: a ```` ```json ... ``` ```` (or bare
+        ```` ``` ... ``` ````) fence, and a JSON object/array with leading or
+        trailing prose. Detection and extraction only — if nothing looks like
+        JSON the original text is returned unchanged, so a genuinely invalid
+        response still surfaces to the caller.
+        """
+        stripped = text.strip()
+        if not stripped:
+            return text
+        fence = re.match(r"^```[^\n]*\n?(.*?)\n?```$", stripped, re.DOTALL)
+        if fence:
+            stripped = fence.group(1).strip()
+        if not stripped.startswith(("{", "[")):
+            span = self._extract_json_span(stripped)
+            if span is not None:
+                stripped = span
+        return stripped
+
+    def _extract_json_span(self, text: str) -> Optional[str]:
+        """Return the outermost ``{...}`` or ``[...]`` span, or ``None``."""
+        starts = [pos for pos in (text.find("{"), text.find("[")) if pos != -1]
+        if not starts:
+            return None
+        start = min(starts)
+        close = "}" if text[start] == "{" else "]"
+        end = text.rfind(close)
+        if end <= start:
+            return None
+        return text[start : end + 1].strip()
 
     def _parse_arguments(self, raw_arguments: Any) -> Dict[str, Any]:
         if isinstance(raw_arguments, dict):

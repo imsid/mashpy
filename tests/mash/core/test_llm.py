@@ -691,6 +691,63 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.tool_calls[0].name, "lookup")
         self.assertEqual(parsed.tool_calls[0].arguments, {"q": "sky"})
 
+    def test_parse_captures_function_call_signature(self) -> None:
+        # Gemini's backend-validation signature must survive parsing onto the
+        # tool_call block so it can be replayed in stateless history.
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        interaction = SimpleNamespace(
+            id="i-sig",
+            status="requires_action",
+            steps=[
+                SimpleNamespace(type="user_input", content=[]),
+                SimpleNamespace(
+                    type="function_call", id="call-1", name="InvokeSubagent",
+                    arguments={"agent": "x"}, signature="sig-abc",
+                ),
+            ],
+            usage=SimpleNamespace(
+                total_input_tokens=1, total_output_tokens=1, total_tokens=2,
+                total_cached_tokens=None, total_thought_tokens=None,
+            ),
+        )
+        parsed = provider._parse_interaction_response(interaction)
+        tc_block = next(b for b in parsed.content_blocks if b.type == "tool_call")
+        self.assertEqual(tc_block.data["signature"], "sig-abc")
+
+    def test_messages_to_steps_replays_function_call_signature(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        messages = [
+            LLMMessage(role="assistant", content=[
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-1", name="InvokeSubagent",
+                    arguments={"a": 1}, signature="sig-xyz",
+                ),
+            ]),
+            LLMMessage(role="tool", content=[
+                LLMContentBlock.tool_result(tool_call_id="call-1", content="done"),
+            ]),
+        ]
+        steps = provider._messages_to_steps(messages, {"call-1": "InvokeSubagent"})
+        fc = next(s for s in steps if s["type"] == "function_call")
+        self.assertEqual(fc["signature"], "sig-xyz")
+
+    def test_messages_to_steps_omits_absent_signature(self) -> None:
+        # A tool_call without a signature must not send an empty one.
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        messages = [
+            LLMMessage(role="assistant", content=[
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-2", name="bash", arguments={"cmd": "ls"},
+                ),
+            ]),
+        ]
+        steps = provider._messages_to_steps(messages, {"call-2": "bash"})
+        fc = next(s for s in steps if s["type"] == "function_call")
+        self.assertNotIn("signature", fc)
+
     def test_parse_interaction_cached_tokens(self) -> None:
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
@@ -931,6 +988,67 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.tool_calls), 1)
         self.assertEqual(response.tool_calls[0].name, "search")
         self.assertEqual(response.tool_calls[0].arguments, {"q": "cats"})
+
+    async def test_stream_response_captures_signature_on_step_start(self) -> None:
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(
+                event_type="step.start", index=1,
+                step=SimpleNamespace(
+                    type="function_call", id="call-s1", name="search",
+                    arguments={"q": "cats"}, signature="sig-stream",
+                ),
+            )
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-s", status="requires_action", steps=[],
+                    usage=SimpleNamespace(
+                        total_input_tokens=5, total_output_tokens=2,
+                        total_tokens=7, total_cached_tokens=None, total_thought_tokens=None,
+                    ),
+                ))
+
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(
+                create=AsyncMock(return_value=_fake_stream())))
+        )
+        response = await provider.send(self._make_request(streaming=True))
+        tc_block = next(b for b in response.content_blocks if b.type == "tool_call")
+        self.assertEqual(tc_block.data["signature"], "sig-stream")
+
+    async def test_stream_response_backfills_signature_from_completed(self) -> None:
+        # Signature absent on step.start but present on the completed interaction.
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(
+                event_type="step.start", index=1,
+                step=SimpleNamespace(
+                    type="function_call", id="call-s2", name="search",
+                    arguments={"q": "cats"},  # no signature yet
+                ),
+            )
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-s2", status="requires_action",
+                    steps=[SimpleNamespace(
+                        type="function_call", id="call-s2", name="search",
+                        arguments={"q": "cats"}, signature="sig-final",
+                    )],
+                    usage=SimpleNamespace(
+                        total_input_tokens=5, total_output_tokens=2,
+                        total_tokens=7, total_cached_tokens=None, total_thought_tokens=None,
+                    ),
+                ))
+
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(
+                create=AsyncMock(return_value=_fake_stream())))
+        )
+        response = await provider.send(self._make_request(streaming=True))
+        tc_block = next(b for b in response.content_blocks if b.type == "tool_call")
+        self.assertEqual(tc_block.data["signature"], "sig-final")
 
     async def test_stream_response_with_thought(self) -> None:
         provider = self._make_provider()
@@ -1190,6 +1308,78 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider._parse_arguments("not json"), {})
         self.assertEqual(provider._parse_arguments(None), {})
         self.assertEqual(provider._parse_arguments({"a": 1}), {"a": 1})
+
+    @staticmethod
+    def _content_response(content: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+    @staticmethod
+    def _structured_request() -> LLMRequest:
+        return LLMRequest(
+            model="gemma3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            provider_options={"structured_output": {"type": "object"}},
+        )
+
+    def test_parse_unwraps_fenced_json_for_structured_output(self) -> None:
+        # OpenRouter's Gemma route ignores response_format and fences the JSON;
+        # the parsed text must be bare JSON so a downstream json.loads succeeds.
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response(
+            '```json\n{\n  "latest_version": "0.19.0",\n  "highlights": []\n}\n```'
+        )
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(
+            json.loads(parsed.text),
+            {"latest_version": "0.19.0", "highlights": []},
+        )
+
+    def test_parse_unwraps_bare_fence_for_structured_output(self) -> None:
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('```\n{"a": 1}\n```')
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(json.loads(parsed.text), {"a": 1})
+
+    def test_parse_extracts_json_from_surrounding_prose(self) -> None:
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('Here is the output: {"a": 1} — done.')
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(json.loads(parsed.text), {"a": 1})
+
+    def test_parse_leaves_fence_when_structured_output_not_requested(self) -> None:
+        # A normal turn may legitimately contain a code fence; only unwrap when
+        # structured output was actually requested.
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('```json\n{"a": 1}\n```')
+
+        parsed = provider._parse(raw, provider.capabilities())
+
+        self.assertEqual(parsed.text, '```json\n{"a": 1}\n```')
+
+    def test_parse_leaves_unfenced_json_untouched(self) -> None:
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('{"a": 1}')
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(json.loads(parsed.text), {"a": 1})
 
     async def test_send_passes_tools_on_native_path(self) -> None:
         provider = self._make_provider(create=AsyncMock(return_value=SimpleNamespace(

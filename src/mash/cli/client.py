@@ -83,19 +83,26 @@ class MashHostClient:
     def _iter_sse_events(response: requests.Response) -> Iterator[dict[str, Any]]:
         event_name: Optional[str] = None
         data_lines: list[str] = []
+
+        def _flush() -> Optional[dict[str, Any]]:
+            if not (event_name and data_lines):
+                return None
+            raw = "\n".join(data_lines)
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = {"raw": raw}
+            return {"event": event_name, "data": payload}
+
         for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
             if raw_line is None:
                 continue
             line = raw_line.decode() if isinstance(raw_line, bytes) else raw_line
             stripped = line.strip()
             if not stripped:
-                if event_name and data_lines:
-                    raw = "\n".join(data_lines)
-                    try:
-                        payload = json.loads(raw)
-                    except json.JSONDecodeError:
-                        payload = {"raw": raw}
-                    yield {"event": event_name, "data": payload}
+                event = _flush()
+                if event is not None:
+                    yield event
                 event_name = None
                 data_lines = []
                 continue
@@ -106,6 +113,15 @@ class MashHostClient:
                 continue
             if stripped.startswith("data:"):
                 data_lines.append(stripped[5:].strip())
+
+        # Flush a final event the stream closed on without a trailing blank
+        # line. The server emits the terminal event (request.completed) as the
+        # last frame and closes immediately; requests.iter_lines drops the
+        # trailing blank of the final "\n\n" at EOF, so without this the
+        # terminal event is lost and the caller sees the stream end early.
+        event = _flush()
+        if event is not None:
+            yield event
 
     def health(self) -> dict[str, Any]:
         response = self._request("GET", "/api/v1/health")

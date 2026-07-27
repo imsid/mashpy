@@ -197,12 +197,18 @@ class GeminiProvider(BaseLLMProvider):
                     })
                 for block in message.content:
                     if block.type == "tool_call":
-                        steps.append({
+                        step: Dict[str, Any] = {
                             "type": "function_call",
                             "id": block.data.get("id", f"call_{uuid.uuid4().hex[:8]}"),
                             "name": block.data.get("name", ""),
                             "arguments": block.data.get("arguments", {}),
-                        })
+                        }
+                        # Replay the backend-validation signature Gemini stamped on
+                        # the original call; without it the resent call is rejected.
+                        signature = block.data.get("signature")
+                        if signature:
+                            step["signature"] = signature
+                        steps.append(step)
             elif message.role == "tool":
                 for block in message.content:
                     if block.type == "tool_result":
@@ -318,12 +324,18 @@ class GeminiProvider(BaseLLMProvider):
             elif step_type == "function_call":
                 call_id = step.id
                 arguments = dict(getattr(step, "arguments", None) or {})
+                # Preserve Gemini's backend-validation signature: in stateless
+                # mode the call is replayed in history, and the backend rejects a
+                # function_call whose signature is missing — the model then has no
+                # valid tool exchange to continue from and returns empty.
+                signature = getattr(step, "signature", None)
                 tool_calls.append(ToolCall(id=call_id, name=step.name, arguments=arguments))
                 blocks.append(
                     LLMContentBlock.tool_call(
                         tool_call_id=call_id,
                         name=step.name,
                         arguments=arguments,
+                        signature=signature,
                     )
                 )
 
@@ -388,6 +400,9 @@ class GeminiProvider(BaseLLMProvider):
                         "args_fragments": [],
                         # arguments may already be populated on step.start
                         "args_initial": dict(getattr(step, "arguments", None) or {}),
+                        # backend-validation signature; may only be finalized on
+                        # interaction.completed, so it is backfilled below.
+                        "signature": getattr(step, "signature", None),
                     }
 
             elif event_type == "step.delta":
@@ -435,6 +450,14 @@ class GeminiProvider(BaseLLMProvider):
                 type="model_output",
                 content=[SimpleNamespace(type="text", text="".join(text_parts))],
             ))
+        # Authoritative signatures come from the completed interaction; use them
+        # to backfill calls whose signature was absent on step.start.
+        final_signatures: Dict[str, str] = {}
+        for fstep in getattr(final_interaction, "steps", None) or []:
+            if getattr(fstep, "type", None) == "function_call":
+                sig = getattr(fstep, "signature", None)
+                if sig:
+                    final_signatures[getattr(fstep, "id", "")] = sig
         for fc in sorted(function_calls.values(), key=lambda x: x.get("id", "")):
             args_text = "".join(fc["args_fragments"])
             args: Dict[str, Any] = fc["args_initial"]
@@ -444,7 +467,11 @@ class GeminiProvider(BaseLLMProvider):
                 except Exception:  # pylint: disable=broad-except
                     pass
             steps.append(SimpleNamespace(
-                type="function_call", id=fc["id"], name=fc["name"], arguments=args
+                type="function_call",
+                id=fc["id"],
+                name=fc["name"],
+                arguments=args,
+                signature=fc.get("signature") or final_signatures.get(fc["id"]),
             ))
 
         usage = getattr(final_interaction, "usage", None) if final_interaction else None

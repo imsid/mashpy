@@ -15,12 +15,13 @@ from typing import Sequence
 from mash import Host, HostBuilder, Pool
 from mash.api import MashHostConfig, run_host
 
+from .catalog.workflows.changelog import build_changelog_workflow_spec
 from .catalog.workflows.quiz import build_quiz_workflow_spec
 
 from .catalog import CATALOG
 from .catalog._base import (
     APP_NAME,  # noqa: F401 — re-exported for tests
-    _cached_docs_for_scope,
+    cached_docs_for_scope,
 )
 from .catalog.agents.admin import ADMIN_COPILOT_AGENT_ID
 from .catalog.agents.admin.spec import AdminCopilotSpec
@@ -53,7 +54,7 @@ __all__ = [
     "RuntimeCopilotSpec",
     "WORKFLOW_COPILOT_AGENT_ID",
     "WorkflowCopilotSpec",
-    "_cached_docs_for_scope",
+    "cached_docs_for_scope",
 ]
 
 
@@ -91,6 +92,7 @@ def build_pool(workspace_root: Path | None = None) -> Pool:
     )
     pool = builder.build()
     pool.register_workflow(build_quiz_workflow_spec(resolved))
+    pool.register_workflow(build_changelog_workflow_spec(resolved))
     return pool
 
 

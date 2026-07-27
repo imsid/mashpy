@@ -30,15 +30,19 @@ class LLMContentBlock:
         tool_call_id: str,
         name: str,
         arguments: Dict[str, Any],
+        signature: Optional[str] = None,
     ) -> "LLMContentBlock":
-        return cls(
-            type="tool_call",
-            data={
-                "id": tool_call_id,
-                "name": name,
-                "arguments": arguments,
-            },
-        )
+        data: Dict[str, Any] = {
+            "id": tool_call_id,
+            "name": name,
+            "arguments": arguments,
+        }
+        # Provider-specific opaque token that must survive round-trips. Gemini
+        # stamps every function_call with a signature the backend validates when
+        # the call is replayed in history; other providers leave it unset.
+        if signature is not None:
+            data["signature"] = signature
+        return cls(type="tool_call", data=data)
 
     @classmethod
     def reasoning(

@@ -27,7 +27,7 @@ DEFAULT_HOSTS: dict[str, dict[str, Any]] = {
             "workflow-copilot",
             "admin-copilot",
         ],
-        "workflows": ["pilot-quiz"],
+        "workflows": ["pilot-quiz", "pilot-changelog"],
     },
 }
 

@@ -104,6 +104,18 @@ your config (`guide` attaches `pilot-quiz` by default), and `/quiz`
 only exists in REPLs of hosts that attach it; compose it onto your own
 host with `--workflows pilot-quiz`.
 
+## The changelog workflow
+
+`pilot-changelog` is a two-step [workflow](workflows-as-step-pipelines.md) that
+shows the `CodeStep` → `AgentStep` shape end to end. The first step is
+deterministic Python: it reads `CHANGELOG.md` and slices out the most recent
+release section(s). The second is one agent run that turns that excerpt into a
+plain-language summary, reaching into the source with bash only when an entry is
+too terse to explain on its own. `guide` attaches it by default, so
+`/workflow run pilot-changelog` runs it and streams the steps; add it to your
+own host with `--workflows pilot-changelog`. Unlike `/quiz` it has no dedicated
+command — it runs through the standard `/workflow` surface.
+
 ## Watching it run
 
 After any answer, `/trace` shows where the time went: the timing breakdown,

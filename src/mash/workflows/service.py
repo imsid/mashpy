@@ -312,10 +312,20 @@ class WorkflowService:
             raise ValueError("run_id is required")
 
         store = self._workflow_store()
-        if store is None or await store.get_run(resolved_run_id) is None:
+        if store is None:
             raise WorkflowNotFoundError(
                 f"workflow run '{resolved_run_id}' was not found"
             )
+        # The store row is written only once the run starts executing; a run is
+        # enqueued and its id returned before that, so a client streaming
+        # immediately would otherwise 404 on a valid run. Mirror get_run: if the
+        # store has no row yet, accept the run when DBOS knows it and let the
+        # poll loop pick up step events once the row appears.
+        if await store.get_run(resolved_run_id) is None:
+            if await _get_workflow_status_or_none(resolved_run_id) is None:
+                raise WorkflowNotFoundError(
+                    f"workflow run '{resolved_run_id}' was not found"
+                )
         return self._stream_step_run_events(
             resolved_workflow_id, resolved_run_id, store, poll_interval
         )
