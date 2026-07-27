@@ -24,7 +24,7 @@ from ..._base import (
     APP_NAME,
     PILOT_SKILLS_DIR,
     build_bash_tool,
-    build_default_llm,
+    build_primary_llm,
 )
 from ..admin import ADMIN_COPILOT_AGENT_ID
 from ..api import API_COPILOT_AGENT_ID
@@ -77,7 +77,7 @@ class PilotSpec(AgentSpec):
         return tools
 
     def build_llm(self) -> LLMProvider:
-        return build_default_llm(self.get_agent_id())
+        return build_primary_llm(self.get_agent_id())
 
     def build_mcp_servers(self) -> list[MCPServerConfig]:
         github_mcp_url = os.getenv("GITHUB_MCP_URL") or GITHUB_MCP_URL

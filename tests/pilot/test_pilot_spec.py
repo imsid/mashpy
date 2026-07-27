@@ -144,8 +144,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
             {
                 "MASH_DATA_DIR": tmp,
                 "MASH_DATABASE_URL": "",
-                "ANTHROPIC_API_KEY": "test-key",
-                "OPENAI_API_KEY": "test-key",
+                "OPENROUTER_API_KEY": "test-key",
             },
             clear=False,
         ):
@@ -245,8 +244,7 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
             {
                 "MASH_DATA_DIR": tmp,
                 "MASH_DATABASE_URL": "",
-                "ANTHROPIC_API_KEY": "test-key",
-                "OPENAI_API_KEY": "test-key",
+                "OPENROUTER_API_KEY": "test-key",
             },
             clear=False,
         ):
@@ -330,8 +328,7 @@ def test_build_host_shutdown_closes_bash_tools() -> None:
             {
                 "MASH_DATA_DIR": tmp,
                 "MASH_DATABASE_URL": "",
-                "ANTHROPIC_API_KEY": "test-key",
-                "OPENAI_API_KEY": "test-key",
+                "OPENROUTER_API_KEY": "test-key",
             },
             clear=False,
         ):
