@@ -15,12 +15,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field
 
-from mash import AgentMetadata, AgentSpec, AgentStep, CodeStep, StepContext, WorkflowSpec
-from mash.cli.commands import Command
+from mash import AgentSpec, AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.skills.registry import SkillRegistry
@@ -173,29 +171,6 @@ class ChangelogSummarizerSpec(AgentSpec):
         return False
 
 
-def create_spec(*, workspace_root: str) -> ChangelogSummarizerSpec:
-    return ChangelogSummarizerSpec(Path(workspace_root).resolve())
-
-
-def build_metadata() -> AgentMetadata:
-    return AgentMetadata(
-        display_name="Changelog Summarizer",
-        description=(
-            "Summarizes the most recent CHANGELOG.md release in plain language, "
-            f"scanning the code when an entry is unclear. Runs the "
-            f"`{CHANGELOG_WORKFLOW_ID}` workflow."
-        ),
-        capabilities=[
-            "changelog summary",
-            f"workflow `{CHANGELOG_WORKFLOW_ID}`",
-        ],
-        usage_guidance=(
-            f"Only useful through the `{CHANGELOG_WORKFLOW_ID}` workflow (the "
-            "/changelog command); it refuses free-form chat. Not a delegation target."
-        ),
-    )
-
-
 def build_changelog_workflow_spec(workspace_root: Path | None = None) -> WorkflowSpec:
     """The pilot-changelog definition: read CHANGELOG.md, then summarize it."""
     resolved = (workspace_root or Path(".")).resolve()
@@ -217,68 +192,4 @@ def build_changelog_workflow_spec(workspace_root: Path | None = None) -> Workflo
             ),
         ],
         metadata={"source": "pilot", "kind": "changelog"},
-    )
-
-
-def register_changelog_command(shell: Any) -> None:
-    """Register Pilot's `/changelog` workflow command on a Mash shell."""
-
-    def changelog_command(ctx: Any, args: list[str]) -> None:
-        versions = 1
-        if args:
-            if len(args) > 1 or not args[0].isdigit():
-                ctx.renderer.error("Usage: /changelog [versions]")
-                return
-            versions = int(args[0])
-
-        run = ctx.client.run_workflow(
-            CHANGELOG_WORKFLOW_ID,
-            session_id=ctx.session_id,
-            workflow_input={"versions": versions},
-        )
-        ctx.renderer.info(f"Workflow: {run.get('workflow_id') or CHANGELOG_WORKFLOW_ID}")
-        run_id = str(run.get("run_id") or "")
-        ctx.renderer.info(f"Run ID: {run_id}")
-        if not run_id:
-            ctx.renderer.info(f"Status: {run.get('status') or ''}")
-            return
-
-        final_payload: dict[str, Any] | None = None
-        try:
-            for event in ctx.client.stream_workflow_run(CHANGELOG_WORKFLOW_ID, run_id):
-                event_name = str(event.get("event") or "")
-                payload = event.get("data")
-                if not isinstance(payload, dict):
-                    continue
-
-                if event_name == "agent.trace":
-                    shell.render_runtime_trace_payload(
-                        payload,
-                        trace_label="Changelog",
-                        agent_id=str(payload.get("task_agent_id") or "") or None,
-                    )
-                    continue
-                if event_name == "request.completed":
-                    final_payload = payload
-                    break
-                if event_name in ("request.error", "workflow.error"):
-                    error = payload.get("error")
-                    raise RuntimeError(str(error or "changelog workflow failed"))
-        finally:
-            shell.chain_renderer.finish_trace()
-
-        if final_payload is not None:
-            shell.render_final_response(
-                ctx,
-                final_payload.get("response"),
-                str(final_payload.get("text") or ""),
-                shell.chain_renderer.take_streamed_text(),
-            )
-
-    shell.register_command(
-        Command(
-            name="changelog",
-            help="Summarize the most recent CHANGELOG.md release(s)",
-            handler=changelog_command,
-        )
     )
