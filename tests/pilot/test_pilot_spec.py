@@ -21,6 +21,7 @@ from mash.agents.masher import (
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
 from mash.tools.bash import BashTool
+from pilot.catalog.workflows.changelog import CHANGELOG_WORKFLOW_ID
 from pilot.catalog.workflows.quiz import QUIZ_WORKFLOW_ID
 from pilot.spec import (
     ADMIN_COPILOT_AGENT_ID,
@@ -221,6 +222,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
                             MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             QUIZ_WORKFLOW_ID,
+                            CHANGELOG_WORKFLOW_ID,
                         }
 
                         primary = host.get_agent(PILOT_AGENT_ID)

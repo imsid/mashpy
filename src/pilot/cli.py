@@ -19,6 +19,10 @@ from mash.cli.shell import MashRemoteShell, ShellTarget
 
 from . import store
 from .catalog.agents.pilot import PILOT_AGENT_ID
+from .catalog.workflows.changelog import (
+    CHANGELOG_WORKFLOW_ID,
+    register_changelog_command,
+)
 from .catalog.workflows.quiz import QUIZ_WORKFLOW_ID, register_quiz_command
 
 PILOT_DEFAULT_API_BASE_URL = os.environ.get(
@@ -277,6 +281,8 @@ def _run_repl(
     # attach pilot-quiz.
     if QUIZ_WORKFLOW_ID in host_workflows:
         register_quiz_command(shell)
+    if CHANGELOG_WORKFLOW_ID in host_workflows:
+        register_changelog_command(shell)
     shell.run()
     return 0
 

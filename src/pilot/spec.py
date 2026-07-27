@@ -15,6 +15,7 @@ from typing import Sequence
 from mash import Host, HostBuilder, Pool
 from mash.api import MashHostConfig, run_host
 
+from .catalog.workflows.changelog import build_changelog_workflow_spec
 from .catalog.workflows.quiz import build_quiz_workflow_spec
 
 from .catalog import CATALOG
@@ -91,6 +92,7 @@ def build_pool(workspace_root: Path | None = None) -> Pool:
     )
     pool = builder.build()
     pool.register_workflow(build_quiz_workflow_spec(resolved))
+    pool.register_workflow(build_changelog_workflow_spec(resolved))
     return pool
 
 
