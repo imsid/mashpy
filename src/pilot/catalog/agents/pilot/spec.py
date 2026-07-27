@@ -130,7 +130,7 @@ class PilotSpec(AgentSpec):
                 "cache_control": {"type": "ephemeral"},
             }
         ]
-        all_cached = _catalog_base._cached_docs_for_scope(
+        all_cached = _catalog_base.cached_docs_for_scope(
             self.workspace_root,
             doc_roots=PILOT_DOC_ROOTS,
             extra_doc_paths=PILOT_EXTRA_DOC_PATHS,

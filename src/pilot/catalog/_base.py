@@ -59,7 +59,7 @@ def build_default_llm(agent_id: str) -> LLMProvider:
     )
 
 
-def _cached_docs_for_scope(
+def cached_docs_for_scope(
     workspace_root: Path,
     *,
     doc_roots: Sequence[str] = (),
@@ -171,7 +171,7 @@ class CopilotAgentSpec(AgentSpec, abc.ABC):
         ]
         repo_context = build_repo_context(
             repo=str(self.workspace_root),
-            cached_files=_cached_docs_for_scope(
+            cached_files=cached_docs_for_scope(
                 self.workspace_root,
                 doc_roots=doc_roots,
             ),
