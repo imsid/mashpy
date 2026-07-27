@@ -1191,6 +1191,78 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider._parse_arguments(None), {})
         self.assertEqual(provider._parse_arguments({"a": 1}), {"a": 1})
 
+    @staticmethod
+    def _content_response(content: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+    @staticmethod
+    def _structured_request() -> LLMRequest:
+        return LLMRequest(
+            model="gemma3",
+            system="You are helpful.",
+            messages=[],
+            tools=[],
+            max_tokens=50,
+            provider_options={"structured_output": {"type": "object"}},
+        )
+
+    def test_parse_unwraps_fenced_json_for_structured_output(self) -> None:
+        # OpenRouter's Gemma route ignores response_format and fences the JSON;
+        # the parsed text must be bare JSON so a downstream json.loads succeeds.
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response(
+            '```json\n{\n  "latest_version": "0.19.0",\n  "highlights": []\n}\n```'
+        )
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(
+            json.loads(parsed.text),
+            {"latest_version": "0.19.0", "highlights": []},
+        )
+
+    def test_parse_unwraps_bare_fence_for_structured_output(self) -> None:
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('```\n{"a": 1}\n```')
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(json.loads(parsed.text), {"a": 1})
+
+    def test_parse_extracts_json_from_surrounding_prose(self) -> None:
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('Here is the output: {"a": 1} — done.')
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(json.loads(parsed.text), {"a": 1})
+
+    def test_parse_leaves_fence_when_structured_output_not_requested(self) -> None:
+        # A normal turn may legitimately contain a code fence; only unwrap when
+        # structured output was actually requested.
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('```json\n{"a": 1}\n```')
+
+        parsed = provider._parse(raw, provider.capabilities())
+
+        self.assertEqual(parsed.text, '```json\n{"a": 1}\n```')
+
+    def test_parse_leaves_unfenced_json_untouched(self) -> None:
+        provider = object.__new__(GemmaProvider)
+        raw = self._content_response('{"a": 1}')
+
+        parsed = provider._parse(raw, provider.capabilities(), self._structured_request())
+
+        self.assertEqual(json.loads(parsed.text), {"a": 1})
+
     async def test_send_passes_tools_on_native_path(self) -> None:
         provider = self._make_provider(create=AsyncMock(return_value=SimpleNamespace(
             choices=[
