@@ -691,6 +691,63 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.tool_calls[0].name, "lookup")
         self.assertEqual(parsed.tool_calls[0].arguments, {"q": "sky"})
 
+    def test_parse_captures_function_call_signature(self) -> None:
+        # Gemini's backend-validation signature must survive parsing onto the
+        # tool_call block so it can be replayed in stateless history.
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        interaction = SimpleNamespace(
+            id="i-sig",
+            status="requires_action",
+            steps=[
+                SimpleNamespace(type="user_input", content=[]),
+                SimpleNamespace(
+                    type="function_call", id="call-1", name="InvokeSubagent",
+                    arguments={"agent": "x"}, signature="sig-abc",
+                ),
+            ],
+            usage=SimpleNamespace(
+                total_input_tokens=1, total_output_tokens=1, total_tokens=2,
+                total_cached_tokens=None, total_thought_tokens=None,
+            ),
+        )
+        parsed = provider._parse_interaction_response(interaction)
+        tc_block = next(b for b in parsed.content_blocks if b.type == "tool_call")
+        self.assertEqual(tc_block.data["signature"], "sig-abc")
+
+    def test_messages_to_steps_replays_function_call_signature(self) -> None:
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        messages = [
+            LLMMessage(role="assistant", content=[
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-1", name="InvokeSubagent",
+                    arguments={"a": 1}, signature="sig-xyz",
+                ),
+            ]),
+            LLMMessage(role="tool", content=[
+                LLMContentBlock.tool_result(tool_call_id="call-1", content="done"),
+            ]),
+        ]
+        steps = provider._messages_to_steps(messages, {"call-1": "InvokeSubagent"})
+        fc = next(s for s in steps if s["type"] == "function_call")
+        self.assertEqual(fc["signature"], "sig-xyz")
+
+    def test_messages_to_steps_omits_absent_signature(self) -> None:
+        # A tool_call without a signature must not send an empty one.
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        messages = [
+            LLMMessage(role="assistant", content=[
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-2", name="bash", arguments={"cmd": "ls"},
+                ),
+            ]),
+        ]
+        steps = provider._messages_to_steps(messages, {"call-2": "bash"})
+        fc = next(s for s in steps if s["type"] == "function_call")
+        self.assertNotIn("signature", fc)
+
     def test_parse_interaction_cached_tokens(self) -> None:
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
@@ -976,6 +1033,67 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.tool_calls), 1)
         self.assertEqual(response.tool_calls[0].name, "search")
         self.assertEqual(response.tool_calls[0].arguments, {"q": "cats"})
+
+    async def test_stream_response_captures_signature_on_step_start(self) -> None:
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(
+                event_type="step.start", index=1,
+                step=SimpleNamespace(
+                    type="function_call", id="call-s1", name="search",
+                    arguments={"q": "cats"}, signature="sig-stream",
+                ),
+            )
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-s", status="requires_action", steps=[],
+                    usage=SimpleNamespace(
+                        total_input_tokens=5, total_output_tokens=2,
+                        total_tokens=7, total_cached_tokens=None, total_thought_tokens=None,
+                    ),
+                ))
+
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(
+                create=AsyncMock(return_value=_fake_stream())))
+        )
+        response = await provider.send(self._make_request(streaming=True))
+        tc_block = next(b for b in response.content_blocks if b.type == "tool_call")
+        self.assertEqual(tc_block.data["signature"], "sig-stream")
+
+    async def test_stream_response_backfills_signature_from_completed(self) -> None:
+        # Signature absent on step.start but present on the completed interaction.
+        provider = self._make_provider()
+
+        async def _fake_stream():
+            yield SimpleNamespace(
+                event_type="step.start", index=1,
+                step=SimpleNamespace(
+                    type="function_call", id="call-s2", name="search",
+                    arguments={"q": "cats"},  # no signature yet
+                ),
+            )
+            yield SimpleNamespace(event_type="interaction.completed",
+                interaction=SimpleNamespace(
+                    id="i-s2", status="requires_action",
+                    steps=[SimpleNamespace(
+                        type="function_call", id="call-s2", name="search",
+                        arguments={"q": "cats"}, signature="sig-final",
+                    )],
+                    usage=SimpleNamespace(
+                        total_input_tokens=5, total_output_tokens=2,
+                        total_tokens=7, total_cached_tokens=None, total_thought_tokens=None,
+                    ),
+                ))
+
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(
+                create=AsyncMock(return_value=_fake_stream())))
+        )
+        response = await provider.send(self._make_request(streaming=True))
+        tc_block = next(b for b in response.content_blocks if b.type == "tool_call")
+        self.assertEqual(tc_block.data["signature"], "sig-final")
 
     async def test_stream_response_with_thought(self) -> None:
         provider = self._make_provider()
