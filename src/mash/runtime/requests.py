@@ -344,6 +344,46 @@ async def resume_request(
     return result
 
 
+async def rerun_request(
+    self: "AgentRuntime",
+    request_id: str,
+) -> dict[str, Any]:
+    """Start a previous request over as a brand-new request.
+
+    Rebuilds from the original ``request.accepted`` payload (message + full
+    request metadata, including the host snapshot and structured-output
+    request), stamps ``rerun_of`` provenance, and submits through the normal
+    path — new request id, new trace, and a fresh ``context.load`` against the
+    session's current history. Works for any previous request regardless of its
+    terminal state.
+    """
+    self.require_open()
+    events = await self.runtime_store.list_request_events(request_id)
+    accepted = next(
+        (
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    if accepted is None:
+        raise KeyError(request_id)
+    payload = accepted.payload or {}
+    message = str(payload.get("message") or "")
+    session_id = str(payload.get("initial_session_id") or accepted.session_id or "")
+    request_metadata = dict(payload.get("request_metadata") or {})
+    # Provenance for code and the UI; a top-level key, never shown to the model
+    # (which only sees host/context, not sibling metadata keys).
+    request_metadata["rerun_of"] = request_id
+    return await _submit_request(
+        self,
+        message=message,
+        session_id=session_id,
+        request_metadata=request_metadata or None,
+    )
+
+
 async def append_runtime_event(
     self: "AgentRuntime",
     event: RuntimeEvent,

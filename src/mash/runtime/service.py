@@ -242,6 +242,9 @@ class AgentRuntime:
     async def resume_request(self, request_id: str) -> dict[str, Any]:
         return await request_helpers.resume_request(self, request_id)
 
+    async def rerun_request(self, request_id: str) -> dict[str, Any]:
+        return await request_helpers.rerun_request(self, request_id)
+
     async def cancel_request(self, request_id: str) -> dict[str, Any]:
         self.require_open()
         return await self.engine.cancel_request(request_id=request_id)

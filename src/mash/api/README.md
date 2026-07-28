@@ -228,6 +228,19 @@ validation).
   current state. Resume the cancelled request to continue from its last
   checkpoint.
 
+`POST /api/v1/agent/{agent_id}/request/{request_id}/rerun`
+- Starts a previous request over as a brand-new request. Rebuilds from the
+  original `request.accepted` payload (message + full request metadata, including
+  the host snapshot and structured-output request), stamps `rerun_of` provenance,
+  and submits through the normal path — new request id, new trace, and a fresh
+  `context.load` against the session's current history. Works for any previous
+  request regardless of its terminal state; the original is left untouched.
+- Path params:
+  - `agent_id`
+  - `request_id`
+- Returns the new request's accepted payload (`request_id`, `agent_id`,
+  `session_id`, `status`). Stream the new `request_id` as usual.
+
 ### Dynamic Publishing
 
 `POST /api/v1/agent/{agent_id}/skill`

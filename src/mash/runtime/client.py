@@ -70,6 +70,13 @@ class AgentClientLike(Protocol):
         timeout: float = 30.0,
     ) -> dict[str, Any]: ...
 
+    async def rerun_request(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]: ...
+
     async def close(self) -> None: ...
 
 
@@ -120,6 +127,9 @@ class AgentClient:
 
     def _request_cancel_url(self, request_id: str) -> str:
         return f"{self._request_url()}/{request_id}/cancel"
+
+    def _request_rerun_url(self, request_id: str) -> str:
+        return f"{self._request_url()}/{request_id}/rerun"
 
     def _health_url(self) -> str:
         return f"{self.base_url}/health"
@@ -368,6 +378,29 @@ class AgentClient:
             )
         return response.json()
 
+    async def rerun_request(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(headers=self._headers) as client:
+                response = await client.post(
+                    self._request_rerun_url(request_id),
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise AgentClientError(f"POST rerun request failed: {exc}") from exc
+        if response.status_code == 404:
+            raise AgentClientError(f"request '{request_id}' not found")
+        if response.status_code != 200:
+            raise AgentClientError(
+                f"POST rerun request failed (status={response.status_code}): "
+                f"{self._extract_message(response)}"
+            )
+        return response.json()
+
     async def close(self) -> None:
         return None
 
@@ -509,6 +542,15 @@ class InProcessAgentClient:
     ) -> dict[str, Any]:
         del timeout
         return await self.runtime.cancel_request(request_id)
+
+    async def rerun_request(
+        self,
+        request_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        del timeout
+        return await self.runtime.rerun_request(request_id)
 
     async def close(self) -> None:
         return None
