@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.runtime import AgentClientError
+from mash.runtime.errors import RequestStaleError
 from mash.runtime.events import build_reasoning_trace
 from mash.runtime.structured_output import serialize_structured_output
 from mash.skills import Skill
@@ -234,6 +235,10 @@ def build_agent_router() -> APIRouter:
             )
         try:
             result = await client.resume_request(normalized)
+        except RequestStaleError as exc:
+            raise APIError(
+                code="REQUEST_STALE", message=str(exc), status_code=409
+            ) from exc
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404

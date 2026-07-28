@@ -201,6 +201,13 @@ validation).
   - `message`: human-readable description
 - If the request is already completed or pending, returns informational status
   without changing state.
+- Rejected with `409 REQUEST_STALE` when the request's session has accrued a
+  newer replayable turn (resume replays the original context snapshot, so it is
+  unsafe once the session has moved on).
+- On a successful resume the runtime appends a non-terminal
+  `runtime.request.resumed` event (SSE `request.resumed`). Since terminality
+  reads the last event, this flips a previously failed/cancelled request back to
+  non-terminal, so a client whose stream had ended re-opens it after resuming.
 
 `POST /api/v1/agent/{agent_id}/request/{request_id}/cancel`
 - Cancels a running request. The in-flight step finishes and checkpoints;
@@ -617,7 +624,8 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
 - `400 INVALID_AGENT_SKILL`: skill validation failed (for example, missing both `location` and `content`)
 - `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
-- `404 REQUEST_NOT_FOUND`: unknown `request_id` for status or resume operations
+- `404 REQUEST_NOT_FOUND`: unknown `request_id` for status, resume, or cancel operations
+- `409 REQUEST_STALE`: resume rejected because the request's session has newer replayable turns
 
 ## Source Of Truth
 - App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).

@@ -16,7 +16,7 @@ from ..logging.trace_context import (
     get_workflow_id,
     get_workflow_run_id,
 )
-from .errors import classify_error
+from .errors import RequestStaleError, classify_error
 from .events import RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
 
@@ -254,6 +254,96 @@ async def stream_response_events(
         self.runtime_store.unregister_request_waiter(request_id, waiter)
 
 
+def _session_has_later_turn(
+    turns: list[dict[str, Any]],
+    *,
+    accepted_at: float,
+    request_trace_id: str | None,
+) -> bool:
+    """True if a replayable turn was persisted after the request was accepted.
+
+    Excludes the request's own turn (matched by trace id) so re-resuming a
+    completed request is not treated as stale.
+    """
+    for turn in turns:
+        if not bool(turn.get("replayable", True)):
+            continue
+        if request_trace_id and str(turn.get("trace_id")) == str(request_trace_id):
+            continue
+        if float(turn.get("created_at") or 0.0) > accepted_at:
+            return True
+    return False
+
+
+async def resume_request(
+    self: "AgentRuntime",
+    request_id: str,
+) -> dict[str, Any]:
+    self.require_open()
+    events = await self.runtime_store.list_request_events(request_id)
+    if not events:
+        raise KeyError(request_id)
+    accepted = next(
+        (
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    accepted_at = float(accepted.created_at) if accepted is not None else 0.0
+    session_id = next((e.session_id for e in events if e.session_id), None)
+    request_trace_id = next((e.trace_id for e in events if e.trace_id), None)
+
+    # Stale-session guard: resume replays the request's original context
+    # snapshot, so it is unsafe once the session has a newer replayable turn.
+    if session_id:
+        turns = await self.store.get_turns(session_id, self.app_id)
+        if _session_has_later_turn(
+            turns,
+            accepted_at=accepted_at,
+            request_trace_id=request_trace_id,
+        ):
+            raise RequestStaleError(
+                f"request '{request_id}' cannot be resumed: its session has "
+                f"newer turns"
+            )
+
+    result = await self.engine.resume_request(request_id=request_id)
+
+    if str(result.get("status")) == "resumed":
+        # Non-terminal lifecycle event. Because terminality reads the last
+        # event, appending it after a request.failed / request.cancelled flips
+        # the request back to non-terminal so closed streams re-open. A distinct
+        # dedupe_key per resume (by prior resumed count) lets a request be
+        # resumed more than once.
+        prior_resumes = sum(
+            1
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_RESUMED.value
+        )
+        await append_runtime_event(
+            self,
+            RuntimeEvent(
+                request_id=request_id,
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                trace_id=request_trace_id,
+                session_id=session_id,
+                event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                dedupe_key=f"request.resumed.{prior_resumes}",
+                payload={
+                    "request_id": request_id,
+                    "agent_id": self.app_id,
+                    "session_id": session_id,
+                    "status": "resumed",
+                    "previous_status": result.get("previous_status"),
+                },
+            ),
+        )
+    return result
+
+
 async def append_runtime_event(
     self: "AgentRuntime",
     event: RuntimeEvent,
@@ -325,6 +415,8 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
         return {"event": "request.error", "data": dict(event.payload or {})}
     if event.event_type == RuntimeEventType.REQUEST_CANCELLED.value:
         return {"event": "request.cancelled", "data": dict(event.payload or {})}
+    if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
+        return {"event": "request.resumed", "data": dict(event.payload or {})}
     return {
         "event": "agent.trace",
         "data": {

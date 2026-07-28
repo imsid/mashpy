@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -539,6 +540,45 @@ class _TestDBOSRequestEngine:
             "message": "request has been cancelled",
         }
 
+    async def resume_request(self, *, request_id: str) -> dict[str, Any]:
+        """Mirror DBOSRequestEngine.resume_request from the last request event.
+
+        The inline executor has no DBOS status, so infer it: a terminal
+        failed/cancelled request resumes; a completed one is an idempotent
+        no-op.
+        """
+        store = self._runtime.runtime_store
+        events = await store.list_request_events(request_id)
+        if not events:
+            raise KeyError(request_id)
+        last = events[-1].event_type
+        if last == RuntimeEventType.REQUEST_COMPLETED.value:
+            return {
+                "request_id": request_id,
+                "status": "completed",
+                "message": "request already completed successfully",
+            }
+        if last in (
+            RuntimeEventType.REQUEST_FAILED.value,
+            RuntimeEventType.REQUEST_CANCELLED.value,
+        ):
+            previous = (
+                "error"
+                if last == RuntimeEventType.REQUEST_FAILED.value
+                else "cancelled"
+            )
+            return {
+                "request_id": request_id,
+                "status": "resumed",
+                "previous_status": previous,
+                "message": "request has been resumed for recovery",
+            }
+        return {
+            "request_id": request_id,
+            "status": "pending",
+            "message": "request is already pending recovery",
+        }
+
 
 class _TestMemoryStore:
     """Minimal in-memory MemoryStore for tests; accepts a database_url constructor."""
@@ -618,6 +658,7 @@ class _TestMemoryStore:
                 "workflow_run_id": workflow_run_id,
                 "task_id": task_id,
                 "replayable": replayable,
+                "created_at": time.time(),
             }
         )
         return trace_id
@@ -637,7 +678,7 @@ class _TestMemoryStore:
                 "replayable": t.get("replayable", True),
                 "signals": t.get("signals") or {},
                 "metadata": t.get("metadata") or {},
-                "created_at": 0.0,
+                "created_at": float(t.get("created_at") or 0.0),
             }
             for t in self._turns
             if t["session_id"] == session_id and t["app_id"] == app_id
