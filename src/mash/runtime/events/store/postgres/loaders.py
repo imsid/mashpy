@@ -379,6 +379,7 @@ async def is_request_terminal(pool: Any, request_id: str) -> bool:
     return str(row["event_type"]) in {
         RuntimeEventType.REQUEST_COMPLETED.value,
         RuntimeEventType.REQUEST_FAILED.value,
+        RuntimeEventType.REQUEST_CANCELLED.value,
     }
 
 
@@ -485,10 +486,12 @@ async def list_recent_traces(
                         COUNT(*) AS event_count,
                         CASE (ARRAY_AGG(event_type ORDER BY created_at DESC, event_id DESC)
                               FILTER (WHERE event_type IN (
-                                  'runtime.request.completed', 'runtime.request.failed'
+                                  'runtime.request.completed', 'runtime.request.failed',
+                                  'runtime.request.cancelled'
                               )))[1]
                             WHEN 'runtime.request.failed' THEN 'error'
                             WHEN 'runtime.request.completed' THEN 'completed'
+                            WHEN 'runtime.request.cancelled' THEN 'cancelled'
                             ELSE 'in_progress'
                         END AS status,
                         COALESCE(SUM(

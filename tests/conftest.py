@@ -163,6 +163,7 @@ class _TestRuntimeStore:
         return event_type in {
             RuntimeEventType.REQUEST_COMPLETED.value,
             RuntimeEventType.REQUEST_FAILED.value,
+            RuntimeEventType.REQUEST_CANCELLED.value,
         }
 
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
@@ -492,6 +493,51 @@ class _TestDBOSRequestEngine:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def cancel_request(self, *, request_id: str) -> dict[str, Any]:
+        """Mirror DBOSRequestEngine.cancel_request over the inline executor.
+
+        Preempts the request's inline task (the stand-in for DBOS cancellation),
+        settles any parked interaction, and emits the terminal cancelled event.
+        """
+        from mash.runtime.engine.steps import (
+            emit_interaction_ack,
+            emit_request_cancelled,
+        )
+        from mash.runtime.requests import find_pending_interaction
+
+        store = self._runtime.runtime_store
+        if await store.is_request_terminal(request_id):
+            return {
+                "request_id": request_id,
+                "status": "completed",
+                "message": "request is already in a terminal state",
+            }
+        for task in list(self._tasks):
+            if task.get_name().endswith(f"-{request_id}"):
+                task.cancel()
+        events = await store.list_request_events(request_id)
+        trace_id = next((e.trace_id for e in events if e.trace_id), None)
+        session_id = next((e.session_id for e in events if e.session_id), None)
+        pending = find_pending_interaction(events)
+        if pending is not None:
+            await emit_interaction_ack(
+                self._runtime.app_id,
+                request_id,
+                session_id,
+                trace_id,
+                interaction_id=pending,
+                response=None,
+                cancelled=True,
+            )
+        await emit_request_cancelled(
+            self._runtime.app_id, request_id, session_id, trace_id
+        )
+        return {
+            "request_id": request_id,
+            "status": "cancelled",
+            "message": "request has been cancelled",
+        }
 
 
 class _TestMemoryStore:

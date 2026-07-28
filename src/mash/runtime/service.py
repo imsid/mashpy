@@ -243,6 +243,10 @@ class AgentRuntime:
         self.require_open()
         return await self.engine.resume_request(request_id=request_id)
 
+    async def cancel_request(self, request_id: str) -> dict[str, Any]:
+        self.require_open()
+        return await self.engine.cancel_request(request_id=request_id)
+
     def require_open(self) -> None:
         if not self._is_open:
             raise RuntimeError(

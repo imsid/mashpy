@@ -151,7 +151,11 @@ def build_agent_router() -> APIRouter:
                     event_name = str(event.get("event") or "message")
                     payload = event.get("data")
                     yield build_runtime_event_sse_payload(event_name, payload)
-                    if event_name in {"request.completed", "request.error"}:
+                    if event_name in {
+                        "request.completed",
+                        "request.error",
+                        "request.cancelled",
+                    }:
                         break
             except AgentClientError as exc:
                 yield build_runtime_event_sse_payload(
@@ -230,6 +234,26 @@ def build_agent_router() -> APIRouter:
             )
         try:
             result = await client.resume_request(normalized)
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(result)
+
+    @router.post("/agent/{agent_id}/request/{request_id}/cancel")
+    async def cancel_request(
+        request: Request, agent_id: str, request_id: str
+    ) -> dict[str, Any]:
+        client = get_client(request, agent_id)
+        normalized = request_id.strip()
+        if not normalized:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="request_id is required",
+                status_code=400,
+            )
+        try:
+            result = await client.cancel_request(normalized)
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404

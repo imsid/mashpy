@@ -110,6 +110,31 @@ def host_id_from_request_metadata(
     return host_id or None
 
 
+def find_pending_interaction(
+    events: list[RuntimeEvent],
+) -> Optional[str]:
+    """Return the interaction id of the request's last un-acked interaction.
+
+    An interaction is pending when its ``interaction.create`` has no matching
+    ``interaction.ack``. The cancel path uses this to clear a parked prompt and
+    unblock the workflow's ``recv`` with the cancel sentinel.
+    """
+    pending: dict[str, None] = {}
+    for event in events:
+        payload = event.payload or {}
+        interaction_id = payload.get("interaction_id")
+        if not interaction_id:
+            continue
+        if event.event_type == RuntimeEventType.INTERACTION_CREATE.value:
+            pending[str(interaction_id)] = None
+        elif event.event_type == RuntimeEventType.INTERACTION_ACK.value:
+            pending.pop(str(interaction_id), None)
+    if not pending:
+        return None
+    # dicts preserve insertion order; the last still-open create wins.
+    return next(reversed(pending))
+
+
 def caller_metadata_from_request_metadata(
     request_metadata: Optional[dict[str, Any]],
 ) -> Optional[dict[str, Any]]:
@@ -287,6 +312,8 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
         return {"event": "request.completed", "data": dict(event.payload or {})}
     if event.event_type == RuntimeEventType.REQUEST_FAILED.value:
         return {"event": "request.error", "data": dict(event.payload or {})}
+    if event.event_type == RuntimeEventType.REQUEST_CANCELLED.value:
+        return {"event": "request.cancelled", "data": dict(event.payload or {})}
     return {
         "event": "agent.trace",
         "data": {

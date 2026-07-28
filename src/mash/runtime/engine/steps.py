@@ -996,6 +996,40 @@ async def complete_request(
     )
 
 
+async def emit_request_cancelled(
+    agent_id: str,
+    request_id: str,
+    session_id: str | None,
+    trace_id: str | None,
+) -> None:
+    """Append the terminal ``request.cancelled`` event.
+
+    The cancel path owns this: ``DBOSWorkflowCancelledError`` derives from
+    ``BaseException``, so it bypasses the workflow's ``except Exception``
+    handler and ``fail_request`` never fires. Without this event the request
+    would have no terminal record and streams would hang.
+    """
+    runtime = _require_runtime(agent_id)
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=runtime.app_id,
+            agent_id=runtime.app_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            dedupe_key="request.cancelled",
+            payload={
+                "request_id": request_id,
+                "agent_id": runtime.app_id,
+                "session_id": session_id,
+                "status": "cancelled",
+            },
+        ),
+    )
+
+
 async def fail_request(
     agent_id: str,
     request_id: str,

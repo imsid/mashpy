@@ -35,3 +35,10 @@ class RequestEngine(Protocol):
         request_id: str,
     ) -> dict[str, Any]:
         ...
+
+    async def cancel_request(
+        self,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        ...

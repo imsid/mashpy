@@ -169,7 +169,8 @@ validation).
   `data.payload.payload.text`. Concatenate these in arrival order to render the
   answer live before the terminal event. The final, authoritative response is
   still delivered on `request.completed`.
-- Terminates when event name is `request.completed` or `request.error`.
+- Terminates when event name is `request.completed`, `request.error`, or
+  `request.cancelled`.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/status`
 - Returns the current DBOS workflow status for a request.
@@ -200,6 +201,25 @@ validation).
   - `message`: human-readable description
 - If the request is already completed or pending, returns informational status
   without changing state.
+
+`POST /api/v1/agent/{agent_id}/request/{request_id}/cancel`
+- Cancels a running request. The in-flight step finishes and checkpoints;
+  execution stops at the next step boundary. A request parked on an
+  interaction has that prompt acked as cancelled, and the cancel path emits the
+  terminal `runtime.request.cancelled` event (visible as `request.cancelled` on
+  the SSE stream) so streams terminate. Cancel never cascades to subagent
+  children — an already-invoked child runs to completion.
+- Path params:
+  - `agent_id`
+  - `request_id`
+- Returns:
+  - `request_id`
+  - `workflow_id`
+  - `status`: `cancelled` | current status when already terminal
+  - `message`: human-readable description
+- Cancelling an already-terminal request is an idempotent no-op that reports the
+  current state. Resume the cancelled request to continue from its last
+  checkpoint.
 
 ### Dynamic Publishing
 
