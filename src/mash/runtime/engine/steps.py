@@ -836,6 +836,51 @@ INTERACTION_SCHEMAS = {
     "choice": lambda options: {"type": "multi_select", "options": list(options)},
 }
 
+# Marker a cancel sends to a pending interaction's topic. No user response can
+# produce this shape (responses are strings or lists), so an in-flight recv that
+# returns it unambiguously means "this interaction was cancelled": the current
+# attempt ends and, on resume, a fresh interaction is issued.
+INTERACTION_CANCEL_SENTINEL: dict[str, Any] = {"__mash_interaction_cancelled__": True}
+
+
+def is_interaction_cancel_sentinel(response: Any) -> bool:
+    return (
+        isinstance(response, dict)
+        and response.get("__mash_interaction_cancelled__") is True
+    )
+
+
+async def open_interaction(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    *,
+    interaction_type: str,
+    prompt: str,
+    options: list[str] | None = None,
+    timeout_seconds: int = 300,
+) -> str:
+    """Mint the interaction id and emit its create event in one checkpointed step.
+
+    Generating the id inside the step is what makes replay safe: DBOS records the
+    step's return value, so recovery hands the same id back to both the UI and
+    the ``recv`` listener instead of minting a fresh one at workflow scope.
+    """
+    interaction_id = f"itr_{uuid.uuid4().hex[:12]}"
+    await emit_interaction_create(
+        agent_id,
+        request_id,
+        session_id,
+        trace_id,
+        interaction_id=interaction_id,
+        interaction_type=interaction_type,
+        prompt=prompt,
+        options=options,
+        timeout_seconds=timeout_seconds,
+    )
+    return interaction_id
+
 
 async def emit_interaction_create(
     agent_id: str,
@@ -884,6 +929,7 @@ async def emit_interaction_ack(
     interaction_id: str,
     response: Any,
     timed_out: bool = False,
+    cancelled: bool = False,
 ) -> None:
     runtime = _require_runtime(agent_id)
     payload: dict[str, Any] = {
@@ -892,6 +938,8 @@ async def emit_interaction_ack(
     }
     if timed_out:
         payload["timed_out"] = True
+    if cancelled:
+        payload["cancelled"] = True
     await append_runtime_event(
         runtime,
         RuntimeEvent(

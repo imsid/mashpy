@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from dbos import DBOS
@@ -24,10 +23,11 @@ from .steps import (
     commit_request_step,
     complete_request,
     emit_interaction_ack,
-    emit_interaction_create,
     fail_request,
     finalize_structured_output,
+    is_interaction_cancel_sentinel,
     load_request_context,
+    open_interaction,
     persist_completed_turn,
     plan_request_step,
     run_step_tool_batch,
@@ -38,6 +38,88 @@ from .steps import (
 
 def workflow_id_for(agent_id: str, request_id: str) -> str:
     return f"{agent_id}:{request_id}"
+
+
+def _interaction_timeout_default(interaction_type: str) -> Any:
+    if interaction_type == "approval":
+        return "deny"
+    if interaction_type == "choice":
+        return []
+    return ""
+
+
+async def _run_interaction(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    *,
+    loop_index: int,
+    interaction_type: str,
+    prompt: str,
+    options: list[str] | None,
+    timeout_seconds: int,
+    step_prefix: str,
+) -> tuple[str, Any, bool]:
+    """Create an interaction, wait for a response, retrying past a cancel.
+
+    Each attempt mints a fresh interaction id inside a checkpointed
+    ``{step_prefix}.open.{loop}.{attempt}`` step so replay lands on the same id
+    the UI and ``recv`` already agreed on. If ``recv`` returns the cancel
+    sentinel (Phase 2 sends it when a request is cancelled while parked here),
+    the attempt is acked as cancelled and the loop issues a brand-new
+    interaction — which is what a later resume replays into. Returns the
+    ``(interaction_id, response, timed_out)`` of the attempt that produced a
+    real response. ``step_prefix`` keeps the two interaction sites (the AskUser
+    tool intercept and the approval gate) in separate step namespaces so they
+    never collide inside one loop.
+    """
+    attempt = 0
+    while True:
+        interaction_id = await DBOS.run_step_async(
+            {"name": f"{step_prefix}.open.{loop_index}.{attempt}"},
+            open_interaction,
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            interaction_type=interaction_type,
+            prompt=prompt,
+            options=options,
+            timeout_seconds=timeout_seconds,
+        )
+        response = await DBOS.recv_async(
+            interaction_id, timeout_seconds=timeout_seconds
+        )
+        if is_interaction_cancel_sentinel(response):
+            await DBOS.run_step_async(
+                {"name": f"{step_prefix}.ack.{loop_index}.{attempt}"},
+                emit_interaction_ack,
+                agent_id,
+                request_id,
+                session_id,
+                trace_id,
+                interaction_id=interaction_id,
+                response=None,
+                cancelled=True,
+            )
+            attempt += 1
+            continue
+        timed_out = response is None
+        if timed_out:
+            response = _interaction_timeout_default(interaction_type)
+        await DBOS.run_step_async(
+            {"name": f"{step_prefix}.ack.{loop_index}.{attempt}"},
+            emit_interaction_ack,
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            interaction_id=interaction_id,
+            response=response,
+            timed_out=timed_out,
+        )
+        return interaction_id, response, timed_out
 
 
 async def _handle_ask_user_interaction(
@@ -58,38 +140,18 @@ async def _handle_ask_user_interaction(
     options = arguments.get("options")
     interaction_type = "choice" if options else "info"
     timeout_seconds = ASK_USER_DEFAULT_TIMEOUT_SECONDS
-    interaction_id = f"itr_{uuid.uuid4().hex[:12]}"
 
-    await DBOS.run_step_async(
-        {"name": f"ask_user.create.{loop_index}"},
-        emit_interaction_create,
+    interaction_id, response, timed_out = await _run_interaction(
         agent_id,
         request_id,
         session_id,
         trace_id,
-        interaction_id=interaction_id,
+        loop_index=loop_index,
         interaction_type=interaction_type,
         prompt=question,
         options=options,
         timeout_seconds=timeout_seconds,
-    )
-
-    response = await DBOS.recv_async(interaction_id, timeout_seconds=timeout_seconds)
-
-    timed_out = response is None
-    if timed_out:
-        response = [] if interaction_type == "choice" else ""
-
-    await DBOS.run_step_async(
-        {"name": f"ask_user.ack.{loop_index}"},
-        emit_interaction_ack,
-        agent_id,
-        request_id,
-        session_id,
-        trace_id,
-        interaction_id=interaction_id,
-        response=response,
-        timed_out=timed_out,
+        step_prefix="ask_user",
     )
 
     if isinstance(response, list):
@@ -272,45 +334,18 @@ async def execute_request_workflow(
                     prompt = str(interaction.get("prompt") or "")
                     options = interaction.get("options")
                     timeout_seconds = int(interaction.get("timeout_seconds") or 300)
-                    interaction_id = f"itr_{uuid.uuid4().hex[:12]}"
 
-                    await DBOS.run_step_async(
-                        {"name": f"interaction.create.{loop_index}"},
-                        emit_interaction_create,
+                    _, response, _ = await _run_interaction(
                         agent_id,
                         request_id,
                         session_id,
                         trace_id,
-                        interaction_id=interaction_id,
+                        loop_index=loop_index,
                         interaction_type=interaction_type,
                         prompt=prompt,
                         options=options,
                         timeout_seconds=timeout_seconds,
-                    )
-
-                    response = await DBOS.recv_async(
-                        interaction_id, timeout_seconds=timeout_seconds
-                    )
-
-                    timed_out = response is None
-                    if timed_out:
-                        if interaction_type == "approval":
-                            response = "deny"
-                        elif interaction_type == "choice":
-                            response = []
-                        else:
-                            response = ""
-
-                    await DBOS.run_step_async(
-                        {"name": f"interaction.ack.{loop_index}"},
-                        emit_interaction_ack,
-                        agent_id,
-                        request_id,
-                        session_id,
-                        trace_id,
-                        interaction_id=interaction_id,
-                        response=response,
-                        timed_out=timed_out,
+                        step_prefix="interaction",
                     )
 
                     workflow_state = {
