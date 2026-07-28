@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any, Optional
 from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
 from ..logging.trace_context import (
     bound_host_id,
+    clear_subagent_request_id,
     get_host_id,
+    get_subagent_request_id,
     get_workflow_id,
     get_workflow_run_id,
 )
@@ -152,7 +154,16 @@ async def _submit_request_inner(
     request_metadata: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     target_session_id = session_id
-    request_id = str(uuid.uuid4())
+    # A subagent invocation binds a deterministic request id so a DBOS replay
+    # reissues the child under the same workflow id and reattaches to the one
+    # existing child instead of starting a second. Consume it before the child
+    # workflow task is spawned so the child never inherits the parent's key.
+    deterministic_request_id = get_subagent_request_id()
+    if deterministic_request_id:
+        clear_subagent_request_id()
+        request_id = deterministic_request_id
+    else:
+        request_id = str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
     accepted_event = await append_runtime_event(
         self,

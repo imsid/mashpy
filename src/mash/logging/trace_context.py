@@ -36,6 +36,10 @@ _request_metadata: contextvars.ContextVar[dict[str, Any] | None] = (
         default=None,
     )
 )
+_subagent_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_subagent_request_id",
+    default=None,
+)
 
 
 def set_trace_id(trace_id: Optional[str]) -> None:
@@ -86,6 +90,36 @@ def bound_request_id(request_id: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _request_id.reset(token)
+
+
+def get_subagent_request_id() -> Optional[str]:
+    """Get the pending deterministic request id for the next subagent submit.
+
+    Set around a subagent invocation so the submit path can mint a
+    replay-stable child request id (derived from the primary request id + call
+    position) instead of a random uuid. A DBOS replay then reissues the child
+    under the same id and reattaches to the one existing child.
+    """
+    return _subagent_request_id.get()
+
+
+def clear_subagent_request_id() -> None:
+    """Consume the pending subagent request id.
+
+    Called right after the submit path reads it and before the child workflow
+    task is spawned, so the child never inherits the parent's key.
+    """
+    _subagent_request_id.set(None)
+
+
+@contextmanager
+def bound_subagent_request_id(request_id: Optional[str]) -> Iterator[None]:
+    """Bind the deterministic child request id for one subagent invocation."""
+    token = _subagent_request_id.set(request_id)
+    try:
+        yield
+    finally:
+        _subagent_request_id.reset(token)
 
 
 def get_session_id() -> Optional[str]:

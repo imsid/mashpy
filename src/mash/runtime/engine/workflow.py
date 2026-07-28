@@ -11,6 +11,7 @@ from ...logging import (
     bound_request_id,
     bound_request_metadata,
     bound_session_id,
+    bound_subagent_request_id,
 )
 from ...logging.trace_context import bound_workflow_ids
 from .. import context as context_helpers
@@ -199,17 +200,24 @@ async def _run_tool_call_for_workflow(
             loop_index=loop_index,
         )
     if str(tool_call.get("name") or "") == "InvokeSubagent":
-        # InvokeSubagent starts a child DBOS workflow. DBOS rejects that when the
-        # call happens from step context, so keep this one tool invocation at
-        # workflow scope while preserving the same result/event behavior.
-        return await run_step_tool_call(
-            agent_id,
-            request_id,
-            session_id,
-            trace_id,
-            workflow_state,
-            tool_call,
-        )
+        # InvokeSubagent starts a child DBOS workflow. DBOS rejects that from
+        # step context (create_start_workflow_child asserts is_workflow), so
+        # this one invocation stays at workflow scope. To keep replay from
+        # starting a *second* child, bind a deterministic child request id
+        # derived from the primary request id and this call's position; on
+        # replay the child is reissued under the same id and DBOS reattaches to
+        # the existing one. Stable across replay because loop/call index come
+        # from checkpointed state.
+        child_request_id = f"{request_id}-sub-{loop_index}-{call_index}"
+        with bound_subagent_request_id(child_request_id):
+            return await run_step_tool_call(
+                agent_id,
+                request_id,
+                session_id,
+                trace_id,
+                workflow_state,
+                tool_call,
+            )
     return await retry_transient(
         lambda: DBOS.run_step_async(
             {"name": f"tool.call.{loop_index}.{call_index}"},
