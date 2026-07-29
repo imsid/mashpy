@@ -215,6 +215,31 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error_source"], "subagent")
         self.assertNotIn("timed out", payload["error"].lower())
 
+    async def test_cancelled_subagent_reports_the_cancellation(self) -> None:
+        """A cancelled child is a terminal outcome, not a broken stream.
+
+        A subagent runs as its own request and can be cancelled directly, so
+        the primary's tool result names that rather than reporting the stream
+        as having ended without a terminal event.
+        """
+        self.client._events = [
+            {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
+            {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
+            {
+                "event": "request.cancelled",
+                "data": {"request_id": "r1", "status": "cancelled"},
+            },
+        ]
+
+        result = await self.tool.execute({"agent_id": "research", "prompt": "hello"})
+
+        self.assertTrue(result.is_error)
+        payload = json.loads(result.content)
+        self.assertEqual(payload["error_source"], "cancelled")
+        self.assertEqual(payload["request_id"], "r1")
+        self.assertIn("cancelled", payload["error"].lower())
+        self.assertNotIn("without a terminal event", payload["error"])
+
     async def test_max_step_limit_response_is_treated_as_error(self) -> None:
         self.client._events = [
             {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},

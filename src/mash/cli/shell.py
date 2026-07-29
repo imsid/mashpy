@@ -332,6 +332,7 @@ class MashRemoteShell:
             )
         ctx.last_request_id = request_id or None
         final_payload: dict[str, Any] | None = None
+        cancelled = False
         try:
             for event in self.client.stream_request(ctx.agent_id, request_id):
                 event_name = str(event.get("event") or "")
@@ -355,11 +356,21 @@ class MashRemoteShell:
                     final_payload = payload
                     break
 
+                if event_name == "request.cancelled":
+                    cancelled = True
+                    break
+
                 if event_name == "request.error":
                     error = payload.get("error")
                     raise RuntimeError(str(error or "remote request failed"))
         finally:
             self.chain_renderer.finish_trace()
+
+        if cancelled:
+            # A cancelled request is a terminal outcome someone asked for, so
+            # the shell reports it and returns to the prompt.
+            self.renderer.warn("  Request cancelled.")
+            return
 
         if final_payload is None:
             raise RuntimeError("stream ended without a terminal event")

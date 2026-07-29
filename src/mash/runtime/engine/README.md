@@ -187,19 +187,18 @@ Important behavior:
 - assistant output is already reflected in the serialized context before the step returns
 - this step does **not** enable DBOS automatic retries
 
-### 4. `interaction.create.<loop_index>` / `interaction.ack.<loop_index>` (conditional)
+### 4. `<prefix>.open.<loop_index>.<attempt>` / `<prefix>.ack.<loop_index>.<attempt>` (conditional)
 
-Implemented by `emit_interaction_create(...)` and `emit_interaction_ack(...)`.
+Driven by `_run_interaction(...)`, using the `open_interaction(...)` and `emit_interaction_ack(...)` steps. `<prefix>` is `interaction` for the approval gate and `ask_user` for the AskUser tool intercept, keeping the two sites in separate step namespaces.
 
-These steps run only when the action payload from `plan_request_step` contains an `interaction` field. The workflow:
+These steps run only when the action payload from `plan_request_step` contains an `interaction` field (or the plan calls `AskUser`). Per attempt, the workflow:
 
-- generates a unique `interaction_id`
-- appends `runtime.interaction.create` (visible as `request.interaction.create` on SSE)
+- runs `open_interaction`, a **checkpointed** step that mints the `interaction_id` *inside the step* and appends `runtime.interaction.create` (visible as `request.interaction.create` on SSE). Because the id is the step's return value, DBOS replay hands the same id back to both the UI and the `recv` listener — without this, a recovered workflow would mint a fresh id and `recv` on a topic no sender ever targets.
 - calls `DBOS.recv(interaction_id, timeout_seconds=...)` — durable block
-- on response (or timeout): appends `runtime.interaction.ack`
-- injects the response into `workflow_state["interaction_response"]`
+- on a real response (or timeout): appends `runtime.interaction.ack` and injects the response into `workflow_state["interaction_response"]`
+- on the **cancel sentinel** (`INTERACTION_CANCEL_SENTINEL`, sent by the cancel path to a parked interaction's topic): acks the attempt as cancelled and loops to a new attempt — a fresh `open` step, a fresh id, a fresh create event — which is what a later resume replays into.
 
-This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async`. The `recv` itself is the durable checkpoint — if the process restarts, the workflow resumes waiting at the same point. The host delivers responses via `DBOS.send(workflow_id, response, topic=interaction_id)`.
+This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async` for the wait. The host delivers responses via `DBOS.send(workflow_id, response, topic=interaction_id)`.
 
 ### 5. `tool.call.<loop_index>.<call_index>` (with workflow-level interceptions)
 

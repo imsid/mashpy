@@ -10,11 +10,13 @@ from typing import TYPE_CHECKING, Any, Optional
 from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
 from ..logging.trace_context import (
     bound_host_id,
+    clear_subagent_request_id,
     get_host_id,
+    get_subagent_request_id,
     get_workflow_id,
     get_workflow_run_id,
 )
-from .errors import classify_error
+from .errors import RequestStaleError, classify_error
 from .events import RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
 
@@ -110,6 +112,31 @@ def host_id_from_request_metadata(
     return host_id or None
 
 
+def find_pending_interaction(
+    events: list[RuntimeEvent],
+) -> Optional[str]:
+    """Return the interaction id of the request's last un-acked interaction.
+
+    An interaction is pending when its ``interaction.create`` has no matching
+    ``interaction.ack``. The cancel path uses this to clear a parked prompt and
+    unblock the workflow's ``recv`` with the cancel sentinel.
+    """
+    pending: dict[str, None] = {}
+    for event in events:
+        payload = event.payload or {}
+        interaction_id = payload.get("interaction_id")
+        if not interaction_id:
+            continue
+        if event.event_type == RuntimeEventType.INTERACTION_CREATE.value:
+            pending[str(interaction_id)] = None
+        elif event.event_type == RuntimeEventType.INTERACTION_ACK.value:
+            pending.pop(str(interaction_id), None)
+    if not pending:
+        return None
+    # dicts preserve insertion order; the last still-open create wins.
+    return next(reversed(pending))
+
+
 def caller_metadata_from_request_metadata(
     request_metadata: Optional[dict[str, Any]],
 ) -> Optional[dict[str, Any]]:
@@ -127,7 +154,16 @@ async def _submit_request_inner(
     request_metadata: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     target_session_id = session_id
-    request_id = str(uuid.uuid4())
+    # A subagent invocation binds a deterministic request id so a DBOS replay
+    # reissues the child under the same workflow id and reattaches to the one
+    # existing child instead of starting a second. Consume it before the child
+    # workflow task is spawned so the child never inherits the parent's key.
+    deterministic_request_id = get_subagent_request_id()
+    if deterministic_request_id:
+        clear_subagent_request_id()
+        request_id = deterministic_request_id
+    else:
+        request_id = str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
     accepted_event = await append_runtime_event(
         self,
@@ -218,6 +254,153 @@ async def stream_response_events(
         self.runtime_store.unregister_request_waiter(request_id, waiter)
 
 
+def _session_has_later_turn(
+    turns: list[dict[str, Any]],
+    *,
+    accepted_at: float,
+    request_trace_id: str | None,
+) -> bool:
+    """True if a replayable turn was persisted after the request was accepted.
+
+    Excludes the request's own turn (matched by trace id) so re-resuming a
+    completed request is not treated as stale.
+    """
+    for turn in turns:
+        if not bool(turn.get("replayable", True)):
+            continue
+        if request_trace_id and str(turn.get("trace_id")) == str(request_trace_id):
+            continue
+        if float(turn.get("created_at") or 0.0) > accepted_at:
+            return True
+    return False
+
+
+async def resume_request(
+    self: "AgentRuntime",
+    request_id: str,
+) -> dict[str, Any]:
+    self.require_open()
+    events = await self.runtime_store.list_request_events(request_id)
+    if not events:
+        raise KeyError(request_id)
+    accepted = next(
+        (
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    accepted_at = float(accepted.created_at) if accepted is not None else 0.0
+    session_id = next((e.session_id for e in events if e.session_id), None)
+    request_trace_id = next((e.trace_id for e in events if e.trace_id), None)
+
+    # A request that already completed has nothing to replay, so the engine's
+    # idempotent response is the honest answer even once the session has moved
+    # on. Checking it first keeps a completed request from reporting stale.
+    last_lifecycle = next(
+        (
+            e.event_type
+            for e in reversed(events)
+            if e.event_type
+            in (
+                RuntimeEventType.REQUEST_COMPLETED.value,
+                RuntimeEventType.REQUEST_RESUMED.value,
+            )
+        ),
+        None,
+    )
+    already_completed = last_lifecycle == RuntimeEventType.REQUEST_COMPLETED.value
+
+    # Stale-session guard: resume replays the request's original context
+    # snapshot, so it is unsafe once the session has a newer replayable turn.
+    if session_id and not already_completed:
+        turns = await self.store.get_turns(session_id, self.app_id)
+        if _session_has_later_turn(
+            turns,
+            accepted_at=accepted_at,
+            request_trace_id=request_trace_id,
+        ):
+            raise RequestStaleError(
+                f"request '{request_id}' cannot be resumed: its session has "
+                f"newer turns"
+            )
+
+    result = await self.engine.resume_request(request_id=request_id)
+
+    if str(result.get("status")) == "resumed":
+        # Non-terminal lifecycle event. Because terminality reads the last
+        # event, appending it after a request.failed / request.cancelled flips
+        # the request back to non-terminal so closed streams re-open. A distinct
+        # dedupe_key per resume (by prior resumed count) lets a request be
+        # resumed more than once.
+        prior_resumes = sum(
+            1
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_RESUMED.value
+        )
+        await append_runtime_event(
+            self,
+            RuntimeEvent(
+                request_id=request_id,
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                trace_id=request_trace_id,
+                session_id=session_id,
+                event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                dedupe_key=f"request.resumed.{prior_resumes}",
+                payload={
+                    "request_id": request_id,
+                    "agent_id": self.app_id,
+                    "session_id": session_id,
+                    "status": "resumed",
+                    "previous_status": result.get("previous_status"),
+                },
+            ),
+        )
+    return result
+
+
+async def rerun_request(
+    self: "AgentRuntime",
+    request_id: str,
+) -> dict[str, Any]:
+    """Start a previous request over as a brand-new request.
+
+    Rebuilds from the original ``request.accepted`` payload (message + full
+    request metadata, including the host snapshot and structured-output
+    request), stamps ``rerun_of`` provenance, and submits through the normal
+    path — new request id, new trace, and a fresh ``context.load`` against the
+    session's current history. Works for any previous request regardless of its
+    terminal state.
+    """
+    self.require_open()
+    events = await self.runtime_store.list_request_events(request_id)
+    accepted = next(
+        (
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    if accepted is None:
+        raise KeyError(request_id)
+    payload = accepted.payload or {}
+    message = str(payload.get("message") or "")
+    session_id = str(payload.get("initial_session_id") or accepted.session_id or "")
+    request_metadata = dict(payload.get("request_metadata") or {})
+    # Provenance for code and the UI; a top-level key, never shown to the model
+    # (which only sees host/context, not sibling metadata keys).
+    request_metadata["rerun_of"] = request_id
+    return await _submit_request(
+        self,
+        message=message,
+        session_id=session_id,
+        request_metadata=request_metadata or None,
+    )
+
+
 async def append_runtime_event(
     self: "AgentRuntime",
     event: RuntimeEvent,
@@ -287,6 +470,10 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
         return {"event": "request.completed", "data": dict(event.payload or {})}
     if event.event_type == RuntimeEventType.REQUEST_FAILED.value:
         return {"event": "request.error", "data": dict(event.payload or {})}
+    if event.event_type == RuntimeEventType.REQUEST_CANCELLED.value:
+        return {"event": "request.cancelled", "data": dict(event.payload or {})}
+    if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
+        return {"event": "request.resumed", "data": dict(event.payload or {})}
     return {
         "event": "agent.trace",
         "data": {

@@ -138,6 +138,29 @@ export const api = {
   listApiEvents: (params) => request('/telemetry/api/events', { params }),
   listCommandEvents: (params) => request('/telemetry/command-events', { params }),
 
+  // --- Trace actions ---
+  // A trace is one request, so the server resolves the request id from the
+  // trace and these never carry one.
+  traceRequestStatus: (agentId, traceId) =>
+    request(
+      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/status`,
+    ),
+  cancelTraceRequest: (agentId, traceId) =>
+    request(
+      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/cancel`,
+      { method: 'POST' },
+    ),
+  resumeTraceRequest: (agentId, traceId) =>
+    request(
+      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/resume`,
+      { method: 'POST' },
+    ),
+  rerunTraceRequest: (agentId, traceId) =>
+    request(
+      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/rerun`,
+      { method: 'POST' },
+    ),
+
   // --- Sessions ---
   listSessions: (agentId) =>
     request(`/agent/${encodeURIComponent(agentId)}/sessions`),

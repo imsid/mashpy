@@ -266,7 +266,24 @@ class DBOSRequestEngine(RequestEngine):
                 "status": "pending",
                 "message": "request is already pending recovery",
             }
-        if raw_status in ("ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"):
+        if raw_status == "ERROR":
+            # DBOS refuses to resume a workflow that ended in ERROR: its
+            # ``resume_workflows`` update excludes SUCCESS and ERROR, so the
+            # call is a silent no-op. Resuming a failed request from its last
+            # checkpoint needs ``fork_workflow``, which mints a new workflow
+            # id and so breaks the request/workflow/trace 1:1 mapping — a
+            # separate change. Until then, say so instead of reporting a
+            # resume that never happened.
+            return {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "status": "failed",
+                "message": (
+                    "failed requests cannot be resumed; rerun the request "
+                    "to start it over"
+                ),
+            }
+        if raw_status in ("CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"):
             await dbos_class.resume_workflow_async(workflow_id)
             return {
                 "request_id": request_id,
@@ -281,6 +298,98 @@ class DBOSRequestEngine(RequestEngine):
             "status": _REQUEST_STATUS_MAP.get(raw_status, "unknown"),
             "message": f"request is in '{raw_status}' state",
         }
+
+    async def cancel_request(
+        self,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        await ensure_dbos_ready(self._database_url)
+        dbos_class, _ = _load_dbos_api()
+        workflow_id = workflow_id_for(self._runtime.app_id, request_id)
+        status = await dbos_class.get_workflow_status_async(workflow_id)
+        if status is None:
+            raise KeyError(f"request '{request_id}' not found")
+        raw_status = str(getattr(status, "status", "") or "")
+        if raw_status in (
+            "SUCCESS",
+            "ERROR",
+            "CANCELLED",
+            "MAX_RECOVERY_ATTEMPTS_EXCEEDED",
+        ):
+            return {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "status": _REQUEST_STATUS_MAP.get(raw_status, "unknown"),
+                "message": "request is already in a terminal state",
+            }
+        # Preempt the workflow at the next step boundary. The in-flight step
+        # finishes and checkpoints; DBOSWorkflowCancelledError bypasses the
+        # workflow's error handler, so this path owns the terminal event.
+        await dbos_class.cancel_workflow_async(workflow_id)
+        await self._settle_cancelled_interaction(
+            request_id, workflow_id, dbos_class
+        )
+        return {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "status": "cancelled",
+            "message": "request has been cancelled",
+        }
+
+    async def _settle_cancelled_interaction(
+        self,
+        request_id: str,
+        workflow_id: str,
+        dbos_class: Any,
+    ) -> None:
+        """Clear a parked interaction and emit the terminal cancelled event.
+
+        Reads the request's events once: if the request is blocked on an
+        interaction, acks it cancelled (so the UI clears the prompt) and sends
+        the cancel sentinel to its topic (so a later resume replays into a
+        fresh attempt). Then appends ``request.cancelled``.
+        """
+        from ..requests import find_pending_interaction
+        from .steps import (
+            INTERACTION_CANCEL_SENTINEL,
+            emit_interaction_ack,
+            emit_request_cancelled,
+        )
+
+        events = await self._runtime.runtime_store.list_request_events(request_id)
+        trace_id = next((e.trace_id for e in events if e.trace_id), None)
+        session_id = next((e.session_id for e in events if e.session_id), None)
+
+        pending_interaction_id = find_pending_interaction(events)
+        if pending_interaction_id is not None:
+            await emit_interaction_ack(
+                self._runtime.app_id,
+                request_id,
+                session_id,
+                trace_id,
+                interaction_id=pending_interaction_id,
+                response=None,
+                cancelled=True,
+            )
+            try:
+                await dbos_class.send_async(
+                    workflow_id,
+                    INTERACTION_CANCEL_SENTINEL,
+                    topic=pending_interaction_id,
+                )
+            except Exception:
+                # A cancelled workflow may reject the send; the ack already
+                # cleared the prompt and resume issues a fresh interaction
+                # regardless, so this is non-fatal.
+                pass
+
+        await emit_request_cancelled(
+            self._runtime.app_id,
+            request_id,
+            session_id,
+            trace_id,
+        )
 
 
 __all__ = [

@@ -23,6 +23,8 @@ class RuntimeEventType(str, Enum):
     INTERACTION_ACK = "runtime.interaction.ack"
     REQUEST_COMPLETED = "runtime.request.completed"
     REQUEST_FAILED = "runtime.request.failed"
+    REQUEST_CANCELLED = "runtime.request.cancelled"
+    REQUEST_RESUMED = "runtime.request.resumed"
     STEP_FAILED = "runtime.step.failed"
 
 

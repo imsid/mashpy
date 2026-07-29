@@ -360,7 +360,61 @@ async def has_request(pool: Any, request_id: str) -> bool:
     return row is not None
 
 
+async def get_request_id_for_trace(
+    pool: Any,
+    trace_id: str,
+    *,
+    app_id: str | None = None,
+) -> str | None:
+    """The request a trace belongs to, or None if it has none.
+
+    Trace and request are one-to-one under current code — ``start_request_trace``
+    mints exactly one trace per request as a checkpointed step. Rows written
+    before replay-safe checkpointing can break that, so this resolves to the
+    trace's earliest request id: deterministic on legacy data rather than
+    ambiguous.
+    """
+    clauses = ["trace_id = %s", "request_id IS NOT NULL"]
+    params: list[Any] = [trace_id]
+    if app_id is not None:
+        clauses.append("app_id = %s")
+        params.append(app_id)
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                f"""
+                SELECT request_id
+                FROM runtime_event_log
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_id ASC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = await cursor.fetchone()
+    return str(row["request_id"]) if row is not None else None
+
+
+_TERMINAL_REQUEST_EVENTS = (
+    RuntimeEventType.REQUEST_COMPLETED.value,
+    RuntimeEventType.REQUEST_FAILED.value,
+    RuntimeEventType.REQUEST_CANCELLED.value,
+)
+
+# Lifecycle events that decide terminality: the terminal three plus resumed,
+# which un-terminates a request so closed streams re-open.
+_LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
+    RuntimeEventType.REQUEST_RESUMED.value,
+)
+
+
 async def is_request_terminal(pool: Any, request_id: str) -> bool:
+    """Whether the request's last lifecycle event is a terminal one.
+
+    Restricted to lifecycle events rather than reading the log's last row:
+    cancel is appended while a step is still in flight, and that step's own
+    events land after it, which would otherwise read as non-terminal.
+    """
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
@@ -368,18 +422,16 @@ async def is_request_terminal(pool: Any, request_id: str) -> bool:
                 SELECT event_type
                 FROM runtime_event_log
                 WHERE request_id = %s
+                  AND event_type = ANY(%s)
                 ORDER BY seq DESC
                 LIMIT 1
                 """,
-                (request_id,),
+                (request_id, list(_LIFECYCLE_REQUEST_EVENTS)),
             )
             row = await cursor.fetchone()
     if row is None:
         return False
-    return str(row["event_type"]) in {
-        RuntimeEventType.REQUEST_COMPLETED.value,
-        RuntimeEventType.REQUEST_FAILED.value,
-    }
+    return str(row["event_type"]) in _TERMINAL_REQUEST_EVENTS
 
 
 async def list_feedback(
@@ -468,7 +520,9 @@ async def list_recent_traces(
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             # status mirrors _extract_boundary_events in spans.py: the trace's
-            # latest terminal lifecycle event wins, else it is still running.
+            # latest lifecycle event wins, else it is still running. resumed is
+            # in the set and maps to in_progress, so a resumed request stops
+            # reporting the terminal state it was resumed out of.
             await cursor.execute(
                 f"""
                 SELECT * FROM (
@@ -485,10 +539,12 @@ async def list_recent_traces(
                         COUNT(*) AS event_count,
                         CASE (ARRAY_AGG(event_type ORDER BY created_at DESC, event_id DESC)
                               FILTER (WHERE event_type IN (
-                                  'runtime.request.completed', 'runtime.request.failed'
+                                  'runtime.request.completed', 'runtime.request.failed',
+                                  'runtime.request.cancelled', 'runtime.request.resumed'
                               )))[1]
                             WHEN 'runtime.request.failed' THEN 'error'
                             WHEN 'runtime.request.completed' THEN 'completed'
+                            WHEN 'runtime.request.cancelled' THEN 'cancelled'
                             ELSE 'in_progress'
                         END AS status,
                         COALESCE(SUM(

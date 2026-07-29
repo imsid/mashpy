@@ -5,8 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from .events import LogEvent
-from .trace_context import get_host_id, get_request_id, get_trace_id
+from .trace_context import (
+    get_host_id,
+    get_request_id,
+    get_session_id,
+    get_trace_id,
+)
 from ..runtime.events import RuntimeEvent
+
 
 class EventLogger:
     """Writes structured events into a canonical event sink."""
@@ -30,12 +36,21 @@ class EventLogger:
     @staticmethod
     def _to_runtime_event(event: LogEvent) -> RuntimeEvent:
         raw = event.to_dict()
-        trace_id = raw.get("trace_id")
-        resolved_trace_id = (
-            trace_id.strip()
-            if isinstance(trace_id, str) and trace_id.strip()
-            else get_trace_id()
+        # The ambient trace wins, matching how request_id resolves below.
+        # An LLM provider holds its trace id as an instance field and the
+        # runtime shares one provider across every request an agent serves,
+        # so concurrent requests overwrite each other's value; the event's
+        # own trace id is the fallback for emitters outside a request.
+        event_trace_id = raw.get("trace_id")
+        resolved_trace_id = get_trace_id() or (
+            event_trace_id.strip()
+            if isinstance(event_trace_id, str) and event_trace_id.strip()
+            else None
         )
+        # Same reasoning for the session: a provider holds it as an instance
+        # field, so two requests in different sessions would otherwise stamp
+        # each other's events and skew every session-scoped query.
+        resolved_session_id = get_session_id() or raw.get("session_id")
         payload = {
             key: value
             for key, value in raw.items()
@@ -48,7 +63,7 @@ class EventLogger:
             event_type=str(raw["event_type"]),
             request_id=get_request_id(),
             host_id=get_host_id(),
-            session_id=raw.get("session_id"),
+            session_id=resolved_session_id,
             trace_id=resolved_trace_id,
             payload=payload,
             created_at=float(raw["ts"]),

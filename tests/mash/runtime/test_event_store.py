@@ -159,6 +159,44 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await self.store.is_request_terminal(self.request_id))
 
+    async def test_terminality_survives_step_events_after_cancel(self) -> None:
+        """Cancel preempts at the next step boundary, not instantly.
+
+        The step that was in flight finishes and checkpoints, so its events
+        land after ``request.cancelled``. Terminality reads the last
+        *lifecycle* event, so those trailing events must not un-terminate the
+        request; a later ``request.resumed`` still must.
+        """
+        for event_type, dedupe in (
+            (RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted"),
+            (RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled"),
+            ("llm.request.complete", None),
+            ("runtime.llm.think.completed", None),
+        ):
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id="store-test",
+                    agent_id="store-test",
+                    request_id=self.request_id,
+                    session_id="session-1",
+                    event_type=event_type,
+                    dedupe_key=dedupe,
+                )
+            )
+        self.assertTrue(await self.store.is_request_terminal(self.request_id))
+
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                dedupe_key="request.resumed.0",
+            )
+        )
+        self.assertFalse(await self.store.is_request_terminal(self.request_id))
+
     async def test_session_scoped_events_are_queryable_without_request_id(self) -> None:
         event = await self.store.append_event(
             RuntimeEvent(
@@ -520,6 +558,96 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_trace["t-failed"], "error")
         self.assertEqual(by_trace["t-open"], "in_progress")
         self.assertEqual(by_trace["t-retried"], "completed")
+
+    async def test_cancelled_and_resumed_statuses(self) -> None:
+        """The chip a trace shows must follow cancel and resume.
+
+        A cancelled trace reports cancelled, and resuming it returns the trace
+        to running rather than leaving the stale terminal state on the row.
+        """
+        started = RuntimeEventType.TRACE_STARTED.value
+        await self._append(trace_id="t-cancel", event_type=started, created_at=100.0)
+        await self._append(
+            trace_id="t-cancel",
+            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            created_at=101.0,
+        )
+        await self._append(trace_id="t-resumed", event_type=started, created_at=200.0)
+        await self._append(
+            trace_id="t-resumed",
+            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            created_at=201.0,
+        )
+        await self._append(
+            trace_id="t-resumed",
+            event_type=RuntimeEventType.REQUEST_RESUMED.value,
+            created_at=202.0,
+        )
+
+        traces = await self.store.list_recent_traces(self.app_id)
+        by_trace = {item["trace_id"]: item["status"] for item in traces}
+        self.assertEqual(by_trace["t-cancel"], "cancelled")
+        self.assertEqual(by_trace["t-resumed"], "in_progress")
+
+    async def test_request_id_resolves_from_trace(self) -> None:
+        """The admin UI addresses a request by the trace it already shows."""
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                session_id="session-1",
+                trace_id="t-req",
+                request_id="req-abc",
+                event_type=RuntimeEventType.TRACE_STARTED.value,
+                created_at=100.0,
+                payload={},
+            )
+        )
+        self.assertEqual(
+            await self.store.get_request_id_for_trace("t-req", app_id=self.app_id),
+            "req-abc",
+        )
+        # A trace with no request (or an unknown trace) resolves to nothing
+        # rather than guessing.
+        await self._append(
+            trace_id="t-bare",
+            event_type=RuntimeEventType.TRACE_STARTED.value,
+            created_at=200.0,
+        )
+        self.assertIsNone(
+            await self.store.get_request_id_for_trace("t-bare", app_id=self.app_id)
+        )
+        self.assertIsNone(
+            await self.store.get_request_id_for_trace("nope", app_id=self.app_id)
+        )
+
+    async def test_request_id_for_trace_is_deterministic_on_legacy_rows(self) -> None:
+        """Pre-checkpointing rows can put two requests under one trace.
+
+        Trace and request are one-to-one under current code, but the resolver
+        must still answer the same way every time on older data, so it takes
+        the trace's earliest request.
+        """
+        for request_id, created_at in (("req-first", 100.0), ("req-second", 101.0)):
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id=self.app_id,
+                    agent_id=self.app_id,
+                    session_id="session-1",
+                    trace_id="t-dup",
+                    request_id=request_id,
+                    event_type=RuntimeEventType.TRACE_STARTED.value,
+                    created_at=created_at,
+                    payload={},
+                )
+            )
+        for _ in range(3):
+            self.assertEqual(
+                await self.store.get_request_id_for_trace(
+                    "t-dup", app_id=self.app_id
+                ),
+                "req-first",
+            )
 
     async def test_status_filter(self) -> None:
         started = RuntimeEventType.TRACE_STARTED.value

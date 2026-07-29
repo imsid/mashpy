@@ -361,6 +361,8 @@ async def _collect_terminal_payload(
             if not isinstance(payload, dict):
                 raise RuntimeError("completed task response must be an object")
             return payload
+        if event_name == "request.cancelled":
+            raise RuntimeError("workflow task request was cancelled")
         if event_name == "request.error":
             if isinstance(payload, dict):
                 message = payload.get("error") or payload.get("message") or payload.get("status")

@@ -200,6 +200,17 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.is_request_terminal(self._pool, request_id)
 
+    async def get_request_id_for_trace(
+        self,
+        trace_id: str,
+        *,
+        app_id: str | None = None,
+    ) -> str | None:
+        await self.open()
+        return await loaders.get_request_id_for_trace(
+            self._pool, trace_id, app_id=app_id
+        )
+
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
         await self.open()
         return await loaders.append_feedback(self._pool, feedback)

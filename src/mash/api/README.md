@@ -169,7 +169,8 @@ validation).
   `data.payload.payload.text`. Concatenate these in arrival order to render the
   answer live before the terminal event. The final, authoritative response is
   still delivered on `request.completed`.
-- Terminates when event name is `request.completed` or `request.error`.
+- Terminates when event name is `request.completed`, `request.error`, or
+  `request.cancelled`.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/status`
 - Returns the current DBOS workflow status for a request.
@@ -200,6 +201,45 @@ validation).
   - `message`: human-readable description
 - If the request is already completed or pending, returns informational status
   without changing state.
+- Rejected with `409 REQUEST_STALE` when the request's session has accrued a
+  newer replayable turn (resume replays the original context snapshot, so it is
+  unsafe once the session has moved on).
+- On a successful resume the runtime appends a non-terminal
+  `runtime.request.resumed` event (SSE `request.resumed`). Since terminality
+  reads the last event, this flips a previously failed/cancelled request back to
+  non-terminal, so a client whose stream had ended re-opens it after resuming.
+
+`POST /api/v1/agent/{agent_id}/request/{request_id}/cancel`
+- Cancels a running request. The in-flight step finishes and checkpoints;
+  execution stops at the next step boundary. A request parked on an
+  interaction has that prompt acked as cancelled, and the cancel path emits the
+  terminal `runtime.request.cancelled` event (visible as `request.cancelled` on
+  the SSE stream) so streams terminate. Cancel never cascades to subagent
+  children — an already-invoked child runs to completion.
+- Path params:
+  - `agent_id`
+  - `request_id`
+- Returns:
+  - `request_id`
+  - `workflow_id`
+  - `status`: `cancelled` | current status when already terminal
+  - `message`: human-readable description
+- Cancelling an already-terminal request is an idempotent no-op that reports the
+  current state. Resume the cancelled request to continue from its last
+  checkpoint.
+
+`POST /api/v1/agent/{agent_id}/request/{request_id}/rerun`
+- Starts a previous request over as a brand-new request. Rebuilds from the
+  original `request.accepted` payload (message + full request metadata, including
+  the host snapshot and structured-output request), stamps `rerun_of` provenance,
+  and submits through the normal path — new request id, new trace, and a fresh
+  `context.load` against the session's current history. Works for any previous
+  request regardless of its terminal state; the original is left untouched.
+- Path params:
+  - `agent_id`
+  - `request_id`
+- Returns the new request's accepted payload (`request_id`, `agent_id`,
+  `session_id`, `status`). Stream the new `request_id` as usual.
 
 ### Dynamic Publishing
 
@@ -597,7 +637,8 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 - `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
 - `400 INVALID_AGENT_SKILL`: skill validation failed (for example, missing both `location` and `content`)
 - `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
-- `404 REQUEST_NOT_FOUND`: unknown `request_id` for status or resume operations
+- `404 REQUEST_NOT_FOUND`: unknown `request_id` for status, resume, or cancel operations
+- `409 REQUEST_STALE`: resume rejected because the request's session has newer replayable turns
 
 ## Source Of Truth
 - App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).

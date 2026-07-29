@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -53,6 +54,29 @@ def _event_tokens(event: RuntimeEvent) -> int:
         return int(inp) + int(out)
     except (TypeError, ValueError):
         return 0
+
+
+_TERMINAL_REQUEST_EVENTS = (
+    RuntimeEventType.REQUEST_COMPLETED.value,
+    RuntimeEventType.REQUEST_FAILED.value,
+    RuntimeEventType.REQUEST_CANCELLED.value,
+)
+
+_LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
+    RuntimeEventType.REQUEST_RESUMED.value,
+)
+
+
+def _last_lifecycle_event(events: Any) -> str | None:
+    """Last request-lifecycle event type, mirroring the Postgres loader.
+
+    Restricted to lifecycle events so that step events landing after a cancel
+    (the in-flight step finishes and checkpoints) do not hide terminality.
+    """
+    for event in reversed(list(events)):
+        if event.event_type in _LIFECYCLE_REQUEST_EVENTS:
+            return str(event.event_type)
+    return None
 
 
 class _TestRuntimeStore:
@@ -156,14 +180,24 @@ class _TestRuntimeStore:
 
     async def is_request_terminal(self, request_id: str) -> bool:
         async with self._lock:
-            events = self._events_by_request.get(request_id, ())
-            if not events:
-                return False
-            event_type = events[-1].event_type
-        return event_type in {
-            RuntimeEventType.REQUEST_COMPLETED.value,
-            RuntimeEventType.REQUEST_FAILED.value,
-        }
+            events = list(self._events_by_request.get(request_id, ()))
+        return _last_lifecycle_event(events) in _TERMINAL_REQUEST_EVENTS
+
+    async def get_request_id_for_trace(
+        self,
+        trace_id: str,
+        *,
+        app_id: str | None = None,
+    ) -> str | None:
+        async with self._lock:
+            events = list(self._events)
+        for event in events:
+            if event.trace_id != trace_id or not event.request_id:
+                continue
+            if app_id is not None and event.app_id != app_id:
+                continue
+            return str(event.request_id)
+        return None
 
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
         async with self._lock:
@@ -493,6 +527,92 @@ class _TestDBOSRequestEngine:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def cancel_request(self, *, request_id: str) -> dict[str, Any]:
+        """Mirror DBOSRequestEngine.cancel_request over the inline executor.
+
+        Preempts the request's inline task (the stand-in for DBOS cancellation),
+        settles any parked interaction, and emits the terminal cancelled event.
+        """
+        from mash.runtime.engine.steps import (
+            emit_interaction_ack,
+            emit_request_cancelled,
+        )
+        from mash.runtime.requests import find_pending_interaction
+
+        store = self._runtime.runtime_store
+        if await store.is_request_terminal(request_id):
+            return {
+                "request_id": request_id,
+                "status": "completed",
+                "message": "request is already in a terminal state",
+            }
+        for task in list(self._tasks):
+            if task.get_name().endswith(f"-{request_id}"):
+                task.cancel()
+        events = await store.list_request_events(request_id)
+        trace_id = next((e.trace_id for e in events if e.trace_id), None)
+        session_id = next((e.session_id for e in events if e.session_id), None)
+        pending = find_pending_interaction(events)
+        if pending is not None:
+            await emit_interaction_ack(
+                self._runtime.app_id,
+                request_id,
+                session_id,
+                trace_id,
+                interaction_id=pending,
+                response=None,
+                cancelled=True,
+            )
+        await emit_request_cancelled(
+            self._runtime.app_id, request_id, session_id, trace_id
+        )
+        return {
+            "request_id": request_id,
+            "status": "cancelled",
+            "message": "request has been cancelled",
+        }
+
+    async def resume_request(self, *, request_id: str) -> dict[str, Any]:
+        """Mirror DBOSRequestEngine.resume_request from the last request event.
+
+        The inline executor has no DBOS status, so infer it from the last
+        lifecycle event: a cancelled request resumes; a completed one is an
+        idempotent no-op; a failed one cannot be resumed, because DBOS refuses
+        to resume a workflow that ended in ERROR.
+        """
+        store = self._runtime.runtime_store
+        events = await store.list_request_events(request_id)
+        if not events:
+            raise KeyError(request_id)
+        last = _last_lifecycle_event(events)
+        if last == RuntimeEventType.REQUEST_COMPLETED.value:
+            return {
+                "request_id": request_id,
+                "status": "completed",
+                "message": "request already completed successfully",
+            }
+        if last == RuntimeEventType.REQUEST_FAILED.value:
+            return {
+                "request_id": request_id,
+                "status": "failed",
+                "message": (
+                    "failed requests cannot be resumed; rerun the request "
+                    "to start it over"
+                ),
+            }
+        if last == RuntimeEventType.REQUEST_CANCELLED.value:
+            return {
+                "request_id": request_id,
+                "status": "resumed",
+                "previous_status": "cancelled",
+                "message": "request has been resumed for recovery",
+            }
+        return {
+            "request_id": request_id,
+            "status": "pending",
+            "message": "request is already pending recovery",
+        }
+
 
 class _TestMemoryStore:
     """Minimal in-memory MemoryStore for tests; accepts a database_url constructor."""
@@ -572,6 +692,7 @@ class _TestMemoryStore:
                 "workflow_run_id": workflow_run_id,
                 "task_id": task_id,
                 "replayable": replayable,
+                "created_at": time.time(),
             }
         )
         return trace_id
@@ -591,7 +712,7 @@ class _TestMemoryStore:
                 "replayable": t.get("replayable", True),
                 "signals": t.get("signals") or {},
                 "metadata": t.get("metadata") or {},
-                "created_at": 0.0,
+                "created_at": float(t.get("created_at") or 0.0),
             }
             for t in self._turns
             if t["session_id"] == session_id and t["app_id"] == app_id

@@ -48,6 +48,13 @@ class RuntimeStore(Protocol):
 
     async def is_request_terminal(self, request_id: str) -> bool: ...
 
+    async def get_request_id_for_trace(
+        self,
+        trace_id: str,
+        *,
+        app_id: str | None = None,
+    ) -> str | None: ...
+
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord: ...
 
     async def list_feedback(

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 from ..core.llm import LLMProvider
 from ..core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
-from ..logging import bound_trace_id
+from ..logging import bound_session_id, bound_trace_id
 from .store import MemoryStore
 
 COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor.
@@ -84,7 +84,10 @@ async def compact_conversation(
     if hasattr(llm, "set_trace_id"):
         llm.set_trace_id(trace_id)
     try:
-        with bound_trace_id(trace_id):
+        # The session is bound alongside the trace: the summary pass runs on
+        # the shared provider, whose instance session belongs to whichever
+        # request configured it last.
+        with bound_trace_id(trace_id), bound_session_id(session_id):
             response = await llm.send(
                 LLMRequest(
                     model=llm.model,

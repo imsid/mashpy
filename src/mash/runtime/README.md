@@ -584,18 +584,33 @@ There are three layers of failure handling, each covering a different scenario:
 
 **Process crash recovery** covers the case where the host process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted — the DBOS workflow is left in PENDING state in the database. On the next process startup, `DBOS.launch()` scans for orphaned PENDING workflows and replays them from the last completed step. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
 
-### Request Status and Resume APIs
+### Request Status, Cancel, Resume, and Rerun APIs
 
-`AgentRuntime` exposes two methods for request lifecycle inspection:
+`AgentRuntime` exposes four methods for inspecting and controlling a request:
 
 - `get_request_status(request_id)` — queries the DBOS workflow status directly (not the event log). Returns `pending`, `completed`, `failed`, `cancelled`, or `queued`. Use this when the event stream goes silent after a crash to determine whether the request will be auto-recovered (`pending`) or needs manual intervention (`failed`).
 
-- `resume_request(request_id)` — for requests in `failed` or `cancelled` state, calls `DBOS.resume_workflow_async()` to set the workflow back to PENDING for recovery. Returns informational status if the request is already pending or completed.
+- `cancel_request(request_id)` — cancels the DBOS workflow, which preempts the request at the next step boundary; the step in flight finishes and checkpoints. Acks a pending interaction as cancelled and emits `REQUEST_CANCELLED`, which the cancel path owns because `DBOSWorkflowCancelledError` derives from `BaseException` and bypasses the workflow's error handler. Idempotent on a request that is already terminal.
+
+- `resume_request(request_id)` — for requests in `cancelled` (or `MAX_RECOVERY_ATTEMPTS_EXCEEDED`) state, calls `DBOS.resume_workflow_async()` to set the workflow back to PENDING for recovery, then emits `REQUEST_RESUMED`. Rejects with `RequestStaleError` when the session has accrued a newer replayable turn, since resume replays the request's original context snapshot. Returns informational status if the request is already pending or completed.
+
+  A `failed` request cannot be resumed: `DBOS.resume_workflows` updates only workflows whose status is outside `SUCCESS` and `ERROR`, so the call would be a silent no-op. The method reports the failed status and points at rerun. Resuming a failed request from its last checkpoint would need `DBOS.fork_workflow`, which mints a new workflow id and so breaks the request/workflow/trace 1:1 mapping that `workflow_id_for` assumes.
+
+- `rerun_request(request_id)` — submits a new request built from the original's `request.accepted` payload (message plus full request metadata, including the host snapshot), with `rerun_of` stamped into the metadata. New request id, new trace, and `context.load` runs fresh against the session's current history. Works regardless of the original's terminal state.
 
 These are also available through `AgentClient`, `InProcessAgentClient`, and the HTTP API:
 
 - `GET /agent/{agent_id}/request/{request_id}/status`
+- `POST /agent/{agent_id}/request/{request_id}/cancel`
 - `POST /agent/{agent_id}/request/{request_id}/resume`
+- `POST /agent/{agent_id}/request/{request_id}/rerun`
+
+Trace and request are one to one, so the admin UI addresses a request by the trace it is already showing; the same four operations are exposed keyed by trace id, with the request id resolved server-side:
+
+- `GET /agent/{agent_id}/trace/{trace_id}/status`
+- `POST /agent/{agent_id}/trace/{trace_id}/cancel`
+- `POST /agent/{agent_id}/trace/{trace_id}/resume`
+- `POST /agent/{agent_id}/trace/{trace_id}/rerun`
 
 ## Important Interfaces
 
