@@ -360,6 +360,41 @@ async def has_request(pool: Any, request_id: str) -> bool:
     return row is not None
 
 
+async def get_request_id_for_trace(
+    pool: Any,
+    trace_id: str,
+    *,
+    app_id: str | None = None,
+) -> str | None:
+    """The request a trace belongs to, or None if it has none.
+
+    Trace and request are one-to-one under current code — ``start_request_trace``
+    mints exactly one trace per request as a checkpointed step. Rows written
+    before replay-safe checkpointing can break that, so this resolves to the
+    trace's earliest request id: deterministic on legacy data rather than
+    ambiguous.
+    """
+    clauses = ["trace_id = %s", "request_id IS NOT NULL"]
+    params: list[Any] = [trace_id]
+    if app_id is not None:
+        clauses.append("app_id = %s")
+        params.append(app_id)
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                f"""
+                SELECT request_id
+                FROM runtime_event_log
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_id ASC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = await cursor.fetchone()
+    return str(row["request_id"]) if row is not None else None
+
+
 _TERMINAL_REQUEST_EVENTS = (
     RuntimeEventType.REQUEST_COMPLETED.value,
     RuntimeEventType.REQUEST_FAILED.value,
@@ -485,7 +520,9 @@ async def list_recent_traces(
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             # status mirrors _extract_boundary_events in spans.py: the trace's
-            # latest terminal lifecycle event wins, else it is still running.
+            # latest lifecycle event wins, else it is still running. resumed is
+            # in the set and maps to in_progress, so a resumed request stops
+            # reporting the terminal state it was resumed out of.
             await cursor.execute(
                 f"""
                 SELECT * FROM (
@@ -503,7 +540,7 @@ async def list_recent_traces(
                         CASE (ARRAY_AGG(event_type ORDER BY created_at DESC, event_id DESC)
                               FILTER (WHERE event_type IN (
                                   'runtime.request.completed', 'runtime.request.failed',
-                                  'runtime.request.cancelled'
+                                  'runtime.request.cancelled', 'runtime.request.resumed'
                               )))[1]
                             WHEN 'runtime.request.failed' THEN 'error'
                             WHEN 'runtime.request.completed' THEN 'completed'

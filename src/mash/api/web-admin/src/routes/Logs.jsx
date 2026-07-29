@@ -12,6 +12,7 @@ import { TraceDrawer } from '../components/TraceDrawer.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { compactNumber, formatTime, formatDuration } from '../lib/format.js';
+import { TRACE_STATUS } from '../lib/trace.js';
 
 const TABS = [
   { id: 'sessions', label: 'Sessions' },
@@ -25,12 +26,7 @@ const COMMAND_EVENT = {
   'command.error': { label: 'error', tone: 'rose' },
 };
 
-// Wire values match /telemetry/trace/analysis; only the label is prettified.
-const TRACE_STATUS = {
-  completed: { label: 'completed', tone: 'emerald' },
-  error: { label: 'error', tone: 'rose' },
-  in_progress: { label: 'running', tone: 'indigo' },
-};
+// TRACE_STATUS lives in lib/trace.js — the drawer renders the same chips.
 
 // Refresh control that spins its glyph while the request is in flight.
 function RefreshButton({ state }) {
@@ -111,7 +107,7 @@ const TRACE_COLUMNS = [
 // One session row: a table row that toggles open, revealing its traces lazily.
 // Traces are listed across the whole pool (a session can span agents) by
 // session id alone.
-function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, activeTraceId, statusFilter }) {
+function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, activeTraceId, statusFilter, refreshToken }) {
   const tracesState = useApi(
     () =>
       expanded
@@ -121,7 +117,7 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
             limit: 100,
           })
         : Promise.resolve(null),
-    [expanded, session.session_id, statusFilter],
+    [expanded, session.session_id, statusFilter, refreshToken],
   );
 
   const traces = useMemo(() => {
@@ -218,6 +214,7 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   const [traceQuery, setTraceQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [jumpError, setJumpError] = useState('');
+  const [refreshToken, setRefreshToken] = useState(0);
   const openedTrace = useRef('');
 
   // Deep links (from Feedback / Overview) carry a session to focus on.
@@ -352,6 +349,7 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
                       onSelectTrace={setSelected}
                       activeTraceId={selected?.trace_id}
                       statusFilter={statusFilter}
+                      refreshToken={refreshToken}
                     />
                   ))}
                 </tbody>
@@ -367,6 +365,12 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
         trace={selected}
         agentId={selected?.__agentId || agentId}
         onClose={() => setSelected(null)}
+        onChanged={() => {
+          // A cancel/resume/rerun changes trace status, and a rerun adds a
+          // whole new trace, so the expanded session's list is refetched.
+          setRefreshToken((n) => n + 1);
+          state.reload();
+        }}
       />
     </>
   );

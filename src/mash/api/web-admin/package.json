@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/lib/workflow.test.js",
+    "test": "node --test src/lib/workflow.test.js src/lib/trace.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

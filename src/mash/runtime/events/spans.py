@@ -160,6 +160,15 @@ def _extract_boundary_events(events: list[RuntimeEvent]) -> dict[str, Any]:
             result["request_completed_at"] = ts
             result["trace_end"] = max(result["trace_end"], ts)
             result["status"] = "error"
+        elif et == RuntimeEventType.REQUEST_CANCELLED.value:
+            result["request_completed_at"] = ts
+            result["trace_end"] = max(result["trace_end"], ts)
+            result["status"] = "cancelled"
+        elif et == RuntimeEventType.REQUEST_RESUMED.value:
+            # Events are walked in order, so a resume after a terminal event
+            # returns the trace to running — matching the list query's status.
+            result["request_completed_at"] = None
+            result["status"] = "in_progress"
     return result
 
 

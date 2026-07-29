@@ -183,6 +183,22 @@ class _TestRuntimeStore:
             events = list(self._events_by_request.get(request_id, ()))
         return _last_lifecycle_event(events) in _TERMINAL_REQUEST_EVENTS
 
+    async def get_request_id_for_trace(
+        self,
+        trace_id: str,
+        *,
+        app_id: str | None = None,
+    ) -> str | None:
+        async with self._lock:
+            events = list(self._events)
+        for event in events:
+            if event.trace_id != trace_id or not event.request_id:
+                continue
+            if app_id is not None and event.app_id != app_id:
+                continue
+            return str(event.request_id)
+        return None
+
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
         async with self._lock:
             stored = FeedbackRecord(

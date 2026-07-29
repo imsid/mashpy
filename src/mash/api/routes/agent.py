@@ -34,6 +34,21 @@ from .common import (
 )
 
 
+_REQUEST_ID_KEYS = ("request_id", "workflow_id")
+
+
+def _without_request_ids(payload: dict[str, Any], trace_id: str) -> dict[str, Any]:
+    """Re-key a request-scoped response onto the trace that addressed it.
+
+    Request and workflow ids are runtime bookkeeping; a caller working in
+    traces should not have to hold them to act on one.
+    """
+    return {
+        "trace_id": trace_id,
+        **{k: v for k, v in payload.items() if k not in _REQUEST_ID_KEYS},
+    }
+
+
 def build_agent_router() -> APIRouter:
     router = APIRouter()
 
@@ -363,6 +378,101 @@ def build_agent_router() -> APIRouter:
             session_total_tokens_reset=body.session_total_tokens_reset,
         )
         return success({"summary_text": summary_text, "trace_id": trace_id})
+
+    async def _request_id_for_trace(
+        request: Request, agent_id: str, trace_id: str
+    ) -> str:
+        """Resolve a trace to the request it belongs to.
+
+        Trace and request are one-to-one, so the admin UI addresses requests by
+        the trace it already shows and never has to carry a request id.
+        """
+        resolved_agent_id = require_agent_id(agent_id)
+        resolved_trace_id = require_trace_id(trace_id)
+        agent = resolve_agent(request, resolved_agent_id)
+        request_id = await agent.runtime_store.get_request_id_for_trace(
+            resolved_trace_id, app_id=resolved_agent_id
+        )
+        if not request_id:
+            raise APIError(
+                code="REQUEST_NOT_FOUND",
+                message=f"trace '{resolved_trace_id}' has no request",
+                status_code=404,
+            )
+        return request_id
+
+    @router.get("/agent/{agent_id}/trace/{trace_id}/status")
+    async def get_trace_request_status(
+        request: Request, agent_id: str, trace_id: str
+    ) -> dict[str, Any]:
+        request_id = await _request_id_for_trace(request, agent_id, trace_id)
+        client = get_client(request, agent_id)
+        try:
+            status = await client.get_request_status(request_id)
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(_without_request_ids(status, trace_id))
+
+    @router.post("/agent/{agent_id}/trace/{trace_id}/cancel")
+    async def cancel_trace_request(
+        request: Request, agent_id: str, trace_id: str
+    ) -> dict[str, Any]:
+        request_id = await _request_id_for_trace(request, agent_id, trace_id)
+        client = get_client(request, agent_id)
+        try:
+            result = await client.cancel_request(request_id)
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(_without_request_ids(result, trace_id))
+
+    @router.post("/agent/{agent_id}/trace/{trace_id}/resume")
+    async def resume_trace_request(
+        request: Request, agent_id: str, trace_id: str
+    ) -> dict[str, Any]:
+        request_id = await _request_id_for_trace(request, agent_id, trace_id)
+        client = get_client(request, agent_id)
+        try:
+            result = await client.resume_request(request_id)
+        except RequestStaleError as exc:
+            raise APIError(
+                code="REQUEST_STALE", message=str(exc), status_code=409
+            ) from exc
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(_without_request_ids(result, trace_id))
+
+    @router.post("/agent/{agent_id}/trace/{trace_id}/rerun")
+    async def rerun_trace_request(
+        request: Request, agent_id: str, trace_id: str
+    ) -> dict[str, Any]:
+        """Start the trace's request over as a new request.
+
+        The new trace does not exist until the new request starts executing, so
+        this reports acceptance only; the caller reloads its trace list and the
+        rerun appears as a new row.
+        """
+        request_id = await _request_id_for_trace(request, agent_id, trace_id)
+        client = get_client(request, agent_id)
+        try:
+            result = await client.rerun_request(request_id)
+        except (KeyError, AgentClientError) as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(
+            {
+                "rerun_of_trace_id": trace_id,
+                "agent_id": result.get("agent_id"),
+                "session_id": result.get("session_id"),
+                "status": result.get("status") or "accepted",
+            }
+        )
 
     @router.get("/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning")
     async def get_reasoning_trace(
