@@ -1,6 +1,6 @@
 ---
 title: The Durable Agent Loop
-description: How the Mash agent loop runs, what runs through tool calls, and how DBOS checkpointing makes the hosted runtime crash-safe.
+description: How the Mash agent loop runs, what runs through tool calls, how DBOS checkpointing makes the hosted runtime crash-safe, and how cancel, resume, and rerun control a request.
 date: 2026-06-10
 author: imsid
 tags:
@@ -116,6 +116,42 @@ DBOS replays the workflow function on resume, so the loop carries all execution 
 
 Nothing here is written to `memory_turns` until the trace completes. Partial progress lives in workflow state and the event log until then.
 
+## Cancel, resume, and rerun
+
+The replay that recovers a crashed process also gives a person control over a request that is running or already finished. Three verbs sit on the API: `POST .../request/{request_id}/cancel`, `.../resume`, and `.../rerun`.
+
+Cancel stops a running request at the next step boundary. The step in flight finishes and checkpoints first, so a tool call that already started completes and its result is recorded. A request parked on an approval or `AskUser` has that tool call terminated. A subagent invocation is a tool call like any other: a child that has already been invoked runs to completion, and cancel never cascades to it.
+
+Resume continues a cancelled request from its last checkpoint. All of its context comes from the checkpoints, so the request picks up with the model context as it stood rather than one rebuilt from the original message. A request whose session has accrued a later turn is rejected with a 409, because resume replays the original context snapshot and allowing it would persist a turn that ignores everything after it. A request cancelled while parked on an interaction resumes by issuing a fresh `AskUser` call under a new interaction id.
+
+DBOS declines to resume a workflow that ended in error, since its resume path updates only workflows whose status is outside `SUCCESS` and `ERROR`. A failed request starts over with rerun instead.
+
+Rerun starts a previous request over as a new request, with a new request id, a new trace, and a `rerun_of` key stamped into the request metadata for provenance. The original message and host snapshot ride along, and `context.load` runs fresh against the session as it stands now.
+
+One request's event log across a cancel and a resume, cancelled while the LLM call after the seventh tool call was in flight:
+
+```
+seq  event_type                     detail
+78   agent.tool.call                sleep 3 && echo step-7
+79   agent.tool.result
+80   runtime.tool.call.completed
+81   runtime.step.completed
+82   runtime.llm.think.started
+83   agent.think.start
+84   llm.request.start
+85   runtime.request.cancelled      cancelled
+86   llm.request.complete
+87   agent.think.complete
+88   runtime.llm.think.completed
+89   runtime.request.resumed        resumed
+90   runtime.tool.call.started
+91   agent.tool.call                sleep 3 && echo step-8
+```
+
+Seq 85 is where the cancel landed. The think step that was already running finished and checkpointed, which is why events 86 through 88 sit after the cancelled event. Resume at 89 replays the checkpoints and execution continues at the eighth tool call. No work between step-7 and step-8 ran twice.
+
+Because terminality reads the last lifecycle event for a request, `runtime.request.resumed` returns a cancelled request to non-terminal, and a client whose stream ended reopens it. Trace and request are one to one, so the admin UI hangs these three actions off the Logs trace view and addresses the request by its trace id.
+
 ## Event sourcing
 
 Every plan, tool call, and commit emits structured events to the `runtime_event_log` table alongside the workflow state. Those events are how the streaming API works: a client polling `GET .../request/{id}/events` is reading from that log. They are also how the runtime provides observability into a run.
@@ -139,8 +175,8 @@ Three layers cover different failure modes:
 
 | Failure | Handled by | You do |
 |---|---|---|
-| Transient error (rate limit, timeout, network blip) | `retry_transient()`: in-process retry with exponential backoff and jitter, 3 attempts | nothing |
-| Retries exhausted, or terminal error (bad API key, context overflow) | workflow emits `request.error` with `error_code` and `retryable` | inspect; call `POST .../resume` if worth retrying |
+| Transient error (rate limit, timeout, network blip) | `retry_transient()`: in-process retry with exponential backoff and jitter, three retries after the first attempt | nothing |
+| Retries exhausted, or terminal error (bad API key, context overflow) | workflow emits `request.error` with `error_code` and `retryable` | inspect; call `POST .../rerun` if worth running again |
 | Process crash (OOM, `kill -9`, hardware) | DBOS finds the orphaned workflow on next startup and replays from the last checkpoint | nothing |
 
 The first layer wraps LLM planning and tool execution and classifies errors by pattern:
@@ -160,6 +196,6 @@ _TERMINAL_PATTERNS = (
 )
 ```
 
-Unknown errors default to retryable. A crashed process emits no `request.error`, so `GET .../request/{id}/status` covers that case by querying the DBOS workflow state directly. A status of `pending` means the request will recover on next startup; `failed` means it needs a resume call.
+Unknown errors default to retryable. A crashed process emits no `request.error`, so `GET .../request/{id}/status` covers that case by querying the DBOS workflow state directly. A status of `pending` means the request will recover on next startup; `failed` means it will not recover on its own, and rerun is how it starts over.
 
 *Next: [The Runtime Store](persistence-store.md).*

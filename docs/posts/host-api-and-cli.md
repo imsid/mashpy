@@ -35,7 +35,9 @@ Each group of endpoints projects one subsystem from earlier in the series.
 | POST | `/agent/{agent_id}/request` | submit; returns `request_id`; accepts an optional `structured_output` schema |
 | GET | `/agent/{agent_id}/request/{request_id}/events` | SSE stream, a replay of persisted events |
 | GET | `/agent/{agent_id}/request/{request_id}/status` | DBOS workflow status, for when the stream goes quiet |
-| POST | `/agent/{agent_id}/request/{request_id}/resume` | set a failed request back to pending for recovery |
+| POST | `/agent/{agent_id}/request/{request_id}/cancel` | stop a running request at the next step boundary |
+| POST | `/agent/{agent_id}/request/{request_id}/resume` | continue a cancelled request from its last checkpoint |
+| POST | `/agent/{agent_id}/request/{request_id}/rerun` | start a previous request over as a new request |
 | POST | `/agent/{agent_id}/request/{request_id}/interaction` | answer an approval or `AskUser` pause (`interaction_id` in the body) |
 
 **Hosts.** Host compositions are managed and used through their own group:
