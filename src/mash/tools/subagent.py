@@ -15,6 +15,20 @@ DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
 MAX_STEP_LIMIT_PREFIX = "Stopped after reaching the max step limit"
 
 
+class _SubagentCancelled(Exception):
+    """The subagent's own request was cancelled.
+
+    A subagent runs as its own request and workflow, so it can be cancelled
+    directly. Cancelling the primary never cascades to a child that is already
+    running, which makes this the child's own terminal state rather than a
+    failure of the invocation.
+    """
+
+    def __init__(self, request_id: Optional[str]) -> None:
+        super().__init__("subagent request was cancelled")
+        self.request_id = request_id
+
+
 class SupportsSubagentStream(Protocol):
     """Client protocol for host-managed subagent request streaming."""
 
@@ -277,6 +291,10 @@ class InvokeSubagentTool:
                     if event_name == "request.completed":
                         result = data
                         break
+                    if event_name == "request.cancelled":
+                        raise _SubagentCancelled(
+                            str(data.get("request_id") or request_id or "") or None
+                        )
                     if event_name == "request.error":
                         error_payload = classify_error(data.get("error") or "request failed")
                         if data.get("error_code") is not None:
@@ -318,6 +336,16 @@ class InvokeSubagentTool:
                 metadata = result.get("metadata", {})
             if not isinstance(metadata, dict):
                 metadata = {}
+        except _SubagentCancelled as exc:
+            return self._error_result(
+                agent_id=agent_id,
+                primary_session_id=primary_session_id,
+                subagent_session_id=subagent_session_id,
+                started_at=started_at,
+                request_id=exc.request_id or request_id,
+                error=str(exc),
+                error_source="cancelled",
+            )
         except Exception as exc:
             if isinstance(exc, RuntimeError):
                 try:
