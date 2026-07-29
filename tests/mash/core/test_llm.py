@@ -587,14 +587,19 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-    def test_messages_to_steps_full_history(self) -> None:
+    def test_messages_to_steps_replays_a_signed_call(self) -> None:
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
         messages = [
             LLMMessage(role="user", content=[LLMContentBlock.text("Hello")]),
             LLMMessage(role="assistant", content=[
                 LLMContentBlock.text("thinking..."),
-                LLMContentBlock.tool_call(tool_call_id="call-1", name="search", arguments={"q": "test"}),
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-1",
+                    name="search",
+                    arguments={"q": "test"},
+                    signature="sig-abc",
+                ),
             ]),
             LLMMessage(role="tool", content=[
                 LLMContentBlock.tool_result(tool_call_id="call-1", content="result text"),
@@ -612,11 +617,41 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[2]["type"], "function_call")
         self.assertEqual(steps[2]["name"], "search")
         self.assertEqual(steps[2]["arguments"], {"q": "test"})
+        self.assertEqual(steps[2]["signature"], "sig-abc")
 
         self.assertEqual(steps[3]["type"], "function_result")
         self.assertEqual(steps[3]["call_id"], "call-1")
         self.assertEqual(steps[3]["result"], "result text")
         self.assertEqual(steps[3]["name"], "search")
+
+    def test_messages_to_steps_omits_an_unsigned_call(self) -> None:
+        """Gemini rejects a replayed function_call with no signature.
+
+        Current models return calls without one, so replaying the call breaks
+        every turn after a tool result: the non-streaming path 400s and the
+        streaming path returns a completed interaction with no steps. The
+        function_result still names the call and the tool.
+        """
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        messages = [
+            LLMMessage(role="user", content=[LLMContentBlock.text("Hello")]),
+            LLMMessage(role="assistant", content=[
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-1", name="search", arguments={"q": "test"},
+                ),
+            ]),
+            LLMMessage(role="tool", content=[
+                LLMContentBlock.tool_result(tool_call_id="call-1", content="result text"),
+            ]),
+        ]
+        steps = provider._messages_to_steps(messages, {"call-1": "search"})
+
+        self.assertEqual(
+            [step["type"] for step in steps], ["user_input", "function_result"]
+        )
+        self.assertEqual(steps[1]["call_id"], "call-1")
+        self.assertEqual(steps[1]["name"], "search")
 
     def test_delta_messages_to_steps_skips_assistant(self) -> None:
         provider = object.__new__(GeminiProvider)
@@ -733,8 +768,9 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         fc = next(s for s in steps if s["type"] == "function_call")
         self.assertEqual(fc["signature"], "sig-xyz")
 
-    def test_messages_to_steps_omits_absent_signature(self) -> None:
-        # A tool_call without a signature must not send an empty one.
+    def test_messages_to_steps_drops_an_unsigned_call_entirely(self) -> None:
+        # An unsigned call is rejected by the backend, so it is left out rather
+        # than sent without a signature.
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
         messages = [
@@ -745,8 +781,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
             ]),
         ]
         steps = provider._messages_to_steps(messages, {"call-2": "bash"})
-        fc = next(s for s in steps if s["type"] == "function_call")
-        self.assertNotIn("signature", fc)
+        self.assertEqual([s["type"] for s in steps], [])
 
     def test_parse_interaction_cached_tokens(self) -> None:
         provider = object.__new__(GeminiProvider)

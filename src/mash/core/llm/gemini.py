@@ -197,18 +197,21 @@ class GeminiProvider(BaseLLMProvider):
                     })
                 for block in message.content:
                     if block.type == "tool_call":
-                        step: Dict[str, Any] = {
+                        # Gemini rejects a replayed function_call that carries no
+                        # backend-validation signature, and current models return
+                        # calls without one. An unsigned call is therefore left
+                        # out: the following function_result names the call and
+                        # the tool, which is enough for the model to continue.
+                        signature = block.data.get("signature")
+                        if not signature:
+                            continue
+                        steps.append({
                             "type": "function_call",
                             "id": block.data.get("id", f"call_{uuid.uuid4().hex[:8]}"),
                             "name": block.data.get("name", ""),
                             "arguments": block.data.get("arguments", {}),
-                        }
-                        # Replay the backend-validation signature Gemini stamped on
-                        # the original call; without it the resent call is rejected.
-                        signature = block.data.get("signature")
-                        if signature:
-                            step["signature"] = signature
-                        steps.append(step)
+                            "signature": signature,
+                        })
             elif message.role == "tool":
                 for block in message.content:
                     if block.type == "tool_result":
@@ -277,8 +280,15 @@ class GeminiProvider(BaseLLMProvider):
             for s in response_steps
         )
         if status == "completed" and not has_content:
+            # The streaming path reports a rejected request this way rather than
+            # raising, so name the shape of what came back instead of only that
+            # it was empty; the non-streaming path surfaces the API error.
             raise RuntimeError(
-                "Gemini returned a completed interaction with no response content"
+                "Gemini returned a completed interaction with no model output "
+                f"({len(steps)} step(s): "
+                f"{', '.join(str(getattr(s, 'type', '?')) for s in steps) or 'none'}). "
+                "The request was accepted but produced no response; check the "
+                "encoded input steps."
             )
 
         text_parts: List[str] = []
