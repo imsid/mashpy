@@ -30,11 +30,16 @@ class EventLogger:
     @staticmethod
     def _to_runtime_event(event: LogEvent) -> RuntimeEvent:
         raw = event.to_dict()
-        trace_id = raw.get("trace_id")
-        resolved_trace_id = (
-            trace_id.strip()
-            if isinstance(trace_id, str) and trace_id.strip()
-            else get_trace_id()
+        # The ambient trace wins, matching how request_id resolves below.
+        # An LLM provider holds its trace id as an instance field and the
+        # runtime shares one provider across every request an agent serves,
+        # so concurrent requests overwrite each other's value; the event's
+        # own trace id is the fallback for emitters outside a request.
+        event_trace_id = raw.get("trace_id")
+        resolved_trace_id = get_trace_id() or (
+            event_trace_id.strip()
+            if isinstance(event_trace_id, str) and event_trace_id.strip()
+            else None
         )
         payload = {
             key: value
