@@ -624,19 +624,20 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[3]["result"], "result text")
         self.assertEqual(steps[3]["name"], "search")
 
-    def test_messages_to_steps_omits_an_unsigned_call(self) -> None:
-        """Gemini rejects a replayed function_call with no signature.
+    def test_messages_to_steps_replays_the_thought_signature(self) -> None:
+        """Gemini stamps its backend-validation signature on the thought step.
 
-        Current models return calls without one, so replaying the call breaks
-        every turn after a tool result: the non-streaming path 400s and the
-        streaming path returns a completed interaction with no steps. The
-        function_result still names the call and the tool.
+        The signature rides the thought that preceded the call, not the
+        function_call itself, and the backend rejects a replayed tool exchange
+        without it: outright when not streaming, and as a completed interaction
+        with no steps when streaming. The thought is replayed ahead of the call.
         """
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
         messages = [
             LLMMessage(role="user", content=[LLMContentBlock.text("Hello")]),
             LLMMessage(role="assistant", content=[
+                LLMContentBlock(type="thinking", data={"thinking": "", "signature": "sig-thought"}),
                 LLMContentBlock.tool_call(
                     tool_call_id="call-1", name="search", arguments={"q": "test"},
                 ),
@@ -648,10 +649,27 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         steps = provider._messages_to_steps(messages, {"call-1": "search"})
 
         self.assertEqual(
-            [step["type"] for step in steps], ["user_input", "function_result"]
+            [step["type"] for step in steps],
+            ["user_input", "thought", "function_call", "function_result"],
         )
-        self.assertEqual(steps[1]["call_id"], "call-1")
-        self.assertEqual(steps[1]["name"], "search")
+        self.assertEqual(steps[1]["signature"], "sig-thought")
+        self.assertEqual(steps[2]["name"], "search")
+
+    def test_messages_to_steps_without_a_thought_signature(self) -> None:
+        # Nothing to validate against, so the call is replayed as-is.
+        provider = object.__new__(GeminiProvider)
+        provider._web_search = False
+        messages = [
+            LLMMessage(role="assistant", content=[
+                LLMContentBlock.tool_call(
+                    tool_call_id="call-2", name="bash", arguments={"cmd": "ls"},
+                ),
+            ]),
+        ]
+        steps = provider._messages_to_steps(messages, {"call-2": "bash"})
+
+        self.assertEqual([step["type"] for step in steps], ["function_call"])
+        self.assertNotIn("signature", steps[0])
 
     def test_delta_messages_to_steps_skips_assistant(self) -> None:
         provider = object.__new__(GeminiProvider)
@@ -768,20 +786,34 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         fc = next(s for s in steps if s["type"] == "function_call")
         self.assertEqual(fc["signature"], "sig-xyz")
 
-    def test_messages_to_steps_drops_an_unsigned_call_entirely(self) -> None:
-        # An unsigned call is rejected by the backend, so it is left out rather
-        # than sent without a signature.
+    def test_parse_interaction_keeps_a_signature_only_thought(self) -> None:
+        """A thought step often carries a signature and no summary text.
+
+        The signature is what validates the replayed tool exchange on the next
+        turn, so the thinking block is recorded for the signature alone.
+        """
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
-        messages = [
-            LLMMessage(role="assistant", content=[
-                LLMContentBlock.tool_call(
-                    tool_call_id="call-2", name="bash", arguments={"cmd": "ls"},
-                ),
-            ]),
-        ]
-        steps = provider._messages_to_steps(messages, {"call-2": "bash"})
-        self.assertEqual([s["type"] for s in steps], [])
+        interaction = SimpleNamespace(
+            id="interaction-abc",
+            status="completed",
+            steps=[
+                SimpleNamespace(type="user_input",
+                                content=[SimpleNamespace(type="text", text="hi")]),
+                SimpleNamespace(type="thought", summary=None, signature="sig-thought"),
+                SimpleNamespace(type="function_call", id="c1", name="bash",
+                                arguments={"cmd": "ls"}),
+            ],
+            usage=SimpleNamespace(total_input_tokens=1, total_output_tokens=1,
+                                  total_tokens=2, total_cached_tokens=None),
+        )
+
+        parsed = provider._parse_interaction_response(interaction)
+
+        thinking = [b for b in parsed.content_blocks if b.type == "thinking"]
+        self.assertEqual(len(thinking), 1)
+        self.assertEqual(thinking[0].data["signature"], "sig-thought")
+        self.assertEqual([t.name for t in parsed.tool_calls], ["bash"])
 
     def test_parse_interaction_cached_tokens(self) -> None:
         provider = object.__new__(GeminiProvider)

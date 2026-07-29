@@ -195,23 +195,39 @@ class GeminiProvider(BaseLLMProvider):
                         "type": "model_output",
                         "content": [{"type": "text", "text": "\n".join(text_parts)}],
                     })
+                # Gemini validates a replayed tool exchange against the signature
+                # it stamped on the thought step that preceded the call, so the
+                # thought is replayed ahead of the calls it produced. Without it
+                # the request is rejected: outright when not streaming, and as a
+                # completed interaction with no steps when streaming.
+                thought_signature = next(
+                    (
+                        b.data.get("signature")
+                        for b in message.content
+                        if b.type == "thinking" and b.data.get("signature")
+                    ),
+                    None,
+                )
+                has_tool_call = any(b.type == "tool_call" for b in message.content)
+                if thought_signature and has_tool_call:
+                    steps.append({
+                        "type": "thought",
+                        "signature": thought_signature,
+                    })
                 for block in message.content:
                     if block.type == "tool_call":
-                        # Gemini rejects a replayed function_call that carries no
-                        # backend-validation signature, and current models return
-                        # calls without one. An unsigned call is therefore left
-                        # out: the following function_result names the call and
-                        # the tool, which is enough for the model to continue.
-                        signature = block.data.get("signature")
-                        if not signature:
-                            continue
-                        steps.append({
+                        step: Dict[str, Any] = {
                             "type": "function_call",
                             "id": block.data.get("id", f"call_{uuid.uuid4().hex[:8]}"),
                             "name": block.data.get("name", ""),
                             "arguments": block.data.get("arguments", {}),
-                            "signature": signature,
-                        })
+                        }
+                        # Kept for forward compatibility: if a future API stamps
+                        # the call itself, replay that signature too.
+                        signature = block.data.get("signature")
+                        if signature:
+                            step["signature"] = signature
+                        steps.append(step)
             elif message.role == "tool":
                 for block in message.content:
                     if block.type == "tool_result":
@@ -302,13 +318,17 @@ class GeminiProvider(BaseLLMProvider):
                 for item in getattr(step, "summary", None) or []:
                     if getattr(item, "type", None) == "text":
                         thought_parts.append(getattr(item, "text", ""))
-                if thought_parts:
-                    blocks.append(
-                        LLMContentBlock(
-                            type="thinking",
-                            data={"thinking": "".join(thought_parts)},
-                        )
-                    )
+                # Gemini's backend-validation signature rides the thought step,
+                # not the function_call, and the backend rejects a replayed tool
+                # exchange whose thought signature is missing. A thought step
+                # often carries a signature and no summary text, so the block is
+                # recorded for the signature alone.
+                thought_signature = getattr(step, "signature", None)
+                if thought_parts or thought_signature:
+                    data: Dict[str, Any] = {"thinking": "".join(thought_parts)}
+                    if thought_signature:
+                        data["signature"] = thought_signature
+                    blocks.append(LLMContentBlock(type="thinking", data=data))
             elif step_type == "model_output":
                 step_texts: List[str] = []
                 seen_urls: set = set()
@@ -386,6 +406,9 @@ class GeminiProvider(BaseLLMProvider):
         """
         text_parts: List[str] = []
         thought_parts: List[str] = []
+        thought_signature: Optional[str] = None
+        # step index → step type, from step.start
+        step_types: Dict[int, Optional[str]] = {}
         # keyed by step index → {id, name, args_fragments}
         function_calls: Dict[int, Dict[str, Any]] = {}
         final_interaction = None
@@ -402,6 +425,10 @@ class GeminiProvider(BaseLLMProvider):
 
             if event_type == "step.start":
                 step = getattr(event, "step", None)
+                if step is not None:
+                    # Track which step each index belongs to: the thought
+                    # signature arrives later, on a step.delta for that index.
+                    step_types[getattr(event, "index", 0)] = getattr(step, "type", None)
                 if step is not None and getattr(step, "type", None) == "function_call":
                     idx = getattr(event, "index", len(function_calls))
                     function_calls[idx] = {
@@ -419,6 +446,17 @@ class GeminiProvider(BaseLLMProvider):
                 delta = getattr(event, "delta", None)
                 delta_type = getattr(delta, "type", None)
                 idx = getattr(event, "index", 0)
+
+                # The backend-validation signature is delivered as a delta on
+                # the thought step. It never appears on step.start, and the
+                # interaction from interaction.completed carries no steps at
+                # all, so this is the only place to capture it.
+                delta_signature = getattr(delta, "signature", None)
+                if delta_signature:
+                    if step_types.get(idx) == "function_call" and idx in function_calls:
+                        function_calls[idx]["signature"] = delta_signature
+                    else:
+                        thought_signature = delta_signature
 
                 if delta_type == "text":
                     chunk = getattr(delta, "text", "")
@@ -450,10 +488,18 @@ class GeminiProvider(BaseLLMProvider):
 
         # Build a plain object that _parse_interaction_response can consume.
         steps = []
-        if thought_parts:
+        # The thought signature is authoritative on the completed interaction and
+        # may never appear on step.start. It is what validates the replayed tool
+        # exchange on the next turn, so a thought step is synthesized whenever a
+        # signature exists, even with no summary text.
+        for fstep in getattr(final_interaction, "steps", None) or []:
+            if getattr(fstep, "type", None) == "thought":
+                thought_signature = getattr(fstep, "signature", None) or thought_signature
+        if thought_parts or thought_signature:
             steps.append(SimpleNamespace(
                 type="thought",
                 summary=[SimpleNamespace(type="text", text="".join(thought_parts))],
+                signature=thought_signature,
             ))
         if text_parts:
             steps.append(SimpleNamespace(
