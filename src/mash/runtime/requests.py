@@ -295,9 +295,26 @@ async def resume_request(
     session_id = next((e.session_id for e in events if e.session_id), None)
     request_trace_id = next((e.trace_id for e in events if e.trace_id), None)
 
+    # A request that already completed has nothing to replay, so the engine's
+    # idempotent response is the honest answer even once the session has moved
+    # on. Checking it first keeps a completed request from reporting stale.
+    last_lifecycle = next(
+        (
+            e.event_type
+            for e in reversed(events)
+            if e.event_type
+            in (
+                RuntimeEventType.REQUEST_COMPLETED.value,
+                RuntimeEventType.REQUEST_RESUMED.value,
+            )
+        ),
+        None,
+    )
+    already_completed = last_lifecycle == RuntimeEventType.REQUEST_COMPLETED.value
+
     # Stale-session guard: resume replays the request's original context
     # snapshot, so it is unsafe once the session has a newer replayable turn.
-    if session_id:
+    if session_id and not already_completed:
         turns = await self.store.get_turns(session_id, self.app_id)
         if _session_has_later_turn(
             turns,

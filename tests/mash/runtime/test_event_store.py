@@ -159,6 +159,44 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await self.store.is_request_terminal(self.request_id))
 
+    async def test_terminality_survives_step_events_after_cancel(self) -> None:
+        """Cancel preempts at the next step boundary, not instantly.
+
+        The step that was in flight finishes and checkpoints, so its events
+        land after ``request.cancelled``. Terminality reads the last
+        *lifecycle* event, so those trailing events must not un-terminate the
+        request; a later ``request.resumed`` still must.
+        """
+        for event_type, dedupe in (
+            (RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted"),
+            (RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled"),
+            ("llm.request.complete", None),
+            ("runtime.llm.think.completed", None),
+        ):
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id="store-test",
+                    agent_id="store-test",
+                    request_id=self.request_id,
+                    session_id="session-1",
+                    event_type=event_type,
+                    dedupe_key=dedupe,
+                )
+            )
+        self.assertTrue(await self.store.is_request_terminal(self.request_id))
+
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                dedupe_key="request.resumed.0",
+            )
+        )
+        self.assertFalse(await self.store.is_request_terminal(self.request_id))
+
     async def test_session_scoped_events_are_queryable_without_request_id(self) -> None:
         event = await self.store.append_event(
             RuntimeEvent(

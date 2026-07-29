@@ -56,6 +56,29 @@ def _event_tokens(event: RuntimeEvent) -> int:
         return 0
 
 
+_TERMINAL_REQUEST_EVENTS = (
+    RuntimeEventType.REQUEST_COMPLETED.value,
+    RuntimeEventType.REQUEST_FAILED.value,
+    RuntimeEventType.REQUEST_CANCELLED.value,
+)
+
+_LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
+    RuntimeEventType.REQUEST_RESUMED.value,
+)
+
+
+def _last_lifecycle_event(events: Any) -> str | None:
+    """Last request-lifecycle event type, mirroring the Postgres loader.
+
+    Restricted to lifecycle events so that step events landing after a cancel
+    (the in-flight step finishes and checkpoints) do not hide terminality.
+    """
+    for event in reversed(list(events)):
+        if event.event_type in _LIFECYCLE_REQUEST_EVENTS:
+            return str(event.event_type)
+    return None
+
+
 class _TestRuntimeStore:
     def __init__(self, _database_url: str) -> None:
         self._events: list[RuntimeEvent] = []
@@ -157,15 +180,8 @@ class _TestRuntimeStore:
 
     async def is_request_terminal(self, request_id: str) -> bool:
         async with self._lock:
-            events = self._events_by_request.get(request_id, ())
-            if not events:
-                return False
-            event_type = events[-1].event_type
-        return event_type in {
-            RuntimeEventType.REQUEST_COMPLETED.value,
-            RuntimeEventType.REQUEST_FAILED.value,
-            RuntimeEventType.REQUEST_CANCELLED.value,
-        }
+            events = list(self._events_by_request.get(request_id, ()))
+        return _last_lifecycle_event(events) in _TERMINAL_REQUEST_EVENTS
 
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
         async with self._lock:
@@ -543,34 +559,36 @@ class _TestDBOSRequestEngine:
     async def resume_request(self, *, request_id: str) -> dict[str, Any]:
         """Mirror DBOSRequestEngine.resume_request from the last request event.
 
-        The inline executor has no DBOS status, so infer it: a terminal
-        failed/cancelled request resumes; a completed one is an idempotent
-        no-op.
+        The inline executor has no DBOS status, so infer it from the last
+        lifecycle event: a cancelled request resumes; a completed one is an
+        idempotent no-op; a failed one cannot be resumed, because DBOS refuses
+        to resume a workflow that ended in ERROR.
         """
         store = self._runtime.runtime_store
         events = await store.list_request_events(request_id)
         if not events:
             raise KeyError(request_id)
-        last = events[-1].event_type
+        last = _last_lifecycle_event(events)
         if last == RuntimeEventType.REQUEST_COMPLETED.value:
             return {
                 "request_id": request_id,
                 "status": "completed",
                 "message": "request already completed successfully",
             }
-        if last in (
-            RuntimeEventType.REQUEST_FAILED.value,
-            RuntimeEventType.REQUEST_CANCELLED.value,
-        ):
-            previous = (
-                "error"
-                if last == RuntimeEventType.REQUEST_FAILED.value
-                else "cancelled"
-            )
+        if last == RuntimeEventType.REQUEST_FAILED.value:
+            return {
+                "request_id": request_id,
+                "status": "failed",
+                "message": (
+                    "failed requests cannot be resumed; rerun the request "
+                    "to start it over"
+                ),
+            }
+        if last == RuntimeEventType.REQUEST_CANCELLED.value:
             return {
                 "request_id": request_id,
                 "status": "resumed",
-                "previous_status": previous,
+                "previous_status": "cancelled",
                 "message": "request has been resumed for recovery",
             }
         return {

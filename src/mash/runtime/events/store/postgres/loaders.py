@@ -360,7 +360,26 @@ async def has_request(pool: Any, request_id: str) -> bool:
     return row is not None
 
 
+_TERMINAL_REQUEST_EVENTS = (
+    RuntimeEventType.REQUEST_COMPLETED.value,
+    RuntimeEventType.REQUEST_FAILED.value,
+    RuntimeEventType.REQUEST_CANCELLED.value,
+)
+
+# Lifecycle events that decide terminality: the terminal three plus resumed,
+# which un-terminates a request so closed streams re-open.
+_LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
+    RuntimeEventType.REQUEST_RESUMED.value,
+)
+
+
 async def is_request_terminal(pool: Any, request_id: str) -> bool:
+    """Whether the request's last lifecycle event is a terminal one.
+
+    Restricted to lifecycle events rather than reading the log's last row:
+    cancel is appended while a step is still in flight, and that step's own
+    events land after it, which would otherwise read as non-terminal.
+    """
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
@@ -368,19 +387,16 @@ async def is_request_terminal(pool: Any, request_id: str) -> bool:
                 SELECT event_type
                 FROM runtime_event_log
                 WHERE request_id = %s
+                  AND event_type = ANY(%s)
                 ORDER BY seq DESC
                 LIMIT 1
                 """,
-                (request_id,),
+                (request_id, list(_LIFECYCLE_REQUEST_EVENTS)),
             )
             row = await cursor.fetchone()
     if row is None:
         return False
-    return str(row["event_type"]) in {
-        RuntimeEventType.REQUEST_COMPLETED.value,
-        RuntimeEventType.REQUEST_FAILED.value,
-        RuntimeEventType.REQUEST_CANCELLED.value,
-    }
+    return str(row["event_type"]) in _TERMINAL_REQUEST_EVENTS
 
 
 async def list_feedback(

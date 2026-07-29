@@ -266,7 +266,24 @@ class DBOSRequestEngine(RequestEngine):
                 "status": "pending",
                 "message": "request is already pending recovery",
             }
-        if raw_status in ("ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"):
+        if raw_status == "ERROR":
+            # DBOS refuses to resume a workflow that ended in ERROR: its
+            # ``resume_workflows`` update excludes SUCCESS and ERROR, so the
+            # call is a silent no-op. Resuming a failed request from its last
+            # checkpoint needs ``fork_workflow``, which mints a new workflow
+            # id and so breaks the request/workflow/trace 1:1 mapping — a
+            # separate change. Until then, say so instead of reporting a
+            # resume that never happened.
+            return {
+                "request_id": request_id,
+                "workflow_id": workflow_id,
+                "status": "failed",
+                "message": (
+                    "failed requests cannot be resumed; rerun the request "
+                    "to start it over"
+                ),
+            }
+        if raw_status in ("CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"):
             await dbos_class.resume_workflow_async(workflow_id)
             return {
                 "request_id": request_id,

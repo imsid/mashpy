@@ -100,9 +100,11 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_resume_failed_request_emits_resumed_and_reopens(self) -> None:
+    async def test_resume_cancelled_request_emits_resumed_and_reopens(self) -> None:
         runtime = await self._runtime()
-        await self._seed(runtime, "req-1", terminal=RuntimeEventType.REQUEST_FAILED.value)
+        await self._seed(
+            runtime, "req-1", terminal=RuntimeEventType.REQUEST_CANCELLED.value
+        )
         self.assertTrue(await runtime.runtime_store.is_request_terminal("req-1"))
 
         result = await runtime.resume_request("req-1")
@@ -119,6 +121,52 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "req-1", cursor=0, wait_timeout=0.0
         )
         self.assertEqual(public[-1]["event"], "request.resumed")
+
+    async def test_resume_failed_request_is_refused(self) -> None:
+        """DBOS refuses to resume a workflow that ended in ERROR.
+
+        Its ``resume_workflows`` update excludes SUCCESS and ERROR, so calling
+        resume there is a silent no-op. Say so rather than reporting a resume
+        that never happened — and never emit ``request.resumed``, which would
+        strand the request as non-terminal with nothing executing it.
+        """
+        runtime = await self._runtime()
+        await self._seed(
+            runtime, "req-failed", terminal=RuntimeEventType.REQUEST_FAILED.value
+        )
+
+        result = await runtime.resume_request("req-failed")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("rerun", result["message"])
+
+        events = await runtime.runtime_store.list_request_events("req-failed")
+        self.assertFalse(
+            any(
+                e.event_type == RuntimeEventType.REQUEST_RESUMED.value
+                for e in events
+            )
+        )
+        # Stays terminal, so streams do not re-open on a request nothing runs.
+        self.assertTrue(
+            await runtime.runtime_store.is_request_terminal("req-failed")
+        )
+
+    async def test_completed_request_in_moved_on_session_is_not_stale(self) -> None:
+        """A completed request has nothing to replay, so staleness cannot apply.
+
+        The stale guard must not preempt the idempotent completed response.
+        """
+        runtime = await self._runtime()
+        await self._seed(
+            runtime, "req-4", terminal=RuntimeEventType.REQUEST_COMPLETED.value
+        )
+        time.sleep(0.01)
+        await runtime.store.save_turn(
+            "tr-later", "s-1", runtime.app_id, "next", "answer", {}, 0,
+        )
+
+        result = await runtime.resume_request("req-4")
+        self.assertEqual(result["status"], "completed")
 
     async def test_resume_rejects_stale_session(self) -> None:
         runtime = await self._runtime()
