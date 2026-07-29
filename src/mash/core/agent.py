@@ -121,12 +121,18 @@ class Agent:
     def set_event_logger(self, logger: EventLogger, session_id: str) -> None:
         """Set the event logger for automatic event logging.
 
+        Binds the session for the current task context as well, the way
+        ``set_trace_id`` binds the trace. The hosted runtime drives the loop
+        step by step rather than through ``run()``, so this is where a durable
+        request picks up its ambient session.
+
         Args:
             logger: Event logger instance.
             session_id: Session ID for this run.
         """
         self._event_logger = logger
         self._session_id = session_id
+        set_session_id(session_id)
 
     def set_trace_id(self, trace_id: Optional[str]) -> None:
         """Bind a trace ID for externally managed execution flows."""

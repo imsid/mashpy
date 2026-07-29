@@ -5,8 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from .events import LogEvent
-from .trace_context import get_host_id, get_request_id, get_trace_id
+from .trace_context import (
+    get_host_id,
+    get_request_id,
+    get_session_id,
+    get_trace_id,
+)
 from ..runtime.events import RuntimeEvent
+
 
 class EventLogger:
     """Writes structured events into a canonical event sink."""
@@ -41,6 +47,10 @@ class EventLogger:
             if isinstance(event_trace_id, str) and event_trace_id.strip()
             else None
         )
+        # Same reasoning for the session: a provider holds it as an instance
+        # field, so two requests in different sessions would otherwise stamp
+        # each other's events and skew every session-scoped query.
+        resolved_session_id = get_session_id() or raw.get("session_id")
         payload = {
             key: value
             for key, value in raw.items()
@@ -53,7 +63,7 @@ class EventLogger:
             event_type=str(raw["event_type"]),
             request_id=get_request_id(),
             host_id=get_host_id(),
-            session_id=raw.get("session_id"),
+            session_id=resolved_session_id,
             trace_id=resolved_trace_id,
             payload=payload,
             created_at=float(raw["ts"]),
