@@ -195,20 +195,29 @@ class GeminiProvider(BaseLLMProvider):
                         "type": "model_output",
                         "content": [{"type": "text", "text": "\n".join(text_parts)}],
                     })
+                # Gemini stamps its backend-validation signature on the thought
+                # that precedes a call, and rejects a replayed tool exchange
+                # without it. The thought is replayed ahead of its calls.
+                thought_signature = next(
+                    (
+                        b.data.get("signature")
+                        for b in message.content
+                        if b.type == "thinking" and b.data.get("signature")
+                    ),
+                    None,
+                )
+                if thought_signature and any(
+                    b.type == "tool_call" for b in message.content
+                ):
+                    steps.append({"type": "thought", "signature": thought_signature})
                 for block in message.content:
                     if block.type == "tool_call":
-                        step: Dict[str, Any] = {
+                        steps.append({
                             "type": "function_call",
                             "id": block.data.get("id", f"call_{uuid.uuid4().hex[:8]}"),
                             "name": block.data.get("name", ""),
                             "arguments": block.data.get("arguments", {}),
-                        }
-                        # Replay the backend-validation signature Gemini stamped on
-                        # the original call; without it the resent call is rejected.
-                        signature = block.data.get("signature")
-                        if signature:
-                            step["signature"] = signature
-                        steps.append(step)
+                        })
             elif message.role == "tool":
                 for block in message.content:
                     if block.type == "tool_result":
@@ -292,13 +301,12 @@ class GeminiProvider(BaseLLMProvider):
                 for item in getattr(step, "summary", None) or []:
                     if getattr(item, "type", None) == "text":
                         thought_parts.append(getattr(item, "text", ""))
-                if thought_parts:
-                    blocks.append(
-                        LLMContentBlock(
-                            type="thinking",
-                            data={"thinking": "".join(thought_parts)},
-                        )
-                    )
+                thought_signature = getattr(step, "signature", None)
+                if thought_parts or thought_signature:
+                    data: Dict[str, Any] = {"thinking": "".join(thought_parts)}
+                    if thought_signature:
+                        data["signature"] = thought_signature
+                    blocks.append(LLMContentBlock(type="thinking", data=data))
             elif step_type == "model_output":
                 step_texts: List[str] = []
                 seen_urls: set = set()
@@ -376,6 +384,7 @@ class GeminiProvider(BaseLLMProvider):
         """
         text_parts: List[str] = []
         thought_parts: List[str] = []
+        thought_signature: Optional[str] = None
         # keyed by step index → {id, name, args_fragments}
         function_calls: Dict[int, Dict[str, Any]] = {}
         final_interaction = None
@@ -420,6 +429,12 @@ class GeminiProvider(BaseLLMProvider):
                     if getattr(content, "type", None) == "text":
                         thought_parts.append(getattr(content, "text", ""))
 
+                if getattr(delta, "signature", None) and idx not in function_calls:
+                    # The thought signature is delivered only here: it is absent
+                    # from step.start, and the interaction from
+                    # interaction.completed carries no steps at all.
+                    thought_signature = delta.signature
+
                 elif delta_type == "arguments_delta":
                     if idx in function_calls:
                         fragment = getattr(delta, "arguments", "") or ""
@@ -440,10 +455,11 @@ class GeminiProvider(BaseLLMProvider):
 
         # Build a plain object that _parse_interaction_response can consume.
         steps = []
-        if thought_parts:
+        if thought_parts or thought_signature:
             steps.append(SimpleNamespace(
                 type="thought",
                 summary=[SimpleNamespace(type="text", text="".join(thought_parts))],
+                signature=thought_signature,
             ))
         if text_parts:
             steps.append(SimpleNamespace(
