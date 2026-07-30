@@ -9,6 +9,23 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.21.0](https://github.com/imsid/mashpy/compare/mashpy-v0.20.0...mashpy-v0.21.0) (2026-07-30)
+
+
+### Features
+
+* **runtime:** agent request cancel, resume, and rerun ([#171](https://github.com/imsid/mashpy/issues/171)) ([f900d98](https://github.com/imsid/mashpy/commit/f900d983a3b64c74b3f74d9af71acdab1a552860))
+
+
+### Bug Fixes
+
+* **gemini:** replay the thought signature that validates a tool exchange ([#174](https://github.com/imsid/mashpy/issues/174)) ([a7e2cab](https://github.com/imsid/mashpy/commit/a7e2cabb2d5143079eba7abcf4ec34b602a2a335))
+
+
+### Documentation
+
+* **pilot:** move Pilot README to src/pilot, fix stale keys ([#169](https://github.com/imsid/mashpy/issues/169)) ([8ef404d](https://github.com/imsid/mashpy/commit/8ef404dd8a814ce0a4de3e6f76f0a00874053a0f))
+
 ## [0.20.0](https://github.com/imsid/mashpy/compare/mashpy-v0.19.0...mashpy-v0.20.0) (2026-07-27)
 
 

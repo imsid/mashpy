@@ -1,6 +1,6 @@
 [project]
 name = "mashpy"
-version = "0.20.0"
+version = "0.21.0"
 description = "Self-hosted durable runtime for code-authored agents and workflows."
 readme = "README.md"
 requires-python = ">=3.10"
