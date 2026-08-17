@@ -24,15 +24,25 @@ METRIC_EVENT_TYPES: tuple[str, ...] = (
     RuntimeEventType.REQUEST_ACCEPTED.value,
     RuntimeEventType.REQUEST_COMPLETED.value,
     RuntimeEventType.REQUEST_FAILED.value,
+    RuntimeEventType.REQUEST_CANCELLED.value,
     RuntimeEventType.STEP_COMPLETED.value,
     RuntimeEventType.TOOL_CALL_STARTED.value,
     _LLM_REQUEST_COMPLETE,
 )
 
-_TERMINAL = {
-    RuntimeEventType.REQUEST_COMPLETED.value,
-    RuntimeEventType.REQUEST_FAILED.value,
+# Terminal events whose stop reason is the outcome itself. A completed request
+# has no entry: its stop reason comes from the response, not from the fact that
+# it completed.
+_TERMINAL_STOP_REASONS = {
+    RuntimeEventType.REQUEST_FAILED.value: "error",
+    RuntimeEventType.REQUEST_CANCELLED.value: "cancelled",
 }
+
+# Derived, so the set of terminal events and their stop reasons cannot drift
+# apart: cancelled was previously missing from both this set and the loader
+# filter above, and a cancelled row reported its last LLM finish reason as
+# though the run had ended on its own.
+_TERMINAL = {RuntimeEventType.REQUEST_COMPLETED.value, *_TERMINAL_STOP_REASONS}
 
 
 @dataclass
@@ -89,10 +99,28 @@ class _AgentAccum:
         self.last_finish_reason: str | None = None
         self.terminal_type: str | None = None
         self.terminal_payload: dict[str, Any] = {}
+        self.terminal_key: tuple[float, int] | None = None
+
+    def observe_terminal(self, event: RuntimeEvent) -> None:
+        """Keep the latest terminal event for this agent.
+
+        An agent can reach a terminal state more than once in a session — one
+        per request, and a cancelled request that is resumed then completes
+        adds another to the same request. ``compute_row_metrics`` accepts
+        events in any order, so latest is decided by timestamp rather than by
+        position in the list.
+        """
+        key = (float(event.created_at), int(event.event_id))
+        if self.terminal_key is not None and key < self.terminal_key:
+            return
+        self.terminal_key = key
+        self.terminal_type = event.event_type
+        self.terminal_payload = event.payload or {}
 
     def stop_reason(self) -> str | None:
-        if self.terminal_type == RuntimeEventType.REQUEST_FAILED.value:
-            return "error"
+        outcome = _TERMINAL_STOP_REASONS.get(self.terminal_type or "")
+        if outcome is not None:
+            return outcome
         metadata = self.terminal_payload.get("response_metadata")
         if isinstance(metadata, dict) and metadata.get("stop_reason"):
             # Subagents surface runtime stop reasons here (e.g. ``max_steps``),
@@ -131,8 +159,7 @@ def compute_row_metrics(
             if finish:
                 acc.last_finish_reason = str(finish)
         elif etype in _TERMINAL:
-            acc.terminal_type = etype
-            acc.terminal_payload = payload
+            acc.observe_terminal(event)
 
     primary = per_agent.get(primary_agent_id, _AgentAccum())
     subagents: list[SubagentMetrics] = []

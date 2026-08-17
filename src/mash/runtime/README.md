@@ -157,12 +157,16 @@ The `RuntimeStore` boundary is intentionally small:
 - `list_request_events(...)`
 - `has_request(...)`
 - `is_request_terminal(...)`
+- `get_request_lifecycle(...)`
+- `read_request_stream(...)`
 - `get_latest_trace(...)`
 - `list_recent_traces(...)`
 - `append_feedback(...)`
 - `list_feedback(...)`
 
-This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
+This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened.
+
+A request's lifecycle state is one such record, not an inference: the five events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The table is a projection of the log and is rebuildable from it. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
 
 ### Runtime Durability
 

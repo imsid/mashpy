@@ -17,7 +17,7 @@ from ..logging.trace_context import (
     get_workflow_run_id,
 )
 from .errors import RequestStaleError, classify_error
-from .events import RuntimeEvent, RuntimeEventType
+from .events import RequestStatus, RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
 
 if TYPE_CHECKING:
@@ -112,6 +112,26 @@ def host_id_from_request_metadata(
     return host_id or None
 
 
+def request_attempt(events: list[RuntimeEvent]) -> int:
+    """Which attempt the request is on: 0 before any resume, +1 per resume.
+
+    Terminal dedupe keys are scoped by this. A fixed key would make the second
+    attempt's terminal event dedupe onto the first attempt's row and append
+    nothing, leaving ``request.resumed`` as the last lifecycle event and the
+    request non-terminal forever.
+    """
+    return sum(
+        1
+        for event in events
+        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value
+    )
+
+
+async def fetch_request_attempt(self: "AgentRuntime", request_id: str) -> int:
+    """``request_attempt`` over the request's stored events."""
+    return request_attempt(await self.runtime_store.list_request_events(request_id))
+
+
 def find_pending_interaction(
     events: list[RuntimeEvent],
 ) -> Optional[str]:
@@ -174,6 +194,7 @@ async def _submit_request_inner(
             session_id=target_session_id,
             event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
             dedupe_key="request.accepted",
+            lifecycle=RequestStatus.RUNNING,
             payload={
                 "workflow_id": workflow_id,
                 "message": message,
@@ -198,7 +219,9 @@ async def _submit_request_inner(
                 agent_id=self.app_id,
                 session_id=target_session_id,
                 event_type=RuntimeEventType.REQUEST_FAILED.value,
-                dedupe_key="request.failed",
+                # Submit-time failure: the request has never been resumed.
+                dedupe_key="request.failed.0",
+                lifecycle=RequestStatus.FAILED,
                 payload={
                     "request_id": request_id,
                     "agent_id": self.app_id,
@@ -223,7 +246,12 @@ async def stream_response_events(
     if not await self.runtime_store.has_request(request_id):
         raise KeyError(request_id)
 
-    stored_events = await self.runtime_store.list_request_events(
+    # One store call for both facts: `done` is scoped to the events it returns,
+    # so a caller that stops on `done` has necessarily been given the terminal
+    # event. Reading them separately let an append between the two land a
+    # `done=True` alongside events truncated before the terminal row, and the
+    # stream closed without ever emitting it.
+    stored_events, done = await self.runtime_store.read_request_stream(
         request_id,
         after_seq=max(0, int(cursor)),
     )
@@ -231,7 +259,6 @@ async def stream_response_events(
     next_cursor = int(cursor)
     if stored_events:
         next_cursor = int(stored_events[-1].request_seq or 0)
-    done = await self.runtime_store.is_request_terminal(request_id)
     if public_events or done or wait_timeout <= 0:
         return public_events, next_cursor, done
 
@@ -241,14 +268,13 @@ async def stream_response_events(
             await asyncio.wait_for(waiter.wait(), timeout=wait_timeout)
         except asyncio.TimeoutError:
             pass
-        stored_events = await self.runtime_store.list_request_events(
+        stored_events, done = await self.runtime_store.read_request_stream(
             request_id,
             after_seq=max(0, int(cursor)),
         )
         public_events = [to_public_event(event) for event in stored_events]
         if stored_events:
             next_cursor = int(stored_events[-1].request_seq or 0)
-        done = await self.runtime_store.is_request_terminal(request_id)
         return public_events, next_cursor, done
     finally:
         self.runtime_store.unregister_request_waiter(request_id, waiter)
@@ -298,19 +324,10 @@ async def resume_request(
     # A request that already completed has nothing to replay, so the engine's
     # idempotent response is the honest answer even once the session has moved
     # on. Checking it first keeps a completed request from reporting stale.
-    last_lifecycle = next(
-        (
-            e.event_type
-            for e in reversed(events)
-            if e.event_type
-            in (
-                RuntimeEventType.REQUEST_COMPLETED.value,
-                RuntimeEventType.REQUEST_RESUMED.value,
-            )
-        ),
-        None,
+    already_completed = (
+        await self.runtime_store.get_request_lifecycle(request_id)
+        is RequestStatus.COMPLETED
     )
-    already_completed = last_lifecycle == RuntimeEventType.REQUEST_COMPLETED.value
 
     # Stale-session guard: resume replays the request's original context
     # snapshot, so it is unsafe once the session has a newer replayable turn.
@@ -334,11 +351,7 @@ async def resume_request(
         # the request back to non-terminal so closed streams re-open. A distinct
         # dedupe_key per resume (by prior resumed count) lets a request be
         # resumed more than once.
-        prior_resumes = sum(
-            1
-            for e in events
-            if e.event_type == RuntimeEventType.REQUEST_RESUMED.value
-        )
+        prior_resumes = request_attempt(events)
         await append_runtime_event(
             self,
             RuntimeEvent(
@@ -349,6 +362,7 @@ async def resume_request(
                 session_id=session_id,
                 event_type=RuntimeEventType.REQUEST_RESUMED.value,
                 dedupe_key=f"request.resumed.{prior_resumes}",
+                lifecycle=RequestStatus.RUNNING,
                 payload={
                     "request_id": request_id,
                     "agent_id": self.app_id,

@@ -8,8 +8,17 @@ import unittest
 import uuid
 from typing import Any
 
+from pathlib import Path
+
+import mash.storage.migrations
+from conftest import seed_lifecycle
 from mash.runtime.events.store import PostgresRuntimeStore
-from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
+from mash.runtime.events.types import (
+    FeedbackRecord,
+    RequestStatus,
+    RuntimeEvent,
+    RuntimeEventType,
+)
 
 try:  # pragma: no cover - environment dependent
     import psycopg
@@ -46,6 +55,10 @@ def _delete_request_rows(database_url: str, *request_ids: str) -> None:
         with conn.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM runtime_event_log WHERE request_id = ANY(%s)",
+                (ids,),
+            )
+            cursor.execute(
+                "DELETE FROM runtime_request WHERE request_id = ANY(%s)",
                 (ids,),
             )
 
@@ -123,6 +136,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 request_id=self.request_id,
                 session_id="session-1",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
                 payload={"status": "accepted"},
             )
@@ -145,6 +159,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 request_id=self.request_id,
                 session_id="session-1",
                 event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_COMPLETED.value),
                 dedupe_key="request.completed",
                 payload={"status": "completed"},
             )
@@ -180,6 +195,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                     request_id=self.request_id,
                     session_id="session-1",
                     event_type=event_type,
+                    lifecycle=seed_lifecycle(event_type),
                     dedupe_key=dedupe,
                 )
             )
@@ -192,10 +208,135 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 request_id=self.request_id,
                 session_id="session-1",
                 event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_RESUMED.value),
                 dedupe_key="request.resumed.0",
             )
         )
         self.assertFalse(await self.store.is_request_terminal(self.request_id))
+
+    async def _append(self, event_type: str, dedupe: str | None = None) -> RuntimeEvent:
+        return await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=event_type,
+                lifecycle=seed_lifecycle(event_type),
+                dedupe_key=dedupe,
+            )
+        )
+
+    async def test_request_state_is_rebuildable_from_the_log(self) -> None:
+        """runtime_request is a projection, not a second source of truth.
+
+        This is also the migration's backfill path: databases predating the
+        table have log rows and no state, and the same statement reconstructs
+        them.
+        """
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append(
+            RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled.0"
+        )
+        await self._append(RuntimeEventType.REQUEST_RESUMED.value, "request.resumed.0")
+        await self._append(
+            RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.1"
+        )
+        self.assertTrue(await self.store.is_request_terminal(self.request_id))
+
+        backfill = (
+            Path(mash.storage.migrations.__file__).parent
+            / "002_runtime_request_state.sql"
+        ).read_text()
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM runtime_request WHERE request_id = %s",
+                (self.request_id,),
+            )
+            self.assertFalse(await self.store.is_request_terminal(self.request_id))
+            conn.execute(backfill)
+
+        self.assertTrue(await self.store.is_request_terminal(self.request_id))
+        self.assertIs(
+            await self.store.get_request_lifecycle(self.request_id),
+            RequestStatus.COMPLETED,
+        )
+
+    async def test_read_request_stream_never_reports_undelivered_terminal(self) -> None:
+        """``terminal`` must imply the terminal event is in the same batch.
+
+        This is the invariant the split read broke: ``list_request_events`` and
+        ``is_request_terminal`` ran on separate connections, so an append
+        between them produced events truncated before the terminal row with
+        ``terminal`` already true. Consumers stopped on that and never saw the
+        terminal frame.
+        """
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append("runtime.llm.think.completed")
+
+        cursor = 0
+        seen_terminal = False
+        for _ in range(10):
+            events, terminal = await self.store.read_request_stream(
+                self.request_id, after_seq=cursor
+            )
+            if events:
+                cursor = int(events[-1].request_seq or 0)
+            seen_terminal = seen_terminal or any(
+                e.event_type == RuntimeEventType.REQUEST_COMPLETED.value
+                for e in events
+            )
+            if terminal:
+                # The contract consumers rely on: stopping here is safe.
+                self.assertTrue(seen_terminal)
+                break
+            # Land the terminal event mid-poll, the way a real request does.
+            await self._append(
+                RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0"
+            )
+        else:  # pragma: no cover - loop always terminates via the break
+            self.fail("stream never reported terminal")
+        self.assertTrue(seen_terminal)
+
+    async def test_read_request_stream_bounds_terminality_by_cursor(self) -> None:
+        """Terminality is scoped to the prefix the call returns.
+
+        A caller already past the terminal event still gets ``terminal`` true
+        (it was delivered on an earlier read), while a caller whose cursor sits
+        before it gets the event and the flag together.
+        """
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        completed = await self._append(
+            RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0"
+        )
+        terminal_seq = int(completed.request_seq or 0)
+
+        events, terminal = await self.store.read_request_stream(
+            self.request_id, after_seq=terminal_seq - 1
+        )
+        self.assertEqual(
+            [e.event_type for e in events],
+            [RuntimeEventType.REQUEST_COMPLETED.value],
+        )
+        self.assertTrue(terminal)
+
+        events, terminal = await self.store.read_request_stream(
+            self.request_id, after_seq=terminal_seq
+        )
+        self.assertEqual(events, [])
+        self.assertTrue(terminal)
+
+    async def test_read_request_stream_ignores_events_after_a_cancel(self) -> None:
+        """The in-flight step's trailing events must not un-terminate."""
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append(
+            RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled.0"
+        )
+        await self._append("runtime.llm.think.completed")
+
+        events, terminal = await self.store.read_request_stream(self.request_id)
+        self.assertEqual(len(events), 3)
+        self.assertTrue(terminal)
 
     async def test_session_scoped_events_are_queryable_without_request_id(self) -> None:
         event = await self.store.append_event(
@@ -247,6 +388,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 request_id=self.request_id,
                 session_id="session-1",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key=f"waiter-test-{uuid.uuid4().hex[:8]}",
                 payload={"status": "accepted"},
             )
@@ -281,6 +423,7 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                 request_id=self.request_id,
                 session_id="session-recovery",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key=f"recovery-{uuid.uuid4().hex[:8]}",
                 payload={"status": "accepted"},
             )
@@ -299,6 +442,7 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                     request_id=self.request_id,
                     session_id="session-recovery",
                     event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                     dedupe_key=f"listener-{uuid.uuid4().hex[:8]}",
                     payload={"status": "accepted"},
                 )
@@ -329,6 +473,7 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                     request_id=self.request_id,
                     session_id="session-recovery",
                     event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                     dedupe_key=f"post-reconnect-{uuid.uuid4().hex[:8]}",
                     payload={"status": "accepted"},
                 )
@@ -372,6 +517,7 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
                         request_id=self.request_id,
                         session_id="session-1",
                         event_type=event_type,
+                        lifecycle=seed_lifecycle(event_type),
                         dedupe_key=dedupe_key,
                         payload={},
                     )
@@ -533,6 +679,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
                 trace_id=trace_id,
                 host_id="assistant",
                 event_type=event_type,
+                lifecycle=seed_lifecycle(event_type),
                 created_at=created_at,
                 payload={},
             )
@@ -704,6 +851,7 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
                 trace_id=trace_id,
                 host_id="assistant",
                 event_type=event_type,
+                lifecycle=seed_lifecycle(event_type),
                 created_at=created_at,
                 payload=payload,
             )

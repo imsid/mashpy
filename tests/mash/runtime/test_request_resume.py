@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from conftest import build_test_stores
+from conftest import build_test_stores, seed_lifecycle
 from mash.runtime import AgentRuntime
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
@@ -85,6 +85,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id=trace_id,
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -96,6 +97,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id=trace_id,
                 event_type=terminal,
+                lifecycle=seed_lifecycle(terminal),
                 dedupe_key="terminal",
             )
         )

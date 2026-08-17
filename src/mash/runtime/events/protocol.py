@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-from .types import FeedbackRecord, RuntimeEvent
+from .types import FeedbackRecord, RequestStatus, RuntimeEvent
 
 
 class RuntimeStore(Protocol):
@@ -47,6 +47,15 @@ class RuntimeStore(Protocol):
     async def has_request(self, request_id: str) -> bool: ...
 
     async def is_request_terminal(self, request_id: str) -> bool: ...
+
+    async def get_request_lifecycle(self, request_id: str) -> RequestStatus | None: ...
+
+    async def read_request_stream(
+        self,
+        request_id: str,
+        *,
+        after_seq: int = 0,
+    ) -> tuple[list[RuntimeEvent], bool]: ...
 
     async def get_request_id_for_trace(
         self,

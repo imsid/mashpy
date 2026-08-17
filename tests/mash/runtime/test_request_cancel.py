@@ -15,9 +15,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from conftest import build_test_stores
+from conftest import build_test_stores, seed_lifecycle
 from mash.runtime import AgentRuntime
-from mash.runtime.engine.steps import open_interaction
+from mash.runtime.engine.steps import emit_request_cancelled, open_interaction
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import find_pending_interaction, to_public_event
 from mash.testing.runtime_fixtures import build_spec
@@ -34,6 +34,7 @@ def _evt(event_type: str, interaction_id: str | None = None) -> RuntimeEvent:
         app_id="a",
         agent_id="a",
         event_type=event_type,
+        lifecycle=seed_lifecycle(event_type),
         request_id="r",
         payload=payload,
     )
@@ -70,6 +71,7 @@ class PublicEventTests(unittest.TestCase):
             app_id="a",
             agent_id="a",
             event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_CANCELLED.value),
             request_id="r",
             payload={"request_id": "r", "status": "cancelled"},
         )
@@ -113,6 +115,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-1",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -143,6 +146,86 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await runtime.runtime_store.is_request_terminal("req-1"))
 
+    async def test_cancel_after_resume_appends_its_own_terminal_event(self) -> None:
+        """A second cancel must not dedupe onto the first attempt's event.
+
+        Terminal dedupe keys are scoped by attempt. With a fixed key the second
+        ``request.cancelled`` deduped onto the first, appended nothing, and left
+        ``request.resumed`` as the last lifecycle event — so the request stayed
+        non-terminal forever and its stream never closed.
+        """
+        runtime = await self._runtime()
+        await runtime.runtime_store.append_event(
+            RuntimeEvent(
+                request_id="req-3",
+                app_id=runtime.app_id,
+                agent_id=runtime.app_id,
+                session_id="s-1",
+                trace_id="trace-3",
+                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                dedupe_key="request.accepted",
+            )
+        )
+
+        await emit_request_cancelled(runtime.app_id, "req-3", "s-1", "trace-3")
+        self.assertTrue(await runtime.runtime_store.is_request_terminal("req-3"))
+
+        await runtime.runtime_store.append_event(
+            RuntimeEvent(
+                request_id="req-3",
+                app_id=runtime.app_id,
+                agent_id=runtime.app_id,
+                session_id="s-1",
+                trace_id="trace-3",
+                event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_RESUMED.value),
+                dedupe_key="request.resumed.0",
+            )
+        )
+        self.assertFalse(await runtime.runtime_store.is_request_terminal("req-3"))
+
+        await emit_request_cancelled(runtime.app_id, "req-3", "s-1", "trace-3")
+
+        events = await runtime.runtime_store.list_request_events("req-3")
+        cancelled = [
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_CANCELLED.value
+        ]
+        self.assertEqual(len(cancelled), 2)
+        self.assertEqual(
+            [e.dedupe_key for e in cancelled],
+            ["request.cancelled.0", "request.cancelled.1"],
+        )
+        self.assertTrue(await runtime.runtime_store.is_request_terminal("req-3"))
+
+    async def test_terminal_event_is_idempotent_within_one_attempt(self) -> None:
+        """Replaying the same attempt's terminal step still dedupes."""
+        runtime = await self._runtime()
+        await runtime.runtime_store.append_event(
+            RuntimeEvent(
+                request_id="req-4",
+                app_id=runtime.app_id,
+                agent_id=runtime.app_id,
+                session_id="s-1",
+                trace_id="trace-4",
+                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                dedupe_key="request.accepted",
+            )
+        )
+        await emit_request_cancelled(runtime.app_id, "req-4", "s-1", "trace-4")
+        await emit_request_cancelled(runtime.app_id, "req-4", "s-1", "trace-4")
+
+        events = await runtime.runtime_store.list_request_events("req-4")
+        cancelled = [
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_CANCELLED.value
+        ]
+        self.assertEqual(len(cancelled), 1)
+
     async def test_cancel_running_request_stream_ends_cancelled(self) -> None:
         runtime = await self._runtime()
         await runtime.runtime_store.append_event(
@@ -153,6 +236,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-2",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )

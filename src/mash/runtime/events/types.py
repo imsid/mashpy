@@ -28,6 +28,25 @@ class RuntimeEventType(str, Enum):
     STEP_FAILED = "runtime.step.failed"
 
 
+class RequestStatus(str, Enum):
+    """A request's lifecycle state, recorded rather than re-derived.
+
+    Events that move a request between states carry one of these on
+    ``RuntimeEvent.lifecycle``; the store projects it onto ``runtime_request``.
+    Terminality is then a fact about the request, not an inference from event
+    type names and their order in the log.
+    """
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @property
+    def terminal(self) -> bool:
+        return self is not RequestStatus.RUNNING
+
+
 class FeedbackType(str, Enum):
     """Kind of user feedback. Free-form text today; room for future kinds."""
 
@@ -70,3 +89,6 @@ class RuntimeEvent:
     loop_index: Optional[int] = None
     step_key: Optional[str] = None
     dedupe_key: Optional[str] = None
+    # Set only by the five events that move a request between lifecycle states;
+    # None on everything else. The store projects it onto runtime_request.
+    lifecycle: Optional[RequestStatus] = None

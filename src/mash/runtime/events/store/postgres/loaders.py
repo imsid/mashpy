@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ...types import FeedbackRecord, RuntimeEvent, RuntimeEventType
+from ...types import FeedbackRecord, RequestStatus, RuntimeEvent, RuntimeEventType
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,39 @@ def usage_row_to_bucket(row: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _project_lifecycle(
+    cursor: Any,
+    event: RuntimeEvent,
+    request_seq: int | None,
+) -> None:
+    """Record the request's lifecycle state alongside the event that caused it.
+
+    Runs in the append transaction, so the state row and the event it reflects
+    commit together. append_event holds an advisory lock on the request id, so
+    appends for one request are serialized and the last write is the last
+    event — no tiebreak needed here.
+    """
+    if event.lifecycle is None or not event.request_id:
+        return
+    status = RequestStatus(event.lifecycle)
+    await cursor.execute(
+        """
+        INSERT INTO runtime_request (request_id, status, terminal_seq, updated_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (request_id) DO UPDATE
+            SET status = EXCLUDED.status,
+                terminal_seq = EXCLUDED.terminal_seq,
+                updated_at = EXCLUDED.updated_at
+        """,
+        (
+            event.request_id,
+            status.value,
+            request_seq if status.terminal else None,
+            float(event.created_at),
+        ),
+    )
+
+
 async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
     async with pool.connection() as conn:
         async with conn.transaction():
@@ -120,6 +153,13 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                     )
                     existing = await cursor.fetchone()
                     if existing is not None:
+                        # Still project the state. A deduped terminal event was
+                        # already delivered at the existing row's seq, so the
+                        # request is terminal there; skipping this would leave
+                        # a resumed request stuck non-terminal.
+                        await _project_lifecycle(
+                            cursor, event, existing.get("request_seq")
+                        )
                         return dict_to_event(existing)
 
                 next_request_seq: int | None = None
@@ -175,6 +215,7 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                 stored = await cursor.fetchone()
                 if stored is None:
                     raise RuntimeError("failed to persist runtime event")
+                await _project_lifecycle(cursor, event, stored.get("request_seq"))
                 await cursor.execute(
                     "SELECT pg_notify('runtime_events', %s)",
                     (event.request_id or "",),
@@ -395,43 +436,79 @@ async def get_request_id_for_trace(
     return str(row["request_id"]) if row is not None else None
 
 
-_TERMINAL_REQUEST_EVENTS = (
-    RuntimeEventType.REQUEST_COMPLETED.value,
-    RuntimeEventType.REQUEST_FAILED.value,
-    RuntimeEventType.REQUEST_CANCELLED.value,
-)
+async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None:
+    """The request's recorded lifecycle state, or None if it has none."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT status FROM runtime_request WHERE request_id = %s",
+                (request_id,),
+            )
+            row = await cursor.fetchone()
+    return RequestStatus(str(row["status"])) if row is not None else None
 
-# Lifecycle events that decide terminality: the terminal three plus resumed,
-# which un-terminates a request so closed streams re-open.
-_LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
-    RuntimeEventType.REQUEST_RESUMED.value,
-)
 
+async def read_request_stream(
+    pool: Any,
+    request_id: str,
+    *,
+    after_seq: int = 0,
+) -> tuple[list[RuntimeEvent], bool]:
+    """Read a request's events and its terminality as one consistent pair.
 
-async def is_request_terminal(pool: Any, request_id: str) -> bool:
-    """Whether the request's last lifecycle event is a terminal one.
+    Reading the two separately let an append land between them and yield a
+    mutually inconsistent result: events truncated before the terminal row,
+    ``terminal`` already true. Consumers read that as "the terminal event was
+    delivered" and stop, so the stream closed without ever emitting it.
 
-    Restricted to lifecycle events rather than reading the log's last row:
-    cancel is appended while a step is still in flight, and that step's own
-    events land after it, which would otherwise read as non-terminal.
+    Terminality is therefore reported only over the prefix this call returns.
+    The lifecycle scan is bounded by the highest seq the event read saw, so an
+    event appended between the two queries has a higher seq and cannot flip
+    ``terminal`` for a row the caller was not given. When there are no new
+    events the bound is the caller's cursor, so a terminal event that lands
+    mid-call is reported on the next read, together with its event.
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT event_type
+                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                       agent_id, session_id, host_id, event_type, loop_index, step_key,
+                       dedupe_key, payload, created_at
                 FROM runtime_event_log
-                WHERE request_id = %s
-                  AND event_type = ANY(%s)
-                ORDER BY seq DESC
-                LIMIT 1
+                WHERE request_id = %s AND seq > %s
+                ORDER BY seq ASC
                 """,
-                (request_id, list(_LIFECYCLE_REQUEST_EVENTS)),
+                (request_id, int(after_seq)),
+            )
+            rows = await cursor.fetchall()
+            events = [dict_to_event(row) for row in rows]
+            bound = (
+                int(events[-1].request_seq or 0) if events else int(after_seq)
+            )
+            await cursor.execute(
+                """
+                SELECT terminal_seq
+                FROM runtime_request
+                WHERE request_id = %s AND terminal_seq IS NOT NULL
+                  AND terminal_seq <= %s
+                """,
+                (request_id, bound),
+            )
+            terminal = await cursor.fetchone() is not None
+    return events, terminal
+
+
+async def is_request_terminal(pool: Any, request_id: str) -> bool:
+    """Whether the request has reached a terminal state."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT terminal_seq FROM runtime_request WHERE request_id = %s",
+                (request_id,),
             )
             row = await cursor.fetchone()
-    if row is None:
-        return False
-    return str(row["event_type"]) in _TERMINAL_REQUEST_EVENTS
+    return row is not None and row["terminal_seq"] is not None
 
 
 async def list_feedback(

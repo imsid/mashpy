@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from mash.evals.metrics import compute_row_metrics
+from mash.evals.metrics import METRIC_EVENT_TYPES, compute_row_metrics
 from mash.runtime.events.types import RuntimeEvent
 
 
@@ -87,6 +87,46 @@ class ComputeRowMetricsTests(unittest.TestCase):
         self.assertEqual(m.stop_reason, "error")
         self.assertEqual(m.tokens.input, 100)   # spend before the failure is kept
         self.assertEqual(m.subagents, [])
+
+    def test_cancelled_primary_reports_cancelled_not_a_finish_reason(self) -> None:
+        """A cancelled run must not report the last LLM finish reason.
+
+        request.cancelled was in neither the loader filter nor the terminal
+        set, so a cancelled row fell through to ``end_turn`` — indistinguishable
+        from a run that ended on its own.
+        """
+        events = [
+            _ev("pilot", "runtime.request.accepted", 200.0),
+            _llm("pilot", 201.0, i=100, o=10, finish="end_turn"),
+            _ev("pilot", "runtime.request.cancelled", 202.0, status="cancelled"),
+        ]
+        m = compute_row_metrics(events, primary_agent_id="pilot")
+        self.assertEqual(m.stop_reason, "cancelled")
+        self.assertEqual(m.tokens.input, 100)  # spend before the cancel is kept
+
+    def test_cancelled_then_resumed_to_completion_reports_the_outcome(self) -> None:
+        """Latest terminal event wins, and by timestamp rather than list order."""
+        events = [
+            _ev("pilot", "runtime.request.accepted", 300.0),
+            _ev("pilot", "runtime.request.cancelled", 301.0, status="cancelled"),
+            _llm("pilot", 302.0, i=100, o=10, finish="tool_use"),
+            _ev("pilot", "runtime.request.completed", 303.0,
+                response_metadata={"stop_reason": "end_turn"}),
+        ]
+        self.assertEqual(
+            compute_row_metrics(events, primary_agent_id="pilot").stop_reason,
+            "end_turn",
+        )
+        # Same events, shuffled: the fold is order-independent as documented.
+        self.assertEqual(
+            compute_row_metrics(
+                list(reversed(events)), primary_agent_id="pilot"
+            ).stop_reason,
+            "end_turn",
+        )
+
+    def test_cancelled_events_are_loaded_for_metrics(self) -> None:
+        self.assertIn("runtime.request.cancelled", METRIC_EVENT_TYPES)
 
     def test_empty_events(self) -> None:
         m = compute_row_metrics([], primary_agent_id="pilot")
