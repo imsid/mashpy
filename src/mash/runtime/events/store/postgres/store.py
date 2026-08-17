@@ -10,7 +10,7 @@ from typing import Any, cast
 from mash.storage.migrations import run_migrations
 
 from ...protocol import RuntimeStore
-from ...types import FeedbackRecord, RuntimeEvent
+from ...types import FeedbackRecord, RequestStatus, RuntimeEvent
 from . import loaders
 
 try:
@@ -199,6 +199,10 @@ class PostgresRuntimeStore(RuntimeStore):
     async def is_request_terminal(self, request_id: str) -> bool:
         await self.open()
         return await loaders.is_request_terminal(self._pool, request_id)
+
+    async def get_request_lifecycle(self, request_id: str) -> RequestStatus | None:
+        await self.open()
+        return await loaders.get_request_status(self._pool, request_id)
 
     async def read_request_stream(
         self, request_id: str, *, after_seq: int = 0

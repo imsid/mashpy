@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from conftest import build_test_stores
+from conftest import build_test_stores, seed_lifecycle
 from mash.runtime import AgentRuntime
 from mash.runtime.engine.steps import emit_request_cancelled, open_interaction
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
@@ -34,6 +34,7 @@ def _evt(event_type: str, interaction_id: str | None = None) -> RuntimeEvent:
         app_id="a",
         agent_id="a",
         event_type=event_type,
+        lifecycle=seed_lifecycle(event_type),
         request_id="r",
         payload=payload,
     )
@@ -70,6 +71,7 @@ class PublicEventTests(unittest.TestCase):
             app_id="a",
             agent_id="a",
             event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_CANCELLED.value),
             request_id="r",
             payload={"request_id": "r", "status": "cancelled"},
         )
@@ -113,6 +115,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-1",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -160,6 +163,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-3",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -175,6 +179,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-3",
                 event_type=RuntimeEventType.REQUEST_RESUMED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_RESUMED.value),
                 dedupe_key="request.resumed.0",
             )
         )
@@ -206,6 +211,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-4",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -230,6 +236,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 session_id="s-1",
                 trace_id="trace-2",
                 event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
                 dedupe_key="request.accepted",
             )
         )

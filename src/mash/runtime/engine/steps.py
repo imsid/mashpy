@@ -14,7 +14,7 @@ from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
 from .. import factory as factory_helpers
-from ..events import RuntimeEvent, RuntimeEventType
+from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
 from ..requests import append_runtime_event, fetch_request_attempt
 
 if TYPE_CHECKING:
@@ -985,6 +985,7 @@ async def complete_request(
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_COMPLETED.value,
             dedupe_key=f"request.completed.{attempt}",
+            lifecycle=RequestStatus.COMPLETED,
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
@@ -1022,6 +1023,7 @@ async def emit_request_cancelled(
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_CANCELLED.value,
             dedupe_key=f"request.cancelled.{attempt}",
+            lifecycle=RequestStatus.CANCELLED,
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
@@ -1051,6 +1053,7 @@ async def fail_request(
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_FAILED.value,
             dedupe_key=f"request.failed.{attempt}",
+            lifecycle=RequestStatus.FAILED,
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,

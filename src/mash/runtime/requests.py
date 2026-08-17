@@ -17,7 +17,7 @@ from ..logging.trace_context import (
     get_workflow_run_id,
 )
 from .errors import RequestStaleError, classify_error
-from .events import RuntimeEvent, RuntimeEventType
+from .events import RequestStatus, RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
 
 if TYPE_CHECKING:
@@ -194,6 +194,7 @@ async def _submit_request_inner(
             session_id=target_session_id,
             event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
             dedupe_key="request.accepted",
+            lifecycle=RequestStatus.RUNNING,
             payload={
                 "workflow_id": workflow_id,
                 "message": message,
@@ -220,6 +221,7 @@ async def _submit_request_inner(
                 event_type=RuntimeEventType.REQUEST_FAILED.value,
                 # Submit-time failure: the request has never been resumed.
                 dedupe_key="request.failed.0",
+                lifecycle=RequestStatus.FAILED,
                 payload={
                     "request_id": request_id,
                     "agent_id": self.app_id,
@@ -322,19 +324,10 @@ async def resume_request(
     # A request that already completed has nothing to replay, so the engine's
     # idempotent response is the honest answer even once the session has moved
     # on. Checking it first keeps a completed request from reporting stale.
-    last_lifecycle = next(
-        (
-            e.event_type
-            for e in reversed(events)
-            if e.event_type
-            in (
-                RuntimeEventType.REQUEST_COMPLETED.value,
-                RuntimeEventType.REQUEST_RESUMED.value,
-            )
-        ),
-        None,
+    already_completed = (
+        await self.runtime_store.get_request_lifecycle(request_id)
+        is RequestStatus.COMPLETED
     )
-    already_completed = last_lifecycle == RuntimeEventType.REQUEST_COMPLETED.value
 
     # Stale-session guard: resume replays the request's original context
     # snapshot, so it is unsafe once the session has a newer replayable turn.
@@ -369,6 +362,7 @@ async def resume_request(
                 session_id=session_id,
                 event_type=RuntimeEventType.REQUEST_RESUMED.value,
                 dedupe_key=f"request.resumed.{prior_resumes}",
+                lifecycle=RequestStatus.RUNNING,
                 payload={
                     "request_id": request_id,
                     "agent_id": self.app_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -24,7 +25,12 @@ from mash.runtime.engine.steps import (
     run_step_tool_call,
     start_request_trace,
 )
-from mash.runtime.events.types import FeedbackRecord, RuntimeEvent, RuntimeEventType
+from mash.runtime.events.types import (
+    FeedbackRecord,
+    RequestStatus,
+    RuntimeEvent,
+    RuntimeEventType,
+)
 from mash.workflows.store import WorkflowStepEventRecord
 
 
@@ -56,27 +62,32 @@ def _event_tokens(event: RuntimeEvent) -> int:
         return 0
 
 
-_TERMINAL_REQUEST_EVENTS = (
-    RuntimeEventType.REQUEST_COMPLETED.value,
-    RuntimeEventType.REQUEST_FAILED.value,
-    RuntimeEventType.REQUEST_CANCELLED.value,
-)
-
-_LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
-    RuntimeEventType.REQUEST_RESUMED.value,
-)
+_SEED_LIFECYCLE = {
+    RuntimeEventType.REQUEST_ACCEPTED.value: RequestStatus.RUNNING,
+    RuntimeEventType.REQUEST_RESUMED.value: RequestStatus.RUNNING,
+    RuntimeEventType.REQUEST_COMPLETED.value: RequestStatus.COMPLETED,
+    RuntimeEventType.REQUEST_FAILED.value: RequestStatus.FAILED,
+    RuntimeEventType.REQUEST_CANCELLED.value: RequestStatus.CANCELLED,
+}
 
 
-def _last_lifecycle_event(events: Any) -> str | None:
-    """Last request-lifecycle event type, mirroring the Postgres loader.
+def seed_lifecycle(event_type: str) -> RequestStatus | None:
+    """Lifecycle marker for a hand-seeded event, by type.
 
-    Restricted to lifecycle events so that step events landing after a cancel
-    (the in-flight step finishes and checkpoints) do not hide terminality.
+    Production code sets ``RuntimeEvent.lifecycle`` explicitly at each emit
+    site — that is the point of the field. Tests that fabricate lifecycle
+    events directly need the same marker, so this maps it once for seeding
+    rather than repeating the pairing in every test.
     """
-    for event in reversed(list(events)):
-        if event.event_type in _LIFECYCLE_REQUEST_EVENTS:
-            return str(event.event_type)
-    return None
+    return _SEED_LIFECYCLE.get(event_type)
+
+
+@dataclass
+class _RequestState:
+    """Mirror of the Postgres ``runtime_request`` projection."""
+
+    status: RequestStatus
+    terminal_seq: int | None
 
 
 class _TestRuntimeStore:
@@ -86,6 +97,7 @@ class _TestRuntimeStore:
         self._lock = asyncio.Lock()
         self._request_waiters: dict[str, set[asyncio.Event]] = {}
         self._feedback: list[FeedbackRecord] = []
+        self._request_state: dict[str, _RequestState] = {}
 
     async def open(self) -> None:
         return None
@@ -93,6 +105,7 @@ class _TestRuntimeStore:
     async def close(self) -> None:
         self._events.clear()
         self._events_by_request.clear()
+        self._request_state.clear()
 
     async def append_event(self, event: RuntimeEvent) -> RuntimeEvent:
         async with self._lock:
@@ -104,6 +117,9 @@ class _TestRuntimeStore:
             if event.request_id and event.dedupe_key and request_events is not None:
                 for existing in request_events:
                     if existing.dedupe_key == event.dedupe_key:
+                        # Project the state even on a dedupe hit, as the
+                        # loader does.
+                        self._project_lifecycle(event, existing.request_seq)
                         return existing
             stored = RuntimeEvent(
                 event_id=len(self._events) + 1,
@@ -128,8 +144,21 @@ class _TestRuntimeStore:
             self._events.append(stored)
             if request_events is not None:
                 request_events.append(stored)
+            self._project_lifecycle(event, stored.request_seq)
         self._wake_waiters(event.request_id)
         return stored
+
+    def _project_lifecycle(
+        self, event: RuntimeEvent, request_seq: int | None
+    ) -> None:
+        """Mirror of the loader's runtime_request upsert. Call under the lock."""
+        if event.lifecycle is None or not event.request_id:
+            return
+        status = RequestStatus(event.lifecycle)
+        self._request_state[event.request_id] = _RequestState(
+            status=status,
+            terminal_seq=request_seq if status.terminal else None,
+        )
 
     async def list_request_events(
         self,
@@ -180,8 +209,13 @@ class _TestRuntimeStore:
 
     async def is_request_terminal(self, request_id: str) -> bool:
         async with self._lock:
-            events = list(self._events_by_request.get(request_id, ()))
-        return _last_lifecycle_event(events) in _TERMINAL_REQUEST_EVENTS
+            state = self._request_state.get(request_id)
+        return state is not None and state.terminal_seq is not None
+
+    async def get_request_lifecycle(self, request_id: str) -> RequestStatus | None:
+        async with self._lock:
+            state = self._request_state.get(request_id)
+        return state.status if state is not None else None
 
     async def read_request_stream(
         self,
@@ -191,11 +225,15 @@ class _TestRuntimeStore:
     ) -> tuple[list[RuntimeEvent], bool]:
         async with self._lock:
             stored = list(self._events_by_request.get(request_id, ()))
+            state = self._request_state.get(request_id)
         events = [e for e in stored if int(e.request_seq or 0) > int(after_seq)]
         # Terminality bounded by the prefix returned, mirroring the loader.
         bound = int(events[-1].request_seq or 0) if events else int(after_seq)
-        prefix = [e for e in stored if int(e.request_seq or 0) <= bound]
-        terminal = _last_lifecycle_event(prefix) in _TERMINAL_REQUEST_EVENTS
+        terminal = (
+            state is not None
+            and state.terminal_seq is not None
+            and state.terminal_seq <= bound
+        )
         return events, terminal
 
     async def get_request_id_for_trace(
@@ -588,25 +626,25 @@ class _TestDBOSRequestEngine:
         }
 
     async def resume_request(self, *, request_id: str) -> dict[str, Any]:
-        """Mirror DBOSRequestEngine.resume_request from the last request event.
+        """Mirror DBOSRequestEngine.resume_request from the recorded status.
 
-        The inline executor has no DBOS status, so infer it from the last
-        lifecycle event: a cancelled request resumes; a completed one is an
-        idempotent no-op; a failed one cannot be resumed, because DBOS refuses
-        to resume a workflow that ended in ERROR.
+        The inline executor has no DBOS status, so read the request's lifecycle
+        state: a cancelled request resumes; a completed one is an idempotent
+        no-op; a failed one cannot be resumed, because DBOS refuses to resume a
+        workflow that ended in ERROR.
         """
         store = self._runtime.runtime_store
         events = await store.list_request_events(request_id)
         if not events:
             raise KeyError(request_id)
-        last = _last_lifecycle_event(events)
-        if last == RuntimeEventType.REQUEST_COMPLETED.value:
+        status = await store.get_request_lifecycle(request_id)
+        if status is RequestStatus.COMPLETED:
             return {
                 "request_id": request_id,
                 "status": "completed",
                 "message": "request already completed successfully",
             }
-        if last == RuntimeEventType.REQUEST_FAILED.value:
+        if status is RequestStatus.FAILED:
             return {
                 "request_id": request_id,
                 "status": "failed",
@@ -615,7 +653,7 @@ class _TestDBOSRequestEngine:
                     "to start it over"
                 ),
             }
-        if last == RuntimeEventType.REQUEST_CANCELLED.value:
+        if status is RequestStatus.CANCELLED:
             return {
                 "request_id": request_id,
                 "status": "resumed",

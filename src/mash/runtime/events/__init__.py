@@ -24,7 +24,13 @@ from .trace import (
     runtime_event_response_preview,
     serialize_runtime_event,
 )
-from .types import FeedbackRecord, FeedbackType, RuntimeEvent, RuntimeEventType
+from .types import (
+    FeedbackRecord,
+    FeedbackType,
+    RequestStatus,
+    RuntimeEvent,
+    RuntimeEventType,
+)
 
 __all__ = [
     "analyze_trace",
@@ -36,6 +42,7 @@ __all__ = [
     "PostgresRuntimeStore",
     "runtime_event_from_stream_payload",
     "runtime_event_response_preview",
+    "RequestStatus",
     "RuntimeEvent",
     "RuntimeEventType",
     "RuntimeTrace",
