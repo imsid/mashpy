@@ -244,7 +244,12 @@ async def stream_response_events(
     if not await self.runtime_store.has_request(request_id):
         raise KeyError(request_id)
 
-    stored_events = await self.runtime_store.list_request_events(
+    # One store call for both facts: `done` is scoped to the events it returns,
+    # so a caller that stops on `done` has necessarily been given the terminal
+    # event. Reading them separately let an append between the two land a
+    # `done=True` alongside events truncated before the terminal row, and the
+    # stream closed without ever emitting it.
+    stored_events, done = await self.runtime_store.read_request_stream(
         request_id,
         after_seq=max(0, int(cursor)),
     )
@@ -252,7 +257,6 @@ async def stream_response_events(
     next_cursor = int(cursor)
     if stored_events:
         next_cursor = int(stored_events[-1].request_seq or 0)
-    done = await self.runtime_store.is_request_terminal(request_id)
     if public_events or done or wait_timeout <= 0:
         return public_events, next_cursor, done
 
@@ -262,14 +266,13 @@ async def stream_response_events(
             await asyncio.wait_for(waiter.wait(), timeout=wait_timeout)
         except asyncio.TimeoutError:
             pass
-        stored_events = await self.runtime_store.list_request_events(
+        stored_events, done = await self.runtime_store.read_request_stream(
             request_id,
             after_seq=max(0, int(cursor)),
         )
         public_events = [to_public_event(event) for event in stored_events]
         if stored_events:
             next_cursor = int(stored_events[-1].request_seq or 0)
-        done = await self.runtime_store.is_request_terminal(request_id)
         return public_events, next_cursor, done
     finally:
         self.runtime_store.unregister_request_waiter(request_id, waiter)

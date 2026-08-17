@@ -200,6 +200,14 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.is_request_terminal(self._pool, request_id)
 
+    async def read_request_stream(
+        self, request_id: str, *, after_seq: int = 0
+    ) -> tuple[list[RuntimeEvent], bool]:
+        await self.open()
+        return await loaders.read_request_stream(
+            self._pool, request_id, after_seq=after_seq
+        )
+
     async def get_request_id_for_trace(
         self,
         trace_id: str,

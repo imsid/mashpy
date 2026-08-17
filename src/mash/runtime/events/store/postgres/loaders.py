@@ -408,6 +408,64 @@ _LIFECYCLE_REQUEST_EVENTS = _TERMINAL_REQUEST_EVENTS + (
 )
 
 
+async def read_request_stream(
+    pool: Any,
+    request_id: str,
+    *,
+    after_seq: int = 0,
+) -> tuple[list[RuntimeEvent], bool]:
+    """Read a request's events and its terminality as one consistent pair.
+
+    Reading the two separately let an append land between them and yield a
+    mutually inconsistent result: events truncated before the terminal row,
+    ``terminal`` already true. Consumers read that as "the terminal event was
+    delivered" and stop, so the stream closed without ever emitting it.
+
+    Terminality is therefore reported only over the prefix this call returns.
+    The lifecycle scan is bounded by the highest seq the event read saw, so an
+    event appended between the two queries has a higher seq and cannot flip
+    ``terminal`` for a row the caller was not given. When there are no new
+    events the bound is the caller's cursor, so a terminal event that lands
+    mid-call is reported on the next read, together with its event.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                       agent_id, session_id, host_id, event_type, loop_index, step_key,
+                       dedupe_key, payload, created_at
+                FROM runtime_event_log
+                WHERE request_id = %s AND seq > %s
+                ORDER BY seq ASC
+                """,
+                (request_id, int(after_seq)),
+            )
+            rows = await cursor.fetchall()
+            events = [dict_to_event(row) for row in rows]
+            bound = (
+                int(events[-1].request_seq or 0) if events else int(after_seq)
+            )
+            await cursor.execute(
+                """
+                SELECT event_type
+                FROM runtime_event_log
+                WHERE request_id = %s
+                  AND event_type = ANY(%s)
+                  AND seq <= %s
+                ORDER BY seq DESC
+                LIMIT 1
+                """,
+                (request_id, list(_LIFECYCLE_REQUEST_EVENTS), bound),
+            )
+            lifecycle_row = await cursor.fetchone()
+    terminal = (
+        lifecycle_row is not None
+        and str(lifecycle_row["event_type"]) in _TERMINAL_REQUEST_EVENTS
+    )
+    return events, terminal
+
+
 async def is_request_terminal(pool: Any, request_id: str) -> bool:
     """Whether the request's last lifecycle event is a terminal one.
 

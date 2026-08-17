@@ -183,6 +183,21 @@ class _TestRuntimeStore:
             events = list(self._events_by_request.get(request_id, ()))
         return _last_lifecycle_event(events) in _TERMINAL_REQUEST_EVENTS
 
+    async def read_request_stream(
+        self,
+        request_id: str,
+        *,
+        after_seq: int = 0,
+    ) -> tuple[list[RuntimeEvent], bool]:
+        async with self._lock:
+            stored = list(self._events_by_request.get(request_id, ()))
+        events = [e for e in stored if int(e.request_seq or 0) > int(after_seq)]
+        # Terminality bounded by the prefix returned, mirroring the loader.
+        bound = int(events[-1].request_seq or 0) if events else int(after_seq)
+        prefix = [e for e in stored if int(e.request_seq or 0) <= bound]
+        terminal = _last_lifecycle_event(prefix) in _TERMINAL_REQUEST_EVENTS
+        return events, terminal
+
     async def get_request_id_for_trace(
         self,
         trace_id: str,

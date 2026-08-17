@@ -197,6 +197,94 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(await self.store.is_request_terminal(self.request_id))
 
+    async def _append(self, event_type: str, dedupe: str | None = None) -> RuntimeEvent:
+        return await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=event_type,
+                dedupe_key=dedupe,
+            )
+        )
+
+    async def test_read_request_stream_never_reports_undelivered_terminal(self) -> None:
+        """``terminal`` must imply the terminal event is in the same batch.
+
+        This is the invariant the split read broke: ``list_request_events`` and
+        ``is_request_terminal`` ran on separate connections, so an append
+        between them produced events truncated before the terminal row with
+        ``terminal`` already true. Consumers stopped on that and never saw the
+        terminal frame.
+        """
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append("runtime.llm.think.completed")
+
+        cursor = 0
+        seen_terminal = False
+        for _ in range(10):
+            events, terminal = await self.store.read_request_stream(
+                self.request_id, after_seq=cursor
+            )
+            if events:
+                cursor = int(events[-1].request_seq or 0)
+            seen_terminal = seen_terminal or any(
+                e.event_type == RuntimeEventType.REQUEST_COMPLETED.value
+                for e in events
+            )
+            if terminal:
+                # The contract consumers rely on: stopping here is safe.
+                self.assertTrue(seen_terminal)
+                break
+            # Land the terminal event mid-poll, the way a real request does.
+            await self._append(
+                RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0"
+            )
+        else:  # pragma: no cover - loop always terminates via the break
+            self.fail("stream never reported terminal")
+        self.assertTrue(seen_terminal)
+
+    async def test_read_request_stream_bounds_terminality_by_cursor(self) -> None:
+        """Terminality is scoped to the prefix the call returns.
+
+        A caller already past the terminal event still gets ``terminal`` true
+        (it was delivered on an earlier read), while a caller whose cursor sits
+        before it gets the event and the flag together.
+        """
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        completed = await self._append(
+            RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0"
+        )
+        terminal_seq = int(completed.request_seq or 0)
+
+        events, terminal = await self.store.read_request_stream(
+            self.request_id, after_seq=terminal_seq - 1
+        )
+        self.assertEqual(
+            [e.event_type for e in events],
+            [RuntimeEventType.REQUEST_COMPLETED.value],
+        )
+        self.assertTrue(terminal)
+
+        events, terminal = await self.store.read_request_stream(
+            self.request_id, after_seq=terminal_seq
+        )
+        self.assertEqual(events, [])
+        self.assertTrue(terminal)
+
+    async def test_read_request_stream_ignores_events_after_a_cancel(self) -> None:
+        """The in-flight step's trailing events must not un-terminate."""
+        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append(
+            RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled.0"
+        )
+        await self._append("runtime.llm.think.completed")
+
+        events, terminal = await self.store.read_request_stream(self.request_id)
+        self.assertEqual(len(events), 3)
+        self.assertTrue(terminal)
+
     async def test_session_scoped_events_are_queryable_without_request_id(self) -> None:
         event = await self.store.append_event(
             RuntimeEvent(

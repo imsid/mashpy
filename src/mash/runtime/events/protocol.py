@@ -48,6 +48,13 @@ class RuntimeStore(Protocol):
 
     async def is_request_terminal(self, request_id: str) -> bool: ...
 
+    async def read_request_stream(
+        self,
+        request_id: str,
+        *,
+        after_seq: int = 0,
+    ) -> tuple[list[RuntimeEvent], bool]: ...
+
     async def get_request_id_for_trace(
         self,
         trace_id: str,
