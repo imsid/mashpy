@@ -15,7 +15,7 @@ from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RuntimeEvent, RuntimeEventType
-from ..requests import append_runtime_event
+from ..requests import append_runtime_event, fetch_request_attempt
 
 if TYPE_CHECKING:
     from ..service import AgentRuntime
@@ -974,6 +974,7 @@ async def complete_request(
             payload={"assistant_response": assistant_response},
         )
     )
+    attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -983,7 +984,7 @@ async def complete_request(
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_COMPLETED.value,
-            dedupe_key="request.completed",
+            dedupe_key=f"request.completed.{attempt}",
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
@@ -1010,6 +1011,7 @@ async def emit_request_cancelled(
     would have no terminal record and streams would hang.
     """
     runtime = _require_runtime(agent_id)
+    attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -1019,7 +1021,7 @@ async def emit_request_cancelled(
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_CANCELLED.value,
-            dedupe_key="request.cancelled",
+            dedupe_key=f"request.cancelled.{attempt}",
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
@@ -1038,6 +1040,7 @@ async def fail_request(
     error_payload: dict[str, Any],
 ) -> None:
     runtime = _require_runtime(agent_id)
+    attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -1047,7 +1050,7 @@ async def fail_request(
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_FAILED.value,
-            dedupe_key="request.failed",
+            dedupe_key=f"request.failed.{attempt}",
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,

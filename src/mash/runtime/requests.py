@@ -112,6 +112,26 @@ def host_id_from_request_metadata(
     return host_id or None
 
 
+def request_attempt(events: list[RuntimeEvent]) -> int:
+    """Which attempt the request is on: 0 before any resume, +1 per resume.
+
+    Terminal dedupe keys are scoped by this. A fixed key would make the second
+    attempt's terminal event dedupe onto the first attempt's row and append
+    nothing, leaving ``request.resumed`` as the last lifecycle event and the
+    request non-terminal forever.
+    """
+    return sum(
+        1
+        for event in events
+        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value
+    )
+
+
+async def fetch_request_attempt(self: "AgentRuntime", request_id: str) -> int:
+    """``request_attempt`` over the request's stored events."""
+    return request_attempt(await self.runtime_store.list_request_events(request_id))
+
+
 def find_pending_interaction(
     events: list[RuntimeEvent],
 ) -> Optional[str]:
@@ -198,7 +218,8 @@ async def _submit_request_inner(
                 agent_id=self.app_id,
                 session_id=target_session_id,
                 event_type=RuntimeEventType.REQUEST_FAILED.value,
-                dedupe_key="request.failed",
+                # Submit-time failure: the request has never been resumed.
+                dedupe_key="request.failed.0",
                 payload={
                     "request_id": request_id,
                     "agent_id": self.app_id,
@@ -334,11 +355,7 @@ async def resume_request(
         # the request back to non-terminal so closed streams re-open. A distinct
         # dedupe_key per resume (by prior resumed count) lets a request be
         # resumed more than once.
-        prior_resumes = sum(
-            1
-            for e in events
-            if e.event_type == RuntimeEventType.REQUEST_RESUMED.value
-        )
+        prior_resumes = request_attempt(events)
         await append_runtime_event(
             self,
             RuntimeEvent(
