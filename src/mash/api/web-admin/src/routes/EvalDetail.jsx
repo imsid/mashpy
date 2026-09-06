@@ -43,7 +43,7 @@ const ROW_COLUMNS = [
     key: 'input',
     header: 'Input',
     render: (r) => (
-      <span className="block max-w-xs truncate text-slate-700" title={r.input}>
+      <span className="block min-w-0 truncate text-slate-700 sm:max-w-xs" title={r.input}>
         {r.input}
       </span>
     ),
@@ -52,7 +52,7 @@ const ROW_COLUMNS = [
     key: 'scenario_description',
     header: 'Scenario',
     render: (r) => (
-      <span className="block max-w-xs truncate text-slate-500" title={r.scenario_description}>
+      <span className="block min-w-0 truncate text-slate-500 sm:max-w-xs" title={r.scenario_description}>
         {r.scenario_description}
       </span>
     ),

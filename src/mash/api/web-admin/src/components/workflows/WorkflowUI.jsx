@@ -71,13 +71,16 @@ function SchemaFieldList({ schema, emptyLabel = 'No declared fields.' }) {
   return (
     <dl className="mt-3 divide-y divide-slate-100 rounded-md border border-slate-200">
       {fields.map((field) => (
-        <div key={field.name} className="grid grid-cols-[minmax(0,1fr)_minmax(5rem,0.7fr)_minmax(0,1.4fr)] gap-3 px-3 py-2.5 text-sm">
+        <div
+          key={field.name}
+          className="px-3 py-2.5 text-sm sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(5rem,0.7fr)_minmax(0,1.4fr)] sm:gap-3"
+        >
           <dt className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-slate-700">
             <span className="truncate" title={field.name}>{field.name}</span>
             {field.required ? <span className="text-rose-500" title="Required">*</span> : null}
           </dt>
-          <dd className="text-xs text-slate-500">{field.type || 'schema'}</dd>
-          <dd className="text-xs text-slate-500">
+          <dd className="mt-1 text-xs text-slate-500 sm:mt-0">{field.type || 'schema'}</dd>
+          <dd className="mt-0.5 text-xs text-slate-500 sm:mt-0">
             {field.schema.description ||
               (field.schema.default !== undefined ? `Default: ${String(field.schema.default)}` : '—')}
           </dd>
@@ -114,8 +117,8 @@ export function Pipeline({ definition, steps, onStepClick }) {
       </p>
       {rows.map((step, index) => {
         const content = (
-          <Card className={`p-4 ${onStepClick ? 'transition hover:border-slate-300 hover:shadow-sm' : ''}`}>
-            <div className="flex items-start justify-between gap-4">
+          <Card className={`p-3 sm:p-4 ${onStepClick ? 'transition hover:border-slate-300 hover:shadow-sm' : ''}`}>
+            <div className="flex items-start justify-between gap-3 sm:gap-4">
               <div className="flex min-w-0 items-start gap-3">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold tabular-nums text-slate-500">
                   {index + 1}
@@ -201,16 +204,16 @@ export function RunTable({ runs, onSelect }) {
   return (
     <Table
       columns={[
-        { key: 'status', header: 'Status', render: (run) => <StatusBadge status={run.status} /> },
+        { key: 'status', header: 'Status', primary: true, render: (run) => <StatusBadge status={run.status} /> },
         { key: 'started', header: 'Started', render: (run) => formatTime(run.started_at || run.created_at) },
         { key: 'duration', header: 'Duration', render: (run) => formatStepDuration(run) },
-        { key: 'run_id', header: 'Run ID', render: (run) => <CopyId value={run.run_id} /> },
+        { key: 'run_id', header: 'Run ID', primary: true, render: (run) => <CopyId value={run.run_id} /> },
         { key: 'dedup_key', header: 'Dedup key', render: (run) => run.dedup_key || <span className="text-slate-300">—</span> },
         {
           key: 'error',
           header: 'Error',
           render: (run) => run.error ? (
-            <span className="block max-w-xs truncate text-rose-600" title={run.error}>{run.error}</span>
+            <span className="block min-w-0 truncate text-rose-600 sm:max-w-xs" title={run.error}>{run.error}</span>
           ) : <span className="text-slate-300">—</span>,
         },
       ]}

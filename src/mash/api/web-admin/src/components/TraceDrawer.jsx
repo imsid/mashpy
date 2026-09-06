@@ -92,7 +92,7 @@ function RawEvents({ events }) {
   const filtered = type === 'all' ? events : events.filter((e) => e?.event_type === type);
   return (
     <div className="space-y-2">
-      <div className="w-56">
+      <div className="sm:w-56">
         <Select value={type} onChange={(e) => setType(e.target.value)}>
           <option value="all">All event types ({events.length})</option>
           {types.map((t) => (
@@ -198,13 +198,13 @@ function MessagesInspector({ messages }) {
           system prompt not captured per request
         </span>
       </div>
-      <div className="mb-3 flex gap-2">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row">
         <TextInput
           placeholder="Search messages…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <div className="w-32 shrink-0">
+        <div className="sm:w-32 sm:shrink-0">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="all">All roles</option>
             <option value="user">User</option>

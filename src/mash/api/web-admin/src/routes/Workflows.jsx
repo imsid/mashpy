@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
+import { FilterBar, FilterField } from '../components/Filters.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Select, TextInput } from '../components/Form.jsx';
 import { KindBadge, StatusBadge } from '../components/workflows/WorkflowUI.jsx';
@@ -94,21 +95,21 @@ export default function Workflows() {
         title="Workflows"
         description="Durable step pipelines registered in this deployment."
       />
-      <div className="mb-4 flex flex-wrap gap-3">
-        <div className="w-full max-w-sm">
+      <FilterBar className="mb-4">
+        <FilterField width="sm:max-w-sm sm:flex-1">
           <TextInput
             aria-label="Search workflows"
             placeholder="Search by workflow id or name"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-        </div>
-        <div className="w-48">
+        </FilterField>
+        <FilterField width="sm:w-48">
           <Select aria-label="Workflow type" value={type} onChange={(event) => setType(event.target.value)}>
             {Object.entries(TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </Select>
-        </div>
-      </div>
+        </FilterField>
+      </FilterBar>
       <Async state={state}>
         {() => !catalog.length ? (
           <Empty>No step pipelines are registered.</Empty>
