@@ -10,6 +10,7 @@ import { Loading, ErrorState } from './State.jsx';
 import { CopyId, CopyButton } from './CopyId.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
+import { useBreakpoint } from '../lib/useMediaQuery.js';
 import { reconstructMessages, previewText } from '../lib/conversation.js';
 import { compactNumber, formatDuration, tokensInOut } from '../lib/format.js';
 import { traceActions, traceStatusFromRequest, traceStatusMeta } from '../lib/trace.js';
@@ -164,7 +165,12 @@ function MessageDetail({ message }) {
 }
 
 function MessagesInspector({ messages }) {
+  const wide = useBreakpoint('sm');
   const [selected, setSelected] = useState(0);
+  // Below `sm` the list and the detail cannot share the width, so the panel
+  // swaps between them. `selected` alone will not do: it has a default, and a
+  // default cannot mean "the reader opened this one".
+  const [detailOpen, setDetailOpen] = useState(false);
   const [role, setRole] = useState('all');
   const [query, setQuery] = useState('');
 
@@ -213,40 +219,58 @@ function MessagesInspector({ messages }) {
           </Select>
         </div>
       </div>
-      <div className="grid grid-cols-5 gap-3">
-        <ul className="col-span-2 max-h-80 space-y-1 overflow-y-auto">
-          {filtered.map((m) => (
-            <li key={m.index}>
-              <button
-                onClick={() => setSelected(m.index)}
-                className={`w-full rounded-md border px-2 py-1.5 text-left ${
-                  active?.index === m.index
-                    ? 'border-slate-300 bg-slate-50'
-                    : 'border-transparent hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <Chip tone={ROLE_TONE[m.role]}>{m.role}</Chip>
-                  {m.tokenUsage ? (
-                    <span className="text-[10px] tabular-nums text-slate-400">
-                      {tokensInOut(
-                        m.tokenUsage.input ?? m.tokenUsage.input_tokens,
-                        m.tokenUsage.output ?? m.tokenUsage.output_tokens,
-                      )}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="mt-1 line-clamp-2 text-xs text-slate-500">
-                  {previewText(m) || <span className="italic">empty</span>}
-                </div>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="col-span-3 max-h-80 overflow-y-auto rounded-md border border-slate-200 p-3">
-          <MessageDetail message={active} />
+      {!wide && detailOpen ? (
+        <div>
+          <button
+            type="button"
+            onClick={() => setDetailOpen(false)}
+            className="mb-2 -ml-1 inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+          >
+            ‹ All messages
+          </button>
+          <div className="rounded-md border border-slate-200 p-3">
+            <MessageDetail message={active} />
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="sm:grid sm:grid-cols-5 sm:gap-3">
+          <ul className="space-y-1 sm:col-span-2 sm:max-h-80 sm:overflow-y-auto">
+            {filtered.map((m) => (
+              <li key={m.index}>
+                <button
+                  onClick={() => {
+                    setSelected(m.index);
+                    setDetailOpen(true);
+                  }}
+                  className={`w-full rounded-md border px-2 py-1.5 text-left ${
+                    active?.index === m.index
+                      ? 'border-slate-300 bg-slate-50'
+                      : 'border-transparent hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <Chip tone={ROLE_TONE[m.role]}>{m.role}</Chip>
+                    {m.tokenUsage ? (
+                      <span className="text-[10px] tabular-nums text-slate-400">
+                        {tokensInOut(
+                          m.tokenUsage.input ?? m.tokenUsage.input_tokens,
+                          m.tokenUsage.output ?? m.tokenUsage.output_tokens,
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-xs text-slate-500">
+                    {previewText(m) || <span className="italic">empty</span>}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 max-h-80 overflow-y-auto rounded-md border border-slate-200 p-3 max-sm:hidden sm:col-span-3 sm:mt-0">
+            <MessageDetail message={active} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

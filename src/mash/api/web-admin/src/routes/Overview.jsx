@@ -5,10 +5,14 @@ import { BarChart } from '../components/BarChart.jsx';
 import { Button } from '../components/Form.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
+import { useBreakpoint } from '../lib/useMediaQuery.js';
 import { compactNumber } from '../lib/format.js';
 
 const DAY = 86400;
 const WINDOW_DAYS = 30;
+// A phone plots a shorter window so the bars stay legible. The fetch and the
+// series are still the full 30 days; only the plotted tail narrows.
+const NARROW_WINDOW_DAYS = 14;
 
 const USAGE_SERIES = [
   { key: 'traces', label: 'Traces', barClass: 'fill-blue-500', dotClass: 'bg-blue-500' },
@@ -83,6 +87,8 @@ async function loadOverview() {
 
 export default function Overview() {
   const state = useApi(loadOverview, []);
+  const wide = useBreakpoint('sm');
+  const windowDays = wide ? WINDOW_DAYS : NARROW_WINDOW_DAYS;
 
   return (
     <div className="space-y-6">
@@ -113,9 +119,13 @@ export default function Overview() {
             <Card className="p-3 sm:p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Usage</h2>
-                <span className="text-xs text-slate-400">Last {WINDOW_DAYS} days</span>
+                <span className="text-xs text-slate-400">Last {windowDays} days</span>
               </div>
-              <BarChart data={data.series} series={USAGE_SERIES} format={compactNumber} />
+              <BarChart
+                data={data.series.slice(-windowDays)}
+                series={USAGE_SERIES}
+                format={compactNumber}
+              />
             </Card>
           </>
         )}

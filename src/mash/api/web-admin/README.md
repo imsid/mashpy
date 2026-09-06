@@ -72,7 +72,10 @@ Notes:
 - `Table.jsx`, `BarChart.jsx`, `Chip.jsx`, `Json.jsx`, `Markdown.jsx`,
   `CopyId.jsx` — presentation primitives. `Table` renders its rows as stacked
   cards below `sm`, driven by the same `columns` config plus two optional
-  fields, `primary` (a card title line) and `hideOnMobile`.
+  fields, `primary` (a card title line) and `hideOnMobile`. `BarChart`
+  measures its container and drops trailing buckets rather than drawing bars
+  below 6px, so a caller that labels its own window (Overview's "Last N days")
+  should narrow the series it passes.
 - `Filters.jsx` — `FilterBar` / `FilterField` / `FilterActions`, the filter row
   above a list. Fields stack below `sm`; `FilterField`'s `width` is the
   desktop width only.
