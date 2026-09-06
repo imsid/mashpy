@@ -6,12 +6,14 @@ import { Table } from '../components/Table.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
 import { Tabs } from '../components/Tabs.jsx';
+import { FilterBar, FilterField, FilterActions } from '../components/Filters.jsx';
 import { TextInput, Select, Button } from '../components/Form.jsx';
 import { JsonBlock } from '../components/Json.jsx';
 import { CopyId } from '../components/CopyId.jsx';
 import { TraceDrawer } from '../components/TraceDrawer.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
+import { useBreakpoint } from '../lib/useMediaQuery.js';
 import { compactNumber, formatTime, formatDuration } from '../lib/format.js';
 import { TRACE_STATUS } from '../lib/trace.js';
 
@@ -60,10 +62,11 @@ function WorkflowCell({ trace }) {
 
 const TRACE_COLUMNS = [
   { key: 'started', header: 'Started', render: (r) => formatTime(r.started_at) },
-  { key: 'trace_id', header: 'Trace ID', render: (r) => <CopyId value={r.trace_id} /> },
+  { key: 'trace_id', header: 'Trace ID', primary: true, render: (r) => <CopyId value={r.trace_id} /> },
   {
     key: 'status',
     header: 'Status',
+    primary: true,
     render: (r) => {
       const status = TRACE_STATUS[r.status];
       if (!status) return <span className="text-slate-300">—</span>;
@@ -92,6 +95,7 @@ const TRACE_COLUMNS = [
     key: 'cache_read_tokens',
     header: 'Cache read',
     align: 'right',
+    hideOnMobile: true,
     render: (r) =>
       r.cache_read_tokens ? compactNumber(r.cache_read_tokens) : <span className="text-slate-300">—</span>,
   },
@@ -99,16 +103,29 @@ const TRACE_COLUMNS = [
     key: 'cache_write_tokens',
     header: 'Cache write',
     align: 'right',
+    hideOnMobile: true,
     render: (r) =>
       r.cache_write_tokens ? compactNumber(r.cache_write_tokens) : <span className="text-slate-300">—</span>,
   },
   { key: 'event_count', header: 'Events', align: 'right' },
 ];
 
-// One session row: a table row that toggles open, revealing its traces lazily.
-// Traces are listed across the whole pool (a session can span agents) by
-// session id alone.
-function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, activeTraceId, statusFilter, refreshToken }) {
+// One session, in either of two shapes. Above `sm` it is a table row that
+// toggles open into a nested trace table; below `sm` it is a card that does
+// the same thing, since eight columns do not fit a phone. Both shapes come
+// from this one component so the trace fetch happens once: only the shape the
+// viewport calls for is ever mounted.
+function SessionEntry({
+  session,
+  columnCount,
+  expanded,
+  onToggle,
+  onSelectTrace,
+  activeTraceId,
+  statusFilter,
+  refreshToken,
+  wide,
+}) {
   const tracesState = useApi(
     () =>
       expanded
@@ -125,6 +142,60 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
     const rows = tracesState.data?.traces || [];
     return [...rows].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
   }, [tracesState.data]);
+
+  const traceList =
+    tracesState.loading && !tracesState.data ? (
+      <Loading />
+    ) : traces.length ? (
+      <Table
+        columns={TRACE_COLUMNS}
+        rows={traces}
+        getRowKey={(r) => r.trace_id}
+        activeKey={activeTraceId}
+        onRowClick={(t) => onSelectTrace({ ...t, __agentId: t.agent_id })}
+      />
+    ) : (
+      <p className="py-3 text-center text-xs text-slate-400">
+        {statusFilter
+          ? `No ${TRACE_STATUS[statusFilter]?.label || statusFilter} traces in this session.`
+          : 'No traces in this session.'}
+      </p>
+    );
+
+  const cacheRead = session.cache_read_tokens;
+  const cacheWrite = session.cache_write_tokens;
+
+  if (!wide) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex w-full items-start gap-2 px-3 py-2.5 text-left"
+        >
+          <span className={`mt-0.5 shrink-0 text-slate-400 transition ${expanded ? 'rotate-90' : ''}`}>
+            ›
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-slate-900">
+              <CopyId value={session.session_id} />
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              {session.owner_agent_id ? <Chip>{session.owner_agent_id}</Chip> : null}
+              <span>{formatTime(session.started_at)}</span>
+              <span>{compactNumber(session.total_tokens)} tokens</span>
+              <span>
+                {session.trace_count} trace{session.trace_count === 1 ? '' : 's'}
+              </span>
+            </span>
+          </span>
+        </button>
+        {expanded ? (
+          <div className="border-t border-slate-100 bg-slate-50/60 px-2 py-2">{traceList}</div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -151,15 +222,15 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
         </td>
         <td
           className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500"
-          title={session.cache_read_tokens ? `${session.cache_read_tokens.toLocaleString()} tokens served from cache` : undefined}
+          title={cacheRead ? `${cacheRead.toLocaleString()} tokens served from cache` : undefined}
         >
-          {session.cache_read_tokens ? compactNumber(session.cache_read_tokens) : <span className="text-slate-300">—</span>}
+          {cacheRead ? compactNumber(cacheRead) : <span className="text-slate-300">—</span>}
         </td>
         <td
           className="px-2 py-2.5 text-right align-top tabular-nums text-slate-500"
-          title={session.cache_write_tokens ? `${session.cache_write_tokens.toLocaleString()} tokens written to cache` : undefined}
+          title={cacheWrite ? `${cacheWrite.toLocaleString()} tokens written to cache` : undefined}
         >
-          {session.cache_write_tokens ? compactNumber(session.cache_write_tokens) : <span className="text-slate-300">—</span>}
+          {cacheWrite ? compactNumber(cacheWrite) : <span className="text-slate-300">—</span>}
         </td>
         <td className="px-2 py-2.5 pr-4 text-right align-top tabular-nums text-slate-500">
           {session.trace_count}
@@ -168,24 +239,8 @@ function SessionRow({ session, columnCount, expanded, onToggle, onSelectTrace, a
       {expanded ? (
         <tr className="bg-slate-50/60">
           <td />
-          <td colSpan={columnCount - 1} className="px-2 pb-3 pt-1 pr-4">
-            {tracesState.loading && !tracesState.data ? (
-              <Loading />
-            ) : traces.length ? (
-              <Table
-                columns={TRACE_COLUMNS}
-                rows={traces}
-                getRowKey={(r) => r.trace_id}
-                activeKey={activeTraceId}
-                onRowClick={(t) => onSelectTrace({ ...t, __agentId: t.agent_id })}
-              />
-            ) : (
-              <p className="py-3 text-center text-xs text-slate-400">
-                {statusFilter
-                  ? `No ${TRACE_STATUS[statusFilter]?.label || statusFilter} traces in this session.`
-                  : 'No traces in this session.'}
-              </p>
-            )}
+          <td colSpan={columnCount - 1} className="px-2 pb-3 pr-4 pt-1">
+            {traceList}
           </td>
         </tr>
       ) : null}
@@ -209,6 +264,7 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
     [agentId, workflowId],
   );
 
+  const wide = useBreakpoint('sm');
   const [expanded, setExpanded] = useState(initialSession || null);
   const [selected, setSelected] = useState(null);
   const [sessionQuery, setSessionQuery] = useState(initialSession || '');
@@ -261,20 +317,16 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
 
   return (
     <>
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Session</span>
-          <div className="w-72">
-            <TextInput
-              value={sessionQuery}
-              placeholder="filter by session id"
-              onChange={(e) => setSessionQuery(e.target.value)}
-            />
-          </div>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Trace</span>
-          <div className="flex w-72 gap-2">
+      <FilterBar>
+        <FilterField label="Session" width="sm:w-72">
+          <TextInput
+            value={sessionQuery}
+            placeholder="filter by session id"
+            onChange={(e) => setSessionQuery(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Trace" width="sm:w-72">
+          <div className="flex gap-2">
             <TextInput
               value={traceQuery}
               placeholder="open by trace id"
@@ -287,23 +339,22 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
               Open
             </Button>
           </div>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Status</span>
-          <div className="w-40">
-            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="">All statuses</option>
-              {Object.entries(TRACE_STATUS).map(([value, { label }]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </label>
-        <RefreshButton state={state} />
-        {jumpError ? <span className="pb-1.5 text-xs text-rose-600">{jumpError}</span> : null}
-      </div>
+        </FilterField>
+        <FilterField label="Status" width="sm:w-40">
+          <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="">All statuses</option>
+            {Object.entries(TRACE_STATUS).map(([value, { label }]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
+        <FilterActions>
+          <RefreshButton state={state} />
+          {jumpError ? <span className="text-xs text-rose-600">{jumpError}</span> : null}
+        </FilterActions>
+      </FilterBar>
 
       <Async state={state} empty={(d) => !d.sessions?.length}>
         {(data) => {
@@ -321,41 +372,46 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
                 ? `${sessions.length} of ${total} session${total === 1 ? '' : 's'}`
                 : `${total} session${total === 1 ? '' : 's'}${truncated ? ` · showing latest ${data.sessions.length}` : ''}`}
             </div>
-            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
-                    {SESSION_HEADERS.map((h, i) => (
-                      <th
-                        key={h || 'chevron'}
-                        className={`px-2 py-2.5 ${i === 0 ? 'pl-4' : ''} ${
-                          i >= 4 ? 'text-right' : ''
-                        } ${i === SESSION_HEADERS.length - 1 ? 'pr-4' : ''}`}
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sessions.map((s) => (
-                    <SessionRow
-                      key={s.session_id}
-                      session={s}
-                      columnCount={SESSION_HEADERS.length}
-                      expanded={expanded === s.session_id}
-                      onToggle={() =>
-                        setExpanded((cur) => (cur === s.session_id ? null : s.session_id))
-                      }
-                      onSelectTrace={setSelected}
-                      activeTraceId={selected?.trace_id}
-                      statusFilter={statusFilter}
-                      refreshToken={refreshToken}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {(() => {
+              const entries = sessions.map((s) => (
+                <SessionEntry
+                  key={s.session_id}
+                  session={s}
+                  wide={wide}
+                  columnCount={SESSION_HEADERS.length}
+                  expanded={expanded === s.session_id}
+                  onToggle={() =>
+                    setExpanded((cur) => (cur === s.session_id ? null : s.session_id))
+                  }
+                  onSelectTrace={setSelected}
+                  activeTraceId={selected?.trace_id}
+                  statusFilter={statusFilter}
+                  refreshToken={refreshToken}
+                />
+              ));
+              if (!wide) return <div className="space-y-2">{entries}</div>;
+              return (
+                <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
+                        {SESSION_HEADERS.map((h, i) => (
+                          <th
+                            key={h || 'chevron'}
+                            className={`px-2 py-2.5 ${i === 0 ? 'pl-4' : ''} ${
+                              i >= 4 ? 'text-right' : ''
+                            } ${i === SESSION_HEADERS.length - 1 ? 'pr-4' : ''}`}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>{entries}</tbody>
+                  </table>
+                </div>
+              );
+            })()}
             </>
           );
         }}
@@ -384,7 +440,12 @@ function ApiAccessTab() {
   const columns = [
     { key: 'time', header: 'Time', render: (r) => formatTime(r.created_at) },
     { key: 'method', header: 'Method', render: (r) => <Mono>{r.method}</Mono> },
-    { key: 'path', header: 'Path', render: (r) => <span className="font-mono text-xs">{r.path}</span> },
+    {
+      key: 'path',
+      header: 'Path',
+      primary: true,
+      render: (r) => <span className="break-all font-mono text-xs">{r.path}</span>,
+    },
     {
       key: 'status_code',
       header: 'Status',
@@ -469,6 +530,7 @@ function CliTab({ agentId, agents }) {
     {
       key: 'command',
       header: 'Command',
+      primary: true,
       render: (r) =>
         r.payload?.command_name ? (
           <Mono>{r.payload.command_name}</Mono>
@@ -558,36 +620,30 @@ export default function Logs() {
         description="Sessions, traces, API access, and CLI activity across the pool."
       />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Agent</span>
-          <div className="w-56">
-            <Select value={agentId} onChange={(e) => update({ agent: e.target.value })}>
-              <option value="">All agents</option>
-              {agents.map((a) => (
-                <option key={a.agent_id} value={a.agent_id}>
-                  {a.metadata?.display_name || a.agent_id}
+      <FilterBar className="mb-4">
+        <FilterField label="Agent">
+          <Select value={agentId} onChange={(e) => update({ agent: e.target.value })}>
+            <option value="">All agents</option>
+            {agents.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>
+                {a.metadata?.display_name || a.agent_id}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
+        {tab === 'sessions' ? (
+          <FilterField label="Workflow">
+            <Select value={workflowId} onChange={(e) => update({ workflow: e.target.value })}>
+              <option value="">All workflows</option>
+              {workflows.map((w) => (
+                <option key={w.workflow_id} value={w.workflow_id}>
+                  {w.display_name || w.workflow_id}
                 </option>
               ))}
             </Select>
-          </div>
-        </label>
-        {tab === 'sessions' ? (
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-slate-600">Workflow</span>
-            <div className="w-56">
-              <Select value={workflowId} onChange={(e) => update({ workflow: e.target.value })}>
-                <option value="">All workflows</option>
-                {workflows.map((w) => (
-                  <option key={w.workflow_id} value={w.workflow_id}>
-                    {w.display_name || w.workflow_id}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </label>
+          </FilterField>
         ) : null}
-      </div>
+      </FilterBar>
 
       <Tabs tabs={TABS} value={tab} onChange={(id) => update({ tab: id })} />
 

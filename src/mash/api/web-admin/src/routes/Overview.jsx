@@ -110,7 +110,7 @@ export default function Overview() {
               />
             </StatGrid>
 
-            <Card className="p-4">
+            <Card className="p-3 sm:p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Usage</h2>
                 <span className="text-xs text-slate-400">Last {WINDOW_DAYS} days</span>

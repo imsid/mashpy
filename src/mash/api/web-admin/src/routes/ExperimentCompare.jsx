@@ -4,6 +4,7 @@ import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Select } from '../components/Form.jsx';
+import { FilterBar, FilterField } from '../components/Filters.jsx';
 import { Table } from '../components/Table.jsx';
 import { Drawer } from '../components/Drawer.jsx';
 import { Markdown } from '../components/Markdown.jsx';
@@ -273,7 +274,7 @@ const ROW_COLUMNS = [
     key: 'input',
     header: 'Input',
     render: (r) => (
-      <span className="block max-w-md truncate text-slate-700" title={r.input}>
+      <span className="block min-w-0 truncate text-slate-700 sm:max-w-md" title={r.input}>
         {r.input}
       </span>
     ),
@@ -333,20 +334,15 @@ export default function ExperimentCompare() {
 
   function sidePicker(side, value) {
     return (
-      <label className="block">
-        <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
-          {side}
-        </span>
-        <div className="w-80">
-          <Select value={value || ''} onChange={(e) => setSide(side, e.target.value)}>
-            {experiments.map((e) => (
-              <option key={e.experiment_id} value={e.experiment_id}>
-                {e.experiment_id} · {formatIso(e.created_at)}
-              </option>
-            ))}
-          </Select>
-        </div>
-      </label>
+      <FilterField label={side} width="sm:w-80">
+        <Select value={value || ''} onChange={(e) => setSide(side, e.target.value)}>
+          {experiments.map((e) => (
+            <option key={e.experiment_id} value={e.experiment_id}>
+              {e.experiment_id} · {formatIso(e.created_at)}
+            </option>
+          ))}
+        </Select>
+      </FilterField>
     );
   }
 
@@ -369,11 +365,11 @@ export default function ExperimentCompare() {
 
       <PageHeader title="Compare Experiments" />
 
-      <div className="mb-5 flex flex-wrap items-end gap-4">
+      <FilterBar className="mb-5">
         {sidePicker('baseline', baselineId)}
-        <span className="pb-2 text-slate-300">vs</span>
+        <span className="hidden text-slate-300 sm:block sm:pb-2">vs</span>
         {sidePicker('control', controlId)}
-      </div>
+      </FilterBar>
 
       <Async state={state}>
         {() => (

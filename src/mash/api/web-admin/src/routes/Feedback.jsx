@@ -4,6 +4,7 @@ import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { TextInput, Select } from '../components/Form.jsx';
+import { FilterBar, FilterField } from '../components/Filters.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { formatTime } from '../lib/format.js';
@@ -40,40 +41,33 @@ export default function Feedback() {
         description="Notes captured via the REPL /feedback command."
       />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Agent</span>
-          <div className="w-56">
-            <Select value={resolvedAgent} onChange={(e) => setAgentId(e.target.value)}>
-              {agents.map((a) => (
-                <option key={a.agent_id} value={a.agent_id}>
-                  {a.metadata?.display_name || a.agent_id}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Range</span>
-          <div className="w-40">
-            <Select value={rangeId} onChange={(e) => setRangeId(e.target.value)}>
-              {RANGES.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.label}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </label>
-        <label className="block flex-1">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Search</span>
+      <FilterBar className="mb-4">
+        <FilterField label="Agent">
+          <Select value={resolvedAgent} onChange={(e) => setAgentId(e.target.value)}>
+            {agents.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>
+                {a.metadata?.display_name || a.agent_id}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
+        <FilterField label="Range" width="sm:w-40">
+          <Select value={rangeId} onChange={(e) => setRangeId(e.target.value)}>
+            {RANGES.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.label}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
+        <FilterField label="Search" width="sm:flex-1">
           <TextInput
             value={query}
             placeholder="Filter messages…"
             onChange={(e) => setQuery(e.target.value)}
           />
-        </label>
-      </div>
+        </FilterField>
+      </FilterBar>
 
       <Async state={state} empty={(d) => !d.feedback?.length}>
         {(data) => (

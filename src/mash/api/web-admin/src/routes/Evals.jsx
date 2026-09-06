@@ -6,6 +6,7 @@ import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
 import { Button, Field, Select, TextArea, TextInput } from '../components/Form.jsx';
 import { Table } from '../components/Table.jsx';
+import { FilterBar, FilterField } from '../components/Filters.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { formatIso } from '../lib/format.js';
@@ -243,21 +244,18 @@ export default function Evals() {
         }
       />
 
-      <div className="mb-4 flex items-end gap-3">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-slate-600">Host</span>
-          <div className="w-48">
-            <Select value={hostFilter} onChange={(e) => setHostFilter(e.target.value)}>
-              <option value="">All hosts</option>
-              {hosts.map((h) => (
-                <option key={h.host_id} value={h.host_id}>
-                  {h.host_id}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </label>
-      </div>
+      <FilterBar className="mb-4">
+        <FilterField label="Host" width="sm:w-48">
+          <Select value={hostFilter} onChange={(e) => setHostFilter(e.target.value)}>
+            <option value="">All hosts</option>
+            {hosts.map((h) => (
+              <option key={h.host_id} value={h.host_id}>
+                {h.host_id}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
+      </FilterBar>
 
       <Async state={state} empty={(d) => !d?.evals?.length}>
         {() =>

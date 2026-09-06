@@ -144,7 +144,7 @@ export default function WorkflowRunDetail() {
                       <Chip tone={connection === 'live' ? 'emerald' : 'amber'}>{connection}</Chip>
                     ) : null}
                   </div>
-                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                  <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
                     <div><dt className="text-xs text-slate-400">Created</dt><dd>{formatTime(run.created_at)}</dd></div>
                     <div><dt className="text-xs text-slate-400">Started</dt><dd>{formatTime(run.started_at)}</dd></div>
                     <div><dt className="text-xs text-slate-400">Finished</dt><dd>{formatTime(run.finished_at)}</dd></div>
