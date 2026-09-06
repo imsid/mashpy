@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { PageHeader, Card } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
+import { StatGrid } from '../components/StatGrid.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Table } from '../components/Table.jsx';
 import { Drawer } from '../components/Drawer.jsx';
@@ -52,7 +53,7 @@ function AggregateCard({ aggregate }) {
       <div className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">
         Aggregate scores
       </div>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+      <StatGrid columns={4}>
         <div>
           <div className="text-xs text-slate-500">Mean score</div>
           {mean_score != null ? (
@@ -81,7 +82,7 @@ function AggregateCard({ aggregate }) {
               </div>
             ))
           : null}
-      </div>
+      </StatGrid>
     </Card>
   );
 }
@@ -103,7 +104,7 @@ function OperationalCard({ operational }) {
         Operational
       </div>
       {hasMetrics ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+        <StatGrid columns={4}>
           <Stat
             label="Mean latency"
             value={
@@ -124,7 +125,7 @@ function OperationalCard({ operational }) {
           <Stat label="LLM calls" value={operational.total_llm_calls ?? 0} />
           <Stat label="Tool calls" value={operational.total_tool_calls ?? 0} />
           <Stat label="Subagent steps" value={operational.total_subagent_steps ?? 0} />
-        </div>
+        </StatGrid>
       ) : (
         <p className="text-sm text-slate-400">
           No operational metrics on this experiment's runs.
@@ -220,7 +221,7 @@ function RunDrawer({ run, onClose }) {
 
           {run.metrics ? (
             <Section title="Metrics">
-              <div className="grid grid-cols-2 gap-3 rounded-md border border-slate-200 p-3 sm:grid-cols-3">
+              <StatGrid columns={3} className="rounded-md border border-slate-200 p-3">
                 <Stat
                   label="Latency"
                   value={
@@ -241,7 +242,7 @@ function RunDrawer({ run, onClose }) {
                   value={`${(run.metrics.tokens?.cache_read ?? 0).toLocaleString()} / ${(run.metrics.tokens?.cache_creation ?? 0).toLocaleString()}`}
                 />
                 <Stat label="Subagent steps" value={run.metrics.num_subagent_steps ?? 0} />
-              </div>
+              </StatGrid>
             </Section>
           ) : null}
 
@@ -289,7 +290,7 @@ function RunsTable({ evalId, experimentId }) {
       key: 'input',
       header: 'Input',
       render: (r) => (
-        <span className="block max-w-xs truncate text-slate-700" title={r.input}>
+        <span className="block min-w-0 truncate text-slate-700 sm:max-w-xs" title={r.input}>
           {r.input}
         </span>
       ),
@@ -299,7 +300,7 @@ function RunsTable({ evalId, experimentId }) {
       header: 'Output',
       render: (r) =>
         r.actual_output ? (
-          <span className="block max-w-xs truncate text-slate-500" title={r.actual_output}>
+          <span className="block min-w-0 truncate text-slate-500 sm:max-w-xs" title={r.actual_output}>
             {r.actual_output}
           </span>
         ) : (

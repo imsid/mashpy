@@ -2,7 +2,8 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { PageHeader } from '../components/Page.jsx';
 import { Async, Empty } from '../components/State.jsx';
-import { Button, Field, Select, TextInput } from '../components/Form.jsx';
+import { Button, Select, TextInput } from '../components/Form.jsx';
+import { FilterBar, FilterField, FilterActions } from '../components/Filters.jsx';
 import { Breadcrumbs, RunTable } from '../components/workflows/WorkflowUI.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
@@ -50,37 +51,31 @@ export default function WorkflowRuns() {
       ]} />
       <PageHeader title="Workflow runs" description={`Stored runs for ${workflowId}.`} />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        <div className="w-44">
-          <Field label="Status">
-            <Select value={status} onChange={(event) => update({ status: event.target.value })}>
-              <option value="">All</option>
-              {['queued', 'running', 'completed', 'failed', 'cancelled'].map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-        <div className="w-56">
-          <Field label="Created after">
-            <TextInput type="datetime-local" value={startTime} onChange={(event) => update({ start: event.target.value })} />
-          </Field>
-        </div>
-        <div className="w-56">
-          <Field label="Created before">
-            <TextInput type="datetime-local" value={endTime} onChange={(event) => update({ end: event.target.value })} />
-          </Field>
-        </div>
-        <div className="w-40">
-          <Field label="Order">
-            <Select value={sortDesc ? 'newest' : 'oldest'} onChange={(event) => update({ sort: event.target.value })}>
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-            </Select>
-          </Field>
-        </div>
-        <Button variant="ghost" onClick={state.reload} disabled={state.loading}>↻ Refresh</Button>
-      </div>
+      <FilterBar className="mb-4">
+        <FilterField label="Status" width="sm:w-44">
+          <Select value={status} onChange={(event) => update({ status: event.target.value })}>
+            <option value="">All</option>
+            {['queued', 'running', 'completed', 'failed', 'cancelled'].map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </Select>
+        </FilterField>
+        <FilterField label="Created after">
+          <TextInput type="datetime-local" value={startTime} onChange={(event) => update({ start: event.target.value })} />
+        </FilterField>
+        <FilterField label="Created before">
+          <TextInput type="datetime-local" value={endTime} onChange={(event) => update({ end: event.target.value })} />
+        </FilterField>
+        <FilterField label="Order" width="sm:w-40">
+          <Select value={sortDesc ? 'newest' : 'oldest'} onChange={(event) => update({ sort: event.target.value })}>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </Select>
+        </FilterField>
+        <FilterActions>
+          <Button variant="ghost" onClick={state.reload} disabled={state.loading}>↻ Refresh</Button>
+        </FilterActions>
+      </FilterBar>
 
       <Async state={state}>
         {(data) => data.runs?.length ? (

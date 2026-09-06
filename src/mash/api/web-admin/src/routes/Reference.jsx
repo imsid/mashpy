@@ -38,11 +38,11 @@ function Operation({ method, path, op }) {
   return (
     <Disclosure
       label={
-        <span className="inline-flex items-center gap-2">
+        <span className="inline-flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span className="w-12 shrink-0 font-mono text-xs font-semibold uppercase text-slate-500">
             {method}
           </span>
-          <span className="font-mono text-xs text-slate-700">{path}</span>
+          <span className="min-w-0 break-all font-mono text-xs text-slate-700">{path}</span>
         </span>
       }
       hint={op.summary || op.operationId}

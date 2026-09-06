@@ -81,8 +81,8 @@ export default function ToolDetail() {
                   <h2 className="mb-3 text-sm font-semibold text-slate-700">Parameters</h2>
                   <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
                     {Object.entries(properties).map(([name, schema]) => (
-                      <div key={name} className="flex gap-4 px-4 py-3">
-                        <div className="w-40 shrink-0">
+                      <div key={name} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:gap-4">
+                        <div className="sm:w-40 sm:shrink-0">
                           <Mono>{name}</Mono>
                           {required.has(name) && (
                             <span className="ml-1.5 text-xs text-rose-500">required</span>
