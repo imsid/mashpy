@@ -7,6 +7,7 @@ import { Drawer } from '../components/Drawer.jsx';
 import { Markdown } from '../components/Markdown.jsx';
 import { Button, Field, TextArea } from '../components/Form.jsx';
 import { Table } from '../components/Table.jsx';
+import { Tabs } from '../components/Tabs.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import { formatIso } from '../lib/format.js';
@@ -603,27 +604,21 @@ export default function EvalDetail() {
               </Card>
             ) : null}
 
-            <div className="mb-5 flex gap-1 border-b border-slate-200">
-              {TABS.map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setTab(tab)}
-                  className={`px-4 pb-2 text-sm font-medium capitalize transition ${
-                    activeTab === tab
-                      ? 'border-b-2 border-slate-900 text-slate-900'
-                      : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {tab}
-                  {tab === 'dataset' && rows.length ? (
-                    <span className="ml-1.5 text-xs text-slate-400">({rows.length})</span>
-                  ) : null}
-                  {tab === 'experiments' && experiments.length ? (
-                    <span className="ml-1.5 text-xs text-slate-400">({experiments.length})</span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
+            <Tabs
+              className="mb-5"
+              value={activeTab}
+              onChange={setTab}
+              tabs={TABS.map((tab) => ({
+                id: tab,
+                label: tab,
+                count:
+                  tab === 'dataset'
+                    ? rows.length
+                    : tab === 'experiments'
+                      ? experiments.length
+                      : 0,
+              }))}
+            />
 
             {activeTab === 'dataset' && <DatasetTab rows={rows} />}
             {activeTab === 'rubric' && (

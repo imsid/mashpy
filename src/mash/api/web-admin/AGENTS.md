@@ -21,6 +21,10 @@ The admin dashboard SPA. Built with Vite into `../static/admin/` and served at
   nav entry in `Shell.jsx`; update `README.md`'s tab table.
 - Keep presentation primitives in `src/components/` and reuse `State` +
   `useApi` for load/empty/error handling.
+- Layout comes from the primitives (`Shell`, `Page`, `Table`, `Filters`,
+  `StatGrid`, `Tabs`, `Drawer`). Route files should not carry breakpoint
+  prefixes or fixed pixel widths; if a route needs a new responsive rule, add
+  it to the primitive.
 
 ## Minimal Validation
 - `npm run build` succeeds and emits into `../static/admin/`.

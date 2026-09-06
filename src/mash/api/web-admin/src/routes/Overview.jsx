@@ -1,4 +1,5 @@
 import { PageHeader, Card } from '../components/Page.jsx';
+import { StatGrid, Stat } from '../components/StatGrid.jsx';
 import { Async } from '../components/State.jsx';
 import { BarChart } from '../components/BarChart.jsx';
 import { Button } from '../components/Form.jsx';
@@ -13,25 +14,6 @@ const USAGE_SERIES = [
   { key: 'traces', label: 'Traces', barClass: 'fill-blue-500', dotClass: 'bg-blue-500' },
   { key: 'tokens', label: 'Tokens', barClass: 'fill-emerald-500', dotClass: 'bg-emerald-500' },
 ];
-
-function Stat({ label, value, hint, to }) {
-  return (
-    <Card to={to} className="px-4 py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-2xl font-semibold tabular-nums">{value}</div>
-        {to ? (
-          <span className="text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500">
-            →
-          </span>
-        ) : null}
-      </div>
-      <div className="mt-0.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-        {label}
-      </div>
-      {hint ? <div className="mt-0.5 text-xs text-slate-400">{hint}</div> : null}
-    </Card>
-  );
-}
 
 // Key a unix timestamp to the start of its day in the viewer's local timezone.
 // The backend buckets on UTC midnight, so without this the bars land under the
@@ -117,7 +99,7 @@ export default function Overview() {
       <Async state={state}>
         {(data) => (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <StatGrid columns={3}>
               <Stat label="Agents" value={data.counts.agents} to="/agents" />
               <Stat label="Hosts" value={data.counts.hosts} to="/hosts" />
               <Stat
@@ -126,7 +108,7 @@ export default function Overview() {
                 hint="across all agents"
                 to="/logs?tab=sessions"
               />
-            </div>
+            </StatGrid>
 
             <Card className="p-4">
               <div className="mb-3 flex items-center justify-between">

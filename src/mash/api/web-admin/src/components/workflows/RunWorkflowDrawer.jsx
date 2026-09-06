@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { Drawer } from '../Drawer.jsx';
 import { Button, Field, Select, TextArea, TextInput } from '../Form.jsx';
+import { Tabs } from '../Tabs.jsx';
 import { api } from '../../lib/api.js';
 import {
   initialWorkflowInput,
@@ -152,22 +153,15 @@ export function RunWorkflowDrawer({ definition, open, initialInput, onClose, onS
     >
       <form id="run-workflow-form" onSubmit={handleSubmit} className="space-y-5">
         {definition.input_schema ? (
-          <div className="flex gap-1 border-b border-slate-200">
-            {['form', 'json'].map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => switchMode(item)}
-                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium capitalize ${
-                  mode === item
-                    ? 'border-slate-900 text-slate-900'
-                    : 'border-transparent text-slate-500'
-                }`}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            className="mb-0"
+            value={mode}
+            onChange={switchMode}
+            tabs={[
+              { id: 'form', label: 'form' },
+              { id: 'json', label: 'json' },
+            ]}
+          />
         ) : (
           <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
             This workflow does not publish a typed input contract. Provide a JSON object.

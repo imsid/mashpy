@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Drawer } from './Drawer.jsx';
 import { Chip, Mono } from './Chip.jsx';
 import { Card } from './Page.jsx';
+import { StatGrid, StatTile } from './StatGrid.jsx';
 import { JsonBlock, Disclosure } from './Json.jsx';
 import { Markdown } from './Markdown.jsx';
 import { TextInput, Select, Button } from './Form.jsx';
@@ -14,15 +15,6 @@ import { compactNumber, formatDuration, tokensInOut } from '../lib/format.js';
 import { traceActions, traceStatusFromRequest, traceStatusMeta } from '../lib/trace.js';
 
 const ROLE_TONE = { user: 'emerald', assistant: 'indigo', tool: 'amber', system: 'slate' };
-
-function StatTile({ label, value, hint }) {
-  return (
-    <div className="rounded-md border border-slate-200 px-3 py-2" title={hint}>
-      <div className="text-xs text-slate-400">{label}</div>
-      <div className="mt-0.5 text-sm font-semibold tabular-nums">{value}</div>
-    </div>
-  );
-}
 
 function SpanNode({ node, depth = 0 }) {
   const duration = node.duration_ms ?? node.duration ?? 0;
@@ -468,7 +460,7 @@ export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
               </Button>
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <StatGrid columns={4}>
             <StatTile
               label="Duration"
               value={formatDuration(durationMs)}
@@ -496,7 +488,7 @@ export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
                 hint={`Tokens served from prompt cache — reduces latency and cost. ${tokens.cache_write_tokens ? `${tokens.cache_write_tokens.toLocaleString()} written to cache this trace.` : ''}`}
               />
             )}
-          </div>
+          </StatGrid>
 
           <SignalsSection
             turn={traceSignals}

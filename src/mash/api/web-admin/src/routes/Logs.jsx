@@ -5,6 +5,7 @@ import { Async, Empty, Loading } from '../components/State.jsx';
 import { Table } from '../components/Table.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
+import { Tabs } from '../components/Tabs.jsx';
 import { TextInput, Select, Button } from '../components/Form.jsx';
 import { JsonBlock } from '../components/Json.jsx';
 import { CopyId } from '../components/CopyId.jsx';
@@ -588,21 +589,7 @@ export default function Logs() {
         ) : null}
       </div>
 
-      <div className="mb-4 flex gap-1 border-b border-slate-200">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => update({ tab: t.id })}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
-              tab === t.id
-                ? 'border-slate-900 text-slate-900'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs tabs={TABS} value={tab} onChange={(id) => update({ tab: id })} />
 
       {tab === 'sessions' ? (
         <SessionsTab
