@@ -9,6 +9,15 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.22.0](https://github.com/imsid/mashpy/compare/mashpy-v0.21.1...mashpy-v0.22.0) (2026-09-06)
+
+
+### Features
+
+* **admin:** measured bar chart and a stacked trace conversation ([#179](https://github.com/imsid/mashpy/issues/179)) ([5ec3b19](https://github.com/imsid/mashpy/commit/5ec3b19814ee6c289761a00b1a141e5da2d86895))
+* **admin:** mobile shell and responsive layout primitives ([#177](https://github.com/imsid/mashpy/issues/177)) ([e84ae10](https://github.com/imsid/mashpy/commit/e84ae104de9a36373db03504f3372be3cf8ab8d0))
+* **admin:** move route layout onto the responsive primitives ([#181](https://github.com/imsid/mashpy/issues/181)) ([4dc1aed](https://github.com/imsid/mashpy/commit/4dc1aed352ec7a110d2d63c4428621655e0106fa))
+
 ## [0.21.1](https://github.com/imsid/mashpy/compare/mashpy-v0.21.0...mashpy-v0.21.1) (2026-08-17)
 
 
