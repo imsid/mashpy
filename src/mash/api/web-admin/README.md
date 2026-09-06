@@ -24,6 +24,9 @@ feeds it, without duplicating component source. For HTTP route internals see
   the routed `<Outlet>`.
 - Routes (one file per tab) live in `src/routes/`; reusable UI in
   `src/components/`; the API client and helpers in `src/lib/`.
+- Layout has two breakpoints: `sm` (single column below it) and `lg` (the
+  sidebar is pinned at and above it). Breakpoint logic lives in the shared
+  components, not in route files.
 - All data is read through `src/lib/api.js`, a thin client over the host API at
   `/api/v1`. Auth rides the same-origin `mash_api_key` cookie that the `/admin`
   index response sets — requests carry no explicit Authorization header. The
@@ -63,12 +66,22 @@ Notes:
 
 ## Shared components (`src/components/`)
 
-- `Shell.jsx` — left-nav + routed outlet (the tab list lives here).
+- `Shell.jsx` — left-nav + routed outlet (the tab list lives here). The nav is
+  pinned at `lg` and behind a hamburger drawer below it.
 - `Page.jsx` — `PageHeader`/page scaffold used by every route.
 - `Table.jsx`, `BarChart.jsx`, `Chip.jsx`, `Json.jsx`, `Markdown.jsx`,
-  `CopyId.jsx` — presentation primitives.
+  `CopyId.jsx` — presentation primitives. `Table` renders its rows as stacked
+  cards below `sm`, driven by the same `columns` config plus two optional
+  fields, `primary` (a card title line) and `hideOnMobile`.
+- `Filters.jsx` — `FilterBar` / `FilterField` / `FilterActions`, the filter row
+  above a list. Fields stack below `sm`; `FilterField`'s `width` is the
+  desktop width only.
+- `StatGrid.jsx` — `StatGrid` plus the `Stat` and `StatTile` variants, for a
+  row of headline numbers.
+- `Tabs.jsx` — the scrollable tab strip used by Logs, Reference, EvalDetail,
+  and the run-workflow drawer.
 - `Drawer.jsx` / `TraceDrawer.jsx` — slide-over panels; `TraceDrawer` renders a
-  session trace.
+  session trace. `Drawer` is a full-screen sheet below `sm`.
 - `Form.jsx`, `State.jsx` — form controls and load/empty/error state wrappers
   (`State` pairs with `lib/useApi.js`).
 - `components/workflows/` — workflow pipeline, status, run submission, and step
@@ -77,6 +90,8 @@ Notes:
 ## Helpers (`src/lib/`)
 
 - `api.js` — the API client (`api.*` methods above) and `ApiError`.
+- `useMediaQuery.js` — `useMediaQuery`, `useBreakpoint`, and `useScrollLock`,
+  plus the `BREAKPOINTS` map the layout is built on.
 - `useApi.js` — `useApi(loader, deps)` hook returning `{ data, error, loading }`.
 - `format.js` — duration/number/token formatting.
 - `conversation.js` — shaping session history into a renderable conversation.

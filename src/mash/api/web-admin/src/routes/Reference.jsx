@@ -3,6 +3,7 @@ import { PageHeader } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Disclosure } from '../components/Json.jsx';
+import { Tabs } from '../components/Tabs.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 import cliDocs from '../cli.json';
@@ -200,21 +201,11 @@ export default function Reference() {
         title="Reference"
         description="API endpoints and CLI commands for this deployment."
       />
-      <div className="mb-4 flex gap-1 border-b border-slate-200">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setParams({ tab: t.id }, { replace: true })}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
-              tab === t.id
-                ? 'border-slate-900 text-slate-900'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        tabs={TABS}
+        value={tab}
+        onChange={(id) => setParams({ tab: id }, { replace: true })}
+      />
       {tab === 'api' ? <ApiReference /> : <CliReference />}
     </div>
   );
