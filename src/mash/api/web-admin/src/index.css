@@ -8,6 +8,26 @@
   color-scheme: light;
 }
 
+html {
+  /* Safari inflates body text in landscape without this, which breaks the
+     column widths the layout is built around. */
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
+  /* No rubber-banding past the sticky header, and no grey flash on tap. */
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Horizontal strips that scroll on narrow screens (tab bars, filter rows)
+   should not show a scrollbar over the content. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
