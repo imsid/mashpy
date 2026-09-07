@@ -35,7 +35,7 @@ The response side mirrors it: `text`, parsed `tool_calls`, normalized `content_b
 flowchart LR
     R["LLMRequest\n(normalized)"] --> A["AnthropicProvider\n→ Messages API"]
     R --> O["OpenAIProvider\n→ Responses API"]
-    R --> G["GeminiProvider\n→ generate_content"]
+    R --> G["GeminiProvider\n→ Interactions API"]
     A --> N["LLMResponse\n(normalized)"]
     O --> N
     G --> N
@@ -45,13 +45,13 @@ The differences the adapters absorb:
 
 | | Anthropic | OpenAI | Gemini |
 |---|---|---|---|
-| API | Messages | Responses | `generate_content` |
-| Prompt caching | `cache_control` breakpoints on system/tool blocks | `prompt_cache_key` + retention | server-side `CachedContent` with TTL |
-| Streaming | yes | yes | not yet |
-| Structured output | `output_config` json_schema | `text.format` json_schema | `response_mime_type` + `response_schema` |
+| API | Messages | Responses | Interactions |
+| Prompt caching | `cache_control` breakpoints on system/tool blocks | `prompt_cache_key` + retention | implicit prefix caching, nothing to configure |
+| Streaming | yes | yes | yes |
+| Structured output | `output_config` json_schema | `text.format` json_schema | `response_format` json_schema |
 | Quirks | beta flags via `provider_options` | temperature omitted for `gpt-5*` | schema types coerced to `"OBJECT"` uppercase |
 
-Prompt caching is where the gap is widest. The developer-facing surface is one boolean, `prompt_caching_enabled` in `AgentConfig`, on by default, which flows into the request as `use_prompt_caching`. What happens next differs completely per vendor. The Anthropic adapter annotates system and tool blocks with cache breakpoints. The OpenAI adapter attaches a cache key with configurable retention. The Gemini adapter creates an actual server-side cache resource holding the system instruction and tool definitions, references it on subsequent requests, recreates it when system or tools change, and cleans it up on `close()`; if cache creation fails, it silently falls back to uncached requests. All of it stays inside the adapter, so an agent spec that switches `AnthropicProvider` for `GeminiProvider` changes one line.
+Prompt caching is where the gap is widest. The developer-facing surface is one boolean, `prompt_caching_enabled` in `AgentConfig`, on by default, which flows into the request as `use_prompt_caching`. What happens next differs completely per vendor. The Anthropic adapter annotates system and tool blocks with cache breakpoints. The OpenAI adapter attaches a cache key with configurable retention. The Gemini adapter does nothing, because the Interactions API it speaks caches implicitly: Google matches the leading tokens of each request against recent ones and discounts the prefix it recognizes, so `use_prompt_caching` has no knob to map onto and the adapter ignores it. All of it stays inside the adapter, so an agent spec that switches `AnthropicProvider` for `GeminiProvider` changes one line.
 
 ## Streaming without a second contract
 
@@ -59,13 +59,13 @@ Prompt caching is where the gap is widest. The developer-facing surface is one b
 
 When `request.streaming` is set and the adapter supports it, the provider streams internally. As text arrives it emits coalesced `llm.response.delta` events, the frames you saw riding the SSE stream in [the request lifecycle post](request-lifecycle.md), and then returns the fully accumulated `LLMResponse`, identical in shape to the non-streaming case. Chunks are flushed by size or interval so event volume stays at tens of events per turn rather than hundreds. `llm.request.complete` remains the source of truth for duration and token counts; deltas are a progress channel.
 
-Adapters without streaming support (currently Gemini) ignore the hint and return the same response shape. The answer just arrives all at once.
+An adapter without streaming support ignores the hint and returns the same response shape. The answer just arrives all at once.
 
 ## Structured output, per provider
 
 The structured-output flow from the runtime ([finalize_structured_output](durable-agent-loop.md), the second LLM call after a run completes) drives providers through `provider_options["structured_output"]`, a JSON schema dict. Each adapter detects the key and translates it to its native schema-enforcement feature, listed in the table above. The instruction asking the model to produce the payload is added by the runtime; the adapters enforce shape. The result is that `structured_output=MyPydanticModel` on a request behaves the same against all three vendors.
 
-`provider_options` itself is the escape hatch for vendor-specific settings, such as Anthropic beta flags or Gemini cache TTLs. Anything that needs to work everywhere gets promoted to a real `LLMRequest` field; the rest stays in the dict.
+`provider_options` itself is the escape hatch for vendor-specific settings, such as Anthropic beta flags or Gemini thinking levels. Anything that needs to work everywhere gets promoted to a real `LLMRequest` field; the rest stays in the dict.
 
 ## What the contract buys the rest of the system
 

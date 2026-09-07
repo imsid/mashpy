@@ -50,14 +50,29 @@ Behavior:
   - otherwise `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 
 Behavior:
-- Uses the modern Google GenAI `client.aio.models.generate_content` API.
+- Uses the Google GenAI Interactions API (`client.aio.interactions.create`).
 - Rejects deprecated legacy models (`gemini-2.0-*`, `gemini-1.5-*`).
-- Automatically translates and coerces lowercase parameter schema types to uppercase strings (e.g. `type: "object"` -> `type: "OBJECT"`) as required by the Gemini API.
-- Disables automatic function calling to ensure explicit Mash tool runtime control.
-- Supports prompt caching via Gemini's `CachedContent` API. When `use_prompt_caching` is enabled, the provider creates a server-side cache resource containing the system instruction and tool definitions, then references it in subsequent requests. The cache is reused as long as system/tools remain unchanged and is automatically recreated when they change. Cache creation failures fall back silently to non-cached requests. The cache is cleaned up on provider `close()` and also expires via TTL (default `3600s`, configurable via `provider_options["cache_ttl"]`).
-- Translates structured outputs into standard `response_mime_type` and `response_schema` parameters.
-- Does not yet honor `request.streaming` (no `llm.response.delta` emission); every request uses the non-streaming `generate_content` call.
-- Returns all-false capability flags (`LLMCapabilities()`).
+- Encodes the conversation as Interactions steps (`user_input`, `model_output`, `thought`, `function_call`, `function_result`). Thought signatures are replayed ahead of the calls they belong to, because the backend rejects a replayed tool exchange without them.
+- Automatically coerces lowercase JSON-schema types to uppercase strings (e.g. `type: "object"` -> `type: "OBJECT"`) as required by the Gemini API.
+- Stateless by default: every request carries the full history. `stateful=True` chains turns with `previous_interaction_id` and sends only new steps.
+- `web_search=True` adds Gemini's native `google_search` grounding tool to every request and drops any registered `web_search` / `web_fetch` tool in favor of it.
+- Disables the SDK's internal retry loop (`HttpRetryOptions(attempts=1)`) so retry decisions go through `retry_transient`, where they are logged.
+- Honors `request.streaming`, emitting coalesced `llm.response.delta` events and assembling the stream into the same response shape as a non-streamed call.
+- Translates structured output into the Interactions `response_format` parameter.
+- Reads thinking controls from `provider_options["thinking_level"]` and `provider_options["thinking_summaries"]`; thought tokens land in `usage.metadata["thought_tokens"]`.
+- Returns capability flags:
+  - `structured_output=True`
+  - `streaming=True`
+  - `reasoning_content=True`
+  - `reasoning_controls=True`
+
+Prompt caching:
+- The Interactions API supports implicit caching only. Explicit caching (`client.caches.create` plus a `cached_content` reference) is a `generateContent` feature and has no equivalent field on an interaction, so the adapter creates and manages no cache resource.
+- Implicit caching needs no configuration and is always on. Google matches the leading tokens of a request against recent requests and discounts whatever prefix it recognizes. `request.use_prompt_caching` is therefore ignored by this adapter; there is no per-request knob to honor.
+- Caching applies to the repeated prefix, which for a Mash agent is the system instruction plus the tool definitions. It is not a property of the session: a first request on a brand new session hits the cache as long as another request shared its prefix recently.
+- The prefix must clear a per-model minimum, 4,096 tokens on the Gemini 3.x line and 2,048 on Gemini 2.5. Total request size does not substitute for it. A measured probe sending 46,811 input tokens behind a 1,801-token system prompt cached nothing across three calls, while a 10,971-token request behind a 10.9k-token prompt cached 8,159 tokens per call. An agent with a small system prompt and no tools gets no caching however large its inputs are.
+- Matching is block-quantized and rounds down, so the cached count runs below the full stable prefix (roughly 75% to 85% in the runs above). Treat the minimum as the point below which caching is impossible rather than the point where it starts paying.
+- Hits arrive as `usage.total_cached_tokens`, mapped to `LLMTokenUsage.cache_read_tokens` and logged as `cache_read_input_tokens` on `llm.request.complete`. A miss reads 0 with no error, and nothing distinguishes a prefix below the minimum from a prefix that failed to match or an entry that expired. `cache_write_tokens` stays unset, since implicit caching has no write step to bill.
 
 ### `OpenAIProvider`
 - Provider name: `openai`
@@ -344,10 +359,14 @@ Providers should map their native token accounting into these fields when availa
 - `reasoning_controls`
 - `server_tools`
 - `streaming`
+- `native_tool_calling` (defaults to `True`)
+- `structured_output`
+- `prompt_caching`
+- `reasoning_content`
 
 Current provider capability summary:
 - `AnthropicProvider`: beta flags, server tools, streaming
-- `GeminiProvider`: all-false (no provider-specific capability flags; streaming not yet implemented)
+- `GeminiProvider`: structured output, streaming, reasoning content, reasoning controls
 - `OpenAIProvider`: reasoning controls, streaming
 
 ## Provider Option Notes
@@ -359,9 +378,9 @@ Current known usage:
   - `betas`: list of Anthropic beta flags
   - `structured_output`: JSON-schema dict (see Structured Output below)
 - Gemini:
-  - `cache_ttl`: TTL string for cached content (default `"3600s"`)
+  - `thinking_level`: thinking budget passed through to the generation config
+  - `thinking_summaries`: whether the model returns thought summaries
   - `structured_output`: JSON-schema dict (see Structured Output below)
-  - any additional `GenerateContentConfig` params not filtered out by the adapter
 - OpenAI:
   - `prompt_cache_key`
   - `prompt_cache_retention`
@@ -402,14 +421,17 @@ No additional flags are required.
 ### `GeminiProvider`
 
 When `provider_options["structured_output"]` is a dict, the adapter sets
-`response_mime_type` and `response_schema` on the `GenerateContentConfig`:
+`response_format` on the interaction:
 
 ```python
-response_mime_type = "application/json"
-response_schema = <user-provided schema dict with types coerced to uppercase>
+response_format = {
+    "type": "text",
+    "mime_type": "application/json",
+    "schema": <user-provided schema dict>,
+}
 ```
 
-Schema types are automatically coerced to uppercase (e.g. `"object"` becomes
+Tool parameter schemas are coerced to uppercase types (e.g. `"object"` becomes
 `"OBJECT"`) as required by the Gemini API.
 
 ### `OpenAIProvider`
