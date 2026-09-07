@@ -108,12 +108,12 @@ calls, and swapping `build_llm()` is the only code change.
 
 Each provider handles prompt caching differently: Anthropic uses
 `cache_control` breakpoints on system and tool blocks, OpenAI uses explicit cache
-keys with configurable retention, and Gemini creates server-side cached content
-objects with a TTL. Mash abstracts all of this behind a single
-`prompt_caching_enabled` flag in `AgentConfig` (on by default). The runtime
-applies the right caching strategy for whichever provider the agent uses, so
-repeated requests within a session avoid re-processing static context without
-any provider-specific code from the developer.
+keys with configurable retention, and Gemini caches implicitly, matching the
+leading tokens of each request against recent ones with nothing to configure.
+Mash abstracts all of this behind a single `prompt_caching_enabled` flag in
+`AgentConfig` (on by default). The runtime applies the right caching strategy for
+whichever provider the agent uses, so repeated requests avoid re-processing
+static context without any provider-specific code from the developer.
 
 **Compaction**
 
