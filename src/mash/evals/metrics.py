@@ -120,6 +120,11 @@ class _AgentAccum:
     def stop_reason(self) -> str | None:
         outcome = _TERMINAL_STOP_REASONS.get(self.terminal_type or "")
         if outcome is not None:
+            # A failure that names its own stop reason (an exhausted step
+            # budget, say) keeps it rather than flattening to "error".
+            failure_stop_reason = self.terminal_payload.get("stop_reason")
+            if isinstance(failure_stop_reason, str) and failure_stop_reason:
+                return failure_stop_reason
             return outcome
         metadata = self.terminal_payload.get("response_metadata")
         if isinstance(metadata, dict) and metadata.get("stop_reason"):

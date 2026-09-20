@@ -88,6 +88,12 @@ def classify_error(error: object) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"error": message}
     if error_type is not None:
         payload["error_type"] = error_type
+    # A failure that ended a turn for a known reason (e.g. an exhausted step
+    # budget) carries it, so lifecycle reporting keeps the distinction instead
+    # of flattening every failure into a generic error.
+    explicit_stop_reason = getattr(error, "stop_reason", None)
+    if isinstance(explicit_stop_reason, str) and explicit_stop_reason:
+        payload["stop_reason"] = explicit_stop_reason
     if error_code is not None:
         payload["error_code"] = error_code
     if retryable is not None:

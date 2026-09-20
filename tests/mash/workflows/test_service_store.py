@@ -22,10 +22,14 @@ from mash.workflows import (
     WorkflowSpec,
 )
 from mash.workflows import dbos as workflow_dbos
-from mash.workflows.service import WorkflowNotFoundError
+from mash.workflows.service import (
+    WorkflowNotFoundError,
+    WorkflowResumeNotSupportedError,
+)
 from mash.workflows.store import (
     RUN_COMPLETED,
     RUN_FAILED,
+    RUN_RUNNING,
     STEP_COMPLETED,
     STEP_EVENT_STARTED,
     STEP_FAILED,
@@ -38,6 +42,13 @@ try:  # pragma: no cover
     import psycopg
 except ImportError:  # pragma: no cover
     psycopg = None
+
+
+class _DBOSStatus:
+    """The one field WorkflowService reads off a DBOS workflow status."""
+
+    def __init__(self, status: str) -> None:
+        self.status = status
 
 
 def _database_url() -> str:
@@ -197,14 +208,61 @@ class WorkflowServiceStoreTests(unittest.IsolatedAsyncioTestCase):
         events = await self.service.list_run_step_events(self.WF, self.run_id)
         self.assertEqual([e["event_type"] for e in events], [STEP_EVENT_STARTED])
 
-    async def test_resume_run_invokes_dbos_and_returns_run(self) -> None:
-        await self._seed(RUN_FAILED, error="boom")
+    async def test_resume_run_redrives_an_interrupted_run(self) -> None:
+        # The host died mid-run: the store row says running and DBOS still has
+        # the workflow pending. That is the state resume exists for.
+        await self._seed(RUN_RUNNING)
         with patch.object(
-            workflow_dbos, "resume_workflow_run", return_value=self.run_id
-        ) as resume:
-            run = await self.service.resume_run(self.WF, self.run_id)
+            workflow_dbos, "get_workflow_status", return_value=_DBOSStatus("PENDING")
+        ):
+            with patch.object(
+                workflow_dbos, "resume_workflow_run", return_value=self.run_id
+            ) as resume:
+                run = await self.service.resume_run(self.WF, self.run_id)
         resume.assert_awaited_once_with(self.run_id)
         self.assertEqual(run.run_id, self.run_id)
+
+    async def test_resume_rejects_a_terminally_failed_run(self) -> None:
+        # DBOS neither transitions an ERROR workflow nor re-runs a step whose
+        # error is checkpointed, so acknowledging this would report a resume
+        # that never happens.
+        await self._seed(RUN_FAILED, error="boom")
+        with patch.object(
+            workflow_dbos, "get_workflow_status", return_value=_DBOSStatus("ERROR")
+        ):
+            with patch.object(
+                workflow_dbos, "resume_workflow_run", return_value=self.run_id
+            ) as resume:
+                with self.assertRaises(WorkflowResumeNotSupportedError) as caught:
+                    await self.service.resume_run(self.WF, self.run_id)
+        resume.assert_not_awaited()
+        self.assertEqual(caught.exception.run_id, self.run_id)
+        self.assertEqual(caught.exception.status, RUN_FAILED)
+        self.assertIn("cannot be resumed", str(caught.exception))
+
+        # The run is left exactly as it was, not nudged into a false state.
+        run = await self.service.get_run(self.WF, self.run_id)
+        self.assertEqual(run.status, RUN_FAILED)
+        self.assertEqual(run.error, "boom")
+
+    async def test_resume_rejects_a_completed_run(self) -> None:
+        await self._seed(RUN_COMPLETED, result={"doubled": 6})
+        with patch.object(
+            workflow_dbos, "get_workflow_status", return_value=_DBOSStatus("SUCCESS")
+        ):
+            with patch.object(
+                workflow_dbos, "resume_workflow_run", return_value=self.run_id
+            ) as resume:
+                with self.assertRaises(WorkflowResumeNotSupportedError) as caught:
+                    await self.service.resume_run(self.WF, self.run_id)
+        resume.assert_not_awaited()
+        self.assertEqual(caught.exception.status, RUN_COMPLETED)
+
+    async def test_resume_run_unknown_to_dbos_raises_not_found(self) -> None:
+        await self._seed(RUN_RUNNING)
+        with patch.object(workflow_dbos, "get_workflow_status", return_value=None):
+            with self.assertRaises(WorkflowNotFoundError):
+                await self.service.resume_run(self.WF, self.run_id)
 
     async def test_resume_missing_run_raises(self) -> None:
         with self.assertRaises(WorkflowNotFoundError):

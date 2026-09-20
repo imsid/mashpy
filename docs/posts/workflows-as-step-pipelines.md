@@ -83,7 +83,9 @@ Every run is a clean slate. State never carries from one run to the next; what a
 
 DBOS orchestrates the run. Each step body and each store write executes as its own memoized DBOS step, so recovery replays a run without redoing completed work. Execution is at-least-once: a step interrupted mid-flight runs again. Pure transforms replay safely. A step with external effects dedupes on a stable key, and `StepContext` hands it `run_id`, `step_id`, `workflow_input`, and `attempt`, all stable across retries. The framework never invents an idempotency key on the author's behalf.
 
-A failed run resumes. `resume_run(run_id)` replays the completed steps from their stored outputs and re-drives the pipeline from the failed step, under the same `run_id`. Agent steps interlock with their own durable request through a deterministic `request_id`, so a resumed agent step continues mid-loop rather than resubmitting the request. A step may declare `timeout_s`; exceeding it fails the step, and the run stays resumable.
+An interrupted run resumes. `resume_run(run_id)` replays the completed steps from their stored outputs and re-drives the pipeline from where it stopped, under the same `run_id`. Agent steps interlock with their own durable request through a deterministic `request_id`, so a resumed agent step continues mid-loop rather than resubmitting the request.
+
+Resume covers runs that stopped without finishing: a host that died mid-run, a cancelled run, one that exhausted its recovery attempts. A run that ended in failure is not one of them. DBOS checkpoints a step's error alongside its output, so replaying a failed run re-raises the recorded error instead of re-running the step, and its resume path skips rows that are already `SUCCESS` or `ERROR`. `resume_run` rejects a terminal run with a 409 rather than acknowledging a resume that never happened; a failed run starts over as a new run. A step may declare `timeout_s`; exceeding it fails the step.
 
 A `dedup_key` on submission becomes a DBOS queue deduplication id, so a second trigger while a run is active is rejected. That makes workflows safe to fire from schedules and webhooks.
 

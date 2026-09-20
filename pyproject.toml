@@ -19,7 +19,7 @@ keywords = ["agents", "cli", "mcp", "llm"]
 dependencies = [
   "aiosqlite>=0.20.0",
   "anthropic>=0.39.0",
-  "dbos>=2.19.0",
+  "dbos>=3.0.0,<4",
   "fastapi>=0.115.0",
   "google-genai>=0.1.0",
   "httpx>=0.28.0",
@@ -52,6 +52,7 @@ pilot = "pilot.cli:main"
 [project.optional-dependencies]
 dev = [
   "build>=1.2.2",
+  "packaging>=23.0",
   "pyinstaller>=6.0",
   "pytest>=8.3.0",
   "twine>=6.1.0",
