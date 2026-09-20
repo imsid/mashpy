@@ -11,6 +11,7 @@ from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
     WorkflowNotFoundError,
+    WorkflowResumeNotSupportedError,
 )
 
 from .common import (
@@ -177,7 +178,7 @@ def build_workflow_router() -> APIRouter:
         workflow_service = get_workflow_service(request)
         try:
             run = await workflow_service.resume_run(workflow_id.strip(), run_id.strip())
-        except WorkflowNotFoundError:
+        except (WorkflowNotFoundError, WorkflowResumeNotSupportedError):
             raise
         except Exception as exc:
             raise APIError(

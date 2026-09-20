@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from . import dbos as workflow_dbos
 from .registry import WorkflowRegistry
 from .spec import WorkflowSpec
-from .store import RUN_QUEUED, RUN_TERMINAL
+from .store import RUN_COMPLETED, RUN_FAILED, RUN_QUEUED, RUN_TERMINAL
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import Pool
@@ -61,6 +61,22 @@ class WorkflowInputValidationError(ValueError):
         self.workflow_id = workflow_id
         self.errors = errors
         super().__init__(f"workflow '{workflow_id}' input validation failed")
+
+
+class WorkflowResumeNotSupportedError(RuntimeError):
+    """Raised when a run's state cannot transition back into execution.
+
+    DBOS resumes a workflow only out of a non-terminal state: its resume path
+    updates rows whose status is outside ``SUCCESS`` and ``ERROR``, and a step
+    that ended in error has that error checkpointed, so a replay re-raises it
+    instead of re-running the step. A terminal run therefore cannot be resumed
+    at all, and reporting the no-op as a successful resume would be a lie.
+    """
+
+    def __init__(self, run_id: str, status: str, message: str) -> None:
+        self.run_id = run_id
+        self.status = status
+        super().__init__(message)
 
 
 class DuplicateWorkflowRunError(RuntimeError):
@@ -255,7 +271,16 @@ class WorkflowService:
         )
 
     async def resume_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
-        """Resume a failed run from its failed step (same run_id)."""
+        """Re-drive an interrupted run from its last checkpoint.
+
+        Resume covers runs that stopped without finishing — a host that died
+        mid-run, a cancelled run, one that exhausted its recovery attempts.
+        Completed steps replay from their memoized outputs and the pipeline
+        continues from where it stopped, under the same ``run_id``.
+
+        A run that reached a terminal outcome is rejected rather than
+        acknowledged: see :class:`WorkflowResumeNotSupportedError`.
+        """
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
@@ -267,6 +292,29 @@ class WorkflowService:
         if store is None or await store.get_run(resolved_run_id) is None:
             raise WorkflowNotFoundError(
                 f"workflow run '{resolved_run_id}' was not found"
+            )
+        status = await _get_workflow_status_or_none(resolved_run_id)
+        if status is None:
+            raise WorkflowNotFoundError(
+                f"workflow run '{resolved_run_id}' is no longer known to the "
+                "durable runtime and cannot be resumed"
+            )
+        raw_status = str(getattr(status, "status", "") or "")
+        if raw_status == "SUCCESS":
+            raise WorkflowResumeNotSupportedError(
+                resolved_run_id,
+                RUN_COMPLETED,
+                f"workflow run '{resolved_run_id}' already completed "
+                "successfully; start a new run instead",
+            )
+        if raw_status == "ERROR":
+            raise WorkflowResumeNotSupportedError(
+                resolved_run_id,
+                RUN_FAILED,
+                f"workflow run '{resolved_run_id}' failed terminally and "
+                "cannot be resumed: the failed step's error is checkpointed, "
+                "so replaying the run re-raises it instead of re-running the "
+                "step. Start a new run instead.",
             )
         await workflow_dbos.resume_workflow_run(resolved_run_id)
         return await self.get_run(resolved_workflow_id, resolved_run_id)

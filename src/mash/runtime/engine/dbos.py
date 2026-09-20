@@ -77,10 +77,20 @@ async def ensure_dbos_ready(database_url: str) -> None:
     if conductor_key:
         config["conductor_key"] = conductor_key
     dbos_class(config=config)
+    # Workflow functions must be registered before launch so recovery can
+    # resolve them; the run queue is a system-database row and can only be
+    # declared once launch has opened it.
     register_workflow(dbos_class)
     dbos_class.launch()
+    await ensure_queue_registered(dbos_class)
     _STATE.ready = True
     _STATE.database_url = resolved_url
+
+
+async def ensure_queue_registered(dbos_class: Any) -> None:
+    from mash.workflows.dbos import ensure_queue_registered as ensure_host_queue
+
+    await ensure_host_queue(dbos_class)
 
 
 def register_workflow(dbos_class: Any) -> None:

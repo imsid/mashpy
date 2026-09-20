@@ -33,6 +33,7 @@ from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
     WorkflowNotFoundError,
+    WorkflowResumeNotSupportedError,
 )
 
 from .config import MashHostConfig
@@ -129,6 +130,19 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         return JSONResponse(
             status_code=404,
             content=error_payload("WORKFLOW_NOT_FOUND", str(exc)),
+        )
+
+    @app.exception_handler(WorkflowResumeNotSupportedError)
+    async def _workflow_resume_not_supported_handler(
+        _: Request, exc: WorkflowResumeNotSupportedError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=error_payload(
+                "WORKFLOW_RESUME_NOT_SUPPORTED",
+                str(exc),
+                {"run_id": exc.run_id, "status": exc.status},
+            ),
         )
 
     @app.exception_handler(WorkflowInputValidationError)
