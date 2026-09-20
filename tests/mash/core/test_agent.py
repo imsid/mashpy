@@ -724,6 +724,89 @@ class ParallelToolExecutionTests(unittest.IsolatedAsyncioTestCase):
         # Results stay in call order, mapped to their tool_call_ids.
         self.assertEqual([r.tool_call_id for r in results], ["c1", "c2"])
 
+    async def test_admission_is_bounded_by_max_parallel_tools(self) -> None:
+        """A wide turn costs a fixed number of tasks, not one per call.
+
+        The cap is a resource bound, so it has to limit how many calls are
+        admitted into the event loop, not merely how many run at once. With
+        gather-over-every-call the pending-task count scaled with the batch.
+        """
+        call_count = 64
+        limit = 4
+        release = asyncio.Event()
+        active = 0
+        peak_active = 0
+        entered = 0
+
+        async def run(_args) -> ToolResult:
+            nonlocal active, peak_active, entered
+            active += 1
+            entered += 1
+            peak_active = max(peak_active, active)
+            await release.wait()
+            active -= 1
+            return ToolResult.success("ok")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="wide",
+                description="parallel-safe",
+                parameters={"type": "object", "properties": {}},
+                _executor=run,
+            )
+        )
+        agent = _build_agent(tools, max_parallel_tools=limit)
+        calls = [_tool_call("wide", f"c{i}") for i in range(call_count)]
+
+        baseline = len(asyncio.all_tasks())
+        batch = asyncio.create_task(agent._execute_tool_calls(calls))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        live = len(asyncio.all_tasks()) - baseline
+        self.assertLessEqual(active, limit)
+        self.assertLessEqual(entered, limit)
+        # The batch task itself plus at most `limit` workers — not one per call.
+        self.assertLessEqual(live, limit + 1)
+        self.assertLess(live, call_count)
+
+        release.set()
+        results = await batch
+
+        self.assertLessEqual(peak_active, limit)
+        self.assertEqual(entered, call_count)
+        self.assertEqual(
+            [r.tool_call_id for r in results], [f"c{i}" for i in range(call_count)]
+        )
+
+    async def test_bounded_admission_still_runs_every_call_in_order(self) -> None:
+        """Draining through a worker pool must not drop or reorder calls."""
+        seen: list[str] = []
+
+        async def run(args) -> ToolResult:
+            seen.append(str(args.get("tag")))
+            return ToolResult.success(str(args.get("tag")))
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="wide",
+                description="parallel-safe",
+                parameters={"type": "object", "properties": {"tag": {"type": "string"}}},
+                _executor=run,
+            )
+        )
+        agent = _build_agent(tools, max_parallel_tools=3)
+        calls = [_tool_call("wide", f"c{i}", tag=f"t{i}") for i in range(20)]
+
+        results = await agent._execute_tool_calls(calls)
+
+        self.assertEqual(len(results), 20)
+        self.assertEqual([r.tool_call_id for r in results], [f"c{i}" for i in range(20)])
+        self.assertEqual([r.content for r in results], [f"t{i}" for i in range(20)])
+        self.assertCountEqual(seen, [f"t{i}" for i in range(20)])
+
     async def test_one_failure_does_not_abort_the_batch(self) -> None:
         async def boom(_args) -> ToolResult:
             raise RuntimeError("kaboom")

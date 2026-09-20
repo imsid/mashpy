@@ -933,6 +933,66 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
                 await runtime.shutdown()
 
+    async def test_tool_batch_step_bounds_admission_not_just_execution(
+        self,
+    ) -> None:
+        """A wide batch must not park one pending task per call.
+
+        max_parallel_tools is a resource bound, so it has to limit how many
+        calls are admitted into the event loop. Gathering over every call
+        capped execution but still created a task per call.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                from mash.runtime.engine.steps import run_step_tool_batch
+
+                call_count = 48
+                limit = 4
+                definition = _ConcurrencyCapDefinition(
+                    Path(tmp),
+                    tool_count=call_count,
+                    max_parallel_tools=limit,
+                    sleep_seconds=0.05,
+                )
+                runtime = AgentRuntime.from_spec(
+                    definition, session_id="host-session", **_test_stores()
+                )
+                await runtime.open()
+                try:
+                    baseline = len(asyncio.all_tasks())
+                    batch = asyncio.create_task(
+                        run_step_tool_batch(
+                            definition.app_id,
+                            "req-admission",
+                            runtime.session_id,
+                            "trace-admission",
+                            {"loop_index": 0, "result_payloads": [], "tool_usage": {}},
+                            [
+                                {"id": f"call-{i}", "name": f"tool_{i}", "arguments": {}}
+                                for i in range(call_count)
+                            ],
+                        )
+                    )
+                    for _ in range(5):
+                        await asyncio.sleep(0)
+                    live = len(asyncio.all_tasks()) - baseline
+
+                    # The batch task plus at most `limit` workers, not one
+                    # task per call.
+                    self.assertLessEqual(live, limit + 1)
+                    self.assertLess(live, call_count)
+
+                    new_state = await batch
+
+                    self.assertEqual(len(new_state["result_payloads"]), call_count)
+                    self.assertLessEqual(definition.peak, limit)
+                    self.assertEqual(
+                        [rp["tool_call_id"] for rp in new_state["result_payloads"]],
+                        [f"call-{i}" for i in range(call_count)],
+                    )
+                finally:
+                    await runtime.shutdown()
+
     async def test_tool_batch_step_caps_concurrency_at_max_parallel_tools(
         self,
     ) -> None:
