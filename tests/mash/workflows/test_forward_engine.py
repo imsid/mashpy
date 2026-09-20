@@ -137,16 +137,22 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         workflow_dbos.unregister_runner(self.RUNNER, self.host)
         await self.store.close()
-        for wf in ("pipe", "pipe-fail", "pipe-agent", "pipe-orchestration"):
+        for wf in (
+            "pipe",
+            "pipe-fail",
+            "pipe-agent",
+            "pipe-agent-exhausted",
+            "pipe-orchestration",
+        ):
             _cleanup(self.url, wf)
 
     async def _execute(self, workflow_id: str, workflow_input: dict[str, Any]) -> tuple[str, Any]:
         run_id = make_run_id(self.RUNNER, workflow_id)
         with patch.object(
-            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None, None)
+            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None)
         ), patch(
             "mash.workflows.engine.load_dbos_api",
-            return_value=(_FakeDBOS, None, None, None, None),
+            return_value=(_FakeDBOS, None, None, None),
         ):
             output = await workflow_dbos.execute_registered_workflow(
                 self.RUNNER, workflow_id, run_id, workflow_input=workflow_input
@@ -274,6 +280,71 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         write = next(s for s in steps if s.step_id == "write")
         self.assertEqual(write.status, STEP_COMPLETED)
         self.assertEqual(write.agent_request_id, "req-1")
+
+    async def test_agent_step_budget_exhaustion_stops_the_pipeline(self) -> None:
+        # Issue #188: an agent that burned its whole step budget fails its
+        # request. The step must fail with it rather than thread a synthesized
+        # result into the next step.
+        ran_after: list[str] = []
+
+        def _after(inp: FinalOut, ctx: StepContext) -> FinalOut:  # pragma: no cover
+            ran_after.append(ctx.step_id)
+            return inp
+
+        async def _fake_post(runner_id, *, agent_id, message, structured_output, **kwargs):
+            del runner_id, agent_id, message, structured_output, kwargs
+            return "req-exhausted"
+
+        async def _fake_collect(runner_id, agent_id, request_id):
+            del runner_id, agent_id, request_id
+            # What collect_terminal_payload raises on a request.error frame.
+            raise RuntimeError(
+                "Stopped after reaching the max step limit (60) before "
+                "finishing. Increase `max_steps` or narrow the task."
+            )
+
+        self.registry.register(
+            WorkflowSpec(
+                workflow_id="pipe-agent-exhausted",
+                input_model=TriggerIn,
+                steps=[
+                    CodeStep(step_id="double", run=_double, input=TriggerIn, output=DoubleOut),
+                    AgentStep(
+                        step_id="write", agent_id="writer", input=DoubleOut, output=FinalOut
+                    ),
+                    CodeStep(step_id="after", run=_after, input=FinalOut, output=FinalOut),
+                ],
+            )
+        )
+        run_id = make_run_id(self.RUNNER, "pipe-agent-exhausted")
+        with patch.object(
+            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None)
+        ), patch(
+            "mash.workflows.engine.load_dbos_api",
+            return_value=(_FakeDBOS, None, None, None),
+        ), patch(
+            "mash.workflows.engine.post_inline_agent_request", _fake_post
+        ), patch(
+            "mash.workflows.engine.collect_terminal_payload", _fake_collect
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await workflow_dbos.execute_registered_workflow(
+                    self.RUNNER, "pipe-agent-exhausted", run_id, workflow_input={"n": 42}
+                )
+
+        self.assertIn("max step limit", str(caught.exception))
+        self.assertEqual(ran_after, [])
+
+        run = await self.store.get_run(run_id)
+        assert run is not None
+        self.assertEqual(run.status, RUN_FAILED)
+        self.assertIsNone(run.result)
+
+        steps = {step.step_id: step for step in await self.store.get_run_steps(run_id)}
+        self.assertEqual(steps["double"].status, STEP_COMPLETED)
+        self.assertEqual(steps["write"].status, STEP_FAILED)
+        self.assertNotIn("after", steps)
+        self.assertNotIn("after.run", _FakeDBOS.step_names)
 
 
 if __name__ == "__main__":  # pragma: no cover

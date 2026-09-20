@@ -11,8 +11,8 @@ from mash.memory.store import MemoryStore, PostgresStore
 from mash.skills.base import Skill
 from mash.skills.tool import SkillTool
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
-from mash.workflows.dbos import make_runner_id
 from mash.workflows.dbos import register_runner as register_workflow_runner
+from mash.workflows.dbos import resolve_runner_id
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
 from mash.workflows.store import WorkflowStore
 
@@ -40,8 +40,9 @@ class Pool:
         self,
         *,
         runtime_database_url: str | None = None,
+        runner_id: str | None = None,
     ) -> None:
-        self.runner_id = make_runner_id()
+        self.runner_id = resolve_runner_id(runner_id)
         self.runtime_database_url = str(runtime_database_url or "").strip() or None
         self._registered: Dict[str, AgentRegistration] = {}
         self._hosts: Dict[str, Host] = {}

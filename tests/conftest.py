@@ -9,6 +9,7 @@ import pytest
 
 from mash.logging import bound_host_id, bound_request_id, bound_request_metadata
 from mash.runtime import context as context_helpers
+from mash.runtime.errors import classify_error
 from mash.runtime.requests import (
     caller_metadata_from_request_metadata,
     host_id_from_request_metadata,
@@ -526,15 +527,15 @@ async def _execute_request_inline(
                 )
                 return
         except Exception as exc:
+            # Mirror the real engine: the error payload is whatever
+            # classify_error makes of the exception, so tests see the same
+            # error_code/retryable/stop_reason fields production emits.
             await fail_request(
                 runtime.app_id,
                 request_id,
                 session_id,
                 trace_id,
-                {
-                    "error": str(exc),
-                    "error_type": exc.__class__.__name__,
-                },
+                classify_error(exc),
             )
 
 

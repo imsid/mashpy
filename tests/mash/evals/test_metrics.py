@@ -42,8 +42,11 @@ class ComputeRowMetricsTests(unittest.TestCase):
             _ev("helper", "runtime.tool.call.started", 102.1, tool_name="bash"),
             _ev("helper", "runtime.tool.call.started", 102.2, tool_name="bash"),
             _ev("helper", "runtime.step.completed", 102.3),
-            _ev("helper", "runtime.request.completed", 102.4,
-                response_metadata={"stop_reason": "max_steps"}),
+            # Budget exhaustion fails the request and names its own reason.
+            _ev("helper", "runtime.request.failed", 102.4,
+                error="Stopped after reaching the max step limit (1) before finishing.",
+                error_code="max_steps_exhausted",
+                stop_reason="max_steps"),
             _ev("pilot", "runtime.step.completed", 103.0),
             _llm("pilot", 103.5, i=350, o=90, cr=1200),
             _ev("pilot", "runtime.step.completed", 104.0),
@@ -87,6 +90,19 @@ class ComputeRowMetricsTests(unittest.TestCase):
         self.assertEqual(m.stop_reason, "error")
         self.assertEqual(m.tokens.input, 100)   # spend before the failure is kept
         self.assertEqual(m.subagents, [])
+
+    def test_failure_that_names_a_stop_reason_keeps_it(self) -> None:
+        """An exhausted step budget must stay distinguishable from any error."""
+        events = [
+            _ev("pilot", "runtime.request.accepted", 200.0),
+            _llm("pilot", 201.0, i=100, o=10, finish="tool_use"),
+            _ev("pilot", "runtime.request.failed", 202.0,
+                error="Stopped after reaching the max step limit (1) before finishing.",
+                error_code="max_steps_exhausted",
+                stop_reason="max_steps"),
+        ]
+        m = compute_row_metrics(events, primary_agent_id="pilot")
+        self.assertEqual(m.stop_reason, "max_steps")
 
     def test_cancelled_primary_reports_cancelled_not_a_finish_reason(self) -> None:
         """A cancelled run must not report the last LLM finish reason.

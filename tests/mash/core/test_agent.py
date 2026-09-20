@@ -8,7 +8,7 @@ import time
 import unittest
 from typing import Optional
 
-from mash.core.agent import Agent, TruncatedToolCallError
+from mash.core.agent import Agent, MaxStepsExhaustedError, TruncatedToolCallError
 from mash.core.config import AgentConfig
 from mash.core.context import Context, ToolCall
 from mash.core.llm import BaseLLMProvider, LLMProvider
@@ -336,10 +336,13 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("do the thing")
 
-        response = await agent.run(context)
+        with self.assertRaises(MaxStepsExhaustedError) as caught:
+            await agent.run(context)
 
-        self.assertIn("max step limit", response.text)
-        self.assertEqual(response.metadata["stop_reason"], "max_steps")
+        self.assertEqual(caught.exception.max_steps, 1)
+        self.assertEqual(caught.exception.stop_reason, "max_steps")
+        self.assertFalse(caught.exception.retryable)
+        self.assertIn("max step limit", str(caught.exception))
 
     async def test_tool_result_trace_preserves_structured_metadata(self) -> None:
         async def noop(_args) -> ToolResult:
@@ -372,7 +375,8 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("do the thing")
 
-        await agent.run(context)
+        with self.assertRaises(MaxStepsExhaustedError):
+            await agent.run(context)
 
         result_events = [event for event in logger.events if event.event_type == "agent.tool.result"]
         self.assertEqual(len(result_events), 1)
