@@ -9,6 +9,24 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.22.1](https://github.com/imsid/mashpy/compare/mashpy-v0.22.0...mashpy-v0.22.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **workflows:** durable runner identity, DBOS 3, honest resume, max_steps ([#189](https://github.com/imsid/mashpy/issues/189)) ([bf03d4c](https://github.com/imsid/mashpy/commit/bf03d4c5c6cc1762cfb6c25536f6efcd8a1a0cbc))
+* **workflows:** keep a failed agent step's request id ([#191](https://github.com/imsid/mashpy/issues/191)) ([298289b](https://github.com/imsid/mashpy/commit/298289b626fba81d4add986c4492dbd5ecb2707e))
+
+
+### Performance
+
+* **runtime:** bound tool-call admission, not just execution ([#192](https://github.com/imsid/mashpy/issues/192)) ([d4f803c](https://github.com/imsid/mashpy/commit/d4f803c92adc936c8c977f6ef55e0db59b8057c3))
+
+
+### Documentation
+
+* **llm:** correct Gemini provider docs for the Interactions API ([#183](https://github.com/imsid/mashpy/issues/183)) ([55f8560](https://github.com/imsid/mashpy/commit/55f856038b1b3793b4a6b8fadfabc910e6de579e))
+
 ## [0.22.0](https://github.com/imsid/mashpy/compare/mashpy-v0.21.1...mashpy-v0.22.0) (2026-09-06)
 
 
