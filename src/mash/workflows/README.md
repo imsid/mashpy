@@ -3,9 +3,9 @@
 `src/mash/workflows` is a DBOS-backed workflow layer on top of the Mash agent
 runtime. A workflow is an ordered pipeline of typed steps with deterministic,
 code-owned control flow; nondeterminism (an agent run, an external call) is
-contained inside steps with schema-checked boundaries. Runs are durable (a run
-resumes from the failed step) and observable (a per-step audit trail in a
-dedicated store).
+contained inside steps with schema-checked boundaries. Runs are durable (an
+interrupted run resumes from its last checkpoint) and observable (a per-step
+audit trail in a dedicated store).
 
 Every workflow is a **step pipeline**: an ordered `steps` list run by the
 forward-pipeline engine ([`engine.py`](./engine.py)). There is no alternative
@@ -95,13 +95,22 @@ store write is its own memoized DBOS step, so a replay skips completed work;
 store writes are idempotent so the crash-after-effect window converges rather
 than duplicating. Orchestration CodeSteps recover from their application ledger.
 
-- `resume_run(run_id)` — replay completed steps and re-drive from the failed
-  step (same `run_id`). Agent steps interlock with their own durable request
+- `resume_run(run_id)` — replay completed steps and re-drive from where the run
+  stopped (same `run_id`). Agent steps interlock with their own durable request
   workflow through a deterministic `request_id`, so they resume mid-loop.
+  Resume covers runs that stopped without finishing: a host that died mid-run,
+  a cancelled run, one that exhausted its recovery attempts.
 - `run_workflow(workflow_id, ...)` — a fresh `run_id` from step 1.
 
-A step may declare `timeout_s`; exceeding it fails the step (resumable), not a
-retry. When DBOS recovery attempts are exhausted the run is `failed`.
+A **terminally failed run is not resumable** and `resume_run` rejects it with
+`WorkflowResumeNotSupportedError` (HTTP 409). DBOS checkpoints a step's error
+next to its output, so replaying a failed run re-raises the recorded error
+instead of re-running the step, and `resume_workflows` skips rows already in
+`SUCCESS` or `ERROR`. Reporting that no-op as a resume would be a lie; a failed
+run starts over as a new run.
+
+A step may declare `timeout_s`; exceeding it fails the step, not a retry. When
+DBOS recovery attempts are exhausted the run is `failed`.
 
 ## Storage
 
@@ -124,7 +133,8 @@ workflow layer:
 - `list_workflows()` / `list_runs(workflow_id, ...)` / `get_run(workflow_id, run_id)`
   — runs read from the store; a run not yet in the store (still queued)
   projects from DBOS status.
-- `resume_run(workflow_id, run_id)` — resume a failed run.
+- `resume_run(workflow_id, run_id)` — re-drive an interrupted run; rejects a
+  terminal one.
 - `list_run_step_events(...)` — the step audit trail.
 - `stream_run_events(...)` — SSE from the store, so code steps are visible.
 

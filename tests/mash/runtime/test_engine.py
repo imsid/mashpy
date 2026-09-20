@@ -482,6 +482,74 @@ class _AlwaysRespondDefinition(_BaseDefinition):
         )
 
 
+class _AlwaysToolCallingLLMProvider(LLMProvider):
+    """Never finishes on its own: every turn asks for another tool call.
+
+    Also records the requests it receives, so a test can tell whether the
+    structured-output finalizer ever ran.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        call_id = f"call-{len(self.requests)}"
+        return LLMResponse(
+            text="Working on it.",
+            tool_calls=[ToolCall(id=call_id, name="keep_going", arguments={})],
+            content_blocks=[
+                LLMContentBlock.text("Working on it."),
+                LLMContentBlock.tool_call(
+                    tool_call_id=call_id, name="keep_going", arguments={}
+                ),
+            ],
+            stop_reason="tool_call",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
+class _ExhaustsStepBudgetDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+        super().__init__(root, app_id=app_id)
+        self.provider = _AlwaysToolCallingLLMProvider()
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
+
+    def build_tools(self) -> ToolRegistry:
+        async def keep_going(_args: Dict[str, Any]) -> ToolResult:
+            return ToolResult.success("still working")
+
+        tools = ToolRegistry()
+        tools.register(
+            FunctionTool(
+                name="keep_going",
+                description="A tool the model keeps calling.",
+                parameters={"type": "object", "properties": {}},
+                _executor=keep_going,
+            )
+        )
+        return tools
+
+    def build_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            app_id=self.app_id,
+            system_prompt="You are a test app.",
+            max_steps=1,
+        )
+
+
 class _StructuredOutputDefinition(_BaseDefinition):
     def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
         super().__init__(root, app_id=app_id)
@@ -1171,14 +1239,86 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 try:
                     await runtime.open()
-                    _, _, result = await self._invoke_request(runtime, message="hi")
-
-                    response_text = result["response"]["text"]
-                    self.assertIn("max step limit", response_text)
-                    self.assertEqual(
-                        result["response"]["metadata"]["stop_reason"],
-                        "max_steps",
+                    accepted = await runtime.submit_request(
+                        message="hi",
+                        session_id=runtime.session_id,
                     )
+                    events = await self._collect_request_events(
+                        runtime, str(accepted["request_id"])
+                    )
+
+                    terminal = events[-1]
+                    self.assertEqual(terminal["event"], "request.error")
+                    self.assertNotIn(
+                        "request.completed",
+                        [event["event"] for event in events],
+                    )
+                    data = dict(terminal["data"])
+                    self.assertEqual(data["error_code"], "max_steps_exhausted")
+                    self.assertEqual(data["stop_reason"], "max_steps")
+                    self.assertFalse(data["retryable"])
+                    self.assertIn("max step limit", data["error"])
+                finally:
+                    await runtime.shutdown()
+
+    async def test_max_steps_exhaustion_is_not_finalized_into_structured_output(
+        self,
+    ) -> None:
+        # Issue #188: with structured output enabled, the budget-exhaustion
+        # warning used to be fed to the finalizer, which happily returned a
+        # schema-valid empty result that the request reported as completed.
+        schema = {
+            "title": "Mappings",
+            "type": "object",
+            "properties": {
+                "mappings": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["mappings"],
+            "additionalProperties": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                definition = _ExhaustsStepBudgetDefinition(Path(tmp))
+                runtime = AgentRuntime.from_spec(
+                    definition, session_id="host-session", **_test_stores()
+                )
+                try:
+                    await runtime.open()
+                    accepted = await runtime.submit_request(
+                        message="map everything",
+                        session_id=runtime.session_id,
+                        structured_output=schema,
+                    )
+                    events = await self._collect_request_events(
+                        runtime, str(accepted["request_id"])
+                    )
+
+                    terminal = events[-1]
+                    self.assertEqual(terminal["event"], "request.error")
+                    self.assertNotIn(
+                        "request.completed",
+                        [event["event"] for event in events],
+                    )
+                    data = dict(terminal["data"])
+                    self.assertEqual(data["error_code"], "max_steps_exhausted")
+                    self.assertEqual(data["stop_reason"], "max_steps")
+
+                    # The finalizer is a second LLM call carrying the schema in
+                    # provider_options. It must never have run.
+                    finalizer_calls = [
+                        request
+                        for request in definition.provider.requests
+                        if request.provider_options.get("structured_output")
+                    ]
+                    self.assertEqual(finalizer_calls, [])
+
+                    # Nothing was persisted as a completed turn either.
+                    turns = await runtime.store.get_turns(
+                        session_id=runtime.session_id,
+                        app_id=runtime.app_id,
+                        limit=5,
+                    )
+                    self.assertEqual(turns, [])
                 finally:
                     await runtime.shutdown()
 

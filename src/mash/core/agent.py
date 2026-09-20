@@ -49,6 +49,31 @@ class TruncatedToolCallError(RuntimeError):
     error_code = "truncated_tool_call"
 
 
+class MaxStepsExhaustedError(RuntimeError):
+    """The agent used its whole step budget without finishing.
+
+    The loop stops because ``max_steps`` ran out, not because the agent
+    decided it was done. Treating that as a completed turn reports work the
+    agent explicitly did not finish: the last assistant text is a budget
+    warning, and with structured output a finalizer will happily turn that
+    warning into a schema-valid empty result that a workflow then threads into
+    its next step. Surfacing it as a terminal failure keeps an unfinished turn
+    unfinished. It is non-retryable: re-running the request re-spends the same
+    budget, so the remedy is a larger ``max_steps`` or a narrower task.
+    """
+
+    retryable = False
+    error_code = "max_steps_exhausted"
+    stop_reason = "max_steps"
+
+    def __init__(self, max_steps: int) -> None:
+        self.max_steps = int(max_steps)
+        super().__init__(
+            f"Stopped after reaching the max step limit ({self.max_steps}) "
+            "before finishing. Increase `max_steps` or narrow the task."
+        )
+
+
 @dataclass
 class StepPlan:
     """One planned agent step after a think phase."""
@@ -329,8 +354,11 @@ class Agent:
             context = self.observe(context, action, results)
 
         if not done and step_index + 1 >= self.config.max_steps:
-            self._apply_max_steps_exhausted(context)
-            done = True
+            # The agent wanted another step and has none left. Raising here
+            # keeps the unfinished turn out of every "completed" path — turn
+            # persistence, structured-output finalization, and the workflow
+            # step that would otherwise thread a synthesized result forward.
+            raise MaxStepsExhaustedError(self.config.max_steps)
 
         return StepCommitResult(context=context, done=done, signals=signals)
 
@@ -938,18 +966,6 @@ class Agent:
                     },
                 )
             )
-
-    def _apply_max_steps_exhausted(self, context: Context) -> None:
-        """Apply the canonical max-step exhaustion behavior."""
-        context.metadata["stop_reason"] = "max_steps"
-        context.add_assistant_message(
-            (
-                f"Stopped after reaching the max step limit "
-                f"({self.config.max_steps}) before finishing. "
-                "Increase `max_steps` or narrow the task."
-            ),
-            stop_reason="max_steps",
-        )
 
     def _normalized_tool_usage(
         self,

@@ -240,19 +240,26 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cancelled", payload["error"].lower())
         self.assertNotIn("without a terminal event", payload["error"])
 
-    async def test_max_step_limit_response_is_treated_as_error(self) -> None:
+    async def test_max_step_exhaustion_surfaces_as_a_terminal_error(self) -> None:
+        # A subagent that spends its whole step budget fails its request, so
+        # the invocation reports the failure the runtime emitted rather than
+        # inferring one from the assistant text.
         self.client._events = [
             {"event": "request.accepted", "data": {"request_id": "r1", "status": "accepted"}},
             {"event": "request.started", "data": {"request_id": "r1", "status": "started"}},
             {
-                "event": "request.completed",
+                "event": "request.error",
                 "data": {
                     "request_id": "r1",
-                    "status": "completed",
-                    "response": {
-                        "text": "Stopped after reaching the max step limit (30) before finishing.",
-                        "metadata": {},
-                    },
+                    "status": "error",
+                    "error": (
+                        "Stopped after reaching the max step limit (30) before "
+                        "finishing. Increase `max_steps` or narrow the task."
+                    ),
+                    "error_type": "MaxStepsExhaustedError",
+                    "error_code": "max_steps_exhausted",
+                    "stop_reason": "max_steps",
+                    "retryable": False,
                 },
             },
         ]
@@ -261,8 +268,10 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.is_error)
         payload = json.loads(result.content)
-        self.assertEqual(payload["error_source"], "subagent_response")
-        self.assertEqual(payload["error_code"], "max_steps_exceeded")
+        self.assertEqual(payload["error_source"], "subagent")
+        self.assertEqual(payload["error_code"], "max_steps_exhausted")
+        self.assertFalse(payload["retryable"])
+        self.assertIn("max step limit", payload["error"])
 
     async def test_client_mode_invokes_resolved_client(self) -> None:
         client = _FakeClient()

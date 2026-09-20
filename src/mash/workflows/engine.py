@@ -315,9 +315,12 @@ class ForwardPipelineStrategy:
         for ordinal, step in enumerate(workflow.steps):
             merged = {**ctx.workflow_input, **(prev_output or {})}
             input_snapshot: dict[str, Any] = merged
+            # Reset per step and before the try: the failure path records this,
+            # and a step that fails in _coerce_input must not carry the
+            # previous iteration's request id into its own row.
+            agent_request_id: str | None = None
             try:
                 input_snapshot = _coerce_input(step, merged)
-                agent_request_id: str | None = None
                 if step.kind == "agent":
                     agent_request_id = await post_inline_agent_request(
                         runner_id,
@@ -395,7 +398,7 @@ class ForwardPipelineStrategy:
                     {"name": f"{step.step_id}.record.fail"},
                     _record_step,
                     runner_id, run_id, wf_id, step.step_id, ordinal, step.kind,
-                    STEP_FAILED, input_snapshot, None, error, None,
+                    STEP_FAILED, input_snapshot, None, error, agent_request_id,
                     STEP_EVENT_FAILED, {"error": error},
                 )
                 await dbos_class.run_step_async(

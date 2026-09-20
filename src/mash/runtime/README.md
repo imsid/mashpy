@@ -579,12 +579,16 @@ There are three layers of failure handling, each covering a different scenario:
 | Failure type | Handled by | Developer action |
 |---|---|---|
 | Transient error (rate limit, timeout, network) | `retry_transient()` — in-process, immediate, with backoff | None — automatic |
-| Retries exhausted or terminal error | `REQUEST_FAILED` emitted | Call `resume_request()` to retry |
+| Retries exhausted or terminal error | `REQUEST_FAILED` emitted | Rerun the request — a failed request is not resumable |
+| Cancelled, or DBOS recovery attempts exhausted | `REQUEST_CANCELLED` / `REQUEST_FAILED` emitted | Call `resume_request()` to re-drive it |
+| Step budget exhausted (`max_steps`) | `REQUEST_FAILED` with `error_code=max_steps_exhausted`, `stop_reason=max_steps` | Raise `max_steps` or narrow the task |
 | Process crash (OOM, kill, hardware) | DBOS local recovery on next startup | None — automatic on restart |
 
 **Step-level retry** covers transient errors during normal operation. If retries exhaust or the error is non-retryable, the workflow emits `REQUEST_FAILED` with `error_code` and `retryable` fields from `classify_error()` so the developer knows what happened.
 
-**Developer-initiated resume** covers failures that survive step-level retry. The developer calls `resume_request(request_id)` to set the DBOS workflow back to PENDING for re-execution.
+**Developer-initiated resume** covers requests that stopped without finishing — a cancelled one, or one whose DBOS recovery attempts ran out. The developer calls `resume_request(request_id)` to set the DBOS workflow back to PENDING for re-execution. A request that ended in `ERROR` is not one of these: DBOS neither transitions it nor re-runs a step whose error is checkpointed, so `resume_request` reports that it cannot be resumed rather than acknowledging a no-op. Rerun it instead.
+
+**Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
 **Process crash recovery** covers the case where the host process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted — the DBOS workflow is left in PENDING state in the database. On the next process startup, `DBOS.launch()` scans for orphaned PENDING workflows and replays them from the last completed step. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
 

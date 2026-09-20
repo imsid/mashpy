@@ -173,7 +173,11 @@ async def upsert_step(conn: Any, step: WorkflowStepRecord) -> None:
                 output_snapshot = EXCLUDED.output_snapshot,
                 error = EXCLUDED.error,
                 attempt = EXCLUDED.attempt,
-                agent_request_id = EXCLUDED.agent_request_id,
+                -- Write-once in practice: a NULL never erases the id recorded
+                -- when the step's request started, but a new id still updates.
+                agent_request_id = COALESCE(
+                    EXCLUDED.agent_request_id, workflow_steps.agent_request_id
+                ),
                 started_at = COALESCE(workflow_steps.started_at, EXCLUDED.started_at),
                 finished_at = EXCLUDED.finished_at
             """,

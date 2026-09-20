@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import re
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -21,7 +23,13 @@ if TYPE_CHECKING:
 
 _WORKFLOW_NAME = "mash.workflow.execute"
 _QUEUE_NAME = "mash.workflow.runs"
+_QUEUE_CONCURRENCY = 8
 _WORKFLOW_RUN_ID_PREFIX = "mw"
+MASH_RUNNER_ID_ENV = "MASH_RUNNER_ID"
+DEFAULT_RUNNER_ID = "default"
+# A run id is colon-delimited (``mw:<runner>:<workflow>:<token>``), so the
+# runner id may not contain a colon.
+_RUNNER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _WORKFLOW_TASK_STRUCTURED_OUTPUT = {
     "title": "WorkflowTaskState",
     "type": "object",
@@ -43,7 +51,7 @@ class _DBOSWorkflowState:
 _STATE = _DBOSWorkflowState()
 
 
-def _load_dbos_api() -> tuple[Any, Any, Any, Any, Any]:
+def _load_dbos_api() -> tuple[Any, Any, Any, Any]:
     try:
         module = importlib.import_module("dbos")
         error_module = importlib.import_module("dbos._error")
@@ -53,27 +61,47 @@ def _load_dbos_api() -> tuple[Any, Any, Any, Any, Any]:
         ) from exc
 
     dbos_class = getattr(module, "DBOS", None)
-    queue_class = getattr(module, "Queue", None)
     set_workflow_id = getattr(module, "SetWorkflowID", None)
     set_enqueue_options = getattr(module, "SetEnqueueOptions", None)
     dedup_error = getattr(error_module, "DBOSQueueDeduplicatedError", None)
     if (
         dbos_class is None
-        or queue_class is None
         or set_workflow_id is None
         or set_enqueue_options is None
         or dedup_error is None
     ):
         raise RuntimeError("dbos module is missing required workflow APIs")
-    return dbos_class, queue_class, set_workflow_id, set_enqueue_options, dedup_error
+    return dbos_class, set_workflow_id, set_enqueue_options, dedup_error
 
 
 def _compact_token(num_bytes: int) -> str:
     return secrets.token_urlsafe(num_bytes).rstrip("=")
 
 
-def make_runner_id() -> str:
-    return f"r_{_compact_token(9)}"
+def resolve_runner_id(explicit_value: str | None = None) -> str:
+    """Resolve this deployment's durable workflow runner identity.
+
+    The runner id is written into every queued run's durable arguments and is
+    how recovery finds the pool that owns a persisted run. It must therefore
+    be a property of the *deployment*, stable across restarts, not of the
+    process: a per-process token leaves every run from a previous process
+    unresolvable after a restart.
+
+    Deployments that share one database give each pool its own id (via
+    ``MASH_RUNNER_ID`` or ``Pool(runner_id=...)``) so their runs stay isolated;
+    a single deployment keeps the default and recovers its own runs.
+    """
+    for candidate in (explicit_value, os.getenv(MASH_RUNNER_ID_ENV)):
+        value = str(candidate or "").strip()
+        if not value:
+            continue
+        if not _RUNNER_ID_PATTERN.match(value):
+            raise ValueError(
+                f"runner_id '{value}' is invalid: use letters, digits, '.', '_' "
+                "or '-', starting with a letter or digit"
+            )
+        return value
+    return DEFAULT_RUNNER_ID
 
 
 def workflow_run_id_prefix(runner_id: str, workflow_id: str) -> str:
@@ -88,6 +116,15 @@ def register_runner(runner_id: str, pool: "Pool") -> None:
     resolved = str(runner_id or "").strip()
     if not resolved:
         raise ValueError("runner_id is required")
+    existing = _STATE.runner_registry.get(resolved)
+    if existing is not None and existing is not pool:
+        # Runner ids are durable addresses. Letting a second pool take over an
+        # id would route another deployment's persisted runs into this one.
+        raise ValueError(
+            f"workflow runner '{resolved}' is already registered to a different "
+            f"pool; give each pool its own id via {MASH_RUNNER_ID_ENV} or "
+            "Pool(runner_id=...)"
+        )
     _STATE.runner_registry[resolved] = pool
 
 
@@ -105,10 +142,9 @@ def require_runner(runner_id: str) -> "Pool":
 
 
 def register_workflow(dbos_class: Any) -> None:
+    """Register the workflow entrypoint. Must run before ``DBOS.launch()``."""
     if _STATE.registered_workflow is not None:
         return
-    _, queue_class, _, _, _ = _load_dbos_api()
-    _STATE.queue = queue_class(_QUEUE_NAME, concurrency=8)
 
     async def _workflow(
         runner_id: str,
@@ -128,6 +164,21 @@ def register_workflow(dbos_class: Any) -> None:
     _STATE.registered_workflow = dbos_class.workflow(name=_WORKFLOW_NAME)(_workflow)
 
 
+async def ensure_queue_registered(dbos_class: Any) -> None:
+    """Declare the run queue in the system database. Must run after launch.
+
+    Queues are rows in the DBOS system database, so the queue can only be
+    declared once ``DBOS.launch()`` has opened it. Registration is an upsert
+    keyed by queue name, so every process in a deployment declares the same
+    queue on startup and converges on one row.
+    """
+    if _STATE.queue is not None:
+        return
+    _STATE.queue = await dbos_class.register_queue_async(
+        _QUEUE_NAME, global_concurrency=_QUEUE_CONCURRENCY
+    )
+
+
 async def start_workflow_run(
     *,
     database_url: str,
@@ -141,7 +192,7 @@ async def start_workflow_run(
     from mash.runtime.engine.dbos import ensure_dbos_ready  # pylint: disable=import-outside-toplevel
 
     await ensure_dbos_ready(database_url)
-    dbos_class, _, set_workflow_id, set_enqueue_options, dedup_error = _load_dbos_api()
+    dbos_class, set_workflow_id, set_enqueue_options, dedup_error = _load_dbos_api()
     register_workflow(dbos_class)
 
     if _STATE.registered_workflow is None or _STATE.queue is None:
@@ -180,20 +231,24 @@ async def start_workflow_run(
 
 
 async def get_workflow_status(run_id: str) -> Any | None:
-    dbos_class, _, _, _, _ = _load_dbos_api()
+    dbos_class, _, _, _ = _load_dbos_api()
     return await dbos_class.get_workflow_status_async(run_id)
 
 
 async def resume_workflow_run(run_id: str) -> str:
-    """Resume a failed/interrupted DBOS workflow run from its failed step.
+    """Re-drive an interrupted DBOS workflow run from its last checkpoint.
 
-    DBOS replays completed steps from their memoized outputs and re-drives from
-    the point of failure. Returns the same ``run_id``.
+    DBOS replays completed steps from their memoized outputs and continues from
+    where the run stopped, under the same ``run_id``. Only non-terminal runs
+    transition: ``resume_workflows`` updates rows whose status is outside
+    ``SUCCESS`` and ``ERROR``, so callers must reject terminal runs before
+    calling this rather than report the resulting no-op as a resume. See
+    ``WorkflowService.resume_run``.
     """
     resolved = str(run_id or "").strip()
     if not resolved:
         raise ValueError("run_id is required")
-    dbos_class, _, _, _, _ = _load_dbos_api()
+    dbos_class, _, _, _ = _load_dbos_api()
     resume = getattr(dbos_class, "resume_workflow_async", None)
     if resume is None:
         raise RuntimeError("dbos does not support resume_workflow_async")
@@ -406,15 +461,16 @@ load_dbos_api = _load_dbos_api
 __all__ = [
     "WorkflowDeduplicatedError",
     "collect_terminal_payload",
+    "ensure_queue_registered",
     "execute_registered_workflow",
     "get_workflow_status",
     "load_dbos_api",
-    "make_runner_id",
     "make_run_id",
     "post_inline_agent_request",
     "register_runner",
     "register_workflow",
     "require_runner",
+    "resolve_runner_id",
     "start_workflow_run",
     "unregister_runner",
     "workflow_run_id_prefix",

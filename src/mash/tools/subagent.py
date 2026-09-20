@@ -12,7 +12,6 @@ from ..runtime.errors import classify_error
 from .base import ToolResult
 
 DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
-MAX_STEP_LIMIT_PREFIX = "Stopped after reaching the max step limit"
 
 
 class _SubagentCancelled(Exception):
@@ -407,16 +406,6 @@ class InvokeSubagentTool:
                 request_id=result.get("request_id"),
                 error="subagent returned an empty response",
                 error_code="empty_response",
-            )
-        if normalized_text.startswith(MAX_STEP_LIMIT_PREFIX):
-            return self._response_error_result(
-                agent_id=agent_id,
-                primary_session_id=primary_session_id,
-                subagent_session_id=subagent_session_id,
-                started_at=started_at,
-                request_id=result.get("request_id"),
-                error=normalized_text,
-                error_code="max_steps_exceeded",
             )
         return ToolResult.success(
             json.dumps(payload, ensure_ascii=True),

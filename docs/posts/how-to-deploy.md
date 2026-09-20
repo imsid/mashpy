@@ -154,6 +154,12 @@ is a fully self-contained, identical copy.
   interaction state are all persisted. Any replica can serve any session.
 - **No sticky sessions required.** The load balancer can use simple
   round-robin routing.
+- **Workflow runs survive a replica dying.** A queued run records the runner
+  id of the deployment that owns it, which defaults to `default` and is the
+  same on every replica, so whichever replica picks the run up can resolve its
+  pool and recover it. Two *different* deployments sharing one database each
+  need their own `MASH_RUNNER_ID`, or they would try to recover each other's
+  runs.
 
 **One caveat:** host compositions defined over the API (`PUT /v1/hosts/{id}`)
 are in-memory and per-replica. Code-defined hosts come back on every restart
@@ -519,6 +525,7 @@ The baseline (`001_baseline.sql`) is idempotent — all `CREATE TABLE` and `CREA
 | `MASH_API_HOST` | No | `127.0.0.1` | Bind host (`0.0.0.0` for containers) |
 | `MASH_API_PORT` | No | `8000` | Bind port |
 | `MASH_DATA_DIR` | No | `/var/lib/mash` | Persistent data directory |
+| `MASH_RUNNER_ID` | No | `default` | Workflow runner identity for this deployment |
 | `ANTHROPIC_API_KEY` | Provider-dependent | — | Anthropic API key |
 | `OPENAI_API_KEY` | Provider-dependent | — | OpenAI API key |
 | `GEMINI_API_KEY` | Provider-dependent | — | Google Gemini API key |
