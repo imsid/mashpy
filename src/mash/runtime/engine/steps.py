@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ...core.context import Context, Response, ToolCall
@@ -591,6 +592,34 @@ async def run_step_tool_call(
     }
 
 
+async def _run_bounded(
+    limit: int,
+    count: int,
+    start: Callable[[int], Awaitable[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Run *count* awaitables, at most *limit* at a time, in index order.
+
+    A fixed pool of workers pulls indices off one shared iterator, so the
+    number of live tasks is ``min(limit, count)`` rather than ``count``.
+    ``asyncio.gather`` over every call would instead schedule them all at once
+    and leave the rest parked on a semaphore, making pending-task count scale
+    with the batch instead of with the configured cap.
+
+    Advancing the shared iterator is safe without a lock: ``next`` runs no
+    ``await``, and coroutines on one event loop only interleave at await
+    points, so no two workers can take the same index.
+    """
+    results: list[dict[str, Any]] = [{} for _ in range(count)]
+    indices = iter(range(count))
+
+    async def _worker() -> None:
+        for index in indices:
+            results[index] = await start(index)
+
+    await asyncio.gather(*(_worker() for _ in range(min(limit, count))))
+    return results
+
+
 async def run_step_tool_batch(
     agent_id: str,
     request_id: str,
@@ -608,6 +637,10 @@ async def run_step_tool_batch(
     agent's ``max_parallel_tools`` so a wide fan-out can't exhaust the
     connection pool or downstream limits. Results are appended in call order so
     they map back to their ``tool_call_id``.
+
+    The cap bounds admission, not just execution: a fixed pool of at most
+    ``max_parallel_tools`` workers drains the calls, so a wide batch costs a
+    fixed number of pending tasks rather than one per call.
     """
     runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
@@ -615,22 +648,18 @@ async def run_step_tool_batch(
     tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
-    semaphore = asyncio.Semaphore(max_parallel)
-
-    async def _run(tool_call: ToolCall) -> dict[str, Any]:
-        async with semaphore:
-            return await _execute_and_record_tool_call(
-                runtime,
-                request_id=request_id,
-                session_id=session_id,
-                trace_id=trace_id,
-                loop_index=loop_index,
-                tool_call=tool_call,
-                host=host,
-            )
-
-    result_payloads = await asyncio.gather(
-        *(_run(tool_call) for tool_call in tool_calls)
+    result_payloads = await _run_bounded(
+        max_parallel,
+        len(tool_calls),
+        lambda index: _execute_and_record_tool_call(
+            runtime,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            loop_index=loop_index,
+            tool_call=tool_calls[index],
+            host=host,
+        ),
     )
 
     tool_usage = workflow_state.get("tool_usage")

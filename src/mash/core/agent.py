@@ -7,6 +7,7 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from mash.skills.registry import SkillRegistry
@@ -536,12 +537,19 @@ class Agent:
         ``tool_call_id``. A failure in any single call is captured as an error
         ``ToolResult`` (never raised), so one failing tool cannot abort the
         rest of the batch.
+
+        The cap bounds admission, not just execution: a run of parallel-safe
+        calls is drained by at most ``max_parallel_tools`` workers, so a wide
+        turn costs a fixed number of pending tasks rather than one per call.
         """
         results: List[Optional[ToolResult]] = [None] * len(tool_calls)
-        semaphore = asyncio.Semaphore(max(1, self.config.max_parallel_tools))
+        limit = max(1, self.config.max_parallel_tools)
 
-        async def _run(idx: int) -> None:
-            async with semaphore:
+        async def _drain(indices: Iterator[int]) -> None:
+            # One shared iterator across workers. ``next`` runs no ``await``
+            # and coroutines interleave only at await points, so two workers
+            # can never take the same index.
+            for idx in indices:
                 results[idx] = await self._safe_execute_tool_call(tool_calls[idx])
 
         i = 0
@@ -556,7 +564,8 @@ class Agent:
             j = i
             while j < n and self._is_parallel_safe(tool_calls[j]):
                 j += 1
-            await asyncio.gather(*(_run(k) for k in range(i, j)))
+            pending = iter(range(i, j))
+            await asyncio.gather(*(_drain(pending) for _ in range(min(limit, j - i))))
             i = j
 
         # Every slot is filled by construction; cast away the Optional.
