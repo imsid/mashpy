@@ -666,4 +666,4 @@ The normal API authentication protects this endpoint and the bundled expression
 assets at `GET /api/v1/telemetry/thoughts/expressions/{asset}` (catalog GIF/PNG
 names only). Admin's Thoughts tab uses the same cookie as Logs and links back
 to each exact trace. The former generation POST and public `/mushy/{id}` routes
-are removed. Migration 004 retains saved GIFs in `mushy_artifact_legacy`.
+are removed. Migration 005 permanently removes the legacy generated GIF table and data.

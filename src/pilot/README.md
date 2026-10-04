@@ -94,5 +94,5 @@ underlined phrases and Mushy alongside. Use **View logs** to inspect a trace.
 The Agent dropdown changes the feed, and Agents cards offer **View thoughts**.
 
 Requests made before capture was enabled may have no usable summaries and are
-excluded. The retired public GIF links are no longer served; existing GIF data
-is preserved in the legacy table by migration 004.
+excluded. The retired public GIF links are no longer served; legacy generated GIF
+data is permanently removed by migration 005.

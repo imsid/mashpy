@@ -52,9 +52,9 @@ same-origin cookie. Each trace's **View logs** link opens the exact trace drawer
 
 The former generation POST, public `/mushy/{id}` viewer and GIF routes, share /
 download controls, GIF renderer, interpreter, and artifact store are removed.
-Migration `004_admin_thoughts.sql` renames the original artifact table to
-`mushy_artifact_legacy`, retaining all saved bytes and rows without serving them.
-Migration `003_mushy.sql` is retained as applied migration history. No new thought
+Migration `005_remove_legacy_mushy.sql` permanently drops the legacy artifact
+table and its generated GIF data. Migrations 003 and 004 remain as applied
+migration history, including installations that already archived the table. No new thought
 storage is introduced: `runtime_event_log` remains the source of truth.
 
 The expression catalog and bundled GIFs remain under `mash/mushy/`. Each has a

@@ -31,11 +31,11 @@ Expression assets are also served under the authenticated telemetry API.
 
 Remove the previous interpreter, rendering, storage, generation and public GET
 surfaces. Keep capture, the expression catalog and existing animation clips.
-Archive existing `mushy_artifact` rows via a table-rename migration; retain prior
-migration history. No destructive data cleanup is part of this change.
+Migration 005 permanently drops the archived artifact table and its generated
+GIF data. Retain migrations 003 and 004 for installations that applied them.
 
 Verify full-text preservation, Markdown safety, exact phrase accents, agent
 isolation, 50 qualifying traces despite newer blank events, chronological
-summaries, authenticated access, retired route 404s, and migration data retention.
+summaries, authenticated access, retired route 404s, and legacy data removal.
 Run runtime request/stream, tool, subagent, history and interaction regressions,
 then build and exercise the packaged Admin UI against real Pilot traces.

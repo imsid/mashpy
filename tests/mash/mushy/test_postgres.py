@@ -17,7 +17,7 @@ from mash.storage.migrations import run_migrations
 
 
 @pytest.mark.skipif(not os.getenv('MASH_REAL_DATABASE_URL'), reason='requires test Postgres')
-def test_feed_selection_order_isolation_and_legacy_preservation():
+def test_feed_selection_order_isolation_and_legacy_removal():
     url = os.environ['MASH_REAL_DATABASE_URL']
     schema = 'thoughts_test_' + uuid4().hex
     with psycopg.connect(url, autocommit=True) as conn:
@@ -34,12 +34,12 @@ def test_feed_selection_order_isolation_and_legacy_preservation():
             async with pool.connection() as conn:
                 await conn.execute(Path('src/mash/storage/migrations/003_mushy.sql').read_text())
                 await conn.execute('INSERT INTO mushy_artifact VALUES (%s,%s,%s,%s,%s,%s)',
-                    (uuid4(), 'pilot', 'old-request', 1, Jsonb([]), b'GIF89a-preserved'))
+                    (uuid4(), 'pilot', 'old-request', 1, Jsonb([]), b'GIF89a-obsolete'))
             await run_migrations(pool)
             await run_migrations(pool)  # safe on repeated startup
             async with pool.connection() as conn:
-                cur = await conn.execute('SELECT gif_bytes FROM mushy_artifact_legacy')
-                assert (await cur.fetchone())['gif_bytes'] == b'GIF89a-preserved'
+                cur = await conn.execute("SELECT to_regclass('mushy_artifact_legacy') AS table_name")
+                assert (await cur.fetchone())['table_name'] is None
                 cur = await conn.execute("SELECT to_regclass('mushy_artifact') AS table_name")
                 assert (await cur.fetchone())['table_name'] is None
 

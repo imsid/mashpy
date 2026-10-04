@@ -699,5 +699,5 @@ answers and tool behavior are unchanged. No interpreter lifecycle is involved.
 thought-bearing traces and all their nonempty summaries from one SQL snapshot.
 Agent filtering and nonempty-string qualification precede the trace limit.
 Admin displays these words in full. The pool uses its existing shared event
-store; there is no separate Mushy service/store. Legacy GIF data is retained by
-migration 004 but is no longer served. See [Mushy](../mushy/README.md).
+store; there is no separate Mushy service/store. Migration 005 permanently removes
+the legacy GIF table and data. See [Mushy](../mushy/README.md).
