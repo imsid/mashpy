@@ -16,6 +16,7 @@ from mash.api.routes.agent import build_agent_router
 from mash.api.routes.evals import build_evals_router
 from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
+from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
 from mash.api.routes.common import (
     APIError,
@@ -186,6 +187,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api = APIRouter(
         prefix=resolved_config.api_prefix, dependencies=[Depends(_authorize)]
     )
+    api.include_router(build_thoughts_router())
     api.include_router(build_agent_router())
     api.include_router(build_host_router())
     api.include_router(build_pool_router())

@@ -55,6 +55,7 @@ class DeterministicLLMProvider(LLMProvider):
         if self._delay_seconds > 0:
             await asyncio.sleep(self._delay_seconds)
         return LLMResponse(
+            thought_summary="",
             text=self._response_text,
             tool_calls=[],
             content_blocks=[LLMContentBlock.text(self._response_text)],
@@ -140,6 +141,7 @@ class DelegatingLLMProvider(LLMProvider):
                 break
         if not saw_tool_result:
             return LLMResponse(
+                thought_summary="",
                 text="Delegating.",
                 tool_calls=[
                     ToolCall(
@@ -168,6 +170,7 @@ class DelegatingLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
+            thought_summary="",
             text=self._final_text,
             tool_calls=[],
             content_blocks=[LLMContentBlock.text(self._final_text)],

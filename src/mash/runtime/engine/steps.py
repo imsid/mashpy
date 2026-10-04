@@ -165,6 +165,7 @@ async def _plan_step_payload(
         action = plan.action
         return {
             "action_type": action.type.value,
+            "thought_summary": action.metadata["thought_summary"],
             "assistant_text": action.metadata.get("assistant_text"),
             "assistant_blocks": list(action.metadata.get("assistant_blocks") or []),
             "stop_reason": action.metadata.get("stop_reason"),

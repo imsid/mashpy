@@ -33,6 +33,7 @@ class _LoopingLLMProvider(LLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         return LLMResponse(
+            thought_summary="",
             text="Let me inspect one more thing.",
             tool_calls=[ToolCall(id="call-1", name="noop", arguments={})],
             content_blocks=[
@@ -76,6 +77,7 @@ class _ToolThenFinishLLMProvider(LLMProvider):
         self._call_count += 1
         if self._call_count == 1:
             return LLMResponse(
+                thought_summary="",
                 text="I need one tool first.",
                 tool_calls=[ToolCall(id="call-1", name="used_tool", arguments={})],
                 content_blocks=[
@@ -91,6 +93,7 @@ class _ToolThenFinishLLMProvider(LLMProvider):
             )
 
         return LLMResponse(
+            thought_summary="",
             text="Done.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Done.")],
@@ -113,6 +116,7 @@ class _FinishImmediatelyLLMProvider(LLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         return LLMResponse(
+            thought_summary="",
             text="Done immediately.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Done immediately.")],
@@ -140,6 +144,7 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
         self._call_count += 1
         if self._call_count == 1:
             return LLMResponse(
+                thought_summary="",
                 text="Partial response.",
                 tool_calls=[],
                 content_blocks=[LLMContentBlock.text("Partial response.")],
@@ -147,6 +152,7 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
+            thought_summary="",
             text="Final answer.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Final answer.")],
@@ -181,6 +187,7 @@ class _MaxTokensLLMProvider(LLMProvider):
         if request.messages:
             self.last_message_roles.append(request.messages[-1].role)
         return LLMResponse(
+            thought_summary="",
             text="A very long truncated answer",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("A very long truncated answer")],
@@ -213,6 +220,7 @@ class _MaxTokensToolCallLLMProvider(LLMProvider):
         del request
         self.call_count += 1
         return LLMResponse(
+            thought_summary="",
             text="Let me look that up",
             tool_calls=[ToolCall(id="call-1", name="search", arguments={})],
             content_blocks=[
@@ -255,6 +263,7 @@ class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
             self.last_message_roles.append(request.messages[-1].role)
         if self.call_count == 1:
             return LLMResponse(
+                thought_summary="",
                 text="Saving that now.",
                 tool_calls=[ToolCall(id="call-1", name="save", arguments={})],
                 content_blocks=[
@@ -269,6 +278,7 @@ class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
+            thought_summary="",
             text="All done.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("All done.")],
@@ -293,6 +303,7 @@ class _LoggingFinishLLMProvider(BaseLLMProvider):
         started_at = time.time()
         await self._emit_request_start(request)
         response = LLMResponse(
+            thought_summary="",
             text="Done immediately.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Done immediately.")],
@@ -913,6 +924,7 @@ class _PhasedLLMProvider(LLMProvider):
             reasoning_tokens=self._reasoning_tokens,
         )
         return LLMResponse(
+            thought_summary="",
             text="I'll call the tool.",
             tool_calls=[ToolCall(id="call-1", name="noop", arguments={})],
             content_blocks=[

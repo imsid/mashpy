@@ -104,6 +104,7 @@ class _ToolSignalsLLMProvider(LLMProvider):
         self._call_count += 1
         if self._call_count == 1:
             return LLMResponse(
+                thought_summary="",
                 text="Need one tool.",
                 tool_calls=[
                     ToolCall(
@@ -125,6 +126,7 @@ class _ToolSignalsLLMProvider(LLMProvider):
             )
 
         return LLMResponse(
+            thought_summary="",
             text="Done.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Done.")],
@@ -152,6 +154,7 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
         self._call_count += 1
         if self._call_count == 1:
             return LLMResponse(
+                thought_summary="",
                 text="Partial response.",
                 tool_calls=[],
                 content_blocks=[LLMContentBlock.text("Partial response.")],
@@ -159,6 +162,7 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
+            thought_summary="",
             text="Final answer.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Final answer.")],
@@ -181,6 +185,7 @@ class _AlwaysRespondLLMProvider(LLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         del request
         return LLMResponse(
+            thought_summary="",
             text="Still responding.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Still responding.")],
@@ -208,6 +213,7 @@ class _StructuredOutputLLMProvider(LLMProvider):
         structured_output = request.provider_options.get("structured_output")
         if structured_output:
             return LLMResponse(
+                thought_summary="",
                 text='{"title":"Changelog","commits_scanned":5}',
                 tool_calls=[],
                 content_blocks=[
@@ -217,6 +223,7 @@ class _StructuredOutputLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=3, output_tokens=2, total_tokens=5),
             )
         return LLMResponse(
+            thought_summary="",
             text="I scanned the recent commits.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("I scanned the recent commits.")],
@@ -309,6 +316,7 @@ class _TwoToolCallLLMProvider(LLMProvider):
         if self._call_count == 1:
             a, b = self._names
             return LLMResponse(
+                thought_summary="",
                 text="Two tools.",
                 tool_calls=[
                     ToolCall(id="call-a", name=a, arguments={}),
@@ -327,6 +335,7 @@ class _TwoToolCallLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
+            thought_summary="",
             text="Done.",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Done.")],
@@ -500,6 +509,7 @@ class _AlwaysToolCallingLLMProvider(LLMProvider):
         self.requests.append(request)
         call_id = f"call-{len(self.requests)}"
         return LLMResponse(
+            thought_summary="",
             text="Working on it.",
             tool_calls=[ToolCall(id=call_id, name="keep_going", arguments={})],
             content_blocks=[
@@ -622,6 +632,7 @@ class _WebSearchAssertingLLMProvider(LLMProvider):
         self.last_tool_names = [tool.name for tool in request.tools]
         self.call_count += 1
         return LLMResponse(
+            thought_summary="",
             text="ok",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("ok")],
@@ -673,6 +684,7 @@ class _CompactionLoggingLLMProvider(BaseLLMProvider):
         self.trace_id_during_send = self._trace_id
         await self._emit_request_start(request)
         response = LLMResponse(
+            thought_summary="",
             text="Summary:\n- compacted",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("Summary:\n- compacted")],
@@ -720,6 +732,7 @@ class _SessionBindingLLMProvider(LLMProvider):
             )
         self.asserted = True
         return LLMResponse(
+            thought_summary="",
             text="hello",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("hello")],
@@ -772,6 +785,7 @@ class _MCPAssertingLLMProvider(LLMProvider):
             raise AssertionError("remote MCP tool should be present in request tools")
         self.call_count += 1
         return LLMResponse(
+            thought_summary="",
             text="ok",
             tool_calls=[],
             content_blocks=[LLMContentBlock.text("ok")],

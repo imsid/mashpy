@@ -187,6 +187,7 @@ class _ToolCallingLLMProvider(LLMProvider):
         )
         if not saw_tool_result:
             return LLMResponse(
+                thought_summary="",
                 text="Reading metadata.",
                 tool_calls=[
                     ToolCall(id="call-1", name="read_metadata", arguments={})
@@ -201,6 +202,7 @@ class _ToolCallingLLMProvider(LLMProvider):
                 usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
             )
         return LLMResponse(
+            thought_summary="",
             text=self._final_text,
             tool_calls=[],
             content_blocks=[LLMContentBlock.text(self._final_text)],

@@ -66,12 +66,17 @@ function AgentCard({ agent, usedIn, highlighted }) {
           <span className="text-xs text-slate-400">No host or workflow references.</span>
         )}
       </div>
+      <div className="flex flex-wrap gap-4">
       <Link
         to={`/logs?agent=${encodeURIComponent(agent.agent_id)}&tab=sessions`}
         className="text-xs font-medium text-indigo-600 hover:underline"
       >
         View logs →
       </Link>
+      <Link to={`/thoughts?agent=${encodeURIComponent(agent.agent_id)}`} className="text-xs font-medium text-indigo-600 hover:underline">
+        View thoughts →
+      </Link>
+      </div>
     </Card>
   );
 }

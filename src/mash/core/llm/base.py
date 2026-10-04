@@ -93,6 +93,9 @@ class LLMProvider(ABC):
         """Return the currently bound event-logger session ID, if any."""
         return None
 
+    def enable_thought_summaries(self) -> None:
+        """Enable exposed textual summaries when supported; otherwise a no-op."""
+
     async def close(self) -> None:
         """Release provider resources. Default is no-op."""
 

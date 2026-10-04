@@ -300,6 +300,19 @@ mash repl --host assistant
 | **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
 
+## Mushy / Thoughts
+
+See the agent's original exposed thought summaries in **Admin → Activity →
+Thoughts**. Filter by Agent and scroll the latest 50 traces with nonempty
+summaries. Underlined phrases bring out the language's personality; selecting
+one moves Mushy beside the passage. Each trace links to its Admin logs.
+
+Capture is always enabled for runtime agents when their provider supports it
+(currently Gemini). The trace sidebar in Logs links directly to that trace's
+thoughts, including older traces. There is no separate interpreter, GIF
+generation API, or public sharing surface. See
+[Mushy](src/mash/mushy/README.md) and [Pilot](src/pilot/README.md#try-mushy-with-pilot).
+
 ## Mash Pilot
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and

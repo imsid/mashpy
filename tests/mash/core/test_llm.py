@@ -485,6 +485,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._app_id = "test"
         provider._session_id = session_id
         provider._stateful = stateful
+        provider._thought_summaries_enabled = False
         provider._web_search = False
         provider._event_logger = None
         provider._trace_id = None
@@ -814,6 +815,23 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         parsed = provider._parse_interaction_response(interaction)
         self.assertEqual(parsed.stop_reason, "max_tokens")
 
+    async def test_mushy_enables_summary_control_and_normalizes_text(self) -> None:
+        provider = self._make_provider()
+        provider.enable_thought_summaries()
+        interaction = self._make_interaction(text="Answer")
+        interaction.steps.insert(1, SimpleNamespace(
+            type="thought", signature="opaque", summary=[
+                SimpleNamespace(type="text", text="Considering alternatives.")
+            ],
+        ))
+        provider._client, create = self._make_client(interaction)
+        response = await provider.send(self._make_request())
+        self.assertEqual(create.call_args.kwargs["generation_config"]["thinking_summaries"], "auto")
+        self.assertEqual(response.thought_summary, "Considering alternatives.")
+        self.assertEqual(response.text, "Answer")
+        interaction.steps[1].summary = []
+        self.assertEqual(provider._parse_interaction_response(interaction).thought_summary, "")
+
     # --- send() / session chaining ---
 
     async def test_first_send_uses_full_history(self) -> None:
@@ -1118,6 +1136,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         response = await provider.send(request)
 
         self.assertEqual(response.text, "Done.")
+        self.assertEqual(response.thought_summary, "thinking hard")
         thinking_block = next(b for b in response.content_blocks if b.type == "thinking")
         self.assertEqual(thinking_block.data["thinking"], "thinking hard")
         self.assertEqual(response.usage.metadata["thought_tokens"], 20)

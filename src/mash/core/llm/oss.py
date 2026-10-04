@@ -411,6 +411,7 @@ class OSSCompatibleProvider(BaseLLMProvider):
             self._handle_tool_call_leak(text)
 
         return LLMResponse(
+            thought_summary="",
             text=text.strip(),
             tool_calls=tool_calls,
             content_blocks=blocks,

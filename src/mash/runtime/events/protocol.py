@@ -94,6 +94,10 @@ class RuntimeStore(Protocol):
         limit: int = 5,
     ) -> list[dict[str, Any]]: ...
 
+    async def list_thought_traces(
+        self, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
     async def list_sessions(
         self,
         *,

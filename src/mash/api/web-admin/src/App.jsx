@@ -12,6 +12,7 @@ import WorkflowRuns from './routes/WorkflowRuns.jsx';
 import WorkflowRunDetail from './routes/WorkflowRunDetail.jsx';
 import Hosts from './routes/Hosts.jsx';
 import Logs from './routes/Logs.jsx';
+import Thoughts from './routes/Thoughts.jsx';
 import Feedback from './routes/Feedback.jsx';
 import Evals from './routes/Evals.jsx';
 import EvalDetail from './routes/EvalDetail.jsx';
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="workflows/:workflowId/runs/:runId" element={<WorkflowRunDetail />} />
         <Route path="hosts" element={<Hosts />} />
         <Route path="logs" element={<Logs />} />
+        <Route path="thoughts" element={<Thoughts />} />
         <Route path="feedback" element={<Feedback />} />
         <Route path="evals" element={<Evals />} />
         <Route path="evals/:evalId" element={<EvalDetail />} />

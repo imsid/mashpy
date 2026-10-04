@@ -654,6 +654,58 @@ async def list_recent_traces(
     return [trace_row_to_summary(row) for row in rows]
 
 
+async def list_thought_traces(
+    pool: Any, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Newest thought-bearing traces, with all their original summaries.
+
+    Filter empty/non-string summaries before limiting *traces*, never events.
+    One statement gives the selected traces and their contents one snapshot.
+    app_id scopes both selection and returned events, including shared traces.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                WITH recent AS (
+                    SELECT app_id, trace_id, MAX(created_at) AS latest_thought_at,
+                           MAX(event_id) AS latest_event_id
+                    FROM runtime_event_log
+                    WHERE trace_id IS NOT NULL
+                      AND event_type = 'runtime.llm.think.completed'
+                      AND jsonb_typeof(payload -> 'thought_summary') = 'string'
+                      AND payload ->> 'thought_summary' ~ '[^[:space:]]'
+                      AND (%s::text IS NULL OR app_id = %s)
+                      AND (%s::text IS NULL OR trace_id = %s)
+                    GROUP BY app_id, trace_id
+                    ORDER BY latest_thought_at DESC, latest_event_id DESC
+                    LIMIT %s
+                )
+                SELECT t.event_id, t.app_id, t.agent_id, t.trace_id, t.session_id,
+                       t.request_id, t.created_at, t.payload ->> 'thought_summary' AS thought_summary,
+                       r.latest_thought_at
+                FROM recent r JOIN runtime_event_log t USING (app_id, trace_id)
+                WHERE t.event_type = 'runtime.llm.think.completed'
+                  AND jsonb_typeof(t.payload -> 'thought_summary') = 'string'
+                  AND t.payload ->> 'thought_summary' ~ '[^[:space:]]'
+                ORDER BY r.latest_thought_at DESC, r.latest_event_id DESC,
+                         t.created_at, t.event_id
+            """, (app_id, app_id, trace_id, trace_id, max(1, min(limit, 50))))
+            rows = await cursor.fetchall()
+    traces: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row['app_id'], row['trace_id'])
+        trace = traces.setdefault(key, {
+            'trace_id': row['trace_id'], 'agent_id': row['agent_id'],
+            'session_id': row['session_id'], 'latest_thought_at': row['latest_thought_at'],
+            'summaries': [],
+        })
+        trace['summaries'].append({
+            'event_id': row['event_id'], 'request_id': row['request_id'],
+            'created_at': row['created_at'], 'thought_summary': row['thought_summary'],
+        })
+    return list(traces.values())
+
+
 async def list_sessions(
     pool: Any,
     *,

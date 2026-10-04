@@ -150,6 +150,7 @@ class LLMResponse:
     text: str
     tool_calls: List[Any]
     content_blocks: List[LLMContentBlock]
+    thought_summary: str
     stop_reason: Optional[str] = None
     usage: Optional[LLMTokenUsage] = None
     provider_response: Any = None

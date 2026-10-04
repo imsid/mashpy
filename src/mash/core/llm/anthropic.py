@@ -267,6 +267,7 @@ class AnthropicProvider(BaseLLMProvider):
         content = getattr(response, "content", None)
         if content is None:
             return LLMResponse(
+                thought_summary="",
                 text="",
                 tool_calls=[],
                 content_blocks=[],
@@ -277,6 +278,7 @@ class AnthropicProvider(BaseLLMProvider):
 
         if isinstance(content, str):
             return LLMResponse(
+                thought_summary="",
                 text=content,
                 tool_calls=[],
                 content_blocks=[LLMContentBlock.text(content)],
@@ -322,6 +324,7 @@ class AnthropicProvider(BaseLLMProvider):
                 )
 
         return LLMResponse(
+            thought_summary="",
             text="".join(text_parts).strip(),
             tool_calls=tool_calls,
             content_blocks=blocks,

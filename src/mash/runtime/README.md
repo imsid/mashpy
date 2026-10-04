@@ -686,3 +686,18 @@ If you are making a change, ask first which boundary you are changing:
   - start with `host/`
 
 That separation is the point of this package layout.
+
+## Mushy / Admin Thoughts
+
+The runtime always enables textual thought summaries on its planning providers,
+including request-scoped ones. Only Gemini currently implements enablement;
+unsupported providers use a no-op default. No agent configuration is required.
+The summaries remain in `runtime.llm.think.completed`; answers and tool behavior
+are unchanged. No interpreter lifecycle is involved.
+
+`RuntimeStore.list_thought_traces(app_id=None, limit=50, trace_id=None)` reads the latest
+thought-bearing traces and all their nonempty summaries from one SQL snapshot.
+Agent/trace filtering and nonempty-string qualification precede the trace limit.
+Admin displays these words in full. The pool uses its existing shared event
+store; there is no separate Mushy service/store. Migration 003 adds only the query index;
+Thoughts needs no new tables. See [Mushy](../mushy/README.md).

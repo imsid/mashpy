@@ -311,6 +311,7 @@ class OpenAIProvider(BaseLLMProvider):
         if phase:
             provider_metadata["phase"] = phase
         return LLMResponse(
+            thought_summary="",
             text="".join(text_parts).strip(),
             tool_calls=tool_calls,
             content_blocks=blocks,
