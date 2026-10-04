@@ -87,10 +87,14 @@ class GeminiProvider(BaseLLMProvider):
             raise RuntimeError("Failed to initialize Gemini client.") from exc
 
         # Stateful mode: chain turns via previous_interaction_id instead of resending full history.
+        self._thought_summaries_enabled = False
         self._stateful = stateful
         self._web_search = web_search
         self._interaction_ids: Dict[str, str] = {}
         self._sent_message_counts: Dict[str, int] = {}
+
+    def enable_thought_summaries(self) -> None:
+        self._thought_summaries_enabled = True
 
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(
@@ -364,6 +368,10 @@ class GeminiProvider(BaseLLMProvider):
             )
 
         return LLMResponse(
+            thought_summary="\n".join(
+                block.data["thinking"] for block in blocks
+                if block.type == "thinking" and block.data["thinking"]
+            ),
             text="".join(text_parts).strip(),
             tool_calls=tool_calls,
             content_blocks=blocks,
@@ -539,7 +547,10 @@ class GeminiProvider(BaseLLMProvider):
             thinking_level = request.provider_options.get("thinking_level")
             if thinking_level:
                 generation_config["thinking_level"] = thinking_level
-            thinking_summaries = request.provider_options.get("thinking_summaries")
+            thinking_summaries = (
+                "auto" if self._thought_summaries_enabled
+                else request.provider_options.get("thinking_summaries")
+            )
             if thinking_summaries:
                 generation_config["thinking_summaries"] = thinking_summaries
 

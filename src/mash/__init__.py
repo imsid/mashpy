@@ -15,6 +15,7 @@ from importlib.metadata import PackageNotFoundError, metadata, version
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from mash.mushy import Mushy
     from mash.runtime import AgentMetadata, AgentSpec, Host, HostBuilder, Pool
     from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 
@@ -43,6 +44,7 @@ def get_docs_url() -> str:
 
 
 _EXPORTS: dict[str, str] = {
+    "Mushy": "mash.mushy",
     "AgentSpec": "mash.runtime",
     "AgentMetadata": "mash.runtime",
     "Host": "mash.runtime",
@@ -68,6 +70,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "Mushy",
     "AgentSpec",
     "AgentMetadata",
     "Host",

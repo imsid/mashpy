@@ -307,13 +307,23 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   };
 
   useEffect(() => {
+    // Thoughts carries the exact trace coordinates. Open directly, even when
+    // that trace is outside the recent session/trace list limits.
+    if (initialTrace && initialSession && agentId) {
+      const key = `${agentId}:${initialSession}:${initialTrace}`;
+      if (openedTrace.current === key) return;
+      openedTrace.current = key;
+      setTraceQuery(initialTrace);
+      setSelected({ trace_id: initialTrace, session_id: initialSession, agent_id: agentId, __agentId: agentId });
+      return;
+    }
     if (!initialTrace || !state.data || openedTrace.current === initialTrace) return;
     openedTrace.current = initialTrace;
     setTraceQuery(initialTrace);
     jumpToTrace(initialTrace);
     // The deep link is consumed once per trace id; subsequent reloads preserve the drawer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTrace, state.data]);
+  }, [agentId, initialSession, initialTrace, state.data]);
 
   return (
     <>

@@ -652,3 +652,18 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 ## Verification Notes
 - Route inventory cross-checked against `create_app(...).openapi()` plus the non-schema routes mounted on the FastAPI app.
 - `http://127.0.0.1:8000/openapi.json` was not available during this update, so the live endpoint could not be fetched; the README was derived from the local app registration instead.
+
+## Admin Thoughts
+
+`GET /api/v1/telemetry/thoughts?agent_id=pilot` returns the latest 50 traces
+containing nonempty exposed thought summaries. Omit `agent_id` for all agents.
+The limit counts qualifying traces, not individual summaries; each selected
+trace includes all its original summaries in chronological order. Unknown agents
+return 404. Existing captured history remains readable regardless of current
+capture settings. Reading the feed does not invoke a model.
+
+The normal API authentication protects this endpoint and the bundled expression
+assets at `GET /api/v1/telemetry/thoughts/expressions/{asset}` (catalog GIF/PNG
+names only). Admin's Thoughts tab uses the same cookie as Logs and links back
+to each exact trace. The former generation POST and public `/mushy/{id}` routes
+are removed. Migration 004 retains saved GIFs in `mushy_artifact_legacy`.

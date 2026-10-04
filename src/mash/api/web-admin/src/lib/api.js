@@ -113,6 +113,8 @@ export const api = {
   // --- Deployment / pool ---
   health: () => request('/health'),
   listAgents: () => request('/agent'),
+  listThoughts: (params) => request('/telemetry/thoughts', { params }),
+  thoughtExpressionUrl: (expression, format = 'gif') => `${API_BASE}/telemetry/thoughts/expressions/${encodeURIComponent(expression)}.${format}`,
   getAgent: (agentId) => request(`/agent/${encodeURIComponent(agentId)}`),
   listTools: () => request('/tools'),
   listSkills: () => request('/skills'),

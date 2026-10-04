@@ -79,6 +79,8 @@ def build_agent_instance(
     tools = self.definition.build_tools()
     skills = getattr(self, "skills", None) or self.definition.build_skills()
     llm = shared_llm if shared_llm is not None else self.definition.build_llm()
+    if self.mushy is not None:
+        llm.enable_thought_summaries()
     if hasattr(self, "agent"):
         config = replace(self.agent.config)
     else:

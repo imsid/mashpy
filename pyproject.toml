@@ -71,6 +71,7 @@ include = ["mash*", "pilot*"]
 exclude = ["apps*", "tests*"]
 
 [tool.setuptools.package-data]
+"mash.mushy" = ["assets/*.gif", "assets/*.png"]
 "mash.api" = ["static/admin/**/*"]
 "mash.agents.masher" = [
   "skills/*/SKILL.md",

@@ -37,19 +37,20 @@ feeds it, without duplicating component source. For HTTP route internals see
 
 Nav order is defined in `components/Shell.jsx`. The sidebar is grouped into
 **Deployment** (Agents, Workflows, Hosts, Tools, Skills — the pool and its
-compositions) and **Activity** (Logs, Feedback, Evals — what the deployment
+compositions) and **Activity** (Logs, Thoughts, Feedback, Evals — what the deployment
 did), with Overview on top and Reference below a divider. Each tab is a route
 component in `src/routes/`.
 
 | Tab | Route | Surfaces | API (`api.*` in `lib/api.js`) → endpoint |
 | --- | --- | --- | --- |
 | Overview | `/` (`Overview.jsx`) | Per-agent usage/cost and recent-session rollups across the pool; summary cards and charts. | `listAgents` → `GET /agent`; per agent `usage` → `GET /telemetry/usage`, `listSessions` → `GET /agent/{id}/sessions` |
-| Agents | `/agents` (`Agents.jsx`) | The pooled agents and hosts in the deployment. | `listAgents` → `GET /agent` |
+| Agents | `/agents` (`Agents.jsx`) | The pooled agents and hosts in the deployment, with View logs and View thoughts shortcuts. | `listAgents` → `GET /agent` |
 | Workflows | `/workflows` (`Workflows.jsx`), `/workflows/:workflowId` (`WorkflowDetail.jsx`), `/workflows/:workflowId/runs` (`WorkflowRuns.jsx`), `/workflows/:workflowId/runs/:runId` (`WorkflowRunDetail.jsx`) | Registered workflow definitions, typed step pipelines, schema-driven run submission, store-backed run history, live step status, snapshots, audit events, results, and resume/run-again actions. | `listWorkflows` → `GET /workflow`; `getWorkflow` → `GET /workflow/{id}`; `runWorkflow` → `POST /workflow/{id}/run`; run/history/audit methods under `/workflow/{id}/runs` |
 | Hosts | `/hosts` (`Hosts.jsx`) | Host compositions; create/edit a host (`PUT`) and submit a test request to its primary. | `listHosts` → `GET /hosts`, `listAgents` → `GET /agent`; `defineHost` → `PUT /hosts/{id}`; `submitHostRequest` → `POST /hosts/{id}/request` |
 | Tools | `/tools` (`Tools.jsx`), `/tools/:toolName` (`ToolDetail.jsx`) | Tool catalog as cards with invocation counts; detail view per tool. | `listTools` → `GET /tools`; `listToolInvocations` → `GET /telemetry/tool-invocations` |
 | Skills | `/skills` (`Skills.jsx`), `/skills/:skillName` (`SkillDetail.jsx`) | Skill catalog as cards with invocation counts; detail view per skill. | `listSkills` → `GET /skills`; `listSkillInvocations` → `GET /telemetry/skill-invocations` |
 | Logs | `/logs` (`Logs.jsx`) | Session rollups with their traces (tokens plus cache read/write at both levels), filterable by participating agent (primary or subagent) and by workflow, with a session count; plus the raw HTTP API event log with request/response detail in a drawer. | `listSessionRollups` → `GET /telemetry/sessions` (`agent_id`, `workflow_id`, returns `total`); `listTraces` → `GET /telemetry/traces`; `listApiEvents` → `GET /telemetry/api/events` |
+| Thoughts | `/thoughts` (`Thoughts.jsx`) | Latest 50 traces with nonempty original summaries, Agent filter, underlined phrases, Mushy expressions, and direct trace-log links. | `listThoughts` → `GET /telemetry/thoughts`; `thoughtExpressionUrl` → authenticated `/telemetry/thoughts/expressions/{asset}` |
 | Feedback | `/feedback` (`Feedback.jsx`) | Submitted feedback, filterable by agent and free-text query. | `listFeedback` → `GET /feedback`; `listAgents` → `GET /agent` |
 | Evals | `/evals` (`Evals.jsx`), `/evals/:evalId` (`EvalDetail.jsx`), `/evals/:evalId/experiments/:experimentId` (`ExperimentDetail.jsx`), `/evals/:evalId/compare` (`ExperimentCompare.jsx`) | Synthetic eval datasets and rubrics; experiments with per-run scores, detail and side-by-side compare views. | `listEvals` → `GET /evals`; `getEval` → `GET /evals/{id}`; `listExperiments` → `GET /evals/{id}/experiments`; run/compare views under the same prefix |
 | Reference | `/reference` (`Reference.jsx`) | Generated API reference from the live OpenAPI schema, plus the bundled CLI reference (`src/cli.json`). | `openapi` → `GET /openapi.json` |
@@ -104,6 +105,17 @@ Notes:
 ## Build & serve
 
 - Dev: `npm install` then `npm run dev` (Vite) in this directory.
-- Build: `npm run build` → emits into `../static/admin/`; `mount_admin_ui` then
+- Build: `npm run build` emits into `dist/`; use `make admin-web-package-sync`
+  from the repo root to build and copy into `../static/admin/`. `mount_admin_ui` then
   exposes `/admin`, `/admin/{path}`, and `/admin/assets/...`. When the bundle is
   absent the route is simply not mounted.
+
+## Thoughts
+
+The feed reads existing `runtime.llm.think.completed` events; opening it never
+calls a model. `components/thoughts/ThoughtTrace.jsx` renders original Markdown
+with `lib/thoughts.js` applying exact-substring accents only to prose (not code
+or links). The local phrase rules are presentation heuristics, not rewritten
+summaries. Reduced-motion users receive PNG counterparts of the bundled GIFs.
+All 50 qualifying traces appear in normal document flow; there is no individual
+summary picker, playback, public sharing, or automatic older-page loading.

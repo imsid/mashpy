@@ -24,6 +24,7 @@ const NAV = [
     label: 'Activity',
     items: [
       { to: '/logs', label: 'Logs' },
+      { to: '/thoughts', label: 'Thoughts' },
       { to: '/feedback', label: 'Feedback' },
       { to: '/evals', label: 'Evals' },
     ],

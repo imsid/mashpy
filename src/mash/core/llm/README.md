@@ -321,6 +321,7 @@ Providers must return `LLMResponse`:
 
 ```python
 LLMResponse(
+    thought_summary="",
     text: str,
     tool_calls: list[Any],
     content_blocks: list[LLMContentBlock],
@@ -500,3 +501,14 @@ channel, not the source of truth for usage.
 - Anthropic adapter: [anthropic.py](/Users/sid/Projects/mashpy/src/mash/core/llm/anthropic.py)
 - Gemini adapter: [gemini.py](/Users/sid/Projects/mashpy/src/mash/core/llm/gemini.py)
 - OpenAI adapter: [openai.py](/Users/sid/Projects/mashpy/src/mash/core/llm/openai.py)
+
+### Mushy thought summaries
+
+`LLMResponse.thought_summary` is a required string containing exposed textual
+thought summaries; adapters and custom providers must supply `""` when absent.
+Opaque signatures, encrypted reasoning, and ordinary answer text are excluded.
+`LLMProvider.enable_thought_summaries()` explicitly requests summary capture
+and raises `NotImplementedError` for unsupported adapters. Gemini implements
+this through `thinking_summaries="auto"`, for both streamed and non-streamed
+responses. Runtime composition enables it only for agents configured with
+`AgentSpec.build_mushy()`. No personality inference happens in the LLM adapter.

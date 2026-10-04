@@ -799,7 +799,7 @@ class Agent:
         )
 
         assistant_text = text.strip()
-        action_metadata: Dict[str, Any] = {}
+        action_metadata: Dict[str, Any] = {"thought_summary": response.thought_summary}
         if assistant_text:
             action_metadata["assistant_text"] = assistant_text
         if blocks:

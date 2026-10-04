@@ -47,6 +47,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeLLMProvider(LLMProvider):
+    def enable_thought_summaries(self) -> None:
+        self.summaries_enabled = True
+
     @property
     def model(self) -> str:
         return "test-model"
