@@ -52,10 +52,9 @@ same-origin cookie. Each trace's **View logs** link opens the exact trace drawer
 
 The former generation POST, public `/mushy/{id}` viewer and GIF routes, share /
 download controls, GIF renderer, interpreter, and artifact store are removed.
-Migration `005_remove_legacy_mushy.sql` permanently drops the legacy artifact
-table and its generated GIF data. Migrations 003 and 004 remain as applied
-migration history, including installations that already archived the table. No new thought
-storage is introduced: `runtime_event_log` remains the source of truth.
+The prototype tables and generated GIF data were removed directly from Pilot,
+the only database that used them. Migration `003_admin_thoughts.sql` adds only
+the query index on `runtime_event_log`; no new thought storage is introduced.
 
 The expression catalog and bundled GIFs remain under `mash/mushy/`. Each has a
 static PNG counterpart for reduced motion. There is no runtime Pillow dependency.

@@ -31,11 +31,12 @@ Expression assets are also served under the authenticated telemetry API.
 
 Remove the previous interpreter, rendering, storage, generation and public GET
 surfaces. Keep capture, the expression catalog and existing animation clips.
-Migration 005 permanently drops the archived artifact table and its generated
-GIF data. Retain migrations 003 and 004 for installations that applied them.
+Remove prototype tables and generated GIF data directly from Pilot, their only
+installation. Consolidate the unshipped migrations into `003_admin_thoughts.sql`,
+which adds only the query index on the existing runtime event table.
 
 Verify full-text preservation, Markdown safety, exact phrase accents, agent
 isolation, 50 qualifying traces despite newer blank events, chronological
-summaries, authenticated access, retired route 404s, and legacy data removal.
+summaries, authenticated access, retired route 404s, and a fresh schema without prototype tables.
 Run runtime request/stream, tool, subagent, history and interaction regressions,
 then build and exercise the packaged Admin UI against real Pilot traces.
