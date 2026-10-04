@@ -83,15 +83,16 @@ when structuring your own multi-agent app.
 
 ## Try Mushy with Pilot
 
-`PilotSpec.build_mushy()` returns `Mushy()` for the primary `pilot` agent. Its
-Gemini provider records exposed summaries alongside the existing request events;
-module copilots are unchanged. No second provider or model call is needed.
+Thought capture is always enabled for Pilot and its module copilots when their
+provider supports it. Gemini records exposed summaries alongside the existing
+request events. No agent configuration, second provider, or model call is needed.
 
 Run the updated host and ask Pilot a question normally. Open
 `http://127.0.0.1:8000/admin/thoughts?agent=pilot` to see its latest 50 traces with
 nonempty summaries. The full original words remain visible, with clickable
 underlined phrases and Mushy alongside. Use **View logs** to inspect a trace.
 The Agent dropdown changes the feed, and Agents cards offer **View thoughts**.
+The Logs trace sidebar also offers **View thoughts** for that exact trace.
 
 Requests made before capture was enabled may have no usable summaries and are
 excluded. The retired public GIF links are no longer served; the prototype tables

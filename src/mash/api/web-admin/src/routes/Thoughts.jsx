@@ -7,14 +7,14 @@ import { ThoughtTrace } from '../components/thoughts/ThoughtTrace.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 
-function ThoughtFeed({ agentId }) {
-  const state = useApi(() => api.listThoughts({ agent_id: agentId }), [agentId]);
+function ThoughtFeed({ agentId, traceId }) {
+  const state = useApi(() => api.listThoughts({ agent_id: agentId, trace_id: traceId }), [agentId, traceId]);
   return (
     <>
       <FilterBar>
         <FilterActions>
           <Button variant="ghost" onClick={state.reload} disabled={state.loading}>↻ Refresh</Button>
-          <span className="text-xs text-slate-500">Latest 50 traces with thoughts · original wording in full</span>
+          <span className="text-xs text-slate-500">{traceId ? 'Selected trace' : 'Latest 50 traces with thoughts'} · original wording in full</span>
         </FilterActions>
       </FilterBar>
       <Async state={state}>
@@ -22,7 +22,7 @@ function ThoughtFeed({ agentId }) {
           <div className="thoughts-feed">
             {data.traces.map((trace) => <ThoughtTrace key={`${trace.agent_id}:${trace.trace_id}`} trace={trace} />)}
           </div>
-        ) : <Empty>No thought summaries recorded{agentId ? ' for this agent' : ''} yet.</Empty>}
+        ) : <Empty>No thought summaries recorded{traceId ? ' for this trace' : agentId ? ' for this agent' : ''} yet.</Empty>}
       </Async>
     </>
   );
@@ -32,9 +32,11 @@ export default function Thoughts() {
   const [params, setParams] = useSearchParams();
   const agentsState = useApi(() => api.listAgents(), []);
   const agentId = params.get('agent') || '';
+  const traceId = params.get('trace') || '';
   const selectAgent = (value) => {
     const next = new URLSearchParams(params);
     if (value) next.set('agent', value); else next.delete('agent');
+    next.delete('trace');
     setParams(next, { replace: true });
   };
   return (
@@ -49,7 +51,15 @@ export default function Thoughts() {
           </Select>
         </FilterField></FilterBar>}
       </Async>
-      <ThoughtFeed key={agentId} agentId={agentId} />
+      {traceId ? (
+        <FilterBar>
+          <FilterActions>
+            <span className="break-all text-xs text-slate-500">Trace: {traceId}</span>
+            <Button variant="ghost" onClick={() => selectAgent(agentId)}>Show latest thoughts</Button>
+          </FilterActions>
+        </FilterBar>
+      ) : null}
+      <ThoughtFeed key={`${agentId}:${traceId}`} agentId={agentId} traceId={traceId} />
     </div>
   );
 }

@@ -94,10 +94,7 @@ class LLMProvider(ABC):
         return None
 
     def enable_thought_summaries(self) -> None:
-        """Enable exposed textual summaries, or reject unsupported providers."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support thought summaries for Mushy"
-        )
+        """Enable exposed textual summaries when supported; otherwise a no-op."""
 
     async def close(self) -> None:
         """Release provider resources. Default is no-op."""

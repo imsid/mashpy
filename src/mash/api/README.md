@@ -659,11 +659,13 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 containing nonempty exposed thought summaries. Omit `agent_id` for all agents.
 The limit counts qualifying traces, not individual summaries; each selected
 trace includes all its original summaries in chronological order. Unknown agents
-return 404. Existing captured history remains readable regardless of current
-capture settings. Reading the feed does not invoke a model.
+return 404. Optional `trace_id` filtering applies before the limit so direct
+links can retrieve older traces. The response echoes `agent_id` and `trace_id`.
+Capture is always enabled for supported providers. Reading the feed does not
+invoke a model.
 
 The normal API authentication protects this endpoint and the bundled expression
 assets at `GET /api/v1/telemetry/thoughts/expressions/{asset}` (catalog GIF/PNG
 names only). Admin's Thoughts tab uses the same cookie as Logs and links back
-to each exact trace. The former generation POST and public `/mushy/{id}` routes
+to each exact trace; the Logs trace sidebar links back to its thoughts. The former generation POST and public `/mushy/{id}` routes
 are removed. Thoughts reuses runtime events; migration 003 adds only its query index.

@@ -655,7 +655,7 @@ async def list_recent_traces(
 
 
 async def list_thought_traces(
-    pool: Any, app_id: str | None = None, *, limit: int = 50,
+    pool: Any, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Newest thought-bearing traces, with all their original summaries.
 
@@ -675,6 +675,7 @@ async def list_thought_traces(
                       AND jsonb_typeof(payload -> 'thought_summary') = 'string'
                       AND payload ->> 'thought_summary' ~ '[^[:space:]]'
                       AND (%s::text IS NULL OR app_id = %s)
+                      AND (%s::text IS NULL OR trace_id = %s)
                     GROUP BY app_id, trace_id
                     ORDER BY latest_thought_at DESC, latest_event_id DESC
                     LIMIT %s
@@ -688,7 +689,7 @@ async def list_thought_traces(
                   AND t.payload ->> 'thought_summary' ~ '[^[:space:]]'
                 ORDER BY r.latest_thought_at DESC, r.latest_event_id DESC,
                          t.created_at, t.event_id
-            """, (app_id, app_id, max(1, min(limit, 50))))
+            """, (app_id, app_id, trace_id, trace_id, max(1, min(limit, 50))))
             rows = await cursor.fetchall()
     traces: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:

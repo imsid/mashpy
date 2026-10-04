@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Drawer } from './Drawer.jsx';
 import { Chip, Mono } from './Chip.jsx';
 import { Card } from './Page.jsx';
@@ -9,6 +10,7 @@ import { TextInput, Select, Button } from './Form.jsx';
 import { Loading, ErrorState } from './State.jsx';
 import { CopyId, CopyButton } from './CopyId.jsx';
 import { api } from '../lib/api.js';
+import { traceThoughtsPath } from '../lib/thoughts.js';
 import { useApi } from '../lib/useApi.js';
 import { useBreakpoint } from '../lib/useMediaQuery.js';
 import { reconstructMessages, previewText } from '../lib/conversation.js';
@@ -447,6 +449,14 @@ export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
         </span>
       }
     >
+      {traceId ? (
+        <div className="mb-4">
+          <Link to={traceThoughtsPath({ agent_id: agentId, trace_id: traceId })}
+            onClick={onClose} className="text-xs font-medium text-indigo-600 hover:underline">
+            View thoughts →
+          </Link>
+        </div>
+      ) : null}
       {analysisState.loading && !analysis ? <Loading /> : null}
       {analysisState.error ? (
         <ErrorState error={analysisState.error} onRetry={analysisState.reload} />

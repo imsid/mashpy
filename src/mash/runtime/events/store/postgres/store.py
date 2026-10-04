@@ -276,10 +276,10 @@ class PostgresRuntimeStore(RuntimeStore):
         )
 
     async def list_thought_traces(
-        self, app_id: str | None = None, *, limit: int = 50,
+        self, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         await self.open()
-        return await loaders.list_thought_traces(self._pool, app_id, limit=limit)
+        return await loaders.list_thought_traces(self._pool, app_id, limit=limit, trace_id=trace_id)
 
     async def list_sessions(
         self,

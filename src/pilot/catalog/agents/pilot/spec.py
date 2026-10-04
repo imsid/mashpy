@@ -12,7 +12,7 @@ from typing import Any
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.mcp.types import MCPServerConfig
-from mash import AgentMetadata, AgentSpec, Mushy
+from mash import AgentMetadata, AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.ask_user import AskUserTool
 from mash.tools.registry import ToolRegistry
@@ -78,9 +78,6 @@ class PilotSpec(AgentSpec):
 
     def build_llm(self) -> LLMProvider:
         return build_primary_llm(self.get_agent_id())
-
-    def build_mushy(self) -> Mushy:
-        return Mushy()
 
     def build_mcp_servers(self) -> list[MCPServerConfig]:
         github_mcp_url = os.getenv("GITHUB_MCP_URL") or GITHUB_MCP_URL

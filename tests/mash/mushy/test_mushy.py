@@ -9,11 +9,10 @@ import pytest
 
 from mash.api import create_app, MashHostConfig
 from mash.core.llm import LLMResponse
-from mash.mushy import Mushy
 from mash.mushy.catalog import EXPRESSIONS
 
 
-def test_agent_spec_captures_summary_without_a_second_provider():
+def test_agent_spec_captures_summary_by_default_without_a_second_provider():
     from conftest import build_test_stores
     from mash.runtime import AgentRuntime
     from mash.testing.runtime_fixtures import build_spec
@@ -27,7 +26,6 @@ def test_agent_spec_captures_summary_without_a_second_provider():
             tool_calls=[], content_blocks=[],
         ))
         spec.build_llm = lambda: primary
-        spec.build_mushy = Mock(return_value=Mushy())
         runtime_store, memory_store = build_test_stores()
         runtime = AgentRuntime.from_spec(
             spec, session_id="session", runtime_store=runtime_store, memory_store=memory_store,
@@ -47,7 +45,6 @@ def test_agent_spec_captures_summary_without_a_second_provider():
             thoughts = [e for e in events if e.event_type == "runtime.llm.think.completed"]
             assert thoughts[0].payload["thought_summary"] == "I am considering alternatives."
             primary.enable_thought_summaries.assert_called()
-            spec.build_mushy.assert_called_once()
         finally:
             await runtime.shutdown()
     asyncio.run(run())
@@ -79,10 +76,14 @@ def test_feed_auth_filter_raw_text_and_fixed_trace_limit():
     assert response.status_code == 200
     assert response.json()["data"]["limit"] == 50
     assert response.json()["data"]["traces"] == store.list_thought_traces.return_value
-    store.list_thought_traces.assert_awaited_once_with("pilot", limit=50)
+    store.list_thought_traces.assert_awaited_once_with("pilot", limit=50, trace_id=None)
     client.get(path, headers=auth)
-    store.list_thought_traces.assert_awaited_with(None, limit=50)
+    store.list_thought_traces.assert_awaited_with(None, limit=50, trace_id=None)
     assert client.get(path, params={"agent_id": "missing"}, headers=auth).status_code == 404
+    response = client.get(path, params={"agent_id": "pilot", "trace_id": " old-trace "}, headers=auth)
+    assert response.status_code == 200
+    assert response.json()["data"]["trace_id"] == "old-trace"
+    store.list_thought_traces.assert_awaited_with("pilot", limit=50, trace_id="old-trace")
     client.cookies.set("mash_api_key", "secret")
     assert client.get(path).status_code == 200
 

@@ -508,7 +508,7 @@ channel, not the source of truth for usage.
 thought summaries; adapters and custom providers must supply `""` when absent.
 Opaque signatures, encrypted reasoning, and ordinary answer text are excluded.
 `LLMProvider.enable_thought_summaries()` explicitly requests summary capture
-and raises `NotImplementedError` for unsupported adapters. Gemini implements
-this through `thinking_summaries="auto"`, for both streamed and non-streamed
-responses. Runtime composition enables it only for agents configured with
-`AgentSpec.build_mushy()`. No personality inference happens in the LLM adapter.
+and is a no-op for unsupported adapters. Gemini implements this through
+`thinking_summaries="auto"`, for both streamed and non-streamed responses.
+Runtime composition always enables it, including on request-scoped providers.
+No personality inference happens in the LLM adapter.

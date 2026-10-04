@@ -71,7 +71,6 @@ class AgentRuntime:
         self.mcp_manager: Optional[MCPManager] = None
         self._chain_renderer: Any = None
 
-        self.mushy = definition.build_mushy()
         self.agent = factory_helpers.build_agent_instance(
             self,
             session_id=self.session_id,

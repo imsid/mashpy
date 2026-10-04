@@ -65,6 +65,11 @@ def test_feed_selection_order_isolation_and_fresh_schema():
             assert traces[0]['session_id'] == 'session-pilot'
             assert await list_thought_traces(pool, 'missing') == []
             assert len(await list_thought_traces(pool, 'pilot', limit=999)) == 50
+            old_trace = await list_thought_traces(pool, 'pilot', trace_id='trace-0')
+            assert [t['trace_id'] for t in old_trace] == ['trace-0']
+            assert old_trace[0]['summaries'][0]['thought_summary'] == 'Original 0'
+            assert await list_thought_traces(pool, 'child', trace_id='trace-0') == []
+            assert await list_thought_traces(pool, 'pilot', trace_id='blank-0') == []
             all_traces = await list_thought_traces(pool)
             assert len(all_traces) == 50
             assert all_traces[0]['agent_id'] == 'child'

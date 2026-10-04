@@ -307,9 +307,10 @@ Thoughts**. Filter by Agent and scroll the latest 50 traces with nonempty
 summaries. Underlined phrases bring out the language's personality; selecting
 one moves Mushy beside the passage. Each trace links to its Admin logs.
 
-Enable capture with `AgentSpec.build_mushy()` returning `Mushy()`. Gemini is
-supported first; Pilot's primary agent enables it. There is no separate
-interpreter, GIF generation API, or public sharing surface. See
+Capture is always enabled for runtime agents when their provider supports it
+(currently Gemini). The trace sidebar in Logs links directly to that trace's
+thoughts, including older traces. There is no separate interpreter, GIF
+generation API, or public sharing surface. See
 [Mushy](src/mash/mushy/README.md) and [Pilot](src/pilot/README.md#try-mushy-with-pilot).
 
 ## Mash Pilot

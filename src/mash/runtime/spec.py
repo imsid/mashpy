@@ -18,7 +18,6 @@ from ..tools.registry import ToolRegistry
 from ..tools.web_search import WebSearchProvider
 
 if TYPE_CHECKING:
-    from mash.mushy import Mushy
     from .service import AgentRuntime
 
 
@@ -88,10 +87,6 @@ class AgentSpec(ABC):
     def enable_runtime_tools(self) -> bool:
         """Whether Mash runtime tools should be auto-registered."""
         return True
-
-    def build_mushy(self) -> Mushy | None:
-        """Enable exposed thought summaries in Admin; disabled by default."""
-        return None
 
     def build_web_search(self) -> WebSearchProvider | None:
         """Web search provider backing `web_search`/`web_fetch`.

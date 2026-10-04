@@ -55,3 +55,9 @@ export function thoughtLogsPath(trace) {
   if (trace.session_id) params.set('session', trace.session_id);
   return `/logs?${params}`;
 }
+
+export function traceThoughtsPath(trace) {
+  const params = new URLSearchParams({ trace: trace.trace_id });
+  if (trace.agent_id) params.set('agent', trace.agent_id);
+  return `/thoughts?${params}`;
+}
