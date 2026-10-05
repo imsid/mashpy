@@ -10,6 +10,11 @@ site_dir = "site"
 repo_url = "https://github.com/imsid/mashpy"
 repo_name = "imsid/mashpy"
 copyright = "Copyright &copy; 2026 The Mash authors"
+extra_css = ["assets/interactive/interactive.css"]
+extra_javascript = [
+    "assets/interactive/agent-loop.js",
+    "assets/interactive/h2a.js",
+]
 nav = [
     { "Home" = "index.md" },
     { "Posts" = [
@@ -24,6 +29,8 @@ nav = [
         ] },
         { "Internals" = [
             { "The Life of a Mash Request" = "posts/request-lifecycle.md" },
+            { "H2A Envelope Walkthrough" = "posts/h2a-envelope-walkthrough.md" },
+            { "Agent Loop Walkthrough" = "posts/agent-loop-walkthrough.md" },
             { "Durable Agent Loop" = "posts/durable-agent-loop.md" },
             { "Persistence Store" = "posts/persistence-store.md" },
             { "Host API and CLI" = "posts/host-api-and-cli.md" },
