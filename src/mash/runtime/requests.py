@@ -470,16 +470,19 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             },
         }
     if event.event_type == RuntimeEventType.INTERACTION_ACK.value:
-        return {
-            "event": "request.interaction.ack",
-            "data": {
-                "request_id": event.request_id,
-                "agent_id": event.agent_id,
-                "session_id": event.session_id,
-                "interaction_id": event.payload.get("interaction_id"),
-                "response": event.payload.get("response"),
-            },
+        data = {
+            "request_id": event.request_id,
+            "agent_id": event.agent_id,
+            "session_id": event.session_id,
+            "interaction_id": event.payload.get("interaction_id"),
+            "response": event.payload.get("response"),
         }
+        # Present only when set, so callers can tell a timeout default or a
+        # cancel from a real response.
+        for flag in ("timed_out", "cancelled"):
+            if event.payload.get(flag):
+                data[flag] = True
+        return {"event": "request.interaction.ack", "data": data}
     if event.event_type == RuntimeEventType.REQUEST_COMPLETED.value:
         return {"event": "request.completed", "data": dict(event.payload or {})}
     if event.event_type == RuntimeEventType.REQUEST_FAILED.value:
