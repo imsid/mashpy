@@ -444,8 +444,12 @@ The HTTP plus SSE binding defines these endpoints for one agent:
 - `POST /agent/{agent_id}/request`
 - `GET /agent/{agent_id}/request/{request_id}`
 - `POST /agent/{agent_id}/request/{request_id}/interaction`
+- `GET /agent/{agent_id}/request/{request_id}/status`
+- `POST /agent/{agent_id}/request/{request_id}/resume`
+- `POST /agent/{agent_id}/request/{request_id}/cancel`
+- `POST /agent/{agent_id}/request/{request_id}/rerun`
 
-Equivalent route shapes are permitted if they preserve the same semantics. Request control (status, cancel, resume, rerun) is exposed by the host (section 10.4).
+Equivalent route shapes are permitted if they preserve the same semantics.
 
 ### 8.2 POST Request Handling
 
@@ -493,7 +497,19 @@ For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
 5. deliver `response` to the request's execution on topic `interaction_id`
 6. return `200 OK` with `{"ok": true, "interaction_id": ...}`
 
-### 8.5 Runtime Requirements Behind The Server
+### 8.5 Request Control Handling
+
+For the `status`, `resume`, `cancel`, and `rerun` routes, the server MUST:
+
+1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
+2. call the runtime's corresponding operation for `request_id`
+3. return `404 REQUEST_NOT_FOUND` if the runtime does not know the request
+4. return `409 REQUEST_STALE` if a resume is refused because the session has newer turns
+5. otherwise return `200 OK` with the operation's result as the body, without the host's `{data}` envelope
+
+Results and semantics are the same as the host routes in section 10.4.
+
+### 8.6 Runtime Requirements Behind The Server
 
 The runtime attached to one agent HTTP server MUST provide:
 

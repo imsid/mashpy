@@ -237,6 +237,13 @@ async def _commit_step_payload(
     }
 
 
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _persist_turn_payload(
     runtime: "AgentRuntime",
     *,
@@ -259,33 +266,46 @@ async def _persist_turn_payload(
     if extra_metadata:
         response_metadata.update(dict(extra_metadata))
     total_tokens = context_helpers.compute_turn_tokens(response_metadata)
-    session_total_tokens = await context_helpers.get_session_total_tokens(
-        runtime, session_id
-    )
-    session_total_tokens += total_tokens
     trace_id = response_metadata.get("trace_id")
     resolved_trace_id = str(trace_id or uuid.uuid4())
-    # Workflow task and subagent turns (their request_metadata carries
-    # workflow_id/run_id/task_id or subagent_id) share the session but are kept
-    # out of the model's replayed conversation history.
-    workflow_id = response_metadata.get("workflow_id") or None
-    workflow_run_id = response_metadata.get("workflow_run_id") or None
-    task_id = response_metadata.get("task_id") or None
-    is_subagent = bool(response_metadata.get("subagent_id"))
-    await runtime.store.save_turn(
-        trace_id=resolved_trace_id,
-        session_id=session_id,
-        app_id=runtime.app_id,
-        user_message=message,
-        agent_response=response.text,
-        signals=signals,
-        session_total_tokens=session_total_tokens,
-        metadata=response_metadata,
-        workflow_id=workflow_id,
-        workflow_run_id=workflow_run_id,
-        task_id=task_id,
-        replayable=workflow_id is None and not is_subagent,
+    latest_turns = await runtime.store.get_turns(
+        session_id=session_id, app_id=runtime.app_id, limit=1
     )
+    latest_turn = latest_turns[-1] if latest_turns else None
+    if latest_turn is not None and str(latest_turn.get("trace_id")) == resolved_trace_id:
+        # This step is being replayed after its insert committed but before
+        # DBOS recorded the step output. The turn is already stored, and its
+        # session total already counts this turn, so reuse it instead of
+        # adding the turn's tokens a second time.
+        session_total_tokens = _int_or_zero(latest_turn.get("session_total_tokens"))
+    else:
+        previous_total = (
+            _int_or_zero(latest_turn.get("session_total_tokens"))
+            if latest_turn is not None
+            else 0
+        )
+        session_total_tokens = previous_total + total_tokens
+        # Workflow task and subagent turns (their request_metadata carries
+        # workflow_id/run_id/task_id or subagent_id) share the session but are
+        # kept out of the model's replayed conversation history.
+        workflow_id = response_metadata.get("workflow_id") or None
+        workflow_run_id = response_metadata.get("workflow_run_id") or None
+        task_id = response_metadata.get("task_id") or None
+        is_subagent = bool(response_metadata.get("subagent_id"))
+        await runtime.store.save_turn(
+            trace_id=resolved_trace_id,
+            session_id=session_id,
+            app_id=runtime.app_id,
+            user_message=message,
+            agent_response=response.text,
+            signals=signals,
+            session_total_tokens=session_total_tokens,
+            metadata=response_metadata,
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
+            task_id=task_id,
+            replayable=workflow_id is None and not is_subagent,
+        )
     response_payload = {
         "text": response.text,
         "signals": dict(signals or {}),
@@ -315,22 +335,25 @@ async def start_request_trace(
     message: str,
 ) -> str:
     runtime = _require_runtime(agent_id)
-    trace_id = str(uuid.uuid4())
     # workflow_id / workflow_run_id are stamped by append_runtime_event from the
     # bound workflow context when the request was issued by a workflow task.
-    await append_runtime_event(
+    started = await append_runtime_event(
         runtime,
         RuntimeEvent(
             request_id=request_id,
             app_id=runtime.app_id,
             agent_id=runtime.app_id,
-            trace_id=trace_id,
+            trace_id=str(uuid.uuid4()),
             session_id=session_id,
             event_type=RuntimeEventType.TRACE_STARTED.value,
             dedupe_key="request.started",
             payload={"message": message},
         ),
     )
+    # On a replay after the append committed but before DBOS recorded this
+    # step, the dedupe hit returns the original row. Taking the id from that
+    # row keeps one trace_id for the whole request.
+    trace_id = str(started.trace_id)
     await runtime.event_logger.emit(
         AgentTraceEvent(
             event_type="agent.run.start",
