@@ -732,6 +732,8 @@ class _TestMemoryStore:
         task_id: str | None = None,
         replayable: bool = True,
     ) -> str:
+        if any(t["trace_id"] == trace_id for t in self._turns):
+            return trace_id
         self._turns.append(
             {
                 "trace_id": trace_id,
