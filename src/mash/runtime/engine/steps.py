@@ -335,22 +335,25 @@ async def start_request_trace(
     message: str,
 ) -> str:
     runtime = _require_runtime(agent_id)
-    trace_id = str(uuid.uuid4())
     # workflow_id / workflow_run_id are stamped by append_runtime_event from the
     # bound workflow context when the request was issued by a workflow task.
-    await append_runtime_event(
+    started = await append_runtime_event(
         runtime,
         RuntimeEvent(
             request_id=request_id,
             app_id=runtime.app_id,
             agent_id=runtime.app_id,
-            trace_id=trace_id,
+            trace_id=str(uuid.uuid4()),
             session_id=session_id,
             event_type=RuntimeEventType.TRACE_STARTED.value,
             dedupe_key="request.started",
             payload={"message": message},
         ),
     )
+    # On a replay after the append committed but before DBOS recorded this
+    # step, the dedupe hit returns the original row. Taking the id from that
+    # row keeps one trace_id for the whole request.
+    trace_id = str(started.trace_id)
     await runtime.event_logger.emit(
         AgentTraceEvent(
             event_type="agent.run.start",
