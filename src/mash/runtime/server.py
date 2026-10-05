@@ -16,6 +16,7 @@ from .engine.workflow import workflow_id_for
 from .errors import RequestStaleError
 from .events import PostgresRuntimeStore
 from .service import AgentRuntime
+from .structured_output import serialize_structured_output
 
 
 def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -169,9 +170,22 @@ class AgentServer:
                 "session_id is required",
             )
 
+        try:
+            structured_output = serialize_structured_output(
+                payload.get("structured_output")
+            )
+        except (TypeError, ValueError) as exc:
+            return _json_error(400, "INVALID_STRUCTURED_OUTPUT", str(exc))
+
+        metadata = payload.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            return _json_error(400, "INVALID_REQUEST", "metadata must be an object")
+
         accepted = await self.runtime.submit_request(
             message=message,
             session_id=session_id.strip(),
+            structured_output=structured_output,
+            metadata=metadata,
         )
         return JSONResponse(accepted, status_code=202)
 

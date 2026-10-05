@@ -458,8 +458,10 @@ For `POST /agent/{agent_id}/request`, the server MUST:
 3. return `400 INVALID_REQUEST` for a non-object body
 4. validate that `message` is a non-empty string, returning `400 INVALID_REQUEST` otherwise
 5. validate that `session_id` is a non-empty string, returning `400 INVALID_REQUEST` otherwise
-6. call the runtime request-submission operation with `message` and `session_id`
-7. return `202 Accepted` with the accepted payload as the body
+6. if `structured_output` is present, validate it as a JSON schema object, returning `400 INVALID_STRUCTURED_OUTPUT` otherwise
+7. if `metadata` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
+8. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, and `metadata`
+9. return `202 Accepted` with the accepted payload as the body
 
 Example error:
 
