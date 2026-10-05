@@ -80,6 +80,35 @@ class PublicEventTests(unittest.TestCase):
         self.assertEqual(public["data"]["status"], "cancelled")
 
 
+    def _ack(self, payload: dict) -> dict:
+        event = RuntimeEvent(
+            app_id="a",
+            agent_id="a",
+            event_type=RuntimeEventType.INTERACTION_ACK.value,
+            request_id="r",
+            session_id="s",
+            payload={"interaction_id": "itr_1", **payload},
+        )
+        public = to_public_event(event)
+        self.assertEqual(public["event"], "request.interaction.ack")
+        return public["data"]
+
+    def test_interaction_ack_omits_flags_for_a_real_response(self) -> None:
+        data = self._ack({"response": "deny"})
+        self.assertEqual(data["response"], "deny")
+        self.assertNotIn("timed_out", data)
+        self.assertNotIn("cancelled", data)
+
+    def test_interaction_ack_carries_timed_out(self) -> None:
+        data = self._ack({"response": "deny", "timed_out": True})
+        self.assertIs(data["timed_out"], True)
+        self.assertNotIn("cancelled", data)
+
+    def test_interaction_ack_carries_cancelled(self) -> None:
+        data = self._ack({"response": None, "cancelled": True})
+        self.assertIsNone(data["response"])
+        self.assertIs(data["cancelled"], True)
+
 class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._runtime_database = patch(

@@ -393,6 +393,8 @@ Fields:
 - `session_id: string`
 - `interaction_id: string`: matches the originating `request.interaction.create`
 - `response: any`: the user's response (string for approval and info, array for choice), the default on timeout, or `null` on cancel
+- `timed_out: true` (optional): present when no response arrived in time and `response` is the default
+- `cancelled: true` (optional): present when the request was cancelled while waiting
 
 ### 7.4 Interaction Flow
 
@@ -418,7 +420,7 @@ sequenceDiagram
 If no response arrives within `timeout_seconds`:
 
 - Execution continues with the default response for the type: `"deny"` for approval, `""` for info, `[]` for choice.
-- The agent MUST emit `request.interaction.ack` carrying the default response.
+- The agent MUST emit `request.interaction.ack` carrying the default response and `timed_out: true`.
 
 ### 7.6 Durability
 
@@ -426,7 +428,7 @@ Interaction waiting MUST be durable. If the agent runtime restarts while waiting
 
 ### 7.7 Cancellation
 
-If a request is cancelled while waiting on an interaction, the agent MUST emit `request.interaction.ack` for that interaction with `response: null`, followed by `request.cancelled`. If the request is later resumed, execution issues a new interaction with a new `interaction_id` and a new `request.interaction.create`.
+If a request is cancelled while waiting on an interaction, the agent MUST emit `request.interaction.ack` for that interaction with `response: null` and `cancelled: true`, followed by `request.cancelled`. If the request is later resumed, execution issues a new interaction with a new `interaction_id` and a new `request.interaction.create`.
 
 ## 8. Client To Agent HTTP Server
 
