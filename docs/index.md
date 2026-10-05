@@ -270,6 +270,8 @@ mash repl --host assistant
 ## Internals
 
 - [**Life of a Mash request**](posts/request-lifecycle.md): follow one message from POST to `request.completed`
+- [**H2A envelope walkthrough**](posts/h2a-envelope-walkthrough.md): interactive, submit, stream, and interaction calls hop by hop
+- [**Agent loop walkthrough**](posts/agent-loop-walkthrough.md): interactive, every DBOS step of a request, with crash and recovery
 - [**Durable agent loop**](posts/durable-agent-loop.md): checkpoints, retries, cancel/resume/rerun, and surviving `kill -9`
 - [**Persistence store**](posts/persistence-store.md): the event log, feedback, and memory tables a request touches
 - [**Host API and CLI**](posts/host-api-and-cli.md): the HTTP surface applications integrate with, and the REPL built on it
