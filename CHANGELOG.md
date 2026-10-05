@@ -9,6 +9,23 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.23.1](https://github.com/imsid/mashpy/compare/mashpy-v0.23.0...mashpy-v0.23.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **runtime:** forward structured_output and metadata in AgentServer submit ([#207](https://github.com/imsid/mashpy/issues/207)) ([4aa94b9](https://github.com/imsid/mashpy/commit/4aa94b901e9a96b3035950b0e127dd734e59d334))
+* **runtime:** keep one trace_id when request.start is replayed ([#205](https://github.com/imsid/mashpy/issues/205)) ([5af614d](https://github.com/imsid/mashpy/commit/5af614daf0b0a0d72119405d7682179382764d40))
+* **runtime:** make turn.persist idempotent on replay ([#204](https://github.com/imsid/mashpy/issues/204)) ([0b860b3](https://github.com/imsid/mashpy/commit/0b860b33a24f46327c77a18959afd2b7a495a128))
+* **runtime:** publish timed_out and cancelled on request.interaction.ack ([#208](https://github.com/imsid/mashpy/issues/208)) ([419c775](https://github.com/imsid/mashpy/commit/419c7756ca98418a42f5d739d63b44486856abb1))
+* **runtime:** serve status, resume, cancel, and rerun on AgentServer ([#206](https://github.com/imsid/mashpy/issues/206)) ([7ee6996](https://github.com/imsid/mashpy/commit/7ee6996407bb9cdbec2171254d20f8cdc66439ab))
+
+
+### Documentation
+
+* add interactive agent loop and H2A envelope walkthroughs ([#196](https://github.com/imsid/mashpy/issues/196)) ([d1ea556](https://github.com/imsid/mashpy/commit/d1ea55613f06f06bcdff7e3a54148571e79a6209))
+* **rfc:** sync H2A RFC with the runtime (v0.3.0) ([#197](https://github.com/imsid/mashpy/issues/197)) ([134b675](https://github.com/imsid/mashpy/commit/134b67541be735f0bf72a1e677fd9a6cf6639e2f))
+
 ## [0.23.0](https://github.com/imsid/mashpy/compare/mashpy-v0.22.1...mashpy-v0.23.0) (2026-10-04)
 
 
