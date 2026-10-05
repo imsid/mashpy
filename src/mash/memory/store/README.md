@@ -64,7 +64,7 @@ Current backend status:
 ### Turn Persistence
 
 `save_turn(...) -> str`
-- Persists one conversation turn.
+- Persists one conversation turn. Saving a `trace_id` that already exists is a no-op.
 - Inputs:
   - `trace_id`: used as the stored `trace_id`
   - `session_id`

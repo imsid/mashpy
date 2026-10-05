@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine.workflow import workflow_id_for
+from .errors import RequestStaleError
 from .events import PostgresRuntimeStore
 from .service import AgentRuntime
 from .structured_output import serialize_structured_output
@@ -69,6 +70,26 @@ class AgentServer:
                 Route(
                     "/agent/{agent_id:str}/request/{request_id:str}/interaction",
                     self.post_interaction,
+                    methods=["POST"],
+                ),
+                Route(
+                    "/agent/{agent_id:str}/request/{request_id:str}/status",
+                    self.get_request_status,
+                    methods=["GET"],
+                ),
+                Route(
+                    "/agent/{agent_id:str}/request/{request_id:str}/resume",
+                    self.resume_request,
+                    methods=["POST"],
+                ),
+                Route(
+                    "/agent/{agent_id:str}/request/{request_id:str}/cancel",
+                    self.cancel_request,
+                    methods=["POST"],
+                ),
+                Route(
+                    "/agent/{agent_id:str}/request/{request_id:str}/rerun",
+                    self.rerun_request,
                     methods=["POST"],
                 ),
             ],
@@ -197,6 +218,35 @@ class AgentServer:
         DBOS.send(wf_id, response_value, topic=interaction_id.strip())
 
         return JSONResponse({"ok": True, "interaction_id": interaction_id.strip()})
+
+    async def get_request_status(self, request: Request) -> Response:
+        return await self._control(request, self.runtime.get_request_status)
+
+    async def resume_request(self, request: Request) -> Response:
+        return await self._control(request, self.runtime.resume_request)
+
+    async def cancel_request(self, request: Request) -> Response:
+        return await self._control(request, self.runtime.cancel_request)
+
+    async def rerun_request(self, request: Request) -> Response:
+        return await self._control(request, self.runtime.rerun_request)
+
+    async def _control(self, request: Request, operation) -> Response:
+        agent_id = request.path_params.get("agent_id", "").strip()
+        if agent_id != self.agent_id:
+            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+
+        request_id = request.path_params.get("request_id", "").strip()
+        if not request_id:
+            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+
+        try:
+            result = await operation(request_id)
+        except RequestStaleError as exc:
+            return _json_error(409, "REQUEST_STALE", str(exc))
+        except KeyError:
+            return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
+        return JSONResponse(result)
 
     async def stream_request(self, request: Request) -> Response:
         agent_id = request.path_params.get("agent_id", "").strip()
