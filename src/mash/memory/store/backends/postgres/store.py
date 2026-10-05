@@ -273,6 +273,7 @@ class PostgresStore(MemoryStore):
                             created_at
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        ON CONFLICT (trace_id) DO NOTHING
                         """,
                         (
                             trace_id,
@@ -300,6 +301,7 @@ class PostgresStore(MemoryStore):
                                 signal_value
                             )
                             VALUES (%s, %s, %s, %s, %s::jsonb)
+                            ON CONFLICT (trace_id, signal_name) DO NOTHING
                             """,
                             [
                                 (

@@ -71,6 +71,9 @@ class MemoryStore(Protocol):
     ) -> str:
         """Save a conversation turn with signals.
 
+        Saving a ``trace_id`` that is already stored is a no-op, so a replayed
+        persist step never fails on the existing row.
+
         Workflow task turns carry their ``workflow_id`` / ``workflow_run_id`` /
         ``task_id`` and are marked ``replayable=False`` so they are excluded from
         the conversation history replayed into the model.

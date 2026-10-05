@@ -92,6 +92,23 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         return turn_id
 
+    async def test_save_turn_is_a_no_op_for_an_existing_trace_id(self) -> None:
+        trace_id = f"replayed-{uuid.uuid4().hex}"
+        for total in (42, 99):
+            await self.store.save_turn(
+                trace_id=trace_id,
+                session_id="session-1",
+                app_id=self.app_id,
+                user_message="hi",
+                agent_response="hello",
+                signals={"sentiment": "positive"},
+                session_total_tokens=total,
+            )
+
+        turns = await self.store.get_turns(session_id="session-1", app_id=self.app_id)
+        self.assertEqual([turn["trace_id"] for turn in turns], [trace_id])
+        self.assertEqual(turns[0]["session_total_tokens"], 42)
+
     async def test_save_and_get_logs_reconstruct_public_event_shape(self) -> None:
         await self.store.save_logs(
             [
