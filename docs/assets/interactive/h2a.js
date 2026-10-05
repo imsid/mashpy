@@ -61,12 +61,18 @@
               what: "submit_request route → pool.get_client(agent_id)",
               body:
                 "<p>" + link("submit_request", "api/routes/agent.py") +
-                " validates the body. An empty message or session id returns 400 " +
-                code("INVALID_REQUEST") + ". The route then resolves the agent id " +
-                "to its client with " + code("pool.get_client") + ".</p>",
+                " validates the body. An empty message or session id fails schema " +
+                "validation and returns 422 " + code("VALIDATION_ERROR") +
+                "; one that is only whitespace returns 400 " + code("INVALID_REQUEST") +
+                ". The route then resolves the agent id to its client with " +
+                code("pool.get_client") + ".</p>",
               payload: json({
-                error: { code: "INVALID_REQUEST", message: "session_id is required" },
-              }) + "\n# returned with status 400 when session_id is empty",
+                error: {
+                  code: "INVALID_REQUEST",
+                  message: "session_id is required",
+                  details: {},
+                },
+              }) + '\n# status 400 when session_id is "   "; an empty string returns 422 VALIDATION_ERROR',
             },
             {
               lane: 2,
