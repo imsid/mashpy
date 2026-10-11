@@ -402,7 +402,7 @@ class Rubric(BaseModel):
 
 
 class GeneratedEval(BaseModel):
-    dataset_rows: list[DatasetRow] = Field(min_length=1, max_length=100)
+    dataset_rows: list[DatasetRow] = Field(min_length=1)
     rubric: Rubric
 
 
