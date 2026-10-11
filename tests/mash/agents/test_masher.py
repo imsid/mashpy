@@ -719,6 +719,13 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
         self.assertNotIn("default", criterion["properties"]["scale_min"])
         self.assertNotIn("default", criterion["properties"]["scale_max"])
 
+    def test_generated_eval_schema_has_no_dataset_rows_max_items(self) -> None:
+        # Gemini rejects maxItems >= 30 on an array of objects; row_count is
+        # bounded on the workflow input and enforced exactly by persist-eval.
+        schema = serialize_structured_output(GeneratedEval)
+        assert schema is not None
+        self.assertNotIn("maxItems", schema["properties"]["dataset_rows"])
+
     def test_profile_host_step_collects_declared_capabilities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=False):
