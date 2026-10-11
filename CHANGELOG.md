@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.23.2](https://github.com/imsid/mashpy/compare/mashpy-v0.23.1...mashpy-v0.23.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* **masher:** drop maxItems from GeneratedEval.dataset_rows ([#211](https://github.com/imsid/mashpy/issues/211)) ([34b4a70](https://github.com/imsid/mashpy/commit/34b4a70c7ee331d257f3063384c340b52e0271d1))
+
 ## [0.23.1](https://github.com/imsid/mashpy/compare/mashpy-v0.23.0...mashpy-v0.23.1) (2026-10-05)
 
 
