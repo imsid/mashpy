@@ -126,6 +126,9 @@ def build_agent_instance(
         agent.set_chain_renderer(chain_renderer)
     if self.definition.enable_runtime_tools():
         configure_runtime_tools(self, agent, session_id=session_id, user_id=user_id)
+    cortex = self.get_cortex()
+    if cortex is not None and user_id:
+        agent.tools.register(cortex.search_tool(user_id))
     mcp_servers = self.get_mcp_servers()
     if mcp_servers:
         configure_remote_tools(self, agent, mcp_servers)

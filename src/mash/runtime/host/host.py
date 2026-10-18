@@ -55,6 +55,9 @@ class Pool:
         self._shared_workflow_store: WorkflowStore | None = None
         self._workflow_registry = WorkflowRegistry()
         self._default_workflow_ids: list[str] = []
+        # CortexSettings when HostBuilder.enable_cortex() was called. Each
+        # computer imports the same pool and reads it in build_agent_server.
+        self.cortex: Any = None
         self._workflow_service = WorkflowService(
             self._workflow_registry,
             self,

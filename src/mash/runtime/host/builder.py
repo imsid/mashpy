@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 from mash.core.database import resolve_database_url
 from mash.workflows import WorkflowSpec
@@ -33,6 +34,7 @@ class HostBuilder:
         self._agents: list[AgentRegistration] = []
         self._hosts: list[Host] = []
         self._workflows: list[WorkflowSpec] = []
+        self._cortex: Any = None
 
     def agent(
         self,
@@ -57,6 +59,19 @@ class HostBuilder:
 
     def workflow(self, workflow: WorkflowSpec) -> "HostBuilder":
         self._workflows.append(workflow)
+        return self
+
+    def enable_cortex(self, *, profile_max_chars: int | None = None) -> "HostBuilder":
+        """Turn on Cortex, per-user memory shared by every agent in the pool.
+
+        Agents serving a request with a ``user_id`` get the user's profile in
+        their context and the read-only ``search_cortex`` tool.
+        """
+        from mash.agents.cortex import DEFAULT_PROFILE_MAX_CHARS, CortexSettings
+
+        self._cortex = CortexSettings(
+            profile_max_chars=profile_max_chars or DEFAULT_PROFILE_MAX_CHARS
+        )
         return self
 
     def build(self) -> Pool:
@@ -98,4 +113,5 @@ class HostBuilder:
         # and hosts defined later through the control API.
         for host in self._hosts:
             pool.define_host(host)
+        pool.cortex = self._cortex
         return pool

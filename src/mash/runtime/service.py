@@ -67,6 +67,7 @@ class AgentRuntime:
 
         self._subagent_access: SubagentAccess | None = None
         self._computer_bash = False
+        self._cortex: Any = None
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
         self.has_mcp_manager = False
         self.mcp_manager: Optional[MCPManager] = None
@@ -132,6 +133,13 @@ class AgentRuntime:
 
     def get_subagent_access(self) -> SubagentAccess | None:
         return self._subagent_access
+
+    def enable_cortex(self, reader: Any) -> None:
+        """Give requests with a ``user_id`` the user's Cortex profile and ``search_cortex``."""
+        self._cortex = reader
+
+    def get_cortex(self) -> Any:
+        return self._cortex
 
     def enable_computer_bash(self) -> None:
         """Give every turn agent bash on its computer, unless the spec has its own."""
@@ -307,6 +315,8 @@ class AgentRuntime:
             return
         await self.store.open()
         await self.runtime_store.open()
+        if self._cortex is not None:
+            await self._cortex.open()
         await self.engine.open()
         self._is_open = True
 
@@ -321,6 +331,8 @@ class AgentRuntime:
                 self.mcp_manager.disconnect_all()
             await self.agent.tools.shutdown()
             await self.agent.llm.close()
+            if self._cortex is not None:
+                await self._cortex.close()
             await self.engine.close()
             self._is_open = False
         finally:
