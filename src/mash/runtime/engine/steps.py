@@ -16,6 +16,7 @@ from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
+from ..host.subagents import append_context_block
 from ..requests import (
     append_runtime_event,
     fetch_request_attempt,
@@ -389,13 +390,22 @@ async def load_request_context(
     metadata = dict(request_metadata or {})
     host = metadata.get("host") or None
     request_context = metadata.get("context")
+    user_id = user_id_from_request_metadata(metadata)
+    system_prompt = factory_helpers.resolve_host_system_prompt(
+        runtime, host, request_context
+    )
+    cortex = runtime.get_cortex()
+    if cortex is not None and user_id:
+        # Read inside this checkpointed step, so a replay sees the profile the
+        # request originally saw.
+        system_prompt = append_context_block(
+            system_prompt, await cortex.profile_block(user_id)
+        )
     context_payload = await context_helpers.build_context_payload(
         runtime,
         session_id=session_id,
         message=message,
-        system_prompt=factory_helpers.resolve_host_system_prompt(
-            runtime, host, request_context
-        ),
+        system_prompt=system_prompt,
     )
     await append_runtime_event(
         runtime,
@@ -414,7 +424,7 @@ async def load_request_context(
         "context": dict(context_payload.get("context") or {}),
         "compaction": dict(context_payload.get("compaction") or {}),
         "host": host,
-        "user_id": user_id_from_request_metadata(metadata),
+        "user_id": user_id,
         "loop_index": 0,
         "aggregate_usage": {"input": 0, "output": 0},
         "tool_usage": {},

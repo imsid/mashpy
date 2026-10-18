@@ -4,7 +4,8 @@
 agent from it behind an ``AgentServer``, and reaches the host for everything
 else: subagent calls go to the host's H2A relay (``{host}/h2a``) with the
 agent's token, and the host checks them against the request's host snapshot.
-Every agent served here gets a ``bash`` tool unless its spec registers its own.
+Every agent served here gets a ``bash`` tool unless its spec registers its own,
+and, when the pool enables Cortex, read access to the request user's Cortex.
 The pool itself is never started on a computer; it only supplies the agent's
 spec and the metadata of the agents it may call.
 """
@@ -77,6 +78,12 @@ def build_agent_server(
         HostRelay(pool, host_api_url=host_api_url, token=token)
     )
     server.runtime.enable_computer_bash()
+    if pool.cortex is not None:
+        from mash.agents.cortex import CortexReader, CortexStore
+        from mash.core.database import resolve_database_url
+
+        database_url = runtime_database_url or resolve_database_url()
+        server.runtime.enable_cortex(CortexReader(CortexStore(database_url), pool.cortex))
     return server
 
 
