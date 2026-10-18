@@ -93,7 +93,7 @@ from mash import AgentSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.skills import SkillRegistry
-from mash.tools import ToolRegistry
+from mash.tools.registry import ToolRegistry
 
 
 class ConciergeAgent(AgentSpec):
@@ -317,24 +317,20 @@ generation API, or public sharing surface. See
 ## Mash Pilot
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
-shipped in this repo at [`src/pilot/`](src/pilot/). Its agents specialize in
-Mash's own modules — so instead of reading docs or grepping the source, you ask
-Pilot and it answers from the actual source tree. It also ships the
-`pilot-changelog` workflow and the `build-mash-agent`/`build-mash-workflow`/
-`build-mash-host` scaffolding skills.
+shipped in this repo at [`src/pilot/`](src/pilot/). Its `pilot` agent answers
+questions from the source, and its `builder` agent builds Mash apps on its own
+computer. It also ships the `pilot-changelog` workflow. Run it from a checkout,
+with `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `MASH_HOST_SECRET` in `.env`:
 
 ```bash
-docker run -d --name pilot -p 8000:8000 \
-  -e GEMINI_API_KEY=... -e OPENROUTER_API_KEY=sk-or-... \
-  -v pilot-data:/var/lib/pilot ghcr.io/imsid/mashpy-pilot:latest
+docker compose -f docker-compose.pilot.yml up -d --build
 
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 pilot repl --host guide
 ```
 
-See [`src/pilot/README.md`](src/pilot/README.md) for the guide team, the
-required keys and model overrides, the shipped workflow, and scaffolding your
-own app.
+See [`src/pilot/README.md`](src/pilot/README.md) for the agents, the keys and
+model overrides, the shipped workflow, and building your own app.
 
 ## Build with a Coding Agent
 

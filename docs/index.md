@@ -23,26 +23,25 @@ and observability. It runs on both frontier and open source models.
 
 **Try it now with Pilot:**
 
-[Pilot](https://github.com/imsid/mash-pilot) is a ready-made Mash host runtime composed
-of multiple agents that answer questions about the Mash codebase and guide you through
-building your own agent application. One container, no code to write — good for getting
-a feel for the runtime before building your own.
+[Pilot](https://github.com/imsid/mashpy/tree/main/src/pilot) is a ready-made Mash host
+that ships in the mashpy repo. Its `pilot` agent answers questions about the Mash
+codebase from the source, and its `builder` agent builds Mash apps on its own
+computer. It runs from a checkout with Docker Compose, which is a good way to get a
+feel for the runtime before building your own.
 
 ```bash
-# 1. Start the host (embedded Postgres, Mash source included)
-docker run -d --name pilot -p 8000:8000 \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v pilot-data:/var/lib/pilot \
-  ghcr.io/imsid/mash-pilot:latest
+# 1. Clone the repo; put GEMINI_API_KEY, OPENROUTER_API_KEY and MASH_HOST_SECRET in .env
+git clone https://github.com/imsid/mashpy.git && cd mashpy
 
-# 2. Install the CLI and start asking
-curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
+# 2. Start Postgres and the host
+docker compose -f docker-compose.pilot.yml up -d --build
+
+# 3. Install the CLI and start asking
+curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 pilot repl --host guide
 ```
 
-Add `-e OPENAI_API_KEY=sk-...` instead if you prefer OpenAI. The `pilot-data` volume
-keeps your database durable across restarts. Once you're ready to build your own agent,
-keep reading.
+Once you're ready to build your own agent, keep reading.
 
 ---
 
@@ -68,7 +67,7 @@ from mash import AgentSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.skills import SkillRegistry
-from mash.tools import ToolRegistry
+from mash.tools.registry import ToolRegistry
 
 
 class ConciergeAgent(AgentSpec):
@@ -301,6 +300,6 @@ mash repl --host assistant
 
 ## Applications
 
-- [**Pilot**](https://github.com/imsid/mashpy/src/pilot) - a multi-agent CLI guide to build and deploy Mash agents.
+- [**Pilot**](https://github.com/imsid/mashpy/tree/main/src/pilot) - a Mash host that answers questions about the codebase and builds Mash apps.
 - [**Masher**](https://github.com/imsid/mashpy/src/mash/agents/masher) - Mash's built-in eval workflows.
 - [**Crew**](https://github.com/imsid/crew) - a self-hosted crew of role-based agents for analytics and product work, with a CLI and a web UI.
