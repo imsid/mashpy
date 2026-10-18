@@ -22,7 +22,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from typing import Mapping, Protocol, Sequence
 
 import httpx
 
@@ -36,6 +36,7 @@ WORKSPACE_MOUNT = "/home/agent/workspace"
 MASH_COMPUTER_IMAGE_ENV = "MASH_COMPUTER_IMAGE"
 MASH_COMPUTER_NETWORK_ENV = "MASH_COMPUTER_NETWORK"
 MASH_COMPUTER_HOST_API_URL_ENV = "MASH_COMPUTER_HOST_API_URL"
+MASH_COMPUTER_MOUNTS_ENV = "MASH_COMPUTER_MOUNTS"
 DEFAULT_NETWORK = "mash"
 
 # Process-specific variables of the host, and secrets a computer must not hold.
@@ -80,6 +81,28 @@ def computer_env(environ: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in environ.items() if key not in _ENV_EXCLUDED}
 
 
+def parse_mounts(entries: Sequence[str]) -> list[dict]:
+    """Docker bind mounts from ``source:target`` or ``source:target:ro`` entries.
+
+    Sources are paths on the Docker host, since the daemon resolves them.
+    """
+    mounts: list[dict] = []
+    for entry in entries:
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(":")
+        if len(parts) not in (2, 3) or (len(parts) == 3 and parts[2] != "ro"):
+            raise ValueError(f"mount '{entry}' is not source:target or source:target:ro")
+        source, target = parts[0], parts[1]
+        if not source.startswith("/") or not target.startswith("/"):
+            raise ValueError(f"mount '{entry}' needs absolute source and target paths")
+        mounts.append(
+            {"Type": "bind", "Source": source, "Target": target, "ReadOnly": len(parts) == 3}
+        )
+    return mounts
+
+
 @dataclass(frozen=True)
 class ComputerEndpoint:
     """How the host reaches one agent's computer."""
@@ -121,6 +144,7 @@ class DockerComputerProvider:
         image: str | None = None,
         network: str | None = None,
         host_api_url: str | None = None,
+        mounts: Sequence[str] | None = None,
         in_container: bool | None = None,
         environ: Mapping[str, str] | None = None,
         engine: DockerEngine | None = None,
@@ -141,6 +165,9 @@ class DockerComputerProvider:
         self._host_api_url = (
             host_api_url or self._environ.get(MASH_COMPUTER_HOST_API_URL_ENV) or None
         )
+        if mounts is None:
+            mounts = self._environ.get(MASH_COMPUTER_MOUNTS_ENV, "").split(",")
+        self._mounts = parse_mounts(mounts)
         self._in_container = _running_in_container() if in_container is None else in_container
         self._engine = engine or DockerEngine()
         self._health_timeout = float(health_timeout)
@@ -208,6 +235,7 @@ class DockerComputerProvider:
             "RestartPolicy": {"Name": "always"},
             "Mounts": [
                 {"Type": "volume", "Source": workspace_volume(agent_id), "Target": WORKSPACE_MOUNT},
+                *self._mounts,
             ],
             "ExtraHosts": ["host.docker.internal:host-gateway"],
         }
@@ -293,6 +321,7 @@ __all__ = [
     "DockerComputerProvider",
     "computer_env",
     "container_name",
+    "parse_mounts",
     "replace_computer",
     "workspace_volume",
 ]

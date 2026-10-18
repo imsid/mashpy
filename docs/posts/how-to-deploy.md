@@ -170,6 +170,14 @@ variables (`PATH`, `HOME`, and so on) and its own secrets (`MASH_HOST_SECRET`,
 `MASH_API_KEY`). Provider keys, MCP header tokens and anything else a spec
 reads from the environment reach the computer this way.
 
+To give every computer files from the Docker host, list bind mounts in
+`MASH_COMPUTER_MOUNTS`, for example
+`MASH_COMPUTER_MOUNTS=/srv/docs:/home/agent/workspace/docs:ro`. The source is a
+path on the Docker host, even when the host runs in a container, because the
+daemon resolves it. A target inside `/home/agent/workspace` sits on top of the
+workspace volume without being copied into it. Bound files keep their owner on
+the Docker host, so add `:ro` unless the `agent` user can write them.
+
 ## Run the host on your laptop
 
 For a faster loop you can run `mash host serve` directly while the computers
@@ -375,6 +383,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_COMPUTER_IMAGE` | host | the host's own image | Image for computers; required when the host runs outside a container |
 | `MASH_COMPUTER_NETWORK` | host | `mash` | Docker network the host and computers share |
 | `MASH_COMPUTER_HOST_API_URL` | host | derived | Override the host address computers call |
+| `MASH_COMPUTER_MOUNTS` | host | none | Comma-separated `source:target[:ro]` bind mounts added to every computer; sources are Docker-host paths |
 | `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | computer | set by the host | The computer's agent token |
