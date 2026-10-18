@@ -10,7 +10,9 @@
 ## Main Components
 - `base.py`: tool interface and shared behavior.
 - `registry.py`: registration and lookup of enabled tools.
-- `bash.py`: repository and terminal inspection tool.
+- `bash.py`: shell tool. Bash starts with a clean environment (`HOME`, `PATH`,
+  `LANG`, `PWD`). When an `agent` user exists, as on an agent computer, it runs
+  as that user through `sudo` and starts in `/home/agent/workspace`.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.
