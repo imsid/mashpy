@@ -31,6 +31,7 @@ from mash.api.routes.workflow import build_workflow_router
 from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
+from mash.runtime.client import AgentUnavailableError
 from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
@@ -121,6 +122,11 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
 
     @app.exception_handler(AgentClientError)
     async def _client_error_handler(_: Request, exc: AgentClientError) -> JSONResponse:
+        if isinstance(exc, AgentUnavailableError):
+            return JSONResponse(
+                status_code=503,
+                content=error_payload("AGENT_UNAVAILABLE", str(exc)),
+            )
         return JSONResponse(
             status_code=502,
             content=error_payload("RUNTIME_CLIENT_ERROR", str(exc)),

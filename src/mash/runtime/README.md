@@ -391,6 +391,19 @@ scaling linearly per agent.
   - subagent metadata
   - prompt augmentation helpers
 
+- `host/tokens.py`
+  - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
+
+- `host/computers.py`
+  - `DockerComputerProvider.ensure(agent_id)`: volumes `<agent_id>-memory` and `<agent_id>-workspace`, container `mash-agent-<agent_id>` on the private network (`MASH_COMPUTER_NETWORK`, default `mash`) with restart policy `always`, then a `/health` wait
+  - the host's environment passes through, minus process variables (`PATH`, `HOME`, ...) and the host's own secrets (`MASH_HOST_SECRET`, `MASH_API_KEY`)
+  - host in a container: computers run the host's own image id and are reached by name; the host joins the network itself. The host container needs the Docker socket mounted and its group added (`group_add`), since the image runs as `mash`
+  - host on the Docker host (local development): `MASH_COMPUTER_IMAGE` is required and must contain the app; each computer's port is published on `127.0.0.1` at a port fixed at create time, and computers reach the host at `host.docker.internal`. Env values pass through unchanged, so a `localhost` database URL must be written as `host.docker.internal`
+  - `replace_computer(engine, agent_id)`: recreate a container from its own configuration, keeping volumes
+
+- `host/docker_engine.py`
+  - minimal async Docker Engine API client over the Unix socket (`DOCKER_HOST`, `/var/run/docker.sock`, or Docker Desktop's `~/.docker/run/docker.sock`)
+
 ## Request Lifecycle
 
 At a high level, one request flows like this:

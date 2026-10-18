@@ -614,6 +614,7 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 ## Error Cases Worth Remembering
 - `401 UNAUTHORIZED`: missing or wrong API key
 - `404 AGENT_NOT_FOUND`: unknown `agent_id`
+- `503 AGENT_UNAVAILABLE`: the agent's server could not be reached, for example because its computer is down
 - `503 SESSIONS_UNAVAILABLE`: session reads for an agent that overrides `build_memory_store()`; the host reads sessions from the pool's shared memory store only
 - `400 INVALID_REQUEST`: blank required path/body values after trimming
 - `503 MEMORY_SEARCH_UNAVAILABLE`: memory search unavailable for the target agent
