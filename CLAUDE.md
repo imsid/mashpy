@@ -42,8 +42,10 @@ agent's token.
   agent's runtime behind an H2A HTTP server, built from the host's own image.
   The agent's memory (`/home/agent/memory`) and workspace
   (`/home/agent/workspace`) are named volumes, so the container can be replaced
-  without losing them. The agent's bash sessions run as an `agent` user with a
-  clean environment and no access to the runtime's secrets.
+  without losing them. Every agent on a computer has a `bash` tool, so it can
+  write and run code and keep files without registering anything. Its bash
+  sessions run as an `agent` user with a clean environment and no access to
+  the runtime's secrets.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -342,6 +344,9 @@ tools = ToolRegistry()
 tools.register(BashTool(working_dir="/path/to/workspace"))
 tools.register(AskUserTool())  # only works in hosted runtime
 ```
+
+On an agent computer the runtime registers `BashTool()` for you. Register your
+own `bash` tool only to change it, for example to start in another directory.
 
 ### Web Search
 

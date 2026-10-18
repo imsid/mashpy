@@ -30,6 +30,8 @@ from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.host.computers import ComputerEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
+from mash.runtime.factory import build_agent_instance
+from mash.tools.bash import BashTool
 from mash.testing.runtime_fixtures import build_delegating_spec, build_spec, metadata
 
 SECRET = "host-secret"
@@ -115,6 +117,32 @@ class BuildAgentServerTests(unittest.TestCase):
         self.assertEqual(client.base_url, "http://host/h2a")
         self.assertEqual(client._headers["Authorization"], "Bearer tok")
         self.assertIsNotNone(relay.get_agent_metadata("research"))
+
+    def test_agent_gets_bash(self) -> None:
+        server = build_agent_server(
+            _build_pool(), "research", token="tok", host_api_url="http://host"
+        )
+
+        self.assertIsInstance(server.runtime.tools.get("bash"), BashTool)
+        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        self.assertIsInstance(turn_agent.tools.get("bash"), BashTool)
+
+    def test_spec_bash_is_kept(self) -> None:
+        spec_bash = BashTool(working_dir="/srv/data")
+        spec = build_spec(agent_id="research", response_text="ok")
+        build_tools = spec.build_tools
+
+        def tools_with_bash():
+            tools = build_tools()
+            tools.register(spec_bash)
+            return tools
+
+        spec.build_tools = tools_with_bash
+        pool = HostBuilder().agent(spec, metadata=metadata()).build()
+        server = build_agent_server(pool, "research", token="tok", host_api_url="http://host")
+
+        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        self.assertIs(turn_agent.tools.get("bash"), spec_bash)
 
     def test_unknown_agent_raises(self) -> None:
         with self.assertRaises(ValueError):

@@ -95,6 +95,12 @@ def _build_memory_update_agent(self: "AgentRuntime", *, llm: Any, config: Any) -
     return Agent(llm=llm, tools=tools, skills=SkillRegistry(), config=config)
 
 
+def register_computer_bash(self: "AgentRuntime", agent: Agent) -> None:
+    """Register bash on a computer's agent; a spec's own ``bash`` tool wins."""
+    if self._computer_bash and "bash" not in agent.tools:
+        agent.tools.register(BashTool())
+
+
 def build_agent_instance(
     self: "AgentRuntime",
     *,
@@ -132,6 +138,7 @@ def build_agent_instance(
         )
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
+    register_computer_bash(self, agent)
     if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
         agent.tools.register(SkillTool(skills))
     collector = getattr(self, "signal_collector", None)

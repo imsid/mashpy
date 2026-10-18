@@ -4,6 +4,7 @@
 agent from it behind an ``AgentServer``, and reaches the host for everything
 else: subagent calls go to the host's H2A relay (``{host}/h2a``) with the
 agent's token, and the host checks them against the request's host snapshot.
+Every agent served here gets a ``bash`` tool unless its spec registers its own.
 The pool itself is never started on a computer; it only supplies the agent's
 spec and the metadata of the agents it may call.
 """
@@ -75,6 +76,7 @@ def build_agent_server(
     server.runtime.attach_subagent_access(
         HostRelay(pool, host_api_url=host_api_url, token=token)
     )
+    server.runtime.enable_computer_bash()
     return server
 
 
