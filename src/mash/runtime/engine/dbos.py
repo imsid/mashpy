@@ -14,10 +14,24 @@ if TYPE_CHECKING:
     from ..service import AgentRuntime
 
 
+# DBOS recovers pending workflows only for its own executor id, so each
+# process gets a distinct one: ``host`` for the host, ``agent:<agent_id>`` for
+# an agent computer.
+HOST_EXECUTOR_ID = "host"
+
+
+def agent_executor_id(agent_id: str) -> str:
+    resolved = str(agent_id or "").strip()
+    if not resolved:
+        raise ValueError("agent_id is required")
+    return f"agent:{resolved}"
+
+
 @dataclass
 class _DBOSRuntimeState:
     ready: bool = False
     database_url: str | None = None
+    executor_id: str = HOST_EXECUTOR_ID
     registered_workflow: Any = None
     runtime_registry: dict[str, "AgentRuntime"] = field(default_factory=dict)
 
@@ -57,6 +71,22 @@ def unregister_runtime(runtime: "AgentRuntime") -> None:
         _STATE.runtime_registry.pop(runtime.app_id, None)
 
 
+def configure_executor_id(executor_id: str) -> None:
+    """Set this process's DBOS executor id. Must run before DBOS launches."""
+    resolved = str(executor_id or "").strip()
+    if not resolved:
+        raise ValueError("executor_id is required")
+    if _STATE.ready and _STATE.executor_id != resolved:
+        raise RuntimeError(
+            f"DBOS runtime is already launched with executor id '{_STATE.executor_id}'"
+        )
+    _STATE.executor_id = resolved
+
+
+def get_executor_id() -> str:
+    return _STATE.executor_id
+
+
 async def ensure_dbos_ready(database_url: str) -> None:
     resolved_url = str(database_url or "").strip()
     conductor_key = os.getenv("DBOS_CONDUCTOR_KEY") or None
@@ -73,6 +103,7 @@ async def ensure_dbos_ready(database_url: str) -> None:
     config: dict[str, Any] = {
         "name": "mash",
         "system_database_url": resolved_url,
+        "executor_id": _STATE.executor_id,
     }
     if conductor_key:
         config["conductor_key"] = conductor_key
@@ -358,5 +389,9 @@ class DBOSRequestEngine(RequestEngine):
 __all__ = [
     "DBOSRequestEngine",
     "RequestEngine",
+    "HOST_EXECUTOR_ID",
+    "agent_executor_id",
+    "configure_executor_id",
     "ensure_dbos_ready",
+    "get_executor_id",
 ]
