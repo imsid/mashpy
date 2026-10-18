@@ -19,9 +19,12 @@ uv tool install mashpy
 
 **Configure the environment:**
 
-Requires Python >= 3.10. Set environment variables for the LLM provider you
-plan to use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` 
-and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
+Requires Python >= 3.10 and Docker: every agent runs in its own container.
+Set environment variables for the LLM provider you plan to use:
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`, a Postgres URL for
+the durable runtime in `MASH_DATABASE_URL`, and a host secret in
+`MASH_HOST_SECRET` (`openssl rand -hex 32`), from which the host derives each
+agent's token.
 
 ## Core Concepts
 
@@ -33,7 +36,14 @@ and and a Postgres URL for its durable runtime in `MASH_DATABASE_URL`
   workflows, and optional host definitions into a `Pool`.
 - **Pool** — the deployed pool of role-less agents and workflows that the API
   server runs. The pool is the unit of deploy; a pool with no user agents is a
-  valid, workflow-only deploy.
+  valid, workflow-only deploy. The pool runs no agents itself: when the host
+  starts, each agent gets a computer and the pool keeps an HTTP client for it.
+- **Agent computer** — a container (`mash-agent-<agent_id>`) that serves one
+  agent's runtime behind an H2A HTTP server, built from the host's own image.
+  The agent's memory (`/home/agent/memory`) and workspace
+  (`/home/agent/workspace`) are named volumes, so the container can be replaced
+  without losing them. The agent's bash sessions run as an `agent` user with a
+  clean environment and no access to the runtime's secrets.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -111,9 +121,15 @@ def build_pool():
     )
 ```
 
-Run it:
+Run it. The host starts one container per agent from an image that contains
+your app (see [The image](https://github.com/imsid/mashpy/blob/main/docs/posts/how-to-deploy.md#the-image)
+for the Dockerfile). With the host on your machine, name that image in
+`MASH_COMPUTER_IMAGE`, and write container-reachable addresses
+(`host.docker.internal`, not `localhost`) in env such as `MASH_DATABASE_URL`:
 
 ```bash
+docker build -t my-agent:dev .
+export MASH_COMPUTER_IMAGE=my-agent:dev
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
@@ -184,8 +200,12 @@ Optional overrides:
 | `build_mcp_servers()` | `[]` | MCP server connections |
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |
-| `on_startup(runtime)` | No-op | Hook after runtime init |
-| `on_shutdown(runtime)` | No-op | Hook before cleanup |
+| `on_startup(runtime)` | No-op | Hook after runtime init, on the agent's computer |
+| `on_shutdown(runtime)` | No-op | Hook before cleanup, on the agent's computer |
+
+The host imports your specs too (for metadata, workflows and eval snapshots),
+but runtimes, tools, MCP connections and these hooks exist only on the agent's
+computer.
 
 ## AgentConfig Fields
 
@@ -375,11 +395,16 @@ class MyAgent(AgentSpec):
         return [
             MCPServerConfig(
                 name="my-mcp-server",
-                url="http://localhost:3000/sse",
+                url="http://my-mcp-server:3000/sse",
                 description="My custom MCP server",
             ),
         ]
 ```
+
+MCP connections open from the agent's computer, so the URL must be reachable
+from inside its container: a service name on the `mash` Docker network, or
+`host.docker.internal` for a server running on the Docker host. `localhost` is
+the computer itself.
 
 ## Multi-Agent Composition
 
@@ -417,6 +442,9 @@ pool = (
 Submitting a request to a host wires the primary with an `InvokeSubagent`
 tool and a prompt block describing that host's subagents — for that request
 only. The same agent can be primary in one host and a subagent in another.
+The primary's computer calls a subagent through the host's `/h2a` relay, which
+checks the call against the request's composition and forwards it to the
+subagent's computer.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
@@ -459,11 +487,11 @@ mash repl                                           # pinned to 'assistant'
 The REPL target is fixed for its lifetime; to change composition, exit and
 `mash compose` again (or `mash repl --agent <id>` for a bare agent).
 
-**Connection sharing:** `Pool` creates one shared Postgres connection
-pool and one shared memory store for all agents that use the default
-`build_memory_store()`. This keeps the total database connection count
-constant regardless of agent count. Agents that override
-`build_memory_store()` get their own store instance.
+**Database connections:** each agent computer holds its own Postgres
+connections; the host holds one set for its reads (traces, telemetry, sessions,
+workflow runs). Session reads on the host cover agents that use the default
+`build_memory_store()`; an agent that overrides it keeps its store on its
+computer.
 
 ## Workflows
 
@@ -561,20 +589,45 @@ endpoint depends on observability being enabled.
 ## Serving and Deployment
 
 ```bash
-# Local development
+# Host on your machine, computers in Docker
+export MASH_HOST_SECRET=... MASH_COMPUTER_IMAGE=my-agent:dev
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 
-# Docker (using the Mash base image)
-# Set MASH_HOST_APP, MASH_DATA_DIR, MASH_DATABASE_URL
+# Host in a container: mount the Docker socket and add its group;
+# computers then run the host's own image on the `mash` network.
+# Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET.
 
 # Programmatic
 from mash.api import run_host, MashHostConfig
-run_host(pool, config=MashHostConfig(bind_host="0.0.0.0", bind_port=8000))
+run_host(
+    pool,
+    config=MashHostConfig(
+        bind_host="0.0.0.0", bind_port=8000, host_app="my_agent.spec:build_pool"
+    ),
+)
 ```
 
-For full deployment instructions (Docker Compose, horizontal scaling,
-cloud deployment, and external API access), see
-[HOW_TO_DEPLOY.md](docs/HOW_TO_DEPLOY.md).
+A deployment runs one host replica. Computers outlive the host and restart on
+crash with the same volumes. Manage them on the Docker host:
+
+```bash
+mash computer ls                  # status, uptime, restarts, volumes
+mash computer shell <agent_id>    # bash as `agent` (--root for root)
+mash computer restart <agent_id>  # replace the container, keep the volumes
+```
+
+For full deployment instructions (compose file, server deployment, the
+environment reference, and external API access), see
+[how-to-deploy.md](docs/posts/how-to-deploy.md).
+
+## File Memory
+
+Opt in per agent with `AgentConfig(memory_enabled=True)`. Each request's system
+prompt carries `/home/agent/memory/INDEX.md`, and the agent reads full memory
+files with `cat`. The agent does not write memory while it works: after each
+top-level or subagent request completes, a memory update runs on a queue local
+to the computer, one at a time, with the request's transcript and bash in the
+memory directory. Conversation history stays in Postgres.
 
 ## Project Structure Convention
 

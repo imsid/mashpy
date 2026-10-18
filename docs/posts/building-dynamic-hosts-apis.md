@@ -193,7 +193,8 @@ sequenceDiagram
     H->>C: submit to primary
     API-->>App: request_id, agent_id: concierge
     App->>API: GET /v1/agent/concierge/request/{id}/events
-    C->>E: InvokeSubagent (in-process)
+    C->>H: InvokeSubagent via /h2a relay
+    H->>E: checked against snapshot, forwarded
     API-->>App: SSE: agent.trace, subagent.*, request.completed
 ```
 

@@ -169,6 +169,6 @@ Approval gating and `AskUser` look like different features, but in the runtime t
 
 A client that can render a prompt and POST a response handles every human-in-the-loop case Mash has, and new interaction-shaped features can reuse the same pair of events.
 
-Everything here ran on tools registered in `build_tools()`, objects living in the host process. The next post covers tools that live outside it, published by Model Context Protocol servers and discovered at startup.
+Everything here ran on tools registered in `build_tools()`, objects living in the agent's runtime on its computer. The next post covers tools that live outside it, published by Model Context Protocol servers and discovered at startup.
 
 *Next: [Remote Tools over MCP](remote-tools-mcp.md).*

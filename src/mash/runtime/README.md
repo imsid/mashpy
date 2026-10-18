@@ -640,7 +640,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 **Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
-**Process crash recovery** covers the case where the host process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted — the DBOS workflow is left in PENDING state in the database. On the next process startup, `DBOS.launch()` scans for orphaned PENDING workflows and replays them from the last completed step. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
+**Process crash recovery** covers the case where an agent computer's process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the DBOS workflow is left in PENDING state in the database. Docker restarts the container, and on startup `DBOS.launch()` scans for PENDING workflows under the computer's executor id (`agent:<agent_id>`) and replays them from the last completed step. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
 
 ### Request Status, Cancel, Resume, and Rerun APIs
 

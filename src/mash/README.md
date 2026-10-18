@@ -20,9 +20,9 @@
 1. A user implements `mash.runtime.AgentSpec` to define one agent.
 2. `mash.runtime.HostBuilder` registers role-less agents and code-defined workflows into a `Pool`, with optional `Host` compositions; every pool also includes Masher and its workflows. A pool with no user agents is a valid, workflow-only deploy.
 3. `mash.workflows.WorkflowService` runs workflows as ordered step pipelines; agent steps send normal Mash requests to registered or internal workflow agents.
-4. `mash.runtime.AgentServer` exposes each per-agent runtime over HTTP + SSE.
+4. Each agent runs on its own computer, a container that serves its runtime with `mash.runtime.AgentServer` over HTTP + SSE. The pool starts the computers through a `ComputerProvider` (Docker) and keeps one `AgentClient` per agent.
 5. `mash.api` exposes that host over HTTP, including workflow routes, and `mash.cli` talks to it as a remote client.
-6. Primary agents can delegate focused work through the runtime host and `InvokeSubagent`.
+6. Primary agents delegate focused work with `InvokeSubagent`, which calls the subagent through the host's `/h2a` relay.
 
 ## Public Entry Points
 - `mash`: top-level authoring exports (`AgentSpec`, `AgentMetadata`, `Host`, `HostBuilder`, `Pool`, `WorkflowSpec`, `CodeStep`, `AgentStep`, `StepContext`).

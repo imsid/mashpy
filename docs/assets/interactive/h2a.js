@@ -26,14 +26,14 @@
     pool: {
       label: "Pool deploy (mash host serve)",
       blurb:
-        "A pool deploy serves every agent behind one FastAPI app. The pool gives " +
-        "each agent an InProcessAgentClient, so the host-to-client and " +
-        "client-to-agent hops are Python calls inside one process.",
+        "A pool deploy serves the API from the host and runs each agent on its " +
+        "own computer, a container with its own AgentServer. The pool holds one " +
+        "AgentClient per computer, so the client-to-agent hop is HTTP and SSE.",
       lanes: [
         ["User application", "your app, CLI, or curl"],
         ["Host", "API routes /api/v1 + Pool"],
-        ["Client", "InProcessAgentClient"],
-        ["Agent", "AgentRuntime"],
+        ["Client", "AgentClient (httpx)"],
+        ["Agent", "AgentServer + AgentRuntime on the computer"],
       ],
       ops: {
         submit: {
@@ -77,11 +77,14 @@
             {
               lane: 2,
               who: "Client",
-              what: "InProcessAgentClient.post_request(...)",
+              what: "AgentClient.post_request(...)",
               body:
-                "<p>" + link("InProcessAgentClient.post_request", "runtime/client.py") +
-                " calls " + code("runtime.submit_request") + " directly and returns " +
-                "the " + code("request_id") + " from the accepted payload.</p>",
+                "<p>" + link("AgentClient.post_request", "runtime/client.py") +
+                " POSTs to " + code("/agent/assistant/request") + " on the agent's " +
+                "computer with the agent's bearer token, and returns the " +
+                code("request_id") + " from the accepted payload. The computer's " +
+                link("AgentServer", "runtime/server.py") + " calls " +
+                code("runtime.submit_request") + ".</p>",
               payload:
                 'request_id = await client.post_request(\n' +
                 '    "Plan the next release.",\n' +
@@ -140,16 +143,16 @@
               body:
                 "<p>" + link("submit_host_request", "runtime/host/host.py") +
                 " looks up the host and its primary agent. An unknown host returns " +
-                "404 " + code("HOST_NOT_FOUND") + ". This path calls the primary's " +
-                "runtime directly instead of going through a client.</p>",
+                "404 " + code("HOST_NOT_FOUND") + ". It submits through the " +
+                "primary's client with the host snapshot and the request context.</p>",
               payload:
                 "host = self.get_host(host_id)\n" +
-                "runtime = self.get_agent(host.primary)",
+                "client = self.get_client(host.primary)",
             },
             {
               lane: 3,
               who: "Agent",
-              what: "submit_request(host_snapshot=...)",
+              what: "AgentServer → submit_request(host_snapshot=...)",
               body:
                 "<p>The runtime stores the host snapshot in the request metadata. " +
                 code("context.load") + " uses it to build the primary's system " +
@@ -157,10 +160,10 @@
                 "recorded step output, so redefining the host later never changes " +
                 "an in-flight request.</p>",
               payload:
-                "await runtime.submit_request(\n" +
-                "    message=message,\n" +
+                "await client.post_request(\n" +
+                "    message,\n" +
                 "    session_id=session_id,\n" +
-                "    host_snapshot=self.snapshot_for(host),\n" +
+                "    host=self.snapshot_for(host),\n" +
                 "    context=context,\n" +
                 ")",
             },
@@ -203,15 +206,17 @@
             {
               lane: 2,
               who: "Client",
-              what: "InProcessAgentClient.stream_response loop",
+              what: "AgentClient.stream_response over SSE",
               body:
-                "<p>The client keeps a cursor starting at 0 and calls " +
-                code("runtime.stream_response_events(request_id, cursor, wait_timeout=0.25)") +
-                " until the runtime reports " + code("done") + ".</p>",
+                "<p>The client opens " + code("GET /agent/assistant/request/" + RID) +
+                " on the computer and parses each SSE frame. The computer's " +
+                "AgentServer keeps a cursor and calls " +
+                code("runtime.stream_response_events(request_id, cursor, wait_timeout=15)") +
+                " until the runtime reports " + code("done") + ", writing a " +
+                code(": keep-alive") + " comment when nothing arrives.</p>",
               payload:
-                "events, cursor, done = await self.runtime.stream_response_events(\n" +
-                "    request_id, cursor=cursor, wait_timeout=0.25,\n" +
-                ")",
+                "async for event in client.stream_response(request_id):\n" +
+                "    yield event  # {\"event\": ..., \"data\": ...}",
             },
             {
               lane: 3,
@@ -284,13 +289,13 @@
             {
               lane: 2,
               who: "Client",
-              what: "DBOS.send_async(workflow_id, response, topic)",
+              what: "AgentClient.post_interaction → DBOS.send",
               body:
-                "<p>" + link("InProcessAgentClient.post_interaction", "runtime/client.py") +
-                " sends the response straight to the request's workflow. The topic " +
-                "is the interaction id.</p>",
+                "<p>" + link("AgentClient.post_interaction", "runtime/client.py") +
+                " POSTs the response to the computer, whose AgentServer sends it to " +
+                "the request's workflow. The topic is the interaction id.</p>",
               payload:
-                'await DBOS.send_async("' + WFID + '", "approve", topic="' + ITR + '")',
+                'DBOS.send("' + WFID + '", "approve", topic="' + ITR + '")',
             },
             {
               lane: 3,

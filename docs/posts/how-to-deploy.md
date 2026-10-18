@@ -1,6 +1,6 @@
 ---
 title: How to Deploy a Mash Host
-description: Deploy a Mash Host with one or more agents, on your laptop, in Docker, or on any cloud provider.
+description: Deploy a Mash host and its agent computers with Docker, on your laptop or a server.
 date: 2026-06-02
 author: imsid
 tags:
@@ -10,55 +10,107 @@ tags:
 
 # How to Deploy a Mash Host
 
-This guide covers deploying a Mash Host with one or more agents, on your
-laptop, in Docker, or on any cloud provider. It uses the
-Pilot agent ([`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/)) as a running example but the steps apply to any
-Mash application.
+This guide covers deploying a Mash host and its agents, on your laptop or on a
+server with Docker. The steps apply to any Mash application; the examples use
+`my_agent.spec:build_pool`.
 
-## Architecture Overview
+## Architecture
 
-Mash follows the **Host → Client → AgentRuntime** model (H2A protocol):
+Every agent in the pool runs on its own computer: a container that serves the
+agent's runtime behind an H2A HTTP server, with its memory and workspace on
+named volumes. The host runs the API, host compositions and workflows, and
+reaches each agent over HTTP.
 
 ```
-┌────────────────────────────────────────────────────┐
-│                    Mash Host                       │
-│                                                    │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐    │
-│  │  Primary   │  │ Subagent A │  │ Subagent B │    │
-│  │  Agent     │  │            │  │            │    │
-│  │  Runtime   │  │  Runtime   │  │  Runtime   │    │
-│  └─────┬──────┘  └─────▲──────┘  └─────▲──────┘    │
-│        │               │               │           │
-│        └── InProcessAgentClient ───────┘           │
-│                                                    │
-│  ┌──────────────────────────────────────────────┐  │
-│  │           FastAPI Server (/api/v1)           │  │
-│  └──────────────────────────────────────────────┘  │
-└────────────────────┬───────────────────────────────┘
-                     │
-                     ▼
-              ┌──────────────┐
-              │  PostgreSQL  │
-              │  (external)  │
-              └──────────────┘
+ user app ──HTTP──► Mash host (API, hosts, workflows)
+                     │  one AgentClient per agent
+                     │  starts missing computers through the Docker socket
+                     ▼ H2A HTTP              ▲ /h2a relay (subagent calls)
+   ┌──────────────────────────────┐          │
+   │ mash-agent-research          │──────────┘
+   │  mash agent serve :9000      │
+   │  /home/agent/memory     ◄── volume research-memory
+   │  /home/agent/workspace  ◄── volume research-workspace
+   └──────────────┬───────────────┘
+                  ▼
+     Postgres: events, DBOS, sessions, workflow runs
 ```
 
-A single Host process manages all agents in-process. The primary agent
-delegates to subagents via `InvokeSubagent`; these calls are in-memory
-function calls, not network hops. All durable state (events, memory, DBOS
-workflows) lives in PostgreSQL.
+- The host and every computer run the same image. The host imports
+  `build_pool()` and keeps each agent's spec and metadata; each computer
+  imports the same `build_pool()` and serves one agent from it.
+- When the host starts, it makes sure each registered agent has a running
+  container named `mash-agent-<agent_id>`. A crashed container is restarted
+  by Docker (restart policy `always`) with the same volumes.
+- Containers outlive the host. A restarted host finds them running and leaves
+  their in-flight requests alone.
+- A primary calls its subagents through the host's `/h2a` relay, which checks
+  the call against the request's host composition. Computers know the host's
+  address and nothing else.
+- Each computer's bash sessions run as an `agent` user with a clean
+  environment, so the agent cannot read the runtime's database URL or API
+  keys.
+- All durable state (events, sessions, DBOS workflows, workflow runs) lives in
+  Postgres. Memory and workspace files live on the volumes.
+
+A deployment runs one host replica.
 
 ## Prerequisites
 
-- Python >= 3.10
-- PostgreSQL >= 14 (required for both local and production)
-- Docker (for containerized deployments)
-- API keys for your LLM provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or
+- Docker Engine on the machine that runs the host. The host starts computers
+  through the Docker socket, so platforms without a Docker daemon (Render,
+  Cloud Run, Fargate) cannot run agent computers.
+- PostgreSQL 14 or later, reachable from the host and from the computers
+- An API key for your LLM provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or
   `GEMINI_API_KEY`)
+- A host secret in `MASH_HOST_SECRET`. The host derives each agent's token
+  from it, so keep it stable across restarts:
 
-## 1. Local Development
+```bash
+export MASH_HOST_SECRET=$(openssl rand -hex 32)
+```
 
-Docker Compose starts both Postgres and the Mash Host with one command.
+## The image
+
+Computers run the host's own image, so the image must contain your app and
+the two users a computer needs: `mash` runs the runtime, and `agent` runs
+bash. `mash` may start bash as `agent` and nothing else.
+
+```dockerfile
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MASH_DATA_DIR=/var/lib/mash \
+    MASH_API_HOST=0.0.0.0 MASH_API_PORT=8000
+
+RUN apt-get update && apt-get install -y --no-install-recommends sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash mash \
+    && useradd --create-home --shell /bin/bash agent \
+    && chmod 0700 /home/mash \
+    && mkdir -p /home/agent/memory /home/agent/workspace \
+    && chown -R agent:agent /home/agent \
+    && chmod 0755 /home/agent /home/agent/memory /home/agent/workspace \
+    && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
+    && chmod 0440 /etc/sudoers.d/mash-agent \
+    && mkdir -p /var/lib/mash && chown mash:mash /var/lib/mash
+
+WORKDIR /opt/app
+COPY . .
+# Your app, with mashpy as a dependency.
+RUN pip install .
+
+USER mash
+CMD ["sh", "-c", "mash host serve --host-app \"$MASH_HOST_APP\" --host \"$MASH_API_HOST\" --port \"$MASH_API_PORT\""]
+```
+
+The repository's own [`Dockerfile`](https://github.com/imsid/mashpy/blob/main/Dockerfile)
+has the same layout.
+
+## Run the host in Docker
+
+This is the production layout, and it works the same on a laptop. The host
+container joins the private network `mash`, reaches computers by container
+name, and starts them with its own image id.
 
 ```yaml
 # docker-compose.yml
@@ -69,343 +121,138 @@ services:
       POSTGRES_DB: mash
       POSTGRES_USER: mash
       POSTGRES_PASSWORD: mash
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks: [mash]
     healthcheck:
-      test: ["CMD-ONLY", "pg_isready", "-U", "mash"]
+      test: ["CMD", "pg_isready", "-U", "mash"]
       interval: 3s
       retries: 5
 
-  mash:
+  host:
     build: .
     environment:
-      MASH_HOST_APP: pilot.spec:build_pool
+      MASH_HOST_APP: my_agent.spec:build_pool
       MASH_DATABASE_URL: postgresql://mash:mash@postgres:5432/mash
+      MASH_HOST_SECRET: ${MASH_HOST_SECRET}
       MASH_API_KEY: ${MASH_API_KEY:-dev-key}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The image runs as `mash`; the socket belongs to root's group (0) on
+    # Docker Desktop and usually to the `docker` group on Linux.
+    group_add: ["0"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    networks: [mash]
     depends_on:
       postgres:
         condition: service_healthy
+
+networks:
+  mash:
+    name: mash
 
 volumes:
   pgdata:
 ```
 
 ```bash
-docker compose up
-```
-
-The Mash Host is accessible at `http://localhost:8000`. To deploy your own
-agent instead of Pilot, change `MASH_HOST_APP` to point at your module (e.g.
-`my_agent.spec:build_pool`) and make sure the Dockerfile copies your agent
-code and installs `mashpy` as a dependency.
-
-```bash
-# Connect from another terminal, then target the agent per command
+docker compose up -d
 mash connect --api-base-url http://127.0.0.1:8000 --api-key dev-key
-mash repl --agent pilot
+mash repl --agent assistant
 ```
 
-## 2. Horizontal Scaling (Multiple Replicas)
+On Linux, find the socket's group with `stat -c %g /var/run/docker.sock` and
+use that number in `group_add`.
 
-Mash Hosts are stateless, since all durable state lives in Postgres. You can run N
-identical replicas of the same Host behind a load balancer, all pointing at the
-same Postgres instance.
+The host passes its environment through to every computer, minus process
+variables (`PATH`, `HOME`, and so on) and its own secrets (`MASH_HOST_SECRET`,
+`MASH_API_KEY`). Provider keys, MCP header tokens and anything else a spec
+reads from the environment reach the computer this way.
 
-### How It Works
+## Run the host on your laptop
 
-```
-                    ┌──────────────────┐
-                    │   Load Balancer  │
-                    │   (nginx / ALB)  │
-                    └────────┬─────────┘
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-   ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-   │  Replica A   │ │  Replica B   │ │  Replica C   │
-   │  (all agents)│ │  (all agents)│ │  (all agents)│
-   └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
-          │                │                │
-          └────────────────┼────────────────┘
-                           ▼
-                ┌──────────────────┐
-                │    PostgreSQL    │
-                └──────────────────┘
-```
+For a faster loop you can run `mash host serve` directly while the computers
+run in Docker. Two things differ:
 
-Each replica independently runs `build_pool()`, creating its own
-`Pool` with all agents in-process. Every replica
-is a fully self-contained, identical copy.
-
-**Why this works:**
-
-- **Event streaming across replicas.** The runtime event store uses Postgres
-  `LISTEN/NOTIFY`. A request can be submitted to Replica A while the SSE
-  stream is served from Replica B, because Postgres broadcasts event notifications
-  to all listeners.
-- **Subagent calls are always in-process.** When the primary agent invokes a
-  subagent, it calls the subagent runtime in the same process via
-  `InProcessAgentClient`. No cross-replica coordination is needed.
-- **Session history is in Postgres.** Conversation memory, traces, and
-  interaction state are all persisted. Any replica can serve any session.
-- **No sticky sessions required.** The load balancer can use simple
-  round-robin routing.
-- **Workflow runs survive a replica dying.** A queued run records the runner
-  id of the deployment that owns it, which defaults to `default` and is the
-  same on every replica, so whichever replica picks the run up can resolve its
-  pool and recover it. Two *different* deployments sharing one database each
-  need their own `MASH_RUNNER_ID`, or they would try to recover each other's
-  runs.
-
-**One caveat:** host compositions defined over the API (`PUT /v1/hosts/{id}`)
-are in-memory and per-replica. Code-defined hosts come back on every restart
-because `build_pool()` recreates them, but API-defined ones don't, and a `PUT`
-only lands on the replica that served it. If your application composes hosts
-dynamically, re-`PUT` them on startup (the call is idempotent) or define them
-in code. Requests already in flight are unaffected either way — each request
-carries a snapshot of its composition.
-
-### docker-compose.yml (Scaled)
-
-```yaml
-services:
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: mash
-      POSTGRES_USER: mash
-      POSTGRES_PASSWORD: mash
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-ONLY", "pg_isready", "-U", "mash"]
-      interval: 3s
-      retries: 5
-
-  mash:
-    build: .
-    environment:
-      MASH_HOST_APP: pilot.spec:build_pool
-      MASH_DATABASE_URL: postgresql://mash:mash@postgres:5432/mash
-      MASH_API_KEY: ${MASH_API_KEY:-dev-key}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    deploy:
-      replicas: 3
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "8000:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - mash
-
-volumes:
-  pgdata:
-```
-
-### nginx.conf
-
-```nginx
-events { worker_connections 1024; }
-
-http {
-    upstream mash_hosts {
-        server mash:8000;
-    }
-
-    server {
-        listen 80;
-
-        location / {
-            proxy_pass http://mash_hosts;
-            proxy_http_version 1.1;
-            proxy_set_header Connection "";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_buffering off;         # required for SSE
-            proxy_read_timeout 3600s;    # long-lived SSE connections
-        }
-    }
-}
-```
-
-Scale up or down at any time:
+- Computers can't run the host's image, because there is none. Build an image
+  of your app and name it in `MASH_COMPUTER_IMAGE`. Rebuild it after code
+  changes, then replace the computers (see Operating computers).
+- Each computer's port is published on `127.0.0.1` at a port fixed when its
+  container is created, and computers reach the host at
+  `host.docker.internal`.
 
 ```bash
-docker compose up --scale mash=5
+docker build -t my-agent:dev .
+export MASH_COMPUTER_IMAGE=my-agent:dev
+export MASH_DATABASE_URL=postgresql://mash:mash@host.docker.internal:5432/mash
+mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
-### Known Limitation: Mid-Request Replica Failure
+Environment values pass through unchanged, so any address the computers use
+must work from inside a container: write `host.docker.internal` rather than
+`localhost` in `MASH_DATABASE_URL` and MCP server URLs. On Linux, also bind the
+host to `0.0.0.0` (`--host 0.0.0.0`) so computers can reach it through
+`host.docker.internal`.
 
-If a replica dies while executing a request, that request is lost. The DBOS
-workflow running the request dies with the process, and no other replica will
-pick it up. The request will remain in `REQUEST_ACCEPTED` state indefinitely.
+## Deploy to a server
 
-**Impact:** The client's SSE stream will stop receiving events and eventually
-time out.
+Run the same compose layout on a VM with Docker (EC2, Compute Engine, a
+Hetzner box) and point `MASH_DATABASE_URL` at managed Postgres if you like.
 
-**Mitigation:** Clients should detect timeouts and retry the request. DBOS
-deduplication prevents double execution if the original replica recovers.
+1. Provision Postgres 14+ and note the connection string. The computers
+   connect to it too, so it must be reachable from the Docker network.
+2. Build the image on the VM, or build it elsewhere and pull it.
+3. Set `MASH_HOST_APP`, `MASH_DATABASE_URL`, `MASH_HOST_SECRET`, `MASH_API_KEY`
+   and your provider keys in the host's environment.
+4. Start the host with the socket mounted and `group_add` set, as in the
+   compose file above.
+5. Put TLS in front of port 8000. For SSE, disable response buffering and set
+   the idle timeout to at least 3600s.
 
-For most self-hosted deployments, this is an acceptable tradeoff. Replica
-failures during active requests are rare, and the simplicity of the current
-model (no distributed consensus, no lease management) is a significant
-operational advantage.
+CPU, memory and disk limits, and outbound network rules for the computers, are
+set on the Docker daemon and network. Mash only decides which containers
+exist.
 
-## 3. Cloud Deployment
+## Operating computers
 
-For production on AWS, GCP, or Azure, the pattern is the same: stateless Mash
-Host containers + managed PostgreSQL.
-
-### Architecture
-
-```
-┌──────────────┐     ┌──────────────────────────────┐
-│   Internet   │────▶│     Cloud Load Balancer      │
-└──────────────┘     └──────────┬───────────────────┘
-                                │
-                    ┌───────────┼───────────┐
-                    ▼           ▼           ▼
-              ┌──────────┐┌──────────┐┌──────────┐
-              │  Host    ││  Host    ││  Host    │
-              │  Task    ││  Task    ││  Task    │
-              └────┬─────┘└────┬─────┘└────┬─────┘
-                   └───────────┼───────────┘
-                               ▼
-                    ┌──────────────────┐
-                    │  Managed Postgres│
-                    │  (RDS / CloudSQL)│
-                    └──────────────────┘
-```
-
-### Recommended Services by Provider
-
-| Component | AWS | GCP | Azure |
-|-----------|-----|-----|-------|
-| Compute | ECS Fargate / EKS | Cloud Run / GKE | Container Apps / AKS |
-| Database | RDS PostgreSQL | Cloud SQL | Azure Database for PostgreSQL |
-| Load Balancer | ALB | Cloud Load Balancing | Application Gateway |
-| Secrets | Secrets Manager | Secret Manager | Key Vault |
-
-### Quick Deploy with Render
-
-[Render](https://render.com) is the fastest path to production. A single
-`render.yaml` Blueprint provisions both the Mash Host and a managed Postgres
-database, with no Dockerfile registry or load balancer to configure.
-
-**1. Add a `render.yaml` to your repo root:**
-
-```yaml
-services:
-  - type: web
-    name: my-agent
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/v1/health
-    envVars:
-      - key: MASH_DATABASE_URL
-        fromDatabase:
-          name: mash-db
-          property: connectionString
-      - key: MASH_HOST_APP
-        value: my_agent.spec:build_pool
-      - key: ANTHROPIC_API_KEY
-        sync: false  # prompted at deploy time
-      - key: MASH_API_KEY
-        sync: false
-
-databases:
-  - name: mash-db
-    plan: basic-256mb
-    databaseName: mash
-    user: mash
-```
-
-**2. Deploy:**
-
-- Push the repo to GitHub (or GitLab).
-- In the Render dashboard, click **New → Blueprint** and select your repo.
-- Render detects `render.yaml`, provisions the database, and builds the
-  Docker image. You'll be prompted for the `sync: false` env vars
-  (`ANTHROPIC_API_KEY`, `MASH_API_KEY`).
-
-**3. Connect:**
+These commands run on the Docker host and find computers by their
+`mash.agent` label:
 
 ```bash
-mash connect \
-  --api-base-url https://my-agent.onrender.com \
-  --api-key <your-mash-api-key>
-mash repl --agent my-agent
+mash computer ls                   # status, uptime, restart count, volumes
+mash computer shell research       # bash as `agent` in /home/agent
+mash computer shell research --root
+mash computer restart research     # replace the container, keep its volumes
 ```
 
-Render handles TLS, health checks, and zero-downtime deploys out of the box.
-To scale horizontally, increase the instance count in the Render dashboard;
-no load balancer setup is needed.
+- `restart` recreates the container from its own configuration. Memory and
+  workspace survive; anything else on the container layer (apt installs,
+  files outside the two mounts) is gone. An agent that needs system packages
+  across replacements records the install steps in memory or keeps a venv in
+  its workspace.
+- Commands run from an admin shell are not in the event log. Their history is
+  appended to `/home/agent/workspace/.admin_history`.
+- A call to an agent whose computer is down returns `503 AGENT_UNAVAILABLE`
+  from host routes. The next host start brings stopped computers back.
+- To pick up a new image, restart the host and then `mash computer restart`
+  each agent. Running containers are left alone on host start, so a new image
+  reaches a computer only when its container is replaced.
 
-### Deployment Steps (Other Providers)
+## Durability
 
-1. **Provision managed PostgreSQL.** Create a Postgres 14+ instance in your
-   cloud provider. Note the connection string.
+- Each computer runs DBOS as executor `agent:<agent_id>`, so after a crash or
+  replacement it recovers exactly its own agent's pending requests. The host
+  runs as executor `host` and recovers only its workflow runs.
+- Subagent calls and workflow agent steps submit with fixed request ids, so a
+  replayed call reattaches to the request it already started.
+- The host is safe to restart at any time. Requests in flight on computers
+  keep running and their events stay in Postgres.
 
-2. **Build and push the Docker image.**
-   ```bash
-   docker build -t my-registry/mash-pilot:latest .
-   docker push my-registry/mash-pilot:latest
-   ```
+## Accessing the host from applications
 
-3. **Configure environment variables.** Set these in your container service's
-   configuration (not baked into the image):
-   ```
-   MASH_HOST_APP=pilot.spec:build_pool
-   MASH_DATABASE_URL=postgresql://user:pass@db-host:5432/mash
-   MASH_API_KEY=<strong-random-key>
-   ANTHROPIC_API_KEY=<your-key>
-   ```
-
-4. **Deploy container tasks/pods.** Start with 2-3 replicas. Each runs the
-   same image with the same environment.
-
-5. **Configure the load balancer.**
-   - Target the container port (default `8000`)
-   - Health check path: `/api/v1/health`
-   - Disable request buffering for SSE support
-   - Set idle timeout to ≥ 3600s for long-lived SSE connections
-   - No sticky sessions needed
-
-6. **Set up autoscaling.** Scale on CPU utilization or concurrent connection
-   count. Each replica handles multiple concurrent requests.
-
-### Connection Pooling
-
-At scale (5+ replicas), use a connection pooler between your Mash replicas and
-Postgres. Each replica opens its own connection pool (`psycopg_pool`), and
-Postgres has a finite connection limit.
-
-- **AWS:** RDS Proxy
-- **GCP:** AlloyDB / Cloud SQL Auth Proxy
-- **Self-managed:** PgBouncer (transaction mode)
-
-### Health Checks
-
-The Mash Host exposes `/api/v1/health` which returns agent status and session
-information. For container orchestrators, configure:
-
-- **Liveness probe:** `GET /api/v1/health` confirms the process is alive
-- **Readiness probe:** `GET /api/v1/health` confirms agents are initialized
-  and Postgres is reachable
-
-## 4. Accessing the Host from External Applications
-
-The Mash Host exposes a REST + SSE API under `/api/v1`. Any HTTP client can
+The Mash host exposes a REST + SSE API under `/api/v1`. Any HTTP client can
 interact with it.
 
 ### Authentication
@@ -417,7 +264,11 @@ Authorization: Bearer <api-key>
 X-API-Key: <api-key>          # alternative header
 ```
 
-### Core API Endpoints
+The `/h2a` relay is for agent computers only and authenticates with agent
+tokens, not the API key. It does not need to be reachable from outside the
+Docker network.
+
+### Core API endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -427,23 +278,23 @@ X-API-Key: <api-key>          # alternative header
 | `GET` | `/api/v1/agent/{agent_id}/request/{request_id}/events` | Stream response (SSE) |
 | `POST` | `/api/v1/agent/{agent_id}/request/{request_id}/interaction` | Respond to an interaction (e.g. AskUser); `interaction_id` goes in the body |
 
-### Example: Submit a Request and Stream the Response
+### Example: submit a request and stream the response
 
 ```bash
 # 1. Submit a request
-REQUEST=$(curl -s -X POST http://localhost:8000/api/v1/agent/pilot/request \
+REQUEST=$(curl -s -X POST http://localhost:8000/api/v1/agent/assistant/request \
   -H "Authorization: Bearer dev-key" \
   -H "Content-Type: application/json" \
-  -d '{"message": "explain the CLI parser", "session_id": "my-session"}')
+  -d '{"message": "summarize the open issues", "session_id": "my-session"}')
 
 REQUEST_ID=$(echo $REQUEST | jq -r '.data.request_id')
 
 # 2. Stream the response via SSE
-curl -N http://localhost:8000/api/v1/agent/pilot/request/$REQUEST_ID/events \
+curl -N http://localhost:8000/api/v1/agent/assistant/request/$REQUEST_ID/events \
   -H "Authorization: Bearer dev-key"
 ```
 
-### Example: Python Client
+### Example: Python client
 
 ```python
 import httpx
@@ -453,16 +304,16 @@ HEADERS = {"Authorization": "Bearer dev-key"}
 
 # Submit
 resp = httpx.post(
-    f"{BASE}/agent/pilot/request",
+    f"{BASE}/agent/assistant/request",
     headers=HEADERS,
-    json={"message": "explain the CLI parser", "session_id": "s1"},
+    json={"message": "summarize the open issues", "session_id": "s1"},
 )
 request_id = resp.json()["data"]["request_id"]
 
 # Stream SSE
 with httpx.stream(
     "GET",
-    f"{BASE}/agent/pilot/request/{request_id}/events",
+    f"{BASE}/agent/assistant/request/{request_id}/events",
     headers=HEADERS,
     timeout=None,
 ) as stream:
@@ -471,62 +322,67 @@ with httpx.stream(
             print(line)
 ```
 
-### Example: Connect with the Mash CLI
+### Example: connect with the Mash CLI
 
 ```bash
 mash connect \
   --api-base-url http://your-host:8000 \
   --api-key your-api-key
-mash repl --agent pilot
+mash repl --agent assistant
 ```
 
-### CORS Configuration
+### CORS configuration
 
-By default, the Host allows requests from `localhost:3000` and
+By default, the host allows requests from `localhost:3000` and
 `localhost:5173`. For production, set allowed origins via the `--cors-origin`
 CLI flag (repeatable) or configure `cors_allow_origins` in `MashHostConfig`.
 
-## 5. Tearing Down and Restarting
+## Tearing down and restarting
 
-Mash Hosts are designed to be ephemeral. You can tear down and restart
-replicas at any time without data loss, because all state is in Postgres.
-
-- **Restart a replica:** The new process calls `build_pool()`, initializes all
-  agent runtimes, reconnects to Postgres, and starts serving.
-- **Scale to zero:** Stop all replicas. State is preserved in Postgres. Start
-  replicas again when needed.
+- **Restart the host:** the new process calls `build_pool()`, reconnects to
+  Postgres, finds the running computers, and starts serving.
+- **Stop everything:** stop the host, then `docker rm -f` the
+  `mash-agent-*` containers. Postgres and the volumes keep all state; the next
+  host start recreates the containers on the same volumes.
+- **Remove an agent's memory and workspace:** delete its two volumes,
+  `<agent_id>-memory` and `<agent_id>-workspace`, after removing its container.
 - **Database migrations:** Mash runs pending migrations automatically on
-  startup. No manual migration step is required for new deployments. See
-  [Schema migrations](#schema-migrations) below for details on how migrations
-  work and how to add new ones.
+  startup. See [Schema migrations](#schema-migrations) below.
 
-## Schema Migrations
+## Schema migrations
 
-Mash uses an ordered-file migration runner rather than a third-party tool. All Mash tables — the runtime event store, the memory store, and the evals store — share one schema baseline in `src/mash/storage/migrations/`, and every store runs the same runner when it opens. On each run the runner:
+Mash uses an ordered-file migration runner rather than a third-party tool. All Mash tables (the runtime event store, the memory store, and the evals store) share one schema baseline in `src/mash/storage/migrations/`, and every store runs the same runner when it opens. On each run the runner:
 
 1. Takes a Postgres advisory lock, so stores opening concurrently apply each migration exactly once.
 2. Creates a `_mash_migrations` tracking table if it does not exist.
 3. Reads all `.sql` files from `src/mash/storage/migrations/` in filename order.
 4. Applies any file not yet recorded in `_mash_migrations` and records the filename and timestamp so it is not applied again. The whole run is one transaction.
 
-The baseline (`001_baseline.sql`) is idempotent — all `CREATE TABLE` and `CREATE INDEX` statements use `IF NOT EXISTS`, so applying it against an existing database is a no-op.
+The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE INDEX` statements use `IF NOT EXISTS`, so applying it against an existing database is a no-op.
 
 **Adding a migration:** Create a new file named `NNN_description.sql` (e.g. `002_add_model_column.sql`) in `src/mash/storage/migrations/`. The next startup applies it automatically. Write it to be rollback-safe.
 
 **Upgrading from an earlier deployment:** Releases up to 0.15 tracked runtime and memory migrations separately, in `_mash_migrations` and `_mash_memory_migrations`. The combined baseline applies cleanly on top of a database created by those runners: every statement is guarded, so existing tables and data are untouched, and the old `_mash_memory_migrations` table is simply left behind. `MASH_DATABASE_URL` is required; the agent raises `RuntimeError` at startup if it is unset.
 
-## Environment Variables Reference
+## Environment variables
 
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `MASH_HOST_APP` | Yes | — | Python module:attribute for `build_pool()` |
-| `MASH_DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `MASH_API_KEY` | No | — | API key for authentication |
-| `MASH_API_HOST` | No | `127.0.0.1` | Bind host (`0.0.0.0` for containers) |
-| `MASH_API_PORT` | No | `8000` | Bind port |
-| `MASH_DATA_DIR` | No | `/var/lib/mash` | Persistent data directory |
-| `MASH_RUNNER_ID` | No | `default` | Workflow runner identity for this deployment |
-| `ANTHROPIC_API_KEY` | Provider-dependent | — | Anthropic API key |
-| `OPENAI_API_KEY` | Provider-dependent | — | OpenAI API key |
-| `GEMINI_API_KEY` | Provider-dependent | — | Google Gemini API key |
-| `DBOS_CONDUCTOR_KEY` | No | — | DBOS Conductor key for distributed workflows |
+| Variable | Set on | Default | Purpose |
+|----------|--------|---------|---------|
+| `MASH_HOST_APP` | host | none | `module:attribute` for `build_pool()`; computers import the same one |
+| `MASH_DATABASE_URL` | host | none | PostgreSQL connection string; passed to computers |
+| `MASH_HOST_SECRET` | host | none | Derives each agent's token; required for a pool with agents |
+| `MASH_API_KEY` | host | none | API key for `/api/v1` |
+| `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |
+| `MASH_API_PORT` | host | `8000` | Bind port |
+| `MASH_COMPUTER_IMAGE` | host | the host's own image | Image for computers; required when the host runs outside a container |
+| `MASH_COMPUTER_NETWORK` | host | `mash` | Docker network the host and computers share |
+| `MASH_COMPUTER_HOST_API_URL` | host | derived | Override the host address computers call |
+| `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
+| `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
+| `MASH_AGENT_TOKEN` | computer | set by the host | The computer's agent token |
+| `MASH_HOST_API_URL` | computer | set by the host | The host address for subagent calls |
+| `MASH_MEMORY_DIR` | computer | `/home/agent/memory` | File memory directory, for agents with `memory_enabled` |
+| `ANTHROPIC_API_KEY` | host | none | Anthropic API key; passed to computers |
+| `OPENAI_API_KEY` | host | none | OpenAI API key; passed to computers |
+| `GEMINI_API_KEY` | host | none | Google Gemini API key; passed to computers |
+| `DBOS_CONDUCTOR_KEY` | host | none | DBOS Conductor key; passed to computers |

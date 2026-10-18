@@ -291,7 +291,7 @@ mash repl --host assistant
 |---|---|
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
-| **Pool** | The deployed pool of role-less agents the API server runs |
+| **Pool** | The deployed pool of role-less agents the API server runs; each agent runs on its own computer (a container) |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
 | **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
@@ -349,7 +349,7 @@ scaffolding from the REPL.
 - [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
 - [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
 - [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem
-- [Deployment guide](docs/posts/how-to-deploy.md) — Docker, cloud, horizontal scaling
+- [Deployment guide](docs/posts/how-to-deploy.md): agent computers, Docker, the host on a server
 - [Building agent CLIs](docs/posts/building-agent-clis.md) — custom CLI development
 - [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
 - [Package overview](src/mash/README.md) — subsystem boundaries and module guides
