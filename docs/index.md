@@ -291,7 +291,7 @@ mash repl --host assistant
 - [**Exploring Mash with Pilot**](posts/exploring-mash-with-pilot.md): ask the Pilot CLI questions about the Mash codebase
 - [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development with dynamic host composition
 - [**Building dynamic hosts over the API**](posts/building-dynamic-hosts-apis.md): compose agent teams at runtime over plain HTTP
-- [**Deploying a Mash Host**](posts/how-to-deploy.md): laptop, Docker, and cloud
+- [**Deploying a Mash Host**](posts/how-to-deploy.md): agent computers on Docker, on a laptop or a server
 - [**Release process**](posts/releasing.md): how versioning, changelogs, and releases work
 
 ## Learnings

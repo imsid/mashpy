@@ -73,28 +73,29 @@ class InvokeSubagentTool:
     }
 ```
 
-Invoking it submits a normal Mash request to the subagent's runtime through an in-process client. The client resolver is gated on the snapshot: an agent id outside the host's subagent list is refused, even if it exists in the pool. The child request goes down the same `submit_request` path and durable workflow as any external request, and the subagent's response streams back to become the tool result the primary observes on its next think.
+Each agent runs on its own computer, so invoking it is an HTTP call. The primary's computer submits a normal Mash request to the host's `/h2a` relay with the primary's agent token, a `parent` naming the calling request, and the request's host snapshot. The relay refuses an agent id outside the snapshot's subagent list, even if it exists in the pool, and forwards the rest to the subagent's computer. The child request goes down the same `submit_request` path and durable workflow as any external request, and the subagent's response streams back through the relay to become the tool result the primary observes on its next think.
 
 Two details keep this delegation well-behaved:
 
-**One session, separate memory.** The child runs under the *primary's* `session_id`: the delegation is a trace within the caller's session, executed by the subagent — there's no per-agent or per-delegation session. The specialist still keeps its own [memory](memory-and-compaction.md) scope (memory is keyed by `app_id`), and its turns are recorded but marked non-replayable, so they never enter the primary's replayed conversation.
+**One session, separate memory.** The child runs under the *primary's* `session_id`: the delegation is a trace within the caller's session, executed by the subagent. There's no per-agent or per-delegation session. The specialist still keeps its own [memory](memory-and-compaction.md) scope (memory is keyed by `app_id`), and its turns are recorded but marked non-replayable, so they never enter the primary's replayed conversation.
 
 **Traces stay connected.** While the child executes, its lifecycle events are mirrored into the parent's trace as `subagent.request.*` and `subagent.agent.trace` events. Because it shares the session, the child's own trace is recorded there too, tagged with the subagent as the executing agent. A client streaming the primary's request watches the delegation happen live, and trace analysis can stitch child traces into the parent's timing breakdown.
 
 ```mermaid
 flowchart TD
-    subgraph pool ["one pool process"]
-        H["host: pilot\n(primary + subagent ids)"]
-        P["agent: pilot\n(directory + InvokeSubagent, per request)"]
-        A["agent: cli-copilot\nown model, memory scope"]
-        B["agent: api-copilot"]
-        W["workflow-only agents\n(hidden from delegation)"]
-        H -. "snapshot on request" .-> P
-        P -- "in-process request" --> A
-        P -- "in-process request" --> B
-    end
-    PG[("Postgres\none pool, one LISTEN,\none memory connection")]
-    pool --- PG
+    H["host: pilot\n(primary + subagent ids, /h2a relay)"]
+    P["computer: pilot\n(directory + InvokeSubagent, per request)"]
+    A["computer: cli-copilot\nown model, memory scope"]
+    B["computer: api-copilot"]
+    W["workflow-only agents\n(hidden from delegation)"]
+    H -- "request + snapshot" --> P
+    P -- "subagent call" --> H
+    H -- "checked against snapshot" --> A
+    H -- "checked against snapshot" --> B
+    PG[("Postgres\nevents, sessions, DBOS")]
+    H --- PG
+    P --- PG
+    A --- PG
 ```
 
 `InvokeSubagent` runs as an ordinary step. The subagent request is its own DBOS workflow, submitted under a request id built from the primary's request id and the call's position (`{request_id}-sub-{loop}-{call}`). A replayed or retried step resubmits that id, and the subagent's runtime returns the request it already started instead of starting a second.

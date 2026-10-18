@@ -10,7 +10,7 @@ tags:
 
 # Remote Tools over MCP
 
-An agent's tool surface extends past the host process. `build_mcp_servers()` on the spec returns a list of [Model Context Protocol](https://modelcontextprotocol.io) server configs, and the tools those servers publish join the agent's registry next to the local ones:
+An agent's tool surface extends past its own computer. `build_mcp_servers()` on the spec returns a list of [Model Context Protocol](https://modelcontextprotocol.io) server configs, and the tools those servers publish join the agent's registry next to the local ones:
 
 ```python
 from mash.mcp.types import MCPServerConfig
@@ -20,7 +20,7 @@ class PilotSpec(AgentSpec):
         return [
             MCPServerConfig(
                 name="github",
-                url="http://localhost:3000/sse",
+                url="http://github-mcp:3000/sse",
                 description="GitHub issue and PR tools",
                 headers={"Authorization": f"Bearer {token}"},
                 allowed_tools=["search_issues", "get_pull_request"],
@@ -49,7 +49,7 @@ Remote tools get namespaced names, like `mcp_github_search_issues` for a `search
 
 ```mermaid
 flowchart LR
-    subgraph host ["host process"]
+    subgraph computer ["agent computer (mash agent serve)"]
         A["agent"]
         R["ToolRegistry\nbash · UpdateDocs ·\nmcp_github_search_issues ·\nmcp_github_get_pull_request"]
         M["MCPManager"]
@@ -60,11 +60,13 @@ flowchart LR
     M -- "HTTP / SSE" --> S2["MCP server: …"]
 ```
 
+The manager runs in the runtime process on the agent's computer, so the URL has to be reachable from that container: a service name on the `mash` Docker network, as above, or `host.docker.internal` for a server on the Docker host. Header tokens stay in the runtime's environment, out of reach of the `agent` user that runs bash.
+
 To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
 
 ## Web search
 
-Web search runs on the same machinery. A `WebSearchProvider` resolves to a single `MCPServerConfig`, and the runtime connects it through the same `MCPManager`. To enable it you must explicitly specify a provider by returning one from `build_web_search()` rather than writing a server config by hand — there's no default, so you always know who is handling your search data. Mash ships one `WebSearchProvider`, `ParallelSearchProvider`, which offers `web_search` and `web_fetch` and requires an API key.
+Web search runs on the same machinery. A `WebSearchProvider` resolves to a single `MCPServerConfig`, and the runtime connects it through the same `MCPManager`. To enable it you must explicitly specify a provider by returning one from `build_web_search()` rather than writing a server config by hand. There's no default, so you always know who is handling your search data. Mash ships one `WebSearchProvider`, `ParallelSearchProvider`, which offers `web_search` and `web_fetch` and requires an API key.
 
 Naming is the one place it diverges. These tools register under their plain names, `web_search` and `web_fetch`, not the `mcp_*` form. They're a named capability rather than an arbitrary remote server, so the wiring keeps the original names while reusing the connection, auth headers, `allowed_tools` filter, and call routing that every MCP server gets.
 

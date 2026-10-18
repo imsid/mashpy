@@ -39,8 +39,9 @@
       fn: link("_submit_request_inner", "runtime/requests.py"),
       records: "Nothing yet. DBOS writes the workflow_status row as it starts the workflow.",
       body:
-        "<p>The API route resolves the agent's " + code("InProcessAgentClient") +
-        " from the pool and calls " + code("AgentRuntime.submit_request") +
+        "<p>The API route resolves the agent's " + code("AgentClient") +
+        " from the pool, which POSTs to the agent's computer, and its " +
+        code("AgentServer") + " calls " + code("AgentRuntime.submit_request") +
         ". The runtime mints " + code("request_id") + ", appends " +
         code("runtime.request.accepted") + " (which also creates the " +
         code("runtime_request") + " row in state " + code("running") +
@@ -50,7 +51,7 @@
         code('SetWorkflowID("' + WFID + '")') + ". DBOS inserts a " +
         code("workflow_status") + " row in state " + code("PENDING") +
         " with the workflow inputs and starts " + F_WORKFLOW +
-        " as a task on the host's event loop. The caller gets " +
+        " as a task on the computer's event loop. The caller gets " +
         code("request_id") + " back without waiting for the agent.</p>",
       facts: [
         ["Workflow", code("mash.runtime.execute_request")],
@@ -375,8 +376,9 @@
         "<p>The reply comes in as " +
         code("POST /api/v1/agent/" + AGENT + "/request/" + RID + "/interaction") +
         " with " + code("{interaction_id, response}") + ". " +
-        code("InProcessAgentClient.post_interaction") + " calls " +
-        code('DBOS.send_async("' + WFID + '", response, topic=interaction_id)') +
+        code("AgentClient.post_interaction") + " forwards it to the computer, whose " +
+        code("AgentServer") + " calls " +
+        code('DBOS.send("' + WFID + '", response, topic=interaction_id)') +
         ". DBOS stores the message in " + code("notifications") +
         " and " + code("recv_async") + " returns it: " + code(response) + ".</p>" +
         "<p>If " + timeout + " seconds pass first, " + code("recv_async") +
@@ -448,33 +450,38 @@
       "request.complete",
     ];
     return {
-      name: "InvokeSubagent",
-      kind: "wf",
-      tag: "workflow scope",
+      name: "tool.call.0.0",
+      kind: "step",
+      tag: "run_step_async",
       call:
-        'with bound_subagent_request_id("' + RID + '-sub-0-0"): run_step_tool_call(...)',
+        'with bound_subagent_request_id("' + RID + '-sub-0-0"): ' +
+        'retry_transient(lambda: DBOS.run_step_async({"name": "tool.call.0.0"}, run_step_tool_call, ...))',
       fn: link("_run_tool_call_for_workflow", "runtime/engine/workflow.py"),
-      retry: "none",
-      records:
-        "No step output for this call. The child workflow has its own checkpoints.",
+      retry: RETRY,
+      reattaches: true,
+      records: code("workflow_state") + " with the subagent's answer appended to " +
+        code("result_payloads"),
       body:
-        "<p>This call stays at workflow scope with no " + code("run_step_async") +
-        " wrapper, because DBOS only starts child workflows from workflow " +
-        "context, not from inside a step.</p>" +
-        "<p>The workflow binds a child request id built from the parent id, the " +
-        "loop index, and the call index: " + code(RID + "-sub-0-0") + ". The " +
-        code("InvokeSubagent") + " tool submits to the " + code("research") +
-        " runtime, whose engine calls " + code("DBOS.start_workflow_async") +
-        ". That starts a child workflow with id " +
-        code("research:" + RID + "-sub-0-0") + ", running the same loop with its own steps:</p>" +
+        "<p>" + code("InvokeSubagent") + " runs as an ordinary step. The workflow " +
+        "binds a request id built from the parent id, the loop index, and the " +
+        "call index: " + code(RID + "-sub-0-0") + ".</p>" +
+        "<p>The tool POSTs that id to the host's " + code("/h2a") + " relay with " +
+        "a " + code("parent") + " naming this request and the request's host " +
+        "snapshot. The host checks that " + code("research") + " is in the " +
+        "snapshot and forwards the call to research's computer, which starts its " +
+        "own workflow " + code("research:" + RID + "-sub-0-0") +
+        " with its own steps:</p>" +
         '<ol class="mv-nested">' +
         child.map(function (n) { return "<li>" + code(n) + "</li>"; }).join("") +
         "</ol>" +
-        "<p>The child runs in the parent's session, and its turn is saved with " +
-        code("replayable = false") + ". The parent's tool streams the child's " +
-        "events until a terminal event, and the child's answer becomes the tool " +
-        "result. The parent appends " + code("runtime.subagent.call.completed") +
-        " in place of " + code("runtime.tool.call.completed") + ".</p>",
+        "<p>The subagent runs in the parent's session, and its turn is saved with " +
+        code("replayable = false") + ". The tool streams the subagent's events " +
+        "through the relay until a terminal event, and the answer becomes the " +
+        "tool result. The parent appends " + code("runtime.subagent.call.completed") +
+        " in place of " + code("runtime.tool.call.completed") + ".</p>" +
+        "<p>If this step runs again, it resubmits the same request id. Research's " +
+        "computer returns the request it already started instead of starting a " +
+        "second, and the stream replays from the first event.</p>",
       events: [
         ev("runtime.tool.call.started", "tool.call.started.0.call_s1"),
         ev("runtime.subagent.call.completed", "tool.call.0.call_s1"),
@@ -645,7 +652,7 @@
     subagent: {
       label: "Subagent",
       blurb:
-        "The primary delegates to a subagent, which runs as a child DBOS workflow.",
+        "The primary delegates to a subagent, which runs as its own DBOS workflow on the subagent's computer.",
       build: function () {
         return [
           submitFrame(),
@@ -675,7 +682,7 @@
   /* ---------- crash and recovery ---------- */
 
   function canCrash(frame) {
-    return !frame.synthetic && (frame.kind === "step" || frame.kind === "recv" || frame.kind === "wf");
+    return !frame.synthetic && (frame.kind === "step" || frame.kind === "recv");
   }
 
   function withCrash(frames, k) {
@@ -687,24 +694,18 @@
     var crashEvents = [];
     if (f.kind === "recv") {
       crashBody =
-        "<p>The host process dies while the workflow is parked on " +
+        "<p>The computer's process dies while the workflow is parked on " +
         code("recv") + ". The interaction prompt is already in " +
         code("runtime_event_log") + " and the " + code("workflow_status") +
         " row stays " + code("PENDING") + ".</p>";
-    } else if (f.kind === "wf") {
-      crashBody =
-        "<p>The host process dies while the child workflow is running. Parent " +
-        "and child are separate " + code("PENDING") + " rows in " +
-        code("workflow_status") + ", each with the checkpoints it had recorded.</p>";
-      crashEvents = f.events.slice(0, 1);
     } else if (f.crashBeforeWrites) {
       crashBody =
-        "<p>The host process dies while this step is running, before its " +
+        "<p>The computer's process dies while this step is running, before its " +
         "writes commit. DBOS has no recorded output for it, and the " +
         code("workflow_status") + " row stays " + code("PENDING") + ".</p>";
     } else {
       crashBody =
-        "<p>The host process dies while this step is running. Its events " +
+        "<p>The computer's process dies while this step is running. Its events " +
         "already reached " + code("runtime_event_log") + ", but DBOS never " +
         "recorded the step's output in " + code("operation_outputs") +
         ". The " + code("workflow_status") + " row stays " + code("PENDING") + ".</p>";
@@ -740,16 +741,17 @@
       retry: "none",
       records: "Nothing new",
       body:
-        "<p>The host starts again. Opening the runtime calls " +
-        code("DBOSRequestEngine.open()") + ", which calls " +
+        "<p>Docker restarts the computer with the same volumes. Opening the " +
+        "runtime calls " + code("DBOSRequestEngine.open()") + ", which calls " +
         code("ensure_dbos_ready()") + ". That constructs DBOS with " +
-        code('{"name": "mash", "system_database_url": MASH_DATABASE_URL}') +
+        code('{"name": "mash", "system_database_url": MASH_DATABASE_URL, "executor_id": "agent:' + AGENT + '"}') +
         ", registers " + code("mash.runtime.execute_request") + ", and calls " +
         code("DBOS.launch()") + ". Registration happens before launch so " +
         "recovery can resolve the workflow function.</p>" +
         "<p>On launch DBOS finds the " + code("PENDING") + " rows in " +
         code("workflow_status") + " and calls each workflow function again with " +
-        "its recorded inputs. Here that is " +
+        "its recorded inputs, only for rows under this computer's executor id. " +
+        "Here that is " +
         code('execute_request_workflow("' + AGENT + '", "' + RID + '", ...)') + ".</p>",
       events: [],
       state: {},
@@ -758,10 +760,6 @@
 
     var replayed = before.filter(function (b) { return b.kind !== "code" || b.name !== "submit_request"; });
     var items = replayed.map(function (b) {
-      if (b.kind === "wf") {
-        return "<li>" + code(b.name) + ": runs again at workflow scope under the " +
-          "same child id and attaches to the existing child workflow</li>";
-      }
       if (b.kind === "code") {
         return "<li>" + code(b.name) + ": plain workflow code, recomputed from replayed values</li>";
       }
@@ -803,12 +801,14 @@
         code("recv_async") + " waits on the same topic. A reply sent while the " +
         "process was down is already in " + code("notifications") +
         " and is delivered as soon as the wait starts.";
-    } else if (f.kind === "wf") {
+    } else if (f.reattaches) {
       note =
-        "The call runs again with the same child id " + code(RID + "-sub-0-0") +
-        ". Starting a workflow under an existing id attaches to it, so the " +
-        "child continues from its own checkpoints and no second child starts. " +
-        "The repeated " + code("tool.call.started") + " append returns the existing row.";
+        "No recorded output, so the step runs again and resubmits " +
+        code(RID + "-sub-0-0") + ". Research's computer already has that " +
+        "request, so it returns it instead of starting a second; the subagent " +
+        "continues from its own checkpoints and the stream replays from its " +
+        "first event. The repeated " + code("tool.call.started") +
+        " append returns the existing row.";
     } else if (f.crashBeforeWrites) {
       note = "No recorded output, so DBOS runs this step again from the start.";
     } else {
@@ -846,7 +846,6 @@
   var KIND_LABEL = {
     step: "DBOS step",
     recv: "DBOS recv",
-    wf: "workflow scope",
     code: "plain code",
     replay: "recovery",
     crash: "crash",
@@ -860,13 +859,17 @@
     var arrow = '<span class="mv-arrow" aria-hidden="true">→</span>';
     return (
       '<div class="mv-map" aria-label="Where each part runs">' +
-      '<div class="mv-zone"><div class="mv-zone-title">Host process ' +
+      '<div class="mv-zone"><div class="mv-zone-title">Host ' +
       code("mash host serve") + "</div>" +
       '<div class="mv-row">' +
       node("user", "Caller", "HTTP") + arrow +
       node("api", "API routes", code("/api/v1")) + arrow +
-      node("pool", "Pool", code("InProcessAgentClient")) + arrow +
-      node("runtime", "AgentRuntime", code("DBOSRequestEngine")) +
+      node("pool", "Pool", code("AgentClient")) +
+      "</div></div>" +
+      '<div class="mv-zone"><div class="mv-zone-title">Agent computer ' +
+      code("mash agent serve") + "</div>" +
+      '<div class="mv-row">' +
+      node("runtime", "AgentServer + AgentRuntime", code("DBOSRequestEngine")) +
       "</div>" +
       '<div class="mv-dbos-box"><div class="mv-zone-title">DBOS library, launched in this process</div>' +
       '<div class="mv-row">' +

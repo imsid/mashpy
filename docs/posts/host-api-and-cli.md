@@ -10,7 +10,7 @@ tags:
 
 # The Host API and CLI
 
-Everything in this series so far ran inside the host process. This post covers the boundary where applications meet it: an HTTP API under `/api/v1`, and a `mash` CLI whose every command is a client of that same API. Together they are the concrete form of the seam the [product brief](product-brief.md) argues for.
+Everything in this series so far ran inside an agent's runtime. This post covers the boundary where applications meet a deployment: an HTTP API under `/api/v1`, and a `mash` CLI whose every command is a client of that same API. Together they are the concrete form of the seam the [product brief](product-brief.md) argues for.
 
 ## Three API conventions
 
