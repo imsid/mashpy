@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 from contextlib import asynccontextmanager
+from typing import Any
 
 from dbos import DBOS
 from starlette.applications import Starlette
@@ -15,6 +17,7 @@ from starlette.routing import Route
 from .engine.workflow import workflow_id_for
 from .errors import RequestStaleError
 from .events import PostgresRuntimeStore
+from .requests import RequestIdConflictError, parent_request_metadata, validate_request_id
 from .service import AgentRuntime
 from .structured_output import serialize_structured_output
 
@@ -26,10 +29,33 @@ def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
-class AgentServer:
-    """ASGI server surface exposing one runtime via H2A HTTP + SSE."""
+class _BearerAuthMiddleware:
+    """Require ``Authorization: Bearer <token>`` on every route but /health."""
 
-    def __init__(self, runtime: AgentRuntime) -> None:
+    def __init__(self, app: Any, token: str) -> None:
+        self.app = app
+        self._expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("path") == "/health":
+            await self.app(scope, receive, send)
+            return
+        supplied = dict(scope.get("headers") or []).get(b"authorization", b"")
+        if not hmac.compare_digest(supplied, self._expected):
+            response = _json_error(401, "UNAUTHORIZED", "Missing or invalid bearer token")
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class AgentServer:
+    """ASGI server surface exposing one runtime via H2A HTTP + SSE.
+
+    With ``token`` set, every route except ``/health`` requires
+    ``Authorization: Bearer <token>``.
+    """
+
+    def __init__(self, runtime: AgentRuntime, *, token: str | None = None) -> None:
         self.runtime = runtime
         self.agent_id = runtime.app_id
         self._ready_event = asyncio.Event()
@@ -57,6 +83,11 @@ class AgentServer:
             lifespan=_lifespan,
             routes=[
                 Route("/health", self.health, methods=["GET"]),
+                Route(
+                    "/agent/{agent_id:str}/describe",
+                    self.describe,
+                    methods=["GET"],
+                ),
                 Route(
                     "/agent/{agent_id:str}/request",
                     self.submit_request,
@@ -94,6 +125,8 @@ class AgentServer:
                 ),
             ],
         )
+        if token:
+            self.app.add_middleware(_BearerAuthMiddleware, token=token)
 
     @classmethod
     def from_spec(
@@ -102,6 +135,7 @@ class AgentServer:
         *,
         runtime_database_url: str | None = None,
         session_id: str,
+        token: str | None = None,
     ) -> "AgentServer":
         from mash.core.database import resolve_database_url
 
@@ -115,7 +149,8 @@ class AgentServer:
                 session_id=session_id,
                 runtime_store=runtime_store,
                 memory_store=memory_store,
-            )
+            ),
+            token=token,
         )
 
     async def wait_until_ready(self, *, timeout: float | None = None) -> None:
@@ -181,13 +216,55 @@ class AgentServer:
         if metadata is not None and not isinstance(metadata, dict):
             return _json_error(400, "INVALID_REQUEST", "metadata must be an object")
 
-        accepted = await self.runtime.submit_request(
-            message=message,
-            session_id=session_id.strip(),
-            structured_output=structured_output,
-            metadata=metadata,
-        )
+        context = payload.get("context")
+        if context is not None and not isinstance(context, str):
+            return _json_error(400, "INVALID_REQUEST", "context must be a string")
+
+        host = payload.get("host")
+        if host is not None and not isinstance(host, dict):
+            return _json_error(400, "INVALID_REQUEST", "host must be an object")
+
+        parent = payload.get("parent")
+        if parent is not None:
+            try:
+                parent_request_metadata(parent, agent_id=self.agent_id)
+            except ValueError as exc:
+                return _json_error(400, "INVALID_PARENT", str(exc))
+
+        request_id = payload.get("request_id")
+        if request_id is not None:
+            try:
+                validate_request_id(request_id)
+            except ValueError as exc:
+                return _json_error(400, "INVALID_REQUEST", str(exc))
+            try:
+                existing = await self.runtime.get_accepted_request(request_id)
+            except RequestIdConflictError as exc:
+                return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
+            if existing is not None:
+                return JSONResponse(existing, status_code=200)
+
+        try:
+            accepted = await self.runtime.submit_request(
+                message=message,
+                session_id=session_id.strip(),
+                structured_output=structured_output,
+                host_snapshot=host,
+                context=context,
+                metadata=metadata,
+                request_id=request_id,
+                parent=parent,
+            )
+        except RequestIdConflictError as exc:
+            return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
         return JSONResponse(accepted, status_code=202)
+
+    async def describe(self, request: Request) -> Response:
+        agent_id = request.path_params.get("agent_id", "").strip()
+        if agent_id != self.agent_id:
+            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+
+        return JSONResponse(self.runtime.describe())
 
     async def post_interaction(self, request: Request) -> Response:
         agent_id = request.path_params.get("agent_id", "").strip()

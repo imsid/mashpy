@@ -30,8 +30,14 @@ class AgentClientLike(Protocol):
         session_id: str,
         structured_output: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
+        context: Optional[str] = None,
+        host: Optional[Dict[str, Any]] = None,
+        parent: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str: ...
+
+    async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]: ...
 
     async def post_interaction(
         self,
@@ -88,6 +94,7 @@ class AgentClient:
         base_url: str,
         agent_id: str,
         *,
+        token: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.base_url = self._normalize_base_url(base_url)
@@ -103,6 +110,8 @@ class AgentClient:
             for key, value in default_headers.items():
                 if isinstance(key, str) and value is not None:
                     self._headers[key] = str(value)
+        if token:
+            self._headers["Authorization"] = f"Bearer {token}"
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
@@ -133,6 +142,9 @@ class AgentClient:
 
     def _health_url(self) -> str:
         return f"{self.base_url}/health"
+
+    def _describe_url(self) -> str:
+        return f"{self.base_url}/agent/{self.agent_id}/describe"
 
     @staticmethod
     def _extract_message(response: httpx.Response) -> str:
@@ -178,6 +190,25 @@ class AgentClient:
             raise AgentClientError("health response must be an object")
         return payload
 
+    async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(headers=self._headers) as client:
+                response = await client.get(
+                    self._describe_url(),
+                    headers={"Accept": "application/json"},
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise AgentClientError(f"describe failed: {exc}") from exc
+        if response.status_code != 200:
+            raise AgentClientError(
+                f"describe failed (status={response.status_code}): {self._extract_message(response)}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise AgentClientError("describe response must be an object")
+        return payload
+
     async def post_request(
         self,
         message: str,
@@ -185,8 +216,13 @@ class AgentClient:
         session_id: str,
         structured_output: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
+        context: Optional[str] = None,
+        host: Optional[Dict[str, Any]] = None,
+        parent: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str:
+        """Submit a request. Resubmitting a known ``request_id`` returns it again."""
         payload: Dict[str, Any] = {
             "message": message,
             "session_id": session_id,
@@ -197,6 +233,14 @@ class AgentClient:
             )
         if metadata:
             payload["metadata"] = dict(metadata)
+        if request_id is not None:
+            payload["request_id"] = request_id
+        if context is not None:
+            payload["context"] = context
+        if host is not None:
+            payload["host"] = dict(host)
+        if parent is not None:
+            payload["parent"] = dict(parent)
 
         try:
             async with httpx.AsyncClient(headers=self._headers) as client:
@@ -208,7 +252,7 @@ class AgentClient:
         except httpx.HTTPError as exc:
             raise AgentClientError(f"POST request failed: {exc}") from exc
 
-        if response.status_code != 202:
+        if response.status_code not in (200, 202):
             raise AgentClientError(
                 f"POST request failed (status={response.status_code}): {self._extract_message(response)}"
             )
@@ -424,6 +468,10 @@ class InProcessAgentClient:
             "session": session_info,
         }
 
+    async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]:
+        del timeout
+        return self.runtime.describe()
+
     async def post_request(
         self,
         message: str,
@@ -431,6 +479,10 @@ class InProcessAgentClient:
         session_id: str,
         structured_output: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
+        context: Optional[str] = None,
+        host: Optional[Dict[str, Any]] = None,
+        parent: Optional[Dict[str, Any]] = None,
         timeout: float = 30.0,
     ) -> str:
         del timeout
@@ -438,7 +490,11 @@ class InProcessAgentClient:
             message=message,
             session_id=session_id,
             structured_output=structured_output,
+            host_snapshot=host,
+            context=context,
             metadata=metadata,
+            request_id=request_id,
+            parent=parent,
         )
         request_id = str(accepted.get("request_id") or "").strip()
         if not request_id:
