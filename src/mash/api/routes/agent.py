@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.runtime import AgentClientError
+from mash.runtime.client import AgentUnavailableError
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.events import build_reasoning_trace
 from mash.memory.signals import build_default_signal_collector
@@ -197,6 +198,8 @@ def build_agent_router() -> APIRouter:
             )
         try:
             status = await client.get_request_status(normalized)
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -221,6 +224,8 @@ def build_agent_router() -> APIRouter:
             raise APIError(
                 code="REQUEST_STALE", message=str(exc), status_code=409
             ) from exc
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -241,6 +246,8 @@ def build_agent_router() -> APIRouter:
             )
         try:
             result = await client.cancel_request(normalized)
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -261,6 +268,8 @@ def build_agent_router() -> APIRouter:
             )
         try:
             result = await client.rerun_request(normalized)
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -418,6 +427,8 @@ def build_agent_router() -> APIRouter:
         client = get_client(request, agent_id)
         try:
             status = await client.get_request_status(request_id)
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -432,6 +443,8 @@ def build_agent_router() -> APIRouter:
         client = get_client(request, agent_id)
         try:
             result = await client.cancel_request(request_id)
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -450,6 +463,8 @@ def build_agent_router() -> APIRouter:
             raise APIError(
                 code="REQUEST_STALE", message=str(exc), status_code=409
             ) from exc
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
@@ -470,6 +485,8 @@ def build_agent_router() -> APIRouter:
         client = get_client(request, agent_id)
         try:
             result = await client.rerun_request(request_id)
+        except AgentUnavailableError:
+            raise
         except (KeyError, AgentClientError) as exc:
             raise APIError(
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404

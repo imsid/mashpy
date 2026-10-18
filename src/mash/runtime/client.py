@@ -18,6 +18,10 @@ class AgentClientError(RuntimeError):
     """Raised when AgentClient operations fail."""
 
 
+class AgentUnavailableError(AgentClientError):
+    """The agent's server could not be reached (for example, its computer is down)."""
+
+
 class AgentClientLike(Protocol):
     """Shared transport contract for one addressable agent runtime."""
 
@@ -160,6 +164,13 @@ class AgentClient:
     def _compact_url(self, session_id: str) -> str:
         return f"{self.base_url}/agent/{self.agent_id}/session/{session_id}/compact"
 
+    def _http_error(self, operation: str, exc: httpx.HTTPError) -> AgentClientError:
+        if isinstance(exc, httpx.TransportError):
+            return AgentUnavailableError(
+                f"agent '{self.agent_id}' is unavailable ({operation}): {exc}"
+            )
+        return AgentClientError(f"{operation}: {exc}")
+
     @staticmethod
     def _extract_message(response: httpx.Response) -> str:
         try:
@@ -194,7 +205,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"health check failed: {exc}") from exc
+            raise self._http_error("health check failed", exc) from exc
         if response.status_code != 200:
             raise AgentClientError(
                 f"health check failed (status={response.status_code}): {self._extract_message(response)}"
@@ -213,7 +224,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"describe failed: {exc}") from exc
+            raise self._http_error("describe failed", exc) from exc
         if response.status_code != 200:
             raise AgentClientError(
                 f"describe failed (status={response.status_code}): {self._extract_message(response)}"
@@ -242,7 +253,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"compact failed: {exc}") from exc
+            raise self._http_error("compact failed", exc) from exc
         if response.status_code != 200:
             raise AgentClientError(
                 f"compact failed (status={response.status_code}): {self._extract_message(response)}"
@@ -293,7 +304,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"POST request failed: {exc}") from exc
+            raise self._http_error("POST request failed", exc) from exc
 
         if response.status_code not in (200, 202):
             raise AgentClientError(
@@ -326,7 +337,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"POST interaction failed: {exc}") from exc
+            raise self._http_error("POST interaction failed", exc) from exc
 
         if resp.status_code == 404:
             raise AgentClientError(
@@ -390,7 +401,7 @@ class AgentClient:
                         if stripped.startswith("data:"):
                             data_lines.append(stripped[5:].strip())
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"GET stream failed: {exc}") from exc
+            raise self._http_error("GET stream failed", exc) from exc
 
     async def get_request_status(
         self,
@@ -405,7 +416,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"GET request status failed: {exc}") from exc
+            raise self._http_error("GET request status failed", exc) from exc
         if response.status_code == 404:
             raise AgentClientError(
                 f"request '{request_id}' not found"
@@ -430,7 +441,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"POST resume request failed: {exc}") from exc
+            raise self._http_error("POST resume request failed", exc) from exc
         if response.status_code == 404:
             raise AgentClientError(
                 f"request '{request_id}' not found"
@@ -455,7 +466,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"POST cancel request failed: {exc}") from exc
+            raise self._http_error("POST cancel request failed", exc) from exc
         if response.status_code == 404:
             raise AgentClientError(f"request '{request_id}' not found")
         if response.status_code != 200:
@@ -478,7 +489,7 @@ class AgentClient:
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
-            raise AgentClientError(f"POST rerun request failed: {exc}") from exc
+            raise self._http_error("POST rerun request failed", exc) from exc
         if response.status_code == 404:
             raise AgentClientError(f"request '{request_id}' not found")
         if response.status_code != 200:
@@ -651,4 +662,10 @@ class InProcessAgentClient:
         return None
 
 
-__all__ = ["AgentClient", "AgentClientError", "AgentClientLike", "InProcessAgentClient"]
+__all__ = [
+    "AgentClient",
+    "AgentClientError",
+    "AgentClientLike",
+    "AgentUnavailableError",
+    "InProcessAgentClient",
+]

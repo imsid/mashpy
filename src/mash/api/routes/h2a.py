@@ -15,7 +15,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from mash.runtime.client import AgentClientError
+from mash.runtime.client import AgentClientError, AgentUnavailableError
 from mash.runtime.events import RuntimeEventType
 from mash.runtime.host.tokens import agent_for_token
 from mash.runtime.requests import parent_request_metadata, validate_request_id
@@ -108,6 +108,8 @@ def build_h2a_router() -> APIRouter:
                 host=host,
                 parent=parent,
             )
+        except AgentUnavailableError as exc:
+            return _h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
         except AgentClientError as exc:
             return _h2a_error(502, "AGENT_ERROR", str(exc))
         return JSONResponse(
