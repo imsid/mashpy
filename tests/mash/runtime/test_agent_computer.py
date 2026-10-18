@@ -10,6 +10,7 @@ H2A HTTP call with the agent's token.
 from __future__ import annotations
 
 import functools
+import os
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -243,6 +244,11 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
         state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
         state.start()
         self.addCleanup(state.stop)
+        # The host app still builds masher's eval agents in-process, and their
+        # LLM providers need a key.
+        env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+        env.start()
+        self.addCleanup(env.stop)
         # One shared Postgres: every process's stores see the same rows.
         runtime_store, memory_store = build_test_stores()
         for target, store in (
