@@ -148,7 +148,7 @@ class DockerComputerProvider:
         in_container: bool | None = None,
         environ: Mapping[str, str] | None = None,
         engine: DockerEngine | None = None,
-        health_timeout: float = 60.0,
+        health_timeout: float = 300.0,
     ) -> None:
         if not str(host_app or "").strip():
             raise ValueError("host_app is required to start agent computers")
