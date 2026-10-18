@@ -9,6 +9,38 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.24.0](https://github.com/imsid/mashpy/compare/mashpy-v0.23.2...mashpy-v0.24.0) (2026-10-18)
+
+
+### Features
+
+* **cortex:** cortex api and docs ([#228](https://github.com/imsid/mashpy/issues/228)) ([c8b9408](https://github.com/imsid/mashpy/commit/c8b94083ca0d4429f5ea1f449752934087d76164))
+* **cortex:** cortex store and reads on agent computers ([#226](https://github.com/imsid/mashpy/issues/226)) ([6aaf652](https://github.com/imsid/mashpy/commit/6aaf65252003e03a52442037e15c956115faa4d9))
+* **cortex:** cortex-agent and the cortex-build workflow ([#227](https://github.com/imsid/mashpy/issues/227)) ([1160ea8](https://github.com/imsid/mashpy/commit/1160ea8e1f5c615cba201732033ee807be52da11))
+* **pilot:** run pilot on agent computers ([#231](https://github.com/imsid/mashpy/issues/231)) ([b6b4a85](https://github.com/imsid/mashpy/commit/b6b4a85018896321ab5b92f6b84d548c254eb147))
+* **runtime:** bind mounts for agent computers ([#229](https://github.com/imsid/mashpy/issues/229)) ([9c7da53](https://github.com/imsid/mashpy/commit/9c7da53072b91983e08bb7c90b39e2b0b0d77e97))
+* **runtime:** docker computer provider and mash computer commands ([#218](https://github.com/imsid/mashpy/issues/218)) ([b25ce37](https://github.com/imsid/mashpy/commit/b25ce376dad3c02e32d18f98564f86acf8334a6e))
+* **runtime:** file memory on the agent's computer ([#220](https://github.com/imsid/mashpy/issues/220)) ([6c069bb](https://github.com/imsid/mashpy/commit/6c069bbea61ca1caaa89ef9e85b130eebc5073f7))
+* **runtime:** give every agent on a computer a bash tool ([#223](https://github.com/imsid/mashpy/issues/223)) ([03c4c5d](https://github.com/imsid/mashpy/commit/03c4c5dcb7fe70043730b9f6629774c0305d060f))
+* **runtime:** h2a 0.4.0 request fields, idempotent submit, and auth ([#215](https://github.com/imsid/mashpy/issues/215)) ([bba6a63](https://github.com/imsid/mashpy/commit/bba6a6336b1a107879ad4aae3cbbce0e3e9774cb))
+* **runtime:** h2a 0.5.0 user_id on requests ([#225](https://github.com/imsid/mashpy/issues/225)) ([e524952](https://github.com/imsid/mashpy/commit/e5249520311120d1583b49037c9c3d6be809741f))
+* **runtime:** mash agent serve and the host H2A relay ([#217](https://github.com/imsid/mashpy/issues/217)) ([a2f4279](https://github.com/imsid/mashpy/commit/a2f4279a5b68e70c714877eca540383b00289c61))
+* **runtime:** route subagents, workflow steps and host routes over H2A ([#216](https://github.com/imsid/mashpy/issues/216)) ([8ca03e0](https://github.com/imsid/mashpy/commit/8ca03e078c90e4fe444c45f37509dc5615639479))
+* **runtime:** run every agent on its computer; remove in-process execution ([#219](https://github.com/imsid/mashpy/issues/219)) ([f906fe5](https://github.com/imsid/mashpy/commit/f906fe564d051e2ac57c554fd7e0b1d4946a66f2))
+* **runtime:** set a DBOS executor id per process ([#213](https://github.com/imsid/mashpy/issues/213)) ([a33190a](https://github.com/imsid/mashpy/commit/a33190a39a7ef234f15c9d6285ec22f9bc00eb4c))
+* **tools:** run bash as the agent user with a clean environment ([#214](https://github.com/imsid/mashpy/issues/214)) ([1a2ca05](https://github.com/imsid/mashpy/commit/1a2ca050c19f423c02fe6814e1b9f32c181ad303))
+
+
+### Documentation
+
+* agent computers ([#221](https://github.com/imsid/mashpy/issues/221)) ([a2a1273](https://github.com/imsid/mashpy/commit/a2a1273af9475a151d9f8299b74c001c379d3c04))
+
+
+### Refactors
+
+* **masher:** remove the trace workflows ([#230](https://github.com/imsid/mashpy/issues/230)) ([b529bca](https://github.com/imsid/mashpy/commit/b529bca4368793f2128add08be90dfea02e89555))
+* **runtime:** remove per-agent file memory ([#224](https://github.com/imsid/mashpy/issues/224)) ([a2b7ace](https://github.com/imsid/mashpy/commit/a2b7acee8d3e4c1fa3325c40b0ee4cc50e2df8c9))
+
 ## [0.23.2](https://github.com/imsid/mashpy/compare/mashpy-v0.23.1...mashpy-v0.23.2) (2026-10-11)
 
 
