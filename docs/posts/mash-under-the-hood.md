@@ -27,7 +27,6 @@ harness and observability underneath.
     - [Telemetry API](#telemetry-api)
     - [Admin dashboard](#admin-dashboard)
     - [CLI Trace Inspection](#cli-trace-inspection)
-    - [Trace Digest](#trace-digest)
 - [Self-Hosted Interfaces](#self-hosted-interfaces)
     - [Composing from the Outside](#composing-from-the-outside)
     - [REPL](#repl)
@@ -253,7 +252,7 @@ The host is the unit of deploy and the unit of evaluation. Mash evals run a
 dataset through the full composition, primary agent, delegation, and
 subagents, so what gets scored is the response the application actually
 receives. Synthetic evals ship as two Masher workflows backed by Mash's built-in
-generation and judging agents. Every pool includes both and all four Masher
+generation and judging agents. Every pool includes both agents and both
 workflows; their specs appear in agent listings.
 
 - **`gen-synthetic-evals`** reads a host's declared capabilities and the
@@ -391,21 +390,6 @@ without leaving the terminal:
 Each trace renders a summary line (status, duration, steps, tool calls, tokens),
 a timing breakdown table with visual bars, per-tool stats, and the top slowest
 operations.
-
-### Trace Digest
-
-Masher also exposes `masher-trace-digest`, a workflow that builds on the same
-span and analysis infrastructure. It produces a schema v2 digest with the full
-latency breakdown, tool stats, step breakdown, slowest operations, nested
-subagent traces, and notable events: a complete diagnostic snapshot of one
-trace. The workflow is all code steps and runs deterministically over the
-runtime event log. Trace mode digests one trace and returns it inline; batch
-mode scans traces newer than a `since_ts` cutoff and appends each digest to a
-JSONL artifact, deduplicated, so repeated batch runs are safe on a schedule.
-
-```bash
-/workflow run masher-trace-digest --input '{"mode": "trace", "target_agent_id": "..", "session_id": "..", "trace_id": ".."}'
-```
 
 ## Self-Hosted Interfaces
 

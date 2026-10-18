@@ -17,6 +17,7 @@ from mash.runtime.events import (
     build_span_tree,
     serialize_runtime_event,
     serialize_span,
+    stitch_subagent_traces,
 )
 from mash.runtime.events.types import RuntimeEvent
 
@@ -484,9 +485,6 @@ def build_telemetry_router() -> APIRouter:
         analysis = analyze_trace(tree)
 
         if stitch and analysis.subagent_details:
-            # Deferred: only pay for the masher package when stitching is requested.
-            from mash.agents.masher.traces import stitch_subagent_traces  # pylint: disable=import-outside-toplevel
-
             analysis = await stitch_subagent_traces(store, analysis)
 
         return success(

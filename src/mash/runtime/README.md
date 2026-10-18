@@ -369,6 +369,7 @@ lifecycle.
 - [`events/analysis.py`](./events/analysis.py)
   - deterministic trace analysis from span trees
   - `analyze_trace(tree)` computes timing breakdown, token aggregation, per-tool stats, per-step breakdown, and slowest operations
+  - `stitch_subagent_traces(store, analysis)` attaches each subagent call's own analysis from the store, up to three levels deep
   - `TraceAnalysis` includes: timing (cold start, context load, think, tool, subagent, idle), token counts, tool stats, step breakdown, subagent details with recursive child analysis support
   - all computation is pure — no DB access, no LLM inference
 

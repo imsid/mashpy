@@ -14,9 +14,7 @@ from mash.agents.masher import (
     EVAL_AGENT_ID,
     EVAL_JUDGE_AGENT_ID,
     MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-    MASHER_ONLINE_EVAL_WORKFLOW_ID,
     MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
-    MASHER_TRACE_DIGEST_WORKFLOW_ID,
 )
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
@@ -226,9 +224,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             for workflow in host.get_workflow_registry().list()
                         } == {
                             MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                            MASHER_ONLINE_EVAL_WORKFLOW_ID,
                             MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
-                            MASHER_TRACE_DIGEST_WORKFLOW_ID,
                             QUIZ_WORKFLOW_ID,
                             CHANGELOG_WORKFLOW_ID,
                         }

@@ -385,8 +385,6 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     workflow_ids,
                     {
                         "changelog",
-                        "masher-trace-digest",
-                        "masher-online-eval-curation",
                         "gen-synthetic-evals",
                         "run-experiment",
                     },
@@ -395,8 +393,6 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     pool.get_host("changelog-host").workflows,
                     (
                         "changelog",
-                        "masher-trace-digest",
-                        "masher-online-eval-curation",
                         "gen-synthetic-evals",
                         "run-experiment",
                     ),
@@ -497,8 +493,6 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
                     [
                         "gen-synthetic-evals",
-                        "masher-online-eval-curation",
-                        "masher-trace-digest",
                         "run-experiment",
                         "wf-a",
                         "wf-b",
@@ -596,7 +590,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     workflow_service = pool.get_workflow_service()
                     self.assertIsNotNone(workflow_service)
                     listed = await workflow_service.list_workflows()
-                    self.assertEqual(len(listed), 5)
+                    self.assertEqual(len(listed), 3)
                     self.assertIn("changelog", {item["workflow_id"] for item in listed})
 
                     async def start_workflow_run(**_kwargs):

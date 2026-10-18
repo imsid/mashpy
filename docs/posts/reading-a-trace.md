@@ -79,8 +79,6 @@ Over HTTP, `GET /api/v1/telemetry/trace/analysis?agent_id=…&session_id=…&tra
 
 In the browser, the admin dashboard at `/admin` renders the trace under Logs: a request list per agent, and a drawer per trace with summary tiles, the reconstructed conversation, and a collapsible span tree with per-span durations. This is the view for browsing and reading traces, where a terminal table stops scaling.
 
-For continuous use, Masher packages the same analysis into scheduled workflows. `masher-trace-digest` emits a full diagnostic snapshot per trace, and `masher-online-eval-curation` writes eval records with latency context. Both are all-code [step pipelines](workflows-as-step-pipelines.md) that scan the event log deterministically and deduplicate what they append, which makes them safe on a schedule.
-
 ## Wrapping up
 
 The event log was introduced in the first post as the record of what happened, and this post read that record directly; the same events that drive SSE replay drive the latency breakdown. That closes the tour of the internals. From here, the [CLI guide](building-agent-clis.md) puts a custom shell on top of what you've built, and the [deploy guide](how-to-deploy.md) covers running it in production.

@@ -198,7 +198,6 @@ class RunExperimentWorkflowTests(unittest.TestCase):
                 rubric=_RUBRIC,
             )
             context = MasherRuntimeContext(
-                runtime_store=_FakeRuntimeStore(),
                 eval_service=service,
                 pool=_FakePool(),
             )

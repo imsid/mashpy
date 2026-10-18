@@ -6,6 +6,7 @@ from .analysis import (
     ToolCallStats,
     TraceAnalysis,
     analyze_trace,
+    stitch_subagent_traces,
 )
 from .spans import (
     Span,
@@ -36,6 +37,7 @@ from .types import (
 __all__ = [
     "RequestIdentity",
     "analyze_trace",
+    "stitch_subagent_traces",
     "build_reasoning_trace",
     "build_runtime_trace",
     "build_span_tree",

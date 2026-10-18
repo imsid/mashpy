@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from .spans import Span, SpanKind, TraceSpanTree
+from .protocol import RuntimeStore
+from .spans import Span, SpanKind, TraceSpanTree, build_span_tree
 
 
 @dataclass(frozen=True)
@@ -352,6 +353,50 @@ def _compute_slowest_spans(
         }
         for span in leaf_spans[:limit]
     ]
+
+
+async def stitch_subagent_traces(
+    store: RuntimeStore,
+    analysis: TraceAnalysis,
+    *,
+    max_depth: int = 3,
+    _depth: int = 0,
+) -> TraceAnalysis:
+    """Attach each subagent call's own analysis, read from the store, up to
+    ``max_depth`` levels."""
+    if not analysis.subagent_details or _depth >= max_depth:
+        return analysis
+
+    updated_details: list[SubagentDetail] = []
+    for detail in analysis.subagent_details:
+        if not detail.agent_id or not detail.subagent_session_id:
+            updated_details.append(detail)
+            continue
+        try:
+            child_events = await store.list_events(
+                app_id=detail.agent_id,
+                session_id=detail.subagent_session_id,
+                limit=None,
+            )
+        except Exception:
+            updated_details.append(detail)
+            continue
+
+        if not child_events:
+            updated_details.append(detail)
+            continue
+
+        try:
+            child_tree = build_span_tree(child_events)
+            child_analysis = analyze_trace(child_tree)
+            child_analysis = await stitch_subagent_traces(
+                store, child_analysis, max_depth=max_depth, _depth=_depth + 1,
+            )
+            updated_details.append(replace(detail, child_analysis=child_analysis))
+        except Exception:
+            updated_details.append(detail)
+
+    return replace(analysis, subagent_details=updated_details)
 
 
 def _extract_subagent_details(subagent_spans: list[Span]) -> list[SubagentDetail]:
