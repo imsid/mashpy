@@ -67,6 +67,7 @@ class AgentRuntime:
         self._shutdown_complete = False
 
         self._subagent_access: SubagentAccess | None = None
+        self._computer_bash = False
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
         self.has_mcp_manager = False
         self.mcp_manager: Optional[MCPManager] = None
@@ -134,6 +135,11 @@ class AgentRuntime:
 
     def get_subagent_access(self) -> SubagentAccess | None:
         return self._subagent_access
+
+    def enable_computer_bash(self) -> None:
+        """Give every turn agent bash on its computer, unless the spec has its own."""
+        self._computer_bash = True
+        factory_helpers.register_computer_bash(self, self.agent)
 
     async def get_session_info(
         self,

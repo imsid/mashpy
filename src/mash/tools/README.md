@@ -12,7 +12,9 @@
 - `registry.py`: registration and lookup of enabled tools.
 - `bash.py`: shell tool. Bash starts with a clean environment (`HOME`, `PATH`,
   `LANG`, `PWD`). When an `agent` user exists, as on an agent computer, it runs
-  as that user through `sudo` and starts in `/home/agent/workspace`.
+  as that user through `sudo` and starts in `/home/agent/workspace`. The
+  runtime registers it for every agent served on a computer unless the spec
+  registers its own `bash` tool.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.

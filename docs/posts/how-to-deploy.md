@@ -47,9 +47,9 @@ reaches each agent over HTTP.
 - A primary calls its subagents through the host's `/h2a` relay, which checks
   the call against the request's host composition. Computers know the host's
   address and nothing else.
-- Each computer's bash sessions run as an `agent` user with a clean
-  environment, so the agent cannot read the runtime's database URL or API
-  keys.
+- Every agent gets a `bash` tool on its computer. Its bash sessions run as an
+  `agent` user with a clean environment, so the agent cannot read the
+  runtime's database URL or API keys.
 - All durable state (events, sessions, DBOS workflows, workflow runs) lives in
   Postgres. Memory and workspace files live on the volumes.
 
