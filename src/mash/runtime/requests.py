@@ -17,6 +17,7 @@ from ..logging.trace_context import (
     get_workflow_id,
     get_workflow_run_id,
 )
+from . import file_memory
 from .errors import RequestStaleError, classify_error
 from .events import RequestStatus, RuntimeEvent, RuntimeEventType
 from .structured_output import serialize_structured_output
@@ -317,6 +318,55 @@ async def _submit_request_inner(
         )
         raise
     return to_public_event(accepted_event)["data"]
+
+
+async def enqueue_memory_update(
+    self: "AgentRuntime",
+    *,
+    request_id: str,
+    session_id: str,
+    message: str,
+    context_payload: dict[str, Any],
+    request_metadata: dict[str, Any] | None,
+) -> str | None:
+    """Queue the memory update for a completed request; return its request id.
+
+    Runs at workflow scope after ``request.completed``. Both writes are
+    idempotent (the accepted event dedupes, the enqueue reuses a fixed
+    workflow id), so a replay queues the update once.
+    """
+    if self.memory_dir is None or not file_memory.should_update_memory(
+        dict(request_metadata or {})
+    ):
+        return None
+    update_request_id = file_memory.memory_update_request_id(request_id)
+    update_metadata = {file_memory.MEMORY_UPDATE_KEY: {"request_id": request_id}}
+    update_message = file_memory.build_transcript(message, context_payload)
+    await append_runtime_event(
+        self,
+        RuntimeEvent(
+            request_id=update_request_id,
+            app_id=self.app_id,
+            agent_id=self.app_id,
+            session_id=session_id,
+            event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+            dedupe_key="request.accepted",
+            lifecycle=RequestStatus.RUNNING,
+            payload={
+                "workflow_id": f"{self.app_id}:{update_request_id}",
+                "message": update_message,
+                "initial_session_id": session_id,
+                "request_metadata": update_metadata,
+            },
+        ),
+    )
+    await self.engine.enqueue_memory_update(
+        request_id=update_request_id,
+        message=update_message,
+        session_id=session_id,
+        request_metadata=update_metadata,
+    )
+    return update_request_id
 
 
 async def stream_response_events(

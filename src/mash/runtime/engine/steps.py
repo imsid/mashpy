@@ -15,6 +15,7 @@ from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
 from .. import factory as factory_helpers
+from .. import file_memory
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
 from ..requests import append_runtime_event, fetch_request_attempt
 
@@ -156,9 +157,10 @@ async def _plan_step_payload(
     session_id: str,
     trace_id: str,
     host: dict[str, Any] | None = None,
+    memory_update: bool = False,
 ) -> dict[str, Any]:
     agent = runtime.build_turn_agent(
-        session_id=session_id, trace_id=trace_id, host=host
+        session_id=session_id, trace_id=trace_id, host=host, memory_update=memory_update
     )
     try:
         plan = await agent.plan_step(context)
@@ -195,9 +197,10 @@ async def _run_tool_call_payload(
     session_id: str,
     trace_id: str,
     host: dict[str, Any] | None = None,
+    memory_update: bool = False,
 ) -> tuple[ContextToolResult, int]:
     agent = runtime.build_turn_agent(
-        session_id=session_id, trace_id=trace_id, host=host
+        session_id=session_id, trace_id=trace_id, host=host, memory_update=memory_update
     )
     started_at = time.time()
     try:
@@ -292,6 +295,7 @@ async def _persist_turn_payload(
         workflow_run_id = response_metadata.get("workflow_run_id") or None
         task_id = response_metadata.get("task_id") or None
         is_subagent = bool(response_metadata.get("subagent_id"))
+        is_memory_update = bool(response_metadata.get(file_memory.MEMORY_UPDATE_KEY))
         await runtime.store.save_turn(
             trace_id=resolved_trace_id,
             session_id=session_id,
@@ -304,7 +308,7 @@ async def _persist_turn_payload(
             workflow_id=workflow_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
-            replayable=workflow_id is None and not is_subagent,
+            replayable=workflow_id is None and not is_subagent and not is_memory_update,
         )
     response_payload = {
         "text": response.text,
@@ -333,8 +337,14 @@ async def start_request_trace(
     request_id: str,
     session_id: str,
     message: str,
+    request_metadata: dict[str, Any] | None = None,
 ) -> str:
     runtime = _require_runtime(agent_id)
+    payload: dict[str, Any] = {"message": message}
+    memory_update = dict(request_metadata or {}).get(file_memory.MEMORY_UPDATE_KEY)
+    if memory_update:
+        payload["trace_kind"] = file_memory.TRACE_KIND
+        payload["source_request_id"] = memory_update.get("request_id")
     # workflow_id / workflow_run_id are stamped by append_runtime_event from the
     # bound workflow context when the request was issued by a workflow task.
     started = await append_runtime_event(
@@ -347,7 +357,7 @@ async def start_request_trace(
             session_id=session_id,
             event_type=RuntimeEventType.TRACE_STARTED.value,
             dedupe_key="request.started",
-            payload={"message": message},
+            payload=payload,
         ),
     )
     # On a replay after the append committed but before DBOS recorded this
@@ -382,13 +392,31 @@ async def load_request_context(
     metadata = dict(request_metadata or {})
     host = metadata.get("host") or None
     request_context = metadata.get("context")
+    memory_update = bool(metadata.get(file_memory.MEMORY_UPDATE_KEY))
+    # INDEX.md is read here, inside the checkpointed step, so a replay sees the
+    # memory the request originally saw.
+    if memory_update:
+        # A memory update sees only the curator prompt, the current index and
+        # the transcript in its message: no agent prompt, no history.
+        system_prompt = factory_helpers.append_memory_block(
+            runtime,
+            file_memory.memory_update_prompt(
+                runtime.app_id,
+                runtime.memory_dir,
+                runtime.agent.config.memory_index_max_chars,
+            ),
+        )
+    else:
+        system_prompt = factory_helpers.append_memory_block(
+            runtime,
+            factory_helpers.resolve_host_system_prompt(runtime, host, request_context),
+        )
     context_payload = await context_helpers.build_context_payload(
         runtime,
         session_id=session_id,
         message=message,
-        system_prompt=factory_helpers.resolve_host_system_prompt(
-            runtime, host, request_context
-        ),
+        system_prompt=system_prompt,
+        include_history=not memory_update,
     )
     await append_runtime_event(
         runtime,
@@ -407,6 +435,7 @@ async def load_request_context(
         "context": dict(context_payload.get("context") or {}),
         "compaction": dict(context_payload.get("compaction") or {}),
         "host": host,
+        "memory_update": memory_update,
         "loop_index": 0,
         "aggregate_usage": {"input": 0, "output": 0},
         "tool_usage": {},
@@ -450,6 +479,7 @@ async def plan_request_step(
         session_id=session_id,
         trace_id=trace_id,
         host=workflow_state.get("host") or None,
+        memory_update=bool(workflow_state.get("memory_update")),
     )
     action_payload = {
         key: value
@@ -517,6 +547,7 @@ async def _execute_and_record_tool_call(
     loop_index: int,
     tool_call: ToolCall,
     host: dict[str, Any] | None,
+    memory_update: bool = False,
 ) -> dict[str, Any]:
     """Run one tool call, emitting its started/completed events.
 
@@ -548,6 +579,7 @@ async def _execute_and_record_tool_call(
         session_id=session_id,
         trace_id=trace_id,
         host=host,
+        memory_update=memory_update,
     )
     result_payload = _step_tool_result_payload(
         tool_call,
@@ -604,6 +636,7 @@ async def run_step_tool_call(
         loop_index=loop_index,
         tool_call=tool_call,
         host=workflow_state.get("host") or None,
+        memory_update=bool(workflow_state.get("memory_update")),
     )
     return {
         **dict(workflow_state or {}),
@@ -683,6 +716,7 @@ async def run_step_tool_batch(
             loop_index=loop_index,
             tool_call=tool_calls[index],
             host=host,
+            memory_update=bool(workflow_state.get("memory_update")),
         ),
     )
 

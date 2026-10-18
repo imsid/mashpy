@@ -14,6 +14,7 @@ from ..memory.signals import build_default_signal_collector
 from ..memory.store import MemoryStore
 from . import context as context_helpers
 from . import factory as factory_helpers
+from . import file_memory
 from . import requests as request_helpers
 from .engine import DBOSRequestEngine, RequestEngine
 from .events import RuntimeStore
@@ -85,6 +86,8 @@ class AgentRuntime:
         self.system_prompt: SystemPrompt = self.agent.config.system_prompt
         self.tools = self.agent.tools
         self.skills = self.agent.skills
+        # None unless the agent opts in with AgentConfig(memory_enabled=True).
+        self.memory_dir = file_memory.resolve_memory_dir(self.agent.config)
 
         definition.on_startup(self)
 
@@ -235,6 +238,24 @@ class AgentRuntime:
         self.require_open()
         return await request_helpers.get_accepted_request(self, request_id)
 
+    async def enqueue_memory_update(
+        self,
+        *,
+        request_id: str,
+        session_id: str,
+        message: str,
+        context_payload: dict[str, Any],
+        request_metadata: dict[str, Any] | None,
+    ) -> str | None:
+        return await request_helpers.enqueue_memory_update(
+            self,
+            request_id=request_id,
+            session_id=session_id,
+            message=message,
+            context_payload=context_payload,
+            request_metadata=request_metadata,
+        )
+
     async def stream_response_events(
         self,
         request_id: str,
@@ -282,9 +303,14 @@ class AgentRuntime:
         session_id: str,
         trace_id: str,
         host: dict[str, Any] | None = None,
+        memory_update: bool = False,
     ) -> Any:
         agent = factory_helpers.build_agent_instance(
-            self, session_id=session_id, shared_llm=self._shared_llm, host=host,
+            self,
+            session_id=session_id,
+            shared_llm=self._shared_llm,
+            host=host,
+            memory_update=memory_update,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent

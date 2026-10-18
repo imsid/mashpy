@@ -27,12 +27,19 @@ def agent_executor_id(agent_id: str) -> str:
     return f"agent:{resolved}"
 
 
+def memory_queue_name(agent_id: str) -> str:
+    """The queue an agent's memory updates run on; only its computer listens."""
+    return f"mash.memory.{agent_id}"
+
+
 @dataclass
 class _DBOSRuntimeState:
     ready: bool = False
     database_url: str | None = None
     executor_id: str = HOST_EXECUTOR_ID
     listen_queues: bool = True
+    agent_id: str | None = None
+    memory_queue: Any = None
     registered_workflow: Any = None
     runtime_registry: dict[str, "AgentRuntime"] = field(default_factory=dict)
 
@@ -92,11 +99,12 @@ def configure_agent_process(agent_id: str) -> None:
     """Configure DBOS for an agent computer. Must run before DBOS launches.
 
     The computer runs as ``agent:<agent_id>``, so it recovers only that agent's
-    requests, and listens to no queues, so it never dequeues the host's
-    workflow runs.
+    requests, and listens only to its own memory queue, so it never dequeues
+    the host's workflow runs.
     """
     configure_executor_id(agent_executor_id(agent_id))
     _STATE.listen_queues = False
+    _STATE.agent_id = agent_id
 
 
 async def ensure_dbos_ready(database_url: str) -> None:
@@ -125,7 +133,9 @@ async def ensure_dbos_ready(database_url: str) -> None:
     # declared once launch has opened it.
     register_workflow(dbos_class)
     if not _STATE.listen_queues:
-        dbos_class.listen_queues([])
+        dbos_class.listen_queues(
+            [memory_queue_name(_STATE.agent_id)] if _STATE.agent_id else []
+        )
     dbos_class.launch()
     await ensure_queue_registered(dbos_class)
     _STATE.ready = True
@@ -186,6 +196,20 @@ class DBOSRequestEngine(RequestEngine):
     async def open(self) -> None:
         register_runtime(self._runtime)
         await ensure_dbos_ready(self._database_url)
+        if getattr(self._runtime, "memory_dir", None) is not None:
+            # Registered at open so updates left queued by a replaced computer
+            # are dequeued without waiting for the next enqueue.
+            await self._ensure_memory_queue()
+
+    async def _ensure_memory_queue(self) -> Any:
+        if _STATE.memory_queue is None:
+            dbos_class, _ = _load_dbos_api()
+            # Concurrency 1: the update job is the only writer of the agent's
+            # memory, even while requests run concurrently.
+            _STATE.memory_queue = await dbos_class.register_queue_async(
+                memory_queue_name(self._runtime.app_id), global_concurrency=1
+            )
+        return _STATE.memory_queue
 
     async def close(self) -> None:
         unregister_runtime(self._runtime)
@@ -221,6 +245,31 @@ class DBOSRequestEngine(RequestEngine):
                 f"failed to start DBOS workflow '{workflow_id}' for session "
                 f"'{session_id}': {detail}"
             ) from exc
+
+    async def enqueue_memory_update(
+        self,
+        *,
+        request_id: str,
+        message: str,
+        session_id: str,
+        request_metadata: dict[str, Any],
+    ) -> None:
+        await ensure_dbos_ready(self._database_url)
+        _, set_workflow_id = _load_dbos_api()
+        queue = await self._ensure_memory_queue()
+        workflow = _STATE.registered_workflow
+        if workflow is None:
+            raise RuntimeError("DBOS workflow is not registered")
+        # A fixed workflow id makes a replayed enqueue a no-op.
+        with set_workflow_id(workflow_id_for(self._runtime.app_id, request_id)):
+            await queue.enqueue_async(
+                workflow,
+                self._runtime.app_id,
+                request_id,
+                message,
+                session_id,
+                dict(request_metadata or {}),
+            )
 
     async def get_request_status(
         self,
@@ -409,4 +458,5 @@ __all__ = [
     "configure_executor_id",
     "ensure_dbos_ready",
     "get_executor_id",
+    "memory_queue_name",
 ]
