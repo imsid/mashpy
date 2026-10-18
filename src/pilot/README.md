@@ -1,9 +1,8 @@
 # Mash Pilot
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
-shipped in this repo at [`src/pilot/`](.). Its agents specialize in Mash's own
-modules — so instead of reading docs or grepping the source, you ask Pilot and
-it answers from the actual source tree.
+shipped in this repo at [`src/pilot/`](.). You ask Pilot about Mash and it
+answers from the source tree, or asks its builder to build a Mash app for you.
 
 ```text
 > Summarize how HostBuilder registers pooled agents and host compositions.
@@ -13,63 +12,67 @@ it answers from the actual source tree.
 
 ## Models and keys
 
-The primary `pilot` agent runs **Gemini** (`gemini-3.5-flash`), read from
-`GEMINI_API_KEY`. Every subagent runs an **open Gemma model over OpenRouter**
-(`google/gemma-4-31b-it`), read from `OPENROUTER_API_KEY`. Both keys are
-required. Each model is overridable:
+The `pilot` guide runs **Gemini** (`gemini-3.5-flash`), read from
+`GEMINI_API_KEY`. The `builder` and the changelog summarizer run an **open
+Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
+`OPENROUTER_API_KEY`. Both keys are required. Each model is overridable:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `GEMINI_API_KEY` | Key for the primary agent (required) | — |
-| `OPENROUTER_API_KEY` | Key for the subagents (required) | — |
-| `PILOT_PRIMARY_MODEL` | Override the primary model | `gemini-3.5-flash` |
-| `PILOT_SUBAGENT_MODEL` | Override the subagent model | `google/gemma-4-31b-it` |
-| `GITHUB_MCP_PAT` | Enable the guide's commit-inspection tools | unset |
+| `GEMINI_API_KEY` | Key for the guide (required) | — |
+| `OPENROUTER_API_KEY` | Key for the builder and the changelog summarizer (required) | — |
+| `MASH_HOST_SECRET` | Derives each agent's token (required; `openssl rand -hex 32`) | — |
+| `PILOT_PRIMARY_MODEL` | Override the guide's model | `gemini-3.5-flash` |
+| `PILOT_SUBAGENT_MODEL` | Override the builder's and summarizer's model | `google/gemma-4-31b-it` |
 
 ## Quick start
 
-```bash
-# 1. Start the host — one container, embedded Postgres, Mash source included
-docker run -d --name pilot -p 8000:8000 \
-  -e GEMINI_API_KEY=... \
-  -e OPENROUTER_API_KEY=sk-or-... \
-  -v pilot-data:/var/lib/pilot \
-  ghcr.io/imsid/mashpy-pilot:latest
+Pilot runs from a checkout of this repo with Docker Compose. The host starts
+one container per agent (its computer) through the Docker socket, and mounts
+the checkout read-only into each one at `/home/agent/workspace/mashpy`.
 
-# 2. Install the CLI and ask
+```bash
+# 1. Clone the repo and put the keys in .env
+git clone https://github.com/imsid/mashpy.git && cd mashpy
+printf 'GEMINI_API_KEY=...\nOPENROUTER_API_KEY=sk-or-...\nMASH_HOST_SECRET=%s\n' "$(openssl rand -hex 32)" > .env
+
+# 2. Start Postgres and the host, from the repo root
+docker compose -f docker-compose.pilot.yml up -d --build
+
+# 3. Install the CLI and ask
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 pilot repl --host guide
 ```
 
-Add `-e GITHUB_MCP_PAT=ghp_...` to enable the guide's commit-inspection tools.
-The `pilot-data` volume keeps the database durable across restarts.
+The first start can take a few minutes while the computers import the app.
+`mash computer ls` lists them. The agents read your checkout as it is, so edits
+show up without a restart. Pilot's own code is in the image: after changing it,
+rebuild, remove the computers with
+`docker rm -f $(docker ps -aq --filter label=mash.agent)`, and restart the
+`pilot` service so it recreates them.
 
 ## The guide team
 
-One agent per module:
-
-| Agent | Owns |
+| Agent | Role |
 |-------|------|
-| `pilot` | Shared/cross-cutting: `core`, `tools`, `skills`, `logging`, `memory` |
-| `cli-copilot` | `src/mash/cli` — commands, REPL, terminal rendering |
-| `api-copilot` | `src/mash/api` — HTTP routes, FastAPI |
-| `mcp-copilot` | `src/mash/mcp` — MCP client/server, transport, tool adaptation |
-| `runtime-copilot` | `src/mash/runtime` — request lifecycle, event sourcing, durability |
-| `workflow-copilot` | `src/mash/workflows` — step pipelines, DBOS orchestration, resume, run status |
+| `pilot` | The guide. Answers questions about Mash from the mounted source, docs and git history. |
+| `builder` | Builds Mash apps in its own workspace (`/home/agent/workspace/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
+
+The `guide` host makes `pilot` the primary and `builder` its subagent. The
+guide delegates to the builder when you ask for an app.
 
 ## A workflow it ships
 
-Beyond answering questions, Pilot registers the `pilot-changelog` workflow — a
-`CodeStep` reads `CHANGELOG.md` and an `AgentStep` summarizes the most recent
-release, scanning the source when an entry is too terse to explain on its own.
-It's attached to the `guide` host, so `/workflow run pilot-changelog` runs it
-from the REPL. See [`catalog/workflows/`](catalog/workflows/) for the spec.
+Pilot registers the `pilot-changelog` workflow. A `CodeStep` reads
+`CHANGELOG.md` and an `AgentStep` summarizes the most recent release, scanning
+the source when an entry is too terse to explain on its own. It's attached to
+the `guide` host, so `/workflow run pilot-changelog` runs it from the REPL. See
+[`catalog/workflows/`](catalog/workflows/) for the spec.
 
-## Scaffolding your own app
+## Building your own app
 
-The guide carries `build-mash-agent`, `build-mash-workflow`, and
-`build-mash-host` skills so it goes beyond explaining Mash to scaffolding your
-application:
+The builder follows the `build-mash-agent`, `build-mash-workflow`, and
+`build-mash-host` skills:
 
 ```text
 > Build me a support agent with a knowledge base search tool and human approval for refunds.
@@ -77,14 +80,16 @@ application:
 > I need an agent that connects to my MCP server at localhost:3000 and uses Gemini.
 ```
 
-Use `pilot serve` from a source install to run your own host, or point the CLI
-at any Mash deployment with `--api-base-url`. Treat this package as a reference
-when structuring your own multi-agent app.
+It cannot serve what it builds, because a computer has no Docker. Copy the app
+out with `docker cp mash-agent-builder:/home/agent/workspace/apps/<name> .`
+and run it as any Mash app. Point the CLI at another Mash deployment with
+`--api-base-url`. Treat this package as a reference when structuring your own
+multi-agent app.
 
 ## Try Mushy with Pilot
 
-Thought capture is always enabled for Pilot and its module copilots when their
-provider supports it. Gemini records exposed summaries alongside the existing
+Thought capture is always enabled for Pilot's agents when their provider
+supports it. Gemini records exposed summaries alongside the existing
 request events. No agent configuration, second provider, or model call is needed.
 
 Run the updated host and ask Pilot a question normally. Open

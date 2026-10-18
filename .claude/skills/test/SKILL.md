@@ -20,9 +20,13 @@ Read the change before designing anything around it.
 - Decide what is *material*: which behaviors a user could observe going wrong.
   Refactors with no observable surface do not need a live test.
 - Learn how pilot exposes that surface. `src/pilot/spec.py` and
-  `src/pilot/catalog/` say which agents exist, which tools each one registers,
-  and which models back them. `GET /api/v1/agent` and `/api/v1/hosts` say what
-  is actually deployed.
+  `src/pilot/catalog/` say which agents exist (the `pilot` guide and its
+  `builder` subagent, plus masher's eval agents and the changelog workflow's
+  agent), which tools each one registers, and which models back them.
+  `GET /api/v1/agent` and `/api/v1/hosts` say what is actually deployed.
+- Every agent runs on its own computer, a `mash-agent-<agent_id>` container
+  the host starts through the Docker socket. Behavior inside an agent (tools,
+  bash, files) happens there, not in the host container.
 
 Model choice is part of grounding: an agent whose model cannot drive the path
 you want to test will fail for reasons that have nothing to do with your
@@ -60,18 +64,36 @@ Wait for approval before running anything.
 
 ## Phase 3 — Bring the stack up
 
+Run compose from the repo root. `.env` needs `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY` and `MASH_HOST_SECRET`; compose refuses to start without
+the secret. If `.env` lacks it, export one in the shell for the run
+(`openssl rand -hex 32`) instead of editing `.env`.
+
 ```bash
-docker compose -f docker-compose.pilot.yml up -d
+docker compose -f docker-compose.pilot.yml up -d --build
 ```
 
-The repo is bind-mounted and installed editable, so source edits need only
-`docker compose -f docker-compose.pilot.yml restart pilot`. **`restart` does
-not re-read `.env`** — an environment change needs `up -d pilot`, and it is
-worth confirming with `exec -T pilot printenv <VAR>`. `down -v` wipes the
-database; use it only when prior state is in the way, and say so, because it
-destroys every earlier run you might still want to inspect.
+Mash and pilot code is baked into the image, so a source change needs a
+rebuild, and computers keep the image they were created from. After changing
+code, rebuild, remove the computers, and restart the host so it recreates them
+(`mash computer restart` keeps the old image):
 
-The port opens before the pool is ready, so wait on the API, not the container:
+```bash
+docker compose -f docker-compose.pilot.yml up -d --build pilot
+docker rm -f $(docker ps -aq --filter label=mash.agent)
+docker compose -f docker-compose.pilot.yml restart pilot
+```
+
+The repo itself is mounted read-only at `/home/agent/workspace/mashpy` in the
+host and every computer, so edits to files the agents read need no restart.
+**`restart` does not re-read `.env`** — an environment change needs
+`up -d pilot` and recreating the computers, which copy the host's environment
+when they are created. `down -v` wipes the database; use it only when prior
+state is in the way, and say so, because it destroys every earlier run you
+might still want to inspect.
+
+The port opens before the pool is ready, and on a cold start the computers can
+take a few minutes to import the app, so wait on the API, not the container:
 
 ```bash
 until [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/agent)" = 200 ]; do sleep 2; done
@@ -92,9 +114,14 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/agent/<agent>/request \
   -H 'Content-Type: application/json' -d '{"message":"...","session_id":"s-1"}'
 curl -s http://127.0.0.1:8000/api/v1/agent/<agent>/request/<request_id>/status
 
-# CLI — run it inside the container; the host's `pilot` binary may be a stale
-# install. Piped stdin works, so a REPL session is scriptable.
-printf '/status\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T pilot pilot repl --host guide
+# CLI — run it inside the host container; the host's `pilot` binary may be a
+# stale install. Piped stdin works, so a REPL session is scriptable. Run it from
+# /tmp: the REPL writes its history file to the working directory, which the
+# `mash` user cannot write in /opt/mash.
+printf '/status\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T -w /tmp -e HOME=/tmp pilot pilot repl --host guide
+
+# Computers — inspect an agent's environment the way its bash sees it
+docker exec -u agent -w /home/agent/workspace mash-agent-<agent_id> ls
 
 # Tables
 docker compose -f docker-compose.pilot.yml exec -T db psql -U mash -d mash_pilot -A -F'|' -c \
@@ -115,7 +142,8 @@ them per Bash call, since shell state does not persist between calls.
 
 A failure is a lead, not a verdict. Before reporting anything, find the
 mechanism in source: the mash code path, the server log
-(`docker compose -f docker-compose.pilot.yml logs pilot --tail 100`), and where
+(`docker compose -f docker-compose.pilot.yml logs pilot --tail 100`), the
+computer's log (`docker logs mash-agent-<agent_id>`), and where
 relevant the installed dependency itself, which is importable in the container:
 
 ```bash

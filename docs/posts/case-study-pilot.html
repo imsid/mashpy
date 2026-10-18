@@ -312,154 +312,101 @@
   <div class="post-header">
     <div class="post-meta">
       <span class="post-meta-tag">Case study</span>
-      <span>June 2026</span>
+      <span>October 2026</span>
     </div>
     <h1>Pilot: a self-hosted app store built with Mash</h1>
     <p class="lede">Pilot is the reference application for the Mash SDK. The pool is the catalog, agents are the listings, host compositions are the installed apps, and a terminal CLI is the storefront. Here's how it's built.</p>
   </div>
 
   <h2>What Pilot does</h2>
-  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a multi-agent guide to the Mash codebase: one primary agent plus six module-scoped copilots, each loaded with the documentation and source for its slice of the repo. The user composes which agents work together, then enters the REPL.</p>
-  <p>It also serves as the application behind the Mash documentation series, so every framework feature is observable in a real running system: delegation, host composition at runtime, durable workflows, skills, human-in-the-loop approval, MCP, and traces.</p>
+  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a guide to the Mash codebase with two agents. The <code>pilot</code> agent answers questions from the source. The <code>builder</code> agent builds Mash apps on its own computer and checks that they work. The user composes which agents work together, then enters the REPL.</p>
+  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent computers, delegation through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
 
   <h2>The catalog</h2>
-  <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs two callables: a spec factory that constructs an <code>AgentSpec</code> (accepting <code>workspace_root</code>) and a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
+  <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs a spec class with a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
 
   <pre><code><span class="cm"># pilot/catalog/__init__.py</span>
-<span class="kw">from</span> dataclasses <span class="kw">import</span> dataclass
-
 @dataclass(frozen=<span class="kw">True</span>)
 <span class="kw">class</span> <span class="fn">CatalogEntry</span>:
     agent_id: str
-    create_spec: Callable[..., AgentSpec]   <span class="cm"># accepts workspace_root=...</span>
+    create_spec: Callable[[], AgentSpec]
     build_metadata: Callable[[], AgentMetadata]
 
 CATALOG: tuple[CatalogEntry, ...] = (
-    CatalogEntry(<span class="str">"pilot"</span>,            pilot.create_spec,             pilot.build_metadata),
-    CatalogEntry(<span class="str">"cli-copilot"</span>,      cli.create_cli_copilot_spec,   cli.build_cli_metadata),
-    CatalogEntry(<span class="str">"api-copilot"</span>,      api.create_api_copilot_spec,   api.build_api_metadata),
-    CatalogEntry(<span class="str">"mcp-copilot"</span>,      mcp.create_mcp_copilot_spec,   mcp.build_mcp_metadata),
-    CatalogEntry(<span class="str">"runtime-copilot"</span>,  runtime.create_runtime_copilot_spec, runtime.build_runtime_metadata),
-    CatalogEntry(<span class="str">"workflow-copilot"</span>, workflow.create_workflow_copilot_spec, workflow.build_workflow_metadata),
-    CatalogEntry(<span class="str">"admin-copilot"</span>,    admin.create_admin_copilot_spec, admin.build_admin_metadata),
+    CatalogEntry(pilot.PILOT_AGENT_ID, pilot.PilotSpec, pilot.build_metadata),
+    CatalogEntry(builder.BUILDER_AGENT_ID, builder.BuilderSpec, builder.build_metadata),
 )</code></pre>
 
-  <p><code>build_pool()</code> in <code>pilot/spec.py</code> iterates <code>CATALOG</code>, calls <code>HostBuilder.agent()</code> for each entry, defines the default <code>guide</code> host, and registers the quiz and changelog workflows on the built pool. The builder includes Masher and its workflows automatically.</p>
+  <p><code>build_pool()</code> in <code>pilot/spec.py</code> registers each entry, the changelog workflow, and the default <code>guide</code> host. <code>HostBuilder</code> adds masher's eval agents and workflows to every pool.</p>
 
   <pre><code><span class="cm"># pilot/spec.py</span>
-<span class="kw">def</span> <span class="fn">build_pool</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> Pool:
+<span class="kw">def</span> <span class="fn">build_pool</span>() -> Pool:
     builder = <span class="fn">HostBuilder</span>()
     <span class="kw">for</span> entry <span class="kw">in</span> CATALOG:
-        builder.agent(
-            entry.create_spec(workspace_root=ws), metadata=entry.build_metadata()
+        builder.agent(entry.create_spec(), metadata=entry.build_metadata())
+    builder.workflow(<span class="fn">build_changelog_workflow_spec</span>())
+    builder.host(
+        <span class="fn">Host</span>(
+            host_id=<span class="str">"guide"</span>,
+            primary=<span class="str">"pilot"</span>,
+            subagents=(<span class="str">"builder"</span>,),
+            workflows=(<span class="str">"pilot-changelog"</span>,),
         )
-    builder.host(<span class="fn">Host</span>(host_id=<span class="str">"guide"</span>, primary=<span class="str">"pilot"</span>, subagents=(...)))
-    pool = builder.build()
-    pool.register_workflow(<span class="fn">build_quiz_workflow_spec</span>(resolved))
-    pool.register_workflow(<span class="fn">build_changelog_workflow_spec</span>(resolved))
-    <span class="kw">return</span> pool</code></pre>
+    )
+    <span class="kw">return</span> builder.build()</code></pre>
 
-  <p>The <code>guide</code> composition ships in code as the default. Further hosts belong to the CLI's config file (<code>~/.pilot/hosts.json</code>) and are published to the deployment as idempotent PUTs when the CLI connects. Which agents work together is user configuration.</p>
+  <p>Further hosts belong to the CLI's config file (<code>~/.pilot/hosts.json</code>) and are published to the deployment as idempotent PUTs when the CLI connects.</p>
 
-  <h2>The guide family</h2>
-  <p>The seven catalog agents form the guide family. The <code>pilot</code> agent is the primary: it covers the shared and cross-cutting modules (<code>core</code>, <code>tools</code>, <code>skills</code>, <code>logging</code>, <code>memory</code>) and delegates to module-scoped copilots for everything else.</p>
-
-  <table class="resp-table">
-    <thead>
-      <tr>
-        <th>Agent</th>
-        <th>Scope</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr><td><code>pilot</code></td><td>Shared/cross-cutting: <code>core</code>, <code>tools</code>, <code>skills</code>, <code>logging</code>, <code>memory</code></td></tr>
-      <tr><td><code>cli-copilot</code></td><td><code>src/mash/cli</code> — commands, REPL, terminal rendering</td></tr>
-      <tr><td><code>api-copilot</code></td><td><code>src/mash/api</code> — HTTP routes, FastAPI, admin dashboard</td></tr>
-      <tr><td><code>mcp-copilot</code></td><td><code>src/mash/mcp</code> — MCP client/server, transport, tool adaptation</td></tr>
-      <tr><td><code>runtime-copilot</code></td><td><code>src/mash/runtime</code> — request lifecycle, event sourcing, durability</td></tr>
-      <tr><td><code>workflow-copilot</code></td><td><code>src/mash/workflows</code> — step pipelines, DBOS orchestration, run status</td></tr>
-      <tr><td><code>admin-copilot</code></td><td><code>src/mash/api/routes/admin</code> — admin dashboard routes and assets</td></tr>
-    </tbody>
-  </table>
-
-  <p>Each copilot is a subclass of <code>CopilotAgentSpec</code>. The shared base loads the relevant <code>README.md</code> and <code>AGENTS.md</code> files from its <code>doc_roots</code> into the system prompt with Anthropic prompt caching. Copilots run with <code>conversation_history_turns=0</code> and <code>temperature=0.2</code> — they receive a single delegated question, answer it with bash if needed, and return.</p>
-
-  <pre><code><span class="cm"># pilot/catalog/_base.py — shared copilot config</span>
-<span class="kw">def</span> <span class="fn">_build_copilot_config</span>(self, agent_id: str) -> AgentConfig:
-    <span class="kw">return</span> <span class="fn">AgentConfig</span>(
-        app_id=agent_id,
-        system_prompt=self.build_system_prompt(),  <span class="cm"># prompt-cached doc blocks</span>
-        skills_enabled=<span class="kw">False</span>,
-        conversation_history_turns=<span class="val">0</span>,
-        max_steps=<span class="val">50</span>,
-        temperature=<span class="val">0.2</span>,
-    )</code></pre>
-
-  <p>The <code>AgentMetadata</code> each copilot registers lists its <code>capabilities</code> and <code>usage_guidance</code>. The primary reads that metadata when routing a delegated question — the same metadata that appears in <code>pilot browse</code> listings. The storefront and the delegation directory are the same data.</p>
-
-  <h2>The pilot agent</h2>
-  <p>The <code>pilot</code> primary carries more tools than the copilots. It registers a <code>BashTool</code> scoped to the workspace, an <code>UpdateDocsTool</code> that requires user approval, and an <code>AskUserTool</code>. It also optionally connects to a GitHub MCP server when <code>GITHUB_MCP_PAT</code> is set, with a two-tool allowlist (<code>list_commits</code> and <code>get_commit</code>) for inspecting mashpy commits.</p>
+  <h2>Agents on computers</h2>
+  <p>Every agent runs on its own computer: a <code>mash-agent-&lt;agent_id&gt;</code> container the host starts through the Docker socket, with a named workspace volume and a bash tool that runs as an unprivileged <code>agent</code> user. Pilot's deployment sets <code>MASH_COMPUTER_MOUNTS</code> so each computer also gets the mashpy checkout, read-only, at <code>/home/agent/workspace/mashpy</code>. The agents read the repository as it is on disk, and an edit shows up without a restart.</p>
 
   <div class="arch">
     <div class="arch-layer arch-layer-blue">
       <div class="arch-layer-label">pilot (primary)</div>
-      <div class="arch-layer-title">Tools: bash · update_docs · ask_user · GitHub MCP (optional)</div>
-      <div class="arch-layer-sub">Skills: build-mash-agent · build-mash-workflow · build-mash-host</div>
+      <div class="arch-layer-title">Tools: bash in the mounted repo · ask_user</div>
+      <div class="arch-layer-sub">Reads source, docs and git history</div>
     </div>
     <div class="arch-connector">
-      <span class="arch-connector-label">InvokeSubagent</span>
+      <span class="arch-connector-label">InvokeSubagent through the host's /h2a relay</span>
     </div>
     <div class="arch-layer arch-layer-green">
-      <div class="arch-layer-label">Copilots (subagents)</div>
-      <div class="arch-layer-title">cli · api · mcp · runtime · workflow · admin</div>
-      <div class="arch-layer-sub">Tools: bash (read-only workspace access)</div>
+      <div class="arch-layer-label">builder (subagent)</div>
+      <div class="arch-layer-title">Tools: bash in its workspace · Skill</div>
+      <div class="arch-layer-sub">Skills: build-mash-agent · build-mash-workflow · build-mash-host</div>
     </div>
   </div>
 
-  <p>The <code>update_docs</code> tool has <code>requires_approval = True</code>, which causes the runtime to pause and surface an approval event before the tool runs. In the REPL this appears as an interactive prompt; over the API it emits a <code>request.waiting</code> event that the client polls. The user approves or rejects; the runtime resumes or aborts. This is the human-in-the-loop flow exercised live.</p>
+  <h2>The pilot agent</h2>
+  <p>The <code>pilot</code> agent registers a <code>BashTool</code> that starts in the mounted repo and an <code>AskUserTool</code>. Its prompt carries a map of where things are documented (<code>CLAUDE.md</code>, each module's <code>README.md</code> and <code>AGENTS.md</code>, the posts, the H2A RFC) rather than the documents themselves. It finds the answer with <code>rg</code>, reads the lines it needs with <code>sed</code>, and cites them as <code>path:line</code>. When the user asks for an app, it delegates to the builder.</p>
+
+  <h2>The builder agent</h2>
+  <p>The <code>builder</code> builds each app in its own directory under <code>/home/agent/workspace/apps</code>. It loads the matching skill, creates the project with <code>uv init</code>, installs mashpy with <code>uv add</code>, and writes the files. It checks the result by importing the pool and running the app's tests, and replies with the directory, the files, and the check output. The workspace is a volume, so the apps survive a container replacement. The builder cannot serve what it builds, because a computer has no Docker; the user copies the app out with <code>docker cp</code>.</p>
 
   <h2>Workflows</h2>
-  <p>Pilot ships two workflows. <code>pilot-quiz</code> is a Mash step pipeline: <code>build_quiz_workflow_spec()</code> returns a <code>WorkflowSpec</code> whose single <code>AgentStep</code> carries <code>QuizAgentSpec</code> as its <code>agent_spec</code>, so registering the workflow also registers the quiz agent as a workflow-only runtime, hidden from listings and delegation.</p>
-
-  <pre><code><span class="cm"># pilot/catalog/workflows/quiz.py</span>
-<span class="kw">def</span> <span class="fn">build_quiz_workflow_spec</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> WorkflowSpec:
-    <span class="kw">return</span> <span class="fn">WorkflowSpec</span>(
-        workflow_id=<span class="str">"pilot-quiz"</span>,
-        steps=[
-            <span class="fn">AgentStep</span>(
-                step_id=<span class="str">"run-quiz"</span>,
-                agent_spec=<span class="fn">QuizAgentSpec</span>(resolved),
-                output={<span class="str">"type"</span>: <span class="str">"object"</span>},
-            )
-        ],
-    )</code></pre>
-
-  <p>A host config that includes <code>"workflows": ["pilot-quiz"]</code> makes the <code>/quiz</code> REPL command available to anyone who enters that host. The command starts a run over the workflow API and streams it: the quiz agent loads its <code>mash-quiz</code> skill, asks its questions through durable <code>AskUser</code> interactions, and the REPL renders each one as an interactive prompt. The run survives a host restart mid-question the same way any durable request does.</p>
-
-  <p><code>pilot-changelog</code> is the second workflow, and shows the mixed-step shape: a <code>CodeStep</code> reads <code>CHANGELOG.md</code> and slices out the most recent release section(s) in deterministic Python, then an <code>AgentStep</code> summarizes that excerpt — reaching into the source with bash only when an entry is too terse to explain. Its <code>ChangelogSummarizerSpec</code> rides the same <code>agent_spec</code> path, so registering the workflow registers the summarizer as a workflow-only runtime. <code>guide</code> attaches it too, but it has no dedicated command: <code>/workflow run pilot-changelog</code> runs it over the standard workflow surface.</p>
+  <p><code>pilot-changelog</code> shows the mixed-step shape. A <code>CodeStep</code> reads <code>CHANGELOG.md</code> and slices out the most recent release section(s) in deterministic Python, then an <code>AgentStep</code> summarizes that excerpt, reaching into the source with bash only when an entry is too terse to explain. The code step runs on the host, which mounts the checkout at the same path. Its <code>ChangelogSummarizerSpec</code> rides the <code>agent_spec</code> path, so registering the workflow registers the summarizer as a workflow-only agent with its own computer. <code>/workflow run pilot-changelog</code> runs it from the REPL.</p>
 
   <pre><code><span class="cm"># pilot/catalog/workflows/changelog.py</span>
-<span class="kw">def</span> <span class="fn">build_changelog_workflow_spec</span>(workspace_root: Path | <span class="kw">None</span> = <span class="kw">None</span>) -> WorkflowSpec:
+<span class="kw">def</span> <span class="fn">build_changelog_workflow_spec</span>(repo_root: Path = REPO_ROOT) -> WorkflowSpec:
     <span class="kw">return</span> <span class="fn">WorkflowSpec</span>(
         workflow_id=<span class="str">"pilot-changelog"</span>,
         input_model=ChangelogIn,
         steps=[
             <span class="fn">CodeStep</span>(
                 step_id=<span class="str">"read-changelog"</span>,
-                run=<span class="fn">_make_read_changelog</span>(resolved),
+                run=<span class="fn">_make_read_changelog</span>(repo_root),
                 input=ChangelogIn,
                 output=ChangelogExtract,
             ),
             <span class="fn">AgentStep</span>(
                 step_id=<span class="str">"summarize"</span>,
-                agent_spec=<span class="fn">ChangelogSummarizerSpec</span>(resolved),
+                agent_spec=<span class="fn">ChangelogSummarizerSpec</span>(repo_root),
                 input=ChangelogExtract,
                 output=ChangelogSummary,
             ),
         ],
     )</code></pre>
 
-  <h2>Every piece exercises a Mash feature</h2>
+  <h2>Mash features in Pilot</h2>
 
   <table class="resp-table">
     <thead>
@@ -470,71 +417,65 @@ CATALOG: tuple[CatalogEntry, ...] = (
     </thead>
     <tbody>
       <tr>
-        <td><code>pilot browse</code> — catalog listings</td>
+        <td>One container per agent (<code>mash computer ls</code>)</td>
+        <td>Agent computers with workspace volumes and bind mounts</td>
+      </tr>
+      <tr>
+        <td><code>pilot browse</code>: catalog listings</td>
         <td><code>AgentMetadata</code> as the store listing</td>
       </tr>
       <tr>
-        <td><code>pilot compose</code> + re-publish on connect</td>
+        <td><code>pilot compose</code> and re-publish on connect</td>
         <td>Dynamic host composition; hosts as data</td>
       </tr>
       <tr>
-        <td>Copilot routing in the <code>guide</code> host</td>
-        <td><code>InvokeSubagent</code> + metadata as the delegation directory</td>
+        <td>The guide delegating to the builder</td>
+        <td><code>InvokeSubagent</code> through the host's <code>/h2a</code> relay</td>
       </tr>
       <tr>
-        <td>Approval pause on <code>update_docs</code></td>
-        <td>Durable human-in-the-loop: <code>requires_approval = True</code></td>
+        <td>The builder loading <code>build-mash-agent</code></td>
+        <td>Skills loaded on demand</td>
       </tr>
       <tr>
-        <td><code>/quiz</code></td>
-        <td>Step-pipeline workflows registered on the pool; attached to hosts by config</td>
+        <td><code>/workflow run pilot-changelog</code></td>
+        <td>Step-pipeline workflows registered on the pool; attached to hosts</td>
       </tr>
       <tr>
         <td><code>/trace [N]</code></td>
         <td>Trace analysis: timing breakdowns, per-tool stats</td>
       </tr>
-      <tr>
-        <td>GitHub commit tools in the guide</td>
-        <td>Remote tools over MCP with a per-agent tool allowlist</td>
-      </tr>
-      <tr>
-        <td>Prompt-cached copilot doc blocks</td>
-        <td>Anthropic prompt caching via <code>cache_control</code> content blocks</td>
-      </tr>
     </tbody>
   </table>
 
   <h2>Deployment</h2>
-  <p>Pilot ships as a single Docker container with an embedded Postgres database. The container runs <code>mash host serve --host-app pilot.spec:build_pool</code>. One volume keeps the database, agent ledger, and session history across restarts.</p>
+  <p>Pilot runs from a checkout with Docker Compose: Postgres and the host, on a network named <code>mash</code>. The host container mounts the Docker socket so it can start the computers, and reads <code>GEMINI_API_KEY</code>, <code>OPENROUTER_API_KEY</code> and <code>MASH_HOST_SECRET</code> from <code>.env</code>.</p>
 
-  <pre><code>docker run -d --name pilot -p 8000:8000 \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v pilot-data:/var/lib/pilot \
-  ghcr.io/imsid/mash-pilot:latest</code></pre>
+  <pre><code>git clone https://github.com/imsid/mashpy.git &amp;&amp; cd mashpy
+docker compose -f docker-compose.pilot.yml up -d --build</code></pre>
 
-  <p>Add <code>-e GITHUB_MCP_PAT=ghp_...</code> to enable the GitHub commit tools on the pilot agent. Set <code>MASH_DATABASE_URL</code> to bring an external Postgres instead of the embedded one — this is the only change the Docker Compose development setup makes. The CLI installs separately and points at any running store by URL.</p>
+  <p>The CLI installs separately and points at any running store by URL.</p>
 
-  <pre><code>curl -fsSL https://raw.githubusercontent.com/imsid/mash-pilot/main/install.sh | sh
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 pilot browse                  <span class="cm"># see the catalog</span>
 pilot repl --host guide       <span class="cm"># enter the default composition</span></code></pre>
 
   <p>The admin dashboard is available at <code>/admin</code> on the running host. It shows the pool, active host compositions, and agent traces with a span tree drawer.</p>
 
   <h2>Adding an agent to the catalog</h2>
-  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. Everything else — pool registration, store listing, delegation routing, session management, streaming — comes from the host.</p>
+  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. The host handles pool registration, the agent's computer, the store listing, delegation, sessions and streaming.</p>
 
   <div class="steps">
     <div class="step">
       <div class="step-num">1</div>
-      <div class="step-text">Create <code>pilot/catalog/agents/my_agent/spec.py</code>. Subclass <code>AgentSpec</code> (or <code>CopilotAgentSpec</code> for a module-scoped guide) and implement <code>get_agent_id()</code>, <code>build_tools()</code>, <code>build_llm()</code>, and <code>build_agent_config()</code>. Add a <code>build_metadata()</code> function returning <code>AgentMetadata</code>.</div>
+      <div class="step-text">Create <code>pilot/catalog/agents/my_agent/spec.py</code>. Subclass <code>AgentSpec</code> and implement <code>get_agent_id()</code>, <code>build_tools()</code>, <code>build_skills()</code>, <code>build_llm()</code>, and <code>build_agent_config()</code>. Add a <code>build_metadata()</code> function returning <code>AgentMetadata</code>.</div>
     </div>
     <div class="step">
       <div class="step-num">2</div>
-      <div class="step-text">Add a <code>CatalogEntry</code> to <code>CATALOG</code> in <code>pilot/catalog/__init__.py</code>: one tuple of <code>(agent_id, create_spec, build_metadata)</code>.</div>
+      <div class="step-text">Add a <code>CatalogEntry</code> to <code>CATALOG</code> in <code>pilot/catalog/__init__.py</code>.</div>
     </div>
     <div class="step">
       <div class="step-num">3</div>
-      <div class="step-text">Merge to <code>main</code> and redeploy the container. The agent appears in <code>pilot browse</code> immediately.</div>
+      <div class="step-text">Rebuild with <code>docker compose -f docker-compose.pilot.yml up -d --build</code>. The host creates the new agent's computer on start, and the agent appears in <code>pilot browse</code>.</div>
     </div>
     <div class="step">
       <div class="step-num">4</div>
@@ -543,7 +484,7 @@ pilot repl --host guide       <span class="cm"># enter the default composition</
   </div>
 
   <div class="callout">
-    The stock <code>mash</code> CLI speaks the same protocol as <code>pilot</code>. <code>mash connect --api-base-url http://127.0.0.1:8000</code> then <code>mash repl --agent cli-copilot</code> opens a direct REPL against any catalog agent, bypassing the store CLI entirely — useful for debugging a new agent before composing it into a host.
+    The stock <code>mash</code> CLI speaks the same protocol as <code>pilot</code>. <code>mash connect --api-base-url http://127.0.0.1:8000</code> then <code>mash repl --agent builder</code> opens a direct REPL against any catalog agent, bypassing the store CLI. This is useful for debugging a new agent before composing it into a host.
   </div>
 
 </div>

@@ -51,7 +51,7 @@ from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
 from mash.skills import SkillRegistry
-from mash.tools import ToolRegistry
+from mash.tools.registry import ToolRegistry
 from mash.tools.bash import BashTool
 
 

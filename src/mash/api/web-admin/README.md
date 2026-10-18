@@ -5,10 +5,9 @@ Reference for the Mash admin dashboard — the React SPA in this directory
 `src/mash/api/static/admin/`, and served at `/admin` by `mash.api.admin_ui`
 (mounted only when the bundle is present).
 
-This README is intended to be prompt-cache friendly for the `admin-copilot`
-agent: it maps every dashboard tab to what it surfaces and the API call that
+This README maps every dashboard tab to what it surfaces and the API call that
 feeds it, without duplicating component source. For HTTP route internals see
-`../README.md` (the `api-copilot` doc); for the telemetry data model see
+`../README.md`; for the telemetry data model see
 `src/mash/runtime`.
 
 ## What this answers

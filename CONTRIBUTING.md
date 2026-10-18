@@ -127,44 +127,44 @@ during development to see how SDK changes affect a real multi-agent host.
 
 ### Running Pilot locally
 
-**Prerequisites:** Docker, an Anthropic or OpenAI API key.
+**Prerequisites:** Docker, a Gemini API key and an OpenRouter API key.
 
-Create `.env` in the repo root with your API key:
+Create `.env` in the repo root:
 
 ```
-ANTHROPIC_API_KEY=sk-...
+GEMINI_API_KEY=...
+OPENROUTER_API_KEY=sk-or-...
+MASH_HOST_SECRET=<openssl rand -hex 32>
 ```
 
-Then bring everything up:
+Then bring everything up from the repo root:
 
 ```bash
-docker compose -f docker-compose.pilot.yml up -d
+docker compose -f docker-compose.pilot.yml up -d --build
 ```
 
-This starts Postgres and the Pilot host together. Once healthy:
+This starts Postgres and the Pilot host. The host starts one computer per
+agent (`mash-agent-<agent_id>`) through the Docker socket; `mash computer ls`
+lists them. The first start can take a few minutes. Once healthy:
 
 ```bash
 pilot browse               # list the pool and configured hosts
-pilot repl --host guide    # enter the default multi-agent composition
+pilot repl --host guide    # enter the guide and its builder
 ```
 
 `pilot` defaults to `http://127.0.0.1:8000`, so no extra flags are needed.
 The admin UI is available at http://localhost:8000/admin.
-Optionally add `GITHUB_MCP_PAT` (a GitHub personal access token with `repo`
-scope) to `.env` to enable the guide's commit-inspection tools.
 
-The repo root is bind-mounted into the container and installed editable
-(`pip install -e .`), so the host imports your live working tree — no commit
-needed. After editing anything under `src/`, restart the host to reload it:
+The repo is mounted read-only at `/home/agent/workspace/mashpy` in the host and
+every computer, so the agents read your working tree as it is. The code the
+host and computers run is baked into the image. After editing anything under
+`src/`, rebuild and recreate the computers, which keep the image they were
+created from:
 
 ```bash
+docker compose -f docker-compose.pilot.yml up -d --build pilot
+docker rm -f $(docker ps -aq --filter label=mash.agent)
 docker compose -f docker-compose.pilot.yml restart pilot
-```
-
-Rebuild only when dependencies change:
-
-```bash
-docker compose -f docker-compose.pilot.yml build pilot
 ```
 
 ### Dogfooding while working on the SDK
@@ -176,17 +176,16 @@ regressions in a real application before the mash suite:
 uv run --extra dev pytest -q tests/pilot
 ```
 
-You can also start the pilot host and talk to it directly. Because the repo is
-mounted and installed editable, the host runs your live working tree — restart
-it (`docker compose -f docker-compose.pilot.yml restart pilot`) after a change
-to get immediate feedback on whether the agents still behave correctly.
+You can also start the pilot host and talk to it directly. After a change,
+rebuild and recreate the computers as above to check that the agents still
+behave correctly.
 
 ### Adding an agent to the Pilot catalog
 
 Agents live under `src/pilot/catalog/agents/<name>/`. Each package needs a
 `spec.py` and an `__init__.py`. Follow these steps:
 
-1. **Create the package.** The `cli` copilot is the smallest complete example.
+1. **Create the package.** The `builder` agent is the smallest complete example.
    Implement the standard `AgentSpec` methods (`get_agent_id`, `build_tools`,
    `build_skills`, `build_llm`, `build_agent_config`).
 
@@ -196,15 +195,11 @@ Agents live under `src/pilot/catalog/agents/<name>/`. Each package needs a
 3. **Register it.** Add a `CatalogEntry` to `CATALOG` in
    `src/pilot/catalog/__init__.py`.
 
-4. **Export from `src/pilot/spec.py`.** Add a re-export for the new spec class
-   (import from `catalog.agents.<name>.spec` and add to `__all__`) so test
-   files that import from `pilot.spec` can find it.
-
-5. **Degrade gracefully.** Gate optional capabilities (MCP servers,
+4. **Degrade gracefully.** Gate optional capabilities (MCP servers,
    credentials) inside the spec method; always register the agent regardless of
    configuration.
 
-6. **Add skills as package data.** Drop markdown files in `src/pilot/skills/`
+5. **Add skills as package data.** Drop markdown files in `src/pilot/skills/`
    and add a glob to `[tool.setuptools.package-data]` in `pyproject.toml` so
    they're included in the wheel and Docker image.
 
@@ -213,12 +208,9 @@ Agents live under `src/pilot/catalog/agents/<name>/`. Each package needs a
 Pilot artifacts are built from the **same `v*` tag** that release-please
 creates for the mashpy package — no separate tag or version bump required.
 
-Two workflows fire on every `v*` push:
-
-| Workflow | Output |
-|----------|--------|
-| `release-pilot.yml` | `pilot` standalone binaries for macOS arm64 and Linux x86_64, uploaded to the GitHub Release |
-| `docker-pilot.yml` | Multi-arch image (`linux/amd64`, `linux/arm64`) pushed to `ghcr.io/imsid/mashpy-pilot:latest` and `:<version>` |
+`release-pilot.yml` fires on every `v*` push and uploads `pilot` standalone
+binaries for macOS arm64 and Linux x86_64 to the GitHub Release. The host
+itself runs from a checkout with Docker Compose; there is no published image.
 
 The `install.sh` in the repo root always fetches the latest binary release
 from `imsid/mashpy`. Users install with:
@@ -226,10 +218,6 @@ from `imsid/mashpy`. Users install with:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 ```
-
-**First-time setup:** after the first push, set the `mashpy-pilot` GHCR
-package to public in **repo Settings → Packages** so `docker pull` works
-without authentication.
 
 **Re-tagging a release** (e.g., after fixing the build config):
 

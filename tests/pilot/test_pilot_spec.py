@@ -3,51 +3,31 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 from unittest.mock import patch
 
-import pilot.spec as pilot_spec_module
 from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
-from mash.agents.masher import (
-    EVAL_AGENT_ID,
-    EVAL_JUDGE_AGENT_ID,
-    MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-    MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
-)
+from mash.agents.masher import EVAL_AGENT_ID, EVAL_JUDGE_AGENT_ID
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
-from mash.tools.bash import BashTool
-from pilot.catalog.workflows.changelog import CHANGELOG_WORKFLOW_ID
-from pilot.catalog.workflows.quiz import QUIZ_WORKFLOW_ID
-from pilot.spec import (
-    ADMIN_COPILOT_AGENT_ID,
-    API_COPILOT_AGENT_ID,
-    APP_NAME,
-    CLI_COPILOT_AGENT_ID,
-    MCP_COPILOT_AGENT_ID,
-    PILOT_AGENT_ID,
-    RUNTIME_COPILOT_AGENT_ID,
-    WORKFLOW_COPILOT_AGENT_ID,
-    AdminCopilotSpec,
-    ApiCopilotSpec,
-    CliCopilotSpec,
-    McpCopilotSpec,
-    PilotSpec,
-    RuntimeCopilotSpec,
-    WorkflowCopilotSpec,
-    cached_docs_for_scope,
-    build_host,
+from mash.workflows import StepContext
+from pilot.catalog._base import APP_NAME, REPO_ROOT
+from pilot.catalog.agents.builder import BUILDER_AGENT_ID
+from pilot.catalog.agents.pilot import PILOT_AGENT_ID, PilotSpec
+from pilot.catalog.workflows.changelog import (
+    CHANGELOG_AGENT_ID,
+    CHANGELOG_WORKFLOW_ID,
+    ChangelogIn,
+    build_changelog_workflow_spec,
 )
+from pilot.spec import GUIDE_HOST_ID, build_pool
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeLLMProvider(LLMProvider):
-    def enable_thought_summaries(self) -> None:
-        self.summaries_enabled = True
-
     @property
     def model(self) -> str:
         return "test-model"
@@ -63,508 +43,110 @@ class _FakeLLMProvider(LLMProvider):
         del trace_id
 
 
+@contextmanager
+def _keyless_models() -> Iterator[None]:
+    """Pilot's Gemini primary and the masher agents on a fake provider; the
+    Gemma subagents build against a dummy OpenRouter key."""
+    with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+        stack.enter_context(
+            patch.dict(
+                os.environ,
+                {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": "", "OPENROUTER_API_KEY": "test-key"},
+            )
+        )
+        for spec in (PilotSpec, EvalAgentSpec, EvalJudgeAgentSpec):
+            stack.enter_context(
+                patch.object(spec, "build_llm", return_value=_FakeLLMProvider())
+            )
+        yield
+
 
 def _computer_runtime(pool, agent_id: str):
     """The runtime serving ``agent_id`` on its local computer."""
     return pool._computer_provider.agent_servers[agent_id].runtime
 
-def test_primary_and_subagent_prompts_are_app_specific() -> None:
-    workspace_root = Path("/tmp/mashpy")
 
-    with patch(
-        "pilot.catalog._base.cached_docs_for_scope",
-        side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
-            workspace_root,
-            doc_roots=kwargs.get("doc_roots", ()),
-            extra_doc_paths=kwargs.get("extra_doc_paths", ()),
-        ),
-    ):
-        primary_prompt = PilotSpec(workspace_root).build_system_prompt()
-        cli_prompt = CliCopilotSpec(workspace_root).build_system_prompt()
-        api_prompt = ApiCopilotSpec(workspace_root).build_system_prompt()
-        mcp_prompt = McpCopilotSpec(workspace_root).build_system_prompt()
-        runtime_prompt = RuntimeCopilotSpec(workspace_root).build_system_prompt()
-        workflow_prompt = WorkflowCopilotSpec(workspace_root).build_system_prompt()
-
-    primary_text = str(primary_prompt)
-    cli_text = str(cli_prompt)
-    api_text = str(api_prompt)
-    mcp_text = str(mcp_prompt)
-    runtime_text = str(runtime_prompt)
-    workflow_text = str(workflow_prompt)
-
-    assert APP_NAME in primary_text
-    assert "primary Mash codebase guide" in primary_text
-    assert "Treat cached docs as the primary source of truth" in primary_text
-    assert "DOC: `README.md`" in primary_text
-    assert "DOC: `src/mash/AGENTS.md`" in primary_text
-    assert "DOC: `src/mash/core/README.md`" in primary_text
-    assert "DOC: `src/mash/runtime/AGENTS.md`" not in primary_text
-    assert "# Repository index" not in primary_text
-    assert "# Symbol index" not in primary_text
-    assert CLI_COPILOT_AGENT_ID in primary_text
-    assert API_COPILOT_AGENT_ID in primary_text
-    assert MCP_COPILOT_AGENT_ID in primary_text
-    assert RUNTIME_COPILOT_AGENT_ID in primary_text
-    assert WORKFLOW_COPILOT_AGENT_ID in primary_text
-
-    assert APP_NAME in cli_text
-    assert "copilot for `src/mash/cli`" in cli_text
-    assert "Do not ask the user for permission to inspect code" in cli_text
-    assert "For command, inventory, or existence questions, start with one targeted `rg`" in cli_text
-    assert "Use the cached CLI docs before using bash." in cli_text
-    assert "# Repository index" not in cli_text
-    assert "# Symbol index" not in cli_text
-    assert "DOC: `src/mash/cli/README.md`" in cli_text
-    assert "DOC: `src/mash/cli/AGENTS.md`" in cli_text
-
-    assert APP_NAME in api_text
-    assert "copilot for `src/mash/api`" in api_text
-    assert "Use the cached API docs before using bash." in api_text
-    assert "DOC: `src/mash/api/README.md`" in api_text
-    assert "DOC: `src/mash/api/AGENTS.md`" in api_text
-    assert "DOC: `src/mash/runtime/AGENTS.md`" not in api_text
-
-    assert APP_NAME in mcp_text
-    assert "copilot for `src/mash/mcp`" in mcp_text
-    assert "Use the cached MCP docs before using bash." in mcp_text
-    assert "DOC: `src/mash/mcp/README.md`" in mcp_text
-    assert "DOC: `src/mash/mcp/AGENTS.md`" in mcp_text
-
-    assert APP_NAME in runtime_text
-    assert "copilot for `src/mash/runtime`" in runtime_text
-    assert "Use the cached runtime docs before using bash." in runtime_text
-    assert "DOC: `src/mash/runtime/README.md`" in runtime_text
-    assert "DOC: `src/mash/runtime/AGENTS.md`" in runtime_text
-
-    assert APP_NAME in workflow_text
-    assert "copilot for `src/mash/workflows`" in workflow_text
-    assert "Use the cached workflow docs before using bash." in workflow_text
-    assert "DOC: `src/mash/workflows/README.md`" in workflow_text
-    assert "DOC: `src/mash/workflows/AGENTS.md`" in workflow_text
+def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
+    with _keyless_models():
+        pool = build_pool()
+        try:
+            described = {str(item["agent_id"]) for item in pool.describe_agents()}
+            assert described == {
+                PILOT_AGENT_ID,
+                BUILDER_AGENT_ID,
+                EVAL_AGENT_ID,
+                EVAL_JUDGE_AGENT_ID,
+            }
+            assert CHANGELOG_AGENT_ID in pool.list_registered_agents()
+            guide = pool.get_host(GUIDE_HOST_ID)
+            assert guide.primary == PILOT_AGENT_ID
+            assert guide.subagents == (BUILDER_AGENT_ID,)
+            assert CHANGELOG_WORKFLOW_ID in guide.workflows
+        finally:
+            asyncio.run(pool.close())
 
 
-def test_build_host_registers_primary_cli_api_and_masher() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(
-            os.environ,
-            {
-                "MASH_DATA_DIR": tmp,
-                "MASH_DATABASE_URL": "",
-                "OPENROUTER_API_KEY": "test-key",
-            },
-            clear=False,
-        ):
-            with ExitStack() as stack:
-                stack.enter_context(
-                    patch.object(PilotSpec, "build_llm", return_value=_FakeLLMProvider())
+def test_agents_on_their_computers() -> None:
+    with _keyless_models():
+
+        async def _run() -> None:
+            pool = build_pool()
+            pool.configure_runtime_database_url("postgresql://test/runtime")
+            await pool.start()
+            try:
+                guide = _computer_runtime(pool, PILOT_AGENT_ID)
+                assert {"AskUser", "bash"} <= set(guide.agent.tools.list_tools())
+                assert guide.agent.tools.get("bash")._session.working_dir == str(REPO_ROOT)
+                turn_agent = guide.build_turn_agent(
+                    session_id="s-1",
+                    trace_id="trace-1",
+                    host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
                 )
-                stack.enter_context(
-                    patch.object(CliCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(ApiCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(
-                        RuntimeCopilotSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(
-                        WorkflowCopilotSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(
-                        EvalJudgeAgentSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch("pilot.catalog._base.cached_docs_for_scope", return_value=[])
-                )
+                try:
+                    assert "InvokeSubagent" in turn_agent.tools
+                finally:
+                    await turn_agent.tools.shutdown()
 
-                async def _run() -> None:
-                    host = build_host(Path.cwd())
-                    host.configure_runtime_database_url("postgresql://test/runtime")
-                    await host.start()
-                    try:
-                        described = {
-                            str(item["agent_id"]): item
-                            for item in host.describe_agents()
-                        }
-                        assert sorted(described.keys()) == [
-                            ADMIN_COPILOT_AGENT_ID,
-                            API_COPILOT_AGENT_ID,
-                            CLI_COPILOT_AGENT_ID,
-                            EVAL_AGENT_ID,
-                            EVAL_JUDGE_AGENT_ID,
-                            MCP_COPILOT_AGENT_ID,
-                            PILOT_AGENT_ID,
-                            RUNTIME_COPILOT_AGENT_ID,
-                            WORKFLOW_COPILOT_AGENT_ID,
-                        ]
-                        assert {
-                            workflow.workflow_id
-                            for workflow in host.get_workflow_registry().list()
-                        } == {
-                            MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID,
-                            MASHER_RUN_EXPERIMENT_WORKFLOW_ID,
-                            QUIZ_WORKFLOW_ID,
-                            CHANGELOG_WORKFLOW_ID,
-                        }
+                builder = _computer_runtime(pool, BUILDER_AGENT_ID)
+                assert "Skill" in builder.agent.tools
+                assert sorted(s.name for s in builder.agent.skills.list_skills()) == [
+                    "build-mash-agent",
+                    "build-mash-host",
+                    "build-mash-workflow",
+                ]
 
-                        primary = _computer_runtime(host, PILOT_AGENT_ID)
-                        assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert RUNTIME_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert WORKFLOW_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert ADMIN_COPILOT_AGENT_ID in str(primary.system_prompt)
-                        assert "eval-agent" not in str(primary.system_prompt)
-                    finally:
-                        await host.close()
+                summarizer = _computer_runtime(pool, CHANGELOG_AGENT_ID)
+                assert summarizer.agent.tools.get("bash")._session.working_dir == str(REPO_ROOT)
+            finally:
+                await pool.close()
 
-                asyncio.run(_run())
+        asyncio.run(_run())
 
 
-def test_tool_shape_matches_mash_copilot_design() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(
-            os.environ,
-            {
-                "MASH_DATA_DIR": tmp,
-                "MASH_DATABASE_URL": "",
-                "OPENROUTER_API_KEY": "test-key",
-            },
-            clear=False,
-        ):
-            with ExitStack() as stack:
-                stack.enter_context(
-                    patch.object(PilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(CliCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(ApiCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(
-                        RuntimeCopilotSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(
-                        WorkflowCopilotSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(
-                        EvalJudgeAgentSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch("pilot.catalog._base.cached_docs_for_scope", return_value=[])
-                )
+def test_guide_prompt_points_at_the_mounted_repo_and_the_builder() -> None:
+    prompt = str(PilotSpec().build_agent_config().system_prompt)
 
-                async def _run() -> None:
-                    host = build_host(Path.cwd())
-                    host.configure_runtime_database_url("postgresql://test/runtime")
-                    await host.start()
-                    try:
-                        primary = _computer_runtime(host, PILOT_AGENT_ID)
-                        cli_agent = _computer_runtime(host, CLI_COPILOT_AGENT_ID)
-                        api_agent = _computer_runtime(host, API_COPILOT_AGENT_ID)
-                        mcp_agent = _computer_runtime(host, MCP_COPILOT_AGENT_ID)
-                        runtime_agent = _computer_runtime(host, RUNTIME_COPILOT_AGENT_ID)
-                        workflow_agent = _computer_runtime(host, WORKFLOW_COPILOT_AGENT_ID)
-                        eval_agent = _computer_runtime(host, "eval-agent")
-
-                        assert "bash" in primary.agent.tools
-                        # InvokeSubagent is wired per request from the host
-                        # snapshot, so only the guide primary's turn agent has it.
-                        assert "InvokeSubagent" not in primary.agent.tools
-                        turn_agent = primary.build_turn_agent(
-                            session_id="s-1",
-                            trace_id="trace-1",
-                            host=host.snapshot_for(host.get_host("guide")),
-                        )
-                        try:
-                            assert "InvokeSubagent" in turn_agent.tools
-                        finally:
-                            await turn_agent.tools.shutdown()
-                        assert "bash" in cli_agent.agent.tools
-                        assert "bash" in api_agent.agent.tools
-                        assert "bash" in mcp_agent.agent.tools
-                        assert "bash" in runtime_agent.agent.tools
-                        assert "bash" in workflow_agent.agent.tools
-                        # Deterministic work lives in workflow code steps; the
-                        # eval agent keeps only the Skill meta-tool.
-                        assert sorted(eval_agent.agent.tools.list_tools()) == ["Skill"]
-                    finally:
-                        await host.close()
-
-                asyncio.run(_run())
+    assert APP_NAME in prompt
+    assert str(REPO_ROOT) in prompt
+    assert "`builder`" in prompt
+    assert "`CLAUDE.md`" in prompt
 
 
-def test_build_host_shutdown_closes_bash_tools() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(
-            os.environ,
-            {
-                "MASH_DATA_DIR": tmp,
-                "MASH_DATABASE_URL": "",
-                "OPENROUTER_API_KEY": "test-key",
-            },
-            clear=False,
-        ):
-            with ExitStack() as stack:
-                stack.enter_context(
-                    patch.object(PilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(CliCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(ApiCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(McpCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(
-                        RuntimeCopilotSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(
-                        WorkflowCopilotSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(AdminCopilotSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(EvalAgentSpec, "build_llm", return_value=_FakeLLMProvider())
-                )
-                stack.enter_context(
-                    patch.object(
-                        EvalJudgeAgentSpec,
-                        "build_llm",
-                        return_value=_FakeLLMProvider(),
-                    )
-                )
-                stack.enter_context(
-                    patch("pilot.catalog._base.cached_docs_for_scope", return_value=[])
-                )
-                shutdown = stack.enter_context(
-                    patch.object(BashTool, "shutdown", autospec=True)
-                )
+def test_read_changelog_slices_the_latest_release() -> None:
+    workflow = build_changelog_workflow_spec(_REPO_ROOT)
+    read_step = workflow.steps[0]
 
-                async def _run() -> None:
-                    host = build_host(Path.cwd())
-                    host.configure_runtime_database_url("postgresql://test/runtime")
-                    await host.start()
-                    await host.close()
+    extract = read_step.run(
+        ChangelogIn(versions=1),
+        StepContext(run_id="run-1", step_id=read_step.step_id, workflow_input={}),
+    )
 
-                asyncio.run(_run())
-
-                assert shutdown.call_count >= 5
-
-
-def test_build_system_prompt_uses_cached_docs_helper() -> None:
-    workspace_root = Path("/tmp/mashpy")
-
-    with patch(
-        "pilot.catalog._base.cached_docs_for_scope",
-        side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
-            workspace_root,
-            doc_roots=kwargs.get("doc_roots", ()),
-            extra_doc_paths=kwargs.get("extra_doc_paths", ()),
-        ),
-    ) as cached_docs:
-        PilotSpec(workspace_root).build_system_prompt()
-        CliCopilotSpec(workspace_root).build_system_prompt()
-        ApiCopilotSpec(workspace_root).build_system_prompt()
-        McpCopilotSpec(workspace_root).build_system_prompt()
-        RuntimeCopilotSpec(workspace_root).build_system_prompt()
-        WorkflowCopilotSpec(workspace_root).build_system_prompt()
-
-    assert cached_docs.call_count == 6
-    primary_call = cached_docs.call_args_list[0]
-    assert "docs/rfcs/host-to-agent-protocol.md" in primary_call.kwargs["extra_doc_paths"]
-
-
-def test_missing_cached_docs_do_not_break_prompt_building() -> None:
-    workspace_root = Path("/tmp/mashpy")
-
-    with patch("pilot.catalog._base.cached_docs_for_scope", return_value=[]):
-        prompt = PilotSpec(workspace_root).build_system_prompt()
-
-    assert APP_NAME in str(prompt)
-
-
-def test_cached_docs_for_scope_loads_readme_and_agents_docs() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace_root = Path(tmp)
-        cli_dir = workspace_root / "src" / "mash" / "cli"
-        cli_dir.mkdir(parents=True, exist_ok=True)
-        (cli_dir / "README.md").write_text("# CLI\nreadme\n", encoding="utf-8")
-        (cli_dir / "AGENTS.md").write_text("# CLI Agents\nagents\n", encoding="utf-8")
-
-        doc_paths = cached_docs_for_scope(
-            workspace_root,
-            doc_roots=("src/mash/cli",),
-        )
-
-        assert doc_paths == [
-            str((cli_dir / "README.md").resolve()),
-            str((cli_dir / "AGENTS.md").resolve()),
-        ]
-
-
-def test_scope_prompt_blocks_include_cached_docs_only() -> None:
-    workspace_root = Path("/tmp/mashpy")
-
-    with patch(
-        "pilot.catalog._base.cached_docs_for_scope",
-        side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
-            workspace_root,
-            doc_roots=kwargs.get("doc_roots", ()),
-            extra_doc_paths=kwargs.get("extra_doc_paths", ()),
-        ),
-    ):
-        primary_prompt = str(PilotSpec(workspace_root).build_system_prompt())
-        cli_prompt = str(CliCopilotSpec(workspace_root).build_system_prompt())
-
-    assert "# Cached docs" in primary_prompt
-    assert "DOC: `README.md`" in primary_prompt
-    assert "DOC: `src/mash/AGENTS.md`" in primary_prompt
-    assert "DOC: `src/mash/runtime/AGENTS.md`" not in primary_prompt
-    assert "host-to-agent-protocol.md" not in primary_prompt
-    assert "# Repository index" not in primary_prompt
-    assert "# Symbol index" not in primary_prompt
-    assert "Cache dir:" not in primary_prompt
-    assert "Directory sample:" not in primary_prompt
-    assert "Cached files:" not in primary_prompt
-
-    assert "# Cached docs" in cli_prompt
-    assert "# Repository index" not in cli_prompt
-    assert "# Symbol index" not in cli_prompt
-    assert "DOC: `src/mash/cli/README.md`" in cli_prompt
-    assert "DOC: `src/mash/cli/AGENTS.md`" in cli_prompt
-
-
-def test_prompts_remain_compact_and_principle_driven() -> None:
-    workspace_root = Path("/tmp/mashpy")
-
-    with patch(
-        "pilot.catalog._base.cached_docs_for_scope",
-        side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
-            workspace_root,
-            doc_roots=kwargs.get("doc_roots", ()),
-            extra_doc_paths=kwargs.get("extra_doc_paths", ()),
-        ),
-    ):
-        primary_prompt = str(PilotSpec(workspace_root).build_system_prompt())
-        cli_prompt = str(CliCopilotSpec(workspace_root).build_system_prompt())
-
-    assert primary_prompt.count("Delegate") <= 2
-    assert "host composition" not in primary_prompt.lower()
-    assert "runtime-serving behavior" not in primary_prompt.lower()
-    assert "open-ended exploration" not in cli_prompt.lower()
-    assert "Treat cached docs as the primary source of truth" in cli_prompt
-    assert pilot_spec_module.__file__ is not None
-    pilot_spec_src = Path(pilot_spec_module.__file__).read_text(encoding="utf-8")
-    assert "CopilotIndexState" not in pilot_spec_src
-    assert "IndexScope" not in pilot_spec_src
-    assert "code_index" not in pilot_spec_src
-
-
-def test_copilot_configs_limit_history_and_steps() -> None:
-    workspace_root = Path("/tmp/mashpy")
-
-    with patch("pilot.catalog._base.cached_docs_for_scope", return_value=[]):
-        cli_config = CliCopilotSpec(workspace_root).build_agent_config()
-        api_config = ApiCopilotSpec(workspace_root).build_agent_config()
-        mcp_config = McpCopilotSpec(workspace_root).build_agent_config()
-        runtime_config = RuntimeCopilotSpec(workspace_root).build_agent_config()
-        workflow_config = WorkflowCopilotSpec(workspace_root).build_agent_config()
-
-    assert cli_config.conversation_history_turns == 0
-    assert api_config.conversation_history_turns == 0
-    assert mcp_config.conversation_history_turns == 0
-    assert runtime_config.conversation_history_turns == 0
-    assert workflow_config.conversation_history_turns == 0
-    assert cli_config.max_steps == 10
-    assert api_config.max_steps == 10
-    assert mcp_config.max_steps == 10
-    assert runtime_config.max_steps == 10
-    assert workflow_config.max_steps == 10
-    assert cli_config.temperature == 0.2
-    assert api_config.temperature == 0.2
-    assert mcp_config.temperature == 0.2
-    assert runtime_config.temperature == 0.2
-    assert workflow_config.temperature == 0.2
-
-
-def test_missing_docs_do_not_break_prompt_building() -> None:
-    workspace_root = Path("/tmp/mashpy")
-
-    with patch(
-        "pilot.catalog._base.cached_docs_for_scope",
-        side_effect=lambda workspace_root, **kwargs: _fake_cached_docs(
-            workspace_root,
-            doc_roots=kwargs.get("doc_roots", ()),
-            extra_doc_paths=kwargs.get("extra_doc_paths", ()),
-            omit_docs={"src/mash/api/AGENTS.md", "src/mash/runtime/README.md"},
-        ),
-    ):
-        primary_prompt = str(PilotSpec(workspace_root).build_system_prompt())
-        api_prompt = str(ApiCopilotSpec(workspace_root).build_system_prompt())
-
-    assert APP_NAME in primary_prompt
-    assert APP_NAME in api_prompt
-    assert "DOC: `src/mash/api/AGENTS.md`" not in api_prompt
-    assert "DOC: `src/mash/runtime/README.md`" not in primary_prompt
+    assert extract.versions_included == 1
+    assert extract.excerpt.startswith(f"## [{extract.latest_version}]")
 
 
 def test_top_level_src_mash_packages_have_required_docs() -> None:
+    # The guide's doc map sends it to each module's README and AGENTS.md.
     package_names = [
         "agents",
         "api",
@@ -583,35 +165,3 @@ def test_top_level_src_mash_packages_have_required_docs() -> None:
         package_dir = _REPO_ROOT / "src" / "mash" / package_name
         assert (package_dir / "README.md").is_file(), package_name
         assert (package_dir / "AGENTS.md").is_file(), package_name
-
-
-def _fake_cached_docs(
-    workspace_root: Path,
-    *,
-    doc_roots: tuple[str, ...] | list[str] = (),
-    extra_doc_paths: tuple[str, ...] | list[str] = (),
-    omit_docs: set[str] | None = None,
-) -> list[str]:
-    workspace_root = workspace_root.resolve()
-    omit_docs = omit_docs or set()
-    relpaths: list[str] = []
-    for root in doc_roots:
-        relpaths.extend([f"{root}/README.md", f"{root}/AGENTS.md"])
-    relpaths.extend(extra_doc_paths)
-
-    seen: set[str] = set()
-    resolved_paths: list[str] = []
-    for relpath in relpaths:
-        cleaned = relpath.strip()
-        if not cleaned or cleaned in seen or cleaned in omit_docs:
-            continue
-        seen.add(cleaned)
-        if relpath in omit_docs:
-            continue
-        doc_path = workspace_root / relpath
-        doc_path.parent.mkdir(parents=True, exist_ok=True)
-        title = Path(relpath).name.replace(".md", "")
-        doc_path.write_text(f"# {title}\nContent for {relpath}.\n", encoding="utf-8")
-        resolved_paths.append(str(doc_path.resolve()))
-
-    return resolved_paths

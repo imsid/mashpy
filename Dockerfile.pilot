@@ -5,32 +5,38 @@ ENV PIP_NO_CACHE_DIR=1
 ENV MASH_DATA_DIR=/var/lib/mash
 ENV MASH_API_HOST=0.0.0.0
 ENV MASH_API_PORT=8000
+ENV MASH_HOST_APP=pilot.spec:build_pool
 
-# postgresql powers the single-container mode (embedded DB); when
-# MASH_DATABASE_URL is provided (e.g. docker compose), it stays unused.
-RUN apt-get update && apt-get install -y --no-install-recommends postgresql && rm -rf /var/lib/apt/lists/*
+# git and ripgrep let the agents read the mounted repo and its history; uv lets
+# the builder create and test Mash apps in its workspace.
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep sudo \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/mash
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
-# Editable install: site-packages gets a finder pointing at /opt/mash/src, so
-# a live bind-mount of the local repo over /opt/mash (see docker-compose.pilot.yml)
-# is picked up on restart without an image rebuild. Rebuild only for dep changes.
-RUN pip install -e .
+RUN pip install . uv
 
-# Agents read the same source tree the runtime is running from.
-ENV MASH_HOST_APP=pilot.spec:build_pool
-ENV PILOT_WORKSPACE_ROOT=/opt/mash
-ENV PILOT_DATA_DIR=/var/lib/pilot
+# Two users: `mash` runs the runtime and holds its env; `agent` runs every bash
+# session the agent opens and can read only /home/agent. `mash` may start bash
+# as `agent` and nothing else.
+RUN useradd --create-home --shell /bin/bash mash \
+    && useradd --create-home --shell /bin/bash agent \
+    && chmod 0700 /home/mash \
+    && mkdir -p /home/agent/workspace \
+    && chown -R agent:agent /home/agent \
+    && chmod 0755 /home/agent /home/agent/workspace \
+    && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
+    && chmod 0440 /etc/sudoers.d/mash-agent \
+    && mkdir -p /var/lib/mash \
+    && chown mash:mash /var/lib/mash \
+    # The mounted checkout belongs to another uid; let git read it anyway.
+    && git config --system --add safe.directory /home/agent/workspace/mashpy
 
-RUN mkdir -p /var/lib/mash /var/lib/pilot
-
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+USER mash
 
 EXPOSE 8000
 
-ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["sh", "-c", "mash host serve --host-app \"${MASH_HOST_APP}\" --host \"${MASH_API_HOST}\" --port \"${MASH_API_PORT}\" ${MASH_API_KEY:+--api-key \"$MASH_API_KEY\"}"]
