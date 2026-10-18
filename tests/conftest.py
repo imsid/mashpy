@@ -795,6 +795,35 @@ class _TestMemoryStore:
             rows = rows[-limit:]
         return rows
 
+    def _user_turns(self, user_id: str, after: float) -> list[dict[str, Any]]:
+        rows = [
+            t
+            for t in self._turns
+            if t.get("user_id") == user_id
+            and t.get("workflow_id") is None
+            and "subagent_id" not in (t.get("metadata") or {})
+            and float(t.get("created_at") or 0.0) > after
+        ]
+        return sorted(rows, key=lambda t: (float(t.get("created_at") or 0.0), t["trace_id"]))
+
+    async def list_user_turns(
+        self, user_id: str, *, after: float = 0.0, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "trace_id": t["trace_id"],
+                "session_id": t["session_id"],
+                "app_id": t["app_id"],
+                "user_message": t.get("user_message", ""),
+                "agent_response": t.get("agent_response", ""),
+                "created_at": float(t.get("created_at") or 0.0),
+            }
+            for t in self._user_turns(user_id, after)[:limit]
+        ]
+
+    async def count_user_turns(self, user_id: str, *, after: float = 0.0) -> int:
+        return len(self._user_turns(user_id, after))
+
     async def list_workflow_turns(
         self,
         app_id: str,
