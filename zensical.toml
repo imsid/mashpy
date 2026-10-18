@@ -44,6 +44,7 @@ nav = [
             { "Workflows" = "posts/workflows-as-step-pipelines.md" },
             { "Reading a Trace" = "posts/reading-a-trace.md" },
             { "Synthetic Evals" = "posts/synthetic-evals.md" },
+            { "Cortex" = "posts/cortex.md" },
         ] },
         { "Guides" = [
             { "Exploring Mash with Pilot" = "posts/exploring-mash-with-pilot.md" },

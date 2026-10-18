@@ -103,6 +103,12 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
                 if state.eval_service is not None:
                     await state.eval_service._store.close()
                 await state.api_event_store.close()
+                if getattr(state.pool, "cortex", None) is not None:
+                    from mash.agents.cortex.routes import cortex_context
+
+                    store = cortex_context(state.pool).store
+                    if store is not None:
+                        await store.close()
                 await state.pool.close()
             application.state.runtime_state = None
 
@@ -224,6 +230,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api.include_router(build_telemetry_router())
     api.include_router(build_feedback_router())
     api.include_router(build_evals_router())
+    if getattr(pool, "cortex", None) is not None:
+        from mash.agents.cortex.routes import build_cortex_router
+
+        api.include_router(build_cortex_router())
     app.include_router(api)
     app.include_router(build_h2a_router())
 
