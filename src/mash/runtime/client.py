@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import time
 from typing import Any, AsyncIterator, Dict, Optional, Protocol
@@ -38,6 +40,15 @@ class AgentClientLike(Protocol):
     ) -> str: ...
 
     async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]: ...
+
+    async def compact_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "manual",
+        session_total_tokens_reset: int = 0,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]: ...
 
     async def post_interaction(
         self,
@@ -146,6 +157,9 @@ class AgentClient:
     def _describe_url(self) -> str:
         return f"{self.base_url}/agent/{self.agent_id}/describe"
 
+    def _compact_url(self, session_id: str) -> str:
+        return f"{self.base_url}/agent/{self.agent_id}/session/{session_id}/compact"
+
     @staticmethod
     def _extract_message(response: httpx.Response) -> str:
         try:
@@ -207,6 +221,35 @@ class AgentClient:
         payload = response.json()
         if not isinstance(payload, dict):
             raise AgentClientError("describe response must be an object")
+        return payload
+
+    async def compact_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "manual",
+        session_total_tokens_reset: int = 0,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(headers=self._headers) as client:
+                response = await client.post(
+                    self._compact_url(session_id),
+                    json={
+                        "reason": reason,
+                        "session_total_tokens_reset": session_total_tokens_reset,
+                    },
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise AgentClientError(f"compact failed: {exc}") from exc
+        if response.status_code != 200:
+            raise AgentClientError(
+                f"compact failed (status={response.status_code}): {self._extract_message(response)}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise AgentClientError("compact response must be an object")
         return payload
 
     async def post_request(
@@ -472,6 +515,22 @@ class InProcessAgentClient:
         del timeout
         return self.runtime.describe()
 
+    async def compact_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "manual",
+        session_total_tokens_reset: int = 0,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        del timeout
+        summary_text, trace_id = await self.runtime.compact_session(
+            session_id=session_id,
+            reason=reason,
+            session_total_tokens_reset=session_total_tokens_reset,
+        )
+        return {"summary_text": summary_text, "trace_id": trace_id}
+
     async def post_request(
         self,
         message: str,
@@ -486,15 +545,22 @@ class InProcessAgentClient:
         timeout: float = 30.0,
     ) -> str:
         del timeout
-        accepted = await self.runtime.submit_request(
-            message=message,
-            session_id=session_id,
-            structured_output=structured_output,
-            host_snapshot=host,
-            context=context,
-            metadata=metadata,
-            request_id=request_id,
-            parent=parent,
+        # Submit from an empty context, as an HTTP submit would: the caller may
+        # be inside a DBOS step (InvokeSubagent, a workflow AgentStep), and DBOS
+        # refuses to start a workflow from step context. The request starts as
+        # its own top-level workflow either way.
+        accepted = await contextvars.Context().run(
+            asyncio.create_task,
+            self.runtime.submit_request(
+                message=message,
+                session_id=session_id,
+                structured_output=structured_output,
+                host_snapshot=host,
+                context=context,
+                metadata=metadata,
+                request_id=request_id,
+                parent=parent,
+            ),
         )
         request_id = str(accepted.get("request_id") or "").strip()
         if not request_id:
@@ -517,33 +583,6 @@ class InProcessAgentClient:
         wf_id = workflow_id_for(self.agent_id, request_id)
         await _DBOS.send_async(wf_id, response, topic=interaction_id)
         return {"ok": True, "interaction_id": interaction_id}
-
-    async def post_subagent_request(
-        self,
-        message: str,
-        *,
-        session_id: str,
-        primary_session_id: str,
-        primary_app_id: str,
-        subagent_id: str,
-        subagent_invoke_opts: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 30.0,
-    ) -> str:
-        del timeout
-        accepted = await self.runtime.submit_subagent_request(
-            message=message,
-            session_id=session_id,
-            primary_session_id=primary_session_id,
-            primary_app_id=primary_app_id,
-            subagent_id=subagent_id,
-            subagent_invoke_opts=subagent_invoke_opts,
-            metadata=metadata,
-        )
-        request_id = str(accepted.get("request_id") or "").strip()
-        if not request_id:
-            raise AgentClientError("Agent POST response missing request_id")
-        return request_id
 
     async def stream_response(
         self,

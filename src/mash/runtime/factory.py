@@ -30,8 +30,12 @@ def resolve_host_subagents(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
 ) -> dict[str, AgentMetadata]:
-    """Resolve a host snapshot's subagent ids to pool metadata."""
-    if not host:
+    """Resolve a host snapshot's subagent ids to pool metadata.
+
+    Only the host's primary routes to subagents. A subagent request carries the
+    same snapshot, but must not see its siblings or call them.
+    """
+    if not host or host.get("primary") != self.app_id:
         return {}
     subagent_ids = [str(value) for value in host.get("subagents") or []]
     if not subagent_ids:
@@ -282,6 +286,7 @@ def configure_subagent_tools(
             client_resolver=client_resolver,
             primary_app_id=self.app_id,
             primary_session_id=session_id,
+            host=host,
             event_logger=self.get_event_logger(),
         )
     )

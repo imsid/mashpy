@@ -14,8 +14,9 @@ Durability and observability come from DBOS plus the workflow store:
   ``(run_id, step_id, attempt, event_type)``), so the rare crash-after-effect
   re-run converges instead of duplicating.
 
-Agent steps interlock with their own durable request workflow through a
-deterministic ``request_id`` (see ``post_inline_agent_request``).
+An agent step submits its request in a step under a ``request_id`` fixed by run
+and step (see ``post_inline_agent_request``), so a replayed submit reattaches to
+the request it already started.
 """
 
 from __future__ import annotations
@@ -227,6 +228,28 @@ async def _invoke_code_step(
     return out.model_dump(mode="json")
 
 
+async def _submit_agent_step(
+    runner_id: str,
+    agent_id: str,
+    message: str,
+    structured_output: dict[str, Any] | None,
+    workflow_id: str,
+    run_id: str,
+    step_id: str,
+    session_id: str,
+) -> str:
+    return await post_inline_agent_request(
+        runner_id,
+        agent_id=agent_id,
+        message=message,
+        structured_output=structured_output,
+        workflow_id=workflow_id,
+        workflow_run_id=run_id,
+        task_id=step_id,
+        session_id=session_id,
+    )
+
+
 def _coerce_input(step: StepSpec, merged: dict[str, Any]) -> dict[str, Any]:
     """Build the step's input snapshot.
 
@@ -322,21 +345,23 @@ class ForwardPipelineStrategy:
             try:
                 input_snapshot = _coerce_input(step, merged)
                 if step.kind == "agent":
-                    agent_request_id = await post_inline_agent_request(
+                    agent_request_id = await dbos_class.run_step_async(
+                        {"name": f"{step.step_id}.submit"},
+                        _submit_agent_step,
                         runner_id,
-                        agent_id=step.agent_id,  # type: ignore[attr-defined]
-                        message=_agent_step_message(
+                        step.agent_id,  # type: ignore[attr-defined]
+                        _agent_step_message(
                             step,
                             workflow_id=wf_id,
                             run_id=run_id,
                             workflow_input=ctx.workflow_input,
                             input_snapshot=input_snapshot,
                         ),
-                        structured_output=serialize_structured_output(step.output),
-                        workflow_id=wf_id,
-                        workflow_run_id=run_id,
-                        task_id=step.step_id,
-                        session_id=session_id,
+                        serialize_structured_output(step.output),
+                        wf_id,
+                        run_id,
+                        step.step_id,
+                        session_id,
                     )
 
                 await dbos_class.run_step_async(
@@ -349,8 +374,8 @@ class ForwardPipelineStrategy:
 
                 if step.kind == "code":
                     if getattr(step, "orchestration", False):
-                        # Orchestration code must run in the workflow context so
-                        # it can start durable child agent workflows. It is
+                        # Orchestration code runs in the workflow context so it
+                        # can submit and await many agent requests itself. It is
                         # replayed after recovery and therefore owns a durable,
                         # idempotent work ledger rather than relying on DBOS to
                         # memoize the code body as one opaque step.

@@ -15,6 +15,7 @@ from ..core.context import (
 )
 from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
+from . import sessions
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -27,37 +28,14 @@ async def get_session_info(
     session_id_value = str(session_id or self.session_id).strip()
     if not session_id_value:
         raise ValueError("session_id is required")
-    # total_tokens is the true spend recorded in the event log across every agent
-    # in the session (matching the admin rollup); session_total_tokens is the
-    # memory context budget, which compaction resets.
-    event_totals = await _session_event_token_totals(self, session_id_value)
-    return {
-        "app_id": self.app_id,
-        "agent_id": self.app_id,
-        "session_id": session_id_value,
-        "model": self.get_model(),
-        "max_steps": self.get_max_steps(),
-        "session_total_tokens": await get_session_total_tokens(self, session_id_value),
-        "total_tokens": event_totals["total_tokens"],
-        "cache_read_tokens": event_totals["cache_read_tokens"],
-        "cache_write_tokens": event_totals["cache_write_tokens"],
-    }
-
-
-async def _session_event_token_totals(self: "AgentRuntime", session_id: str) -> dict[str, int]:
-    """Sum token fields for a session across all agents from the runtime event log."""
-    store = getattr(self, "runtime_store", None)
-    if store is None or not hasattr(store, "list_recent_traces"):
-        return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
-    try:
-        traces = await store.list_recent_traces(session_id=session_id, limit=1000)
-    except Exception:
-        return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
-    return {
-        "total_tokens": sum(int(trace.get("total_tokens") or 0) for trace in traces),
-        "cache_read_tokens": sum(int(trace.get("cache_read_tokens") or 0) for trace in traces),
-        "cache_write_tokens": sum(int(trace.get("cache_write_tokens") or 0) for trace in traces),
-    }
+    return await sessions.session_info(
+        self.store,
+        getattr(self, "runtime_store", None),
+        app_id=self.app_id,
+        session_id=session_id_value,
+        model=self.get_model(),
+        max_steps=self.get_max_steps(),
+    )
 
 
 async def get_history_turns(
@@ -66,17 +44,13 @@ async def get_history_turns(
     *,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    return await self.store.get_turns(
-        session_id=session_id,
-        app_id=self.app_id,
-        limit=limit,
+    return await sessions.history_turns(
+        self.store, app_id=self.app_id, session_id=session_id, limit=limit
     )
 
 
 async def list_sessions(self: "AgentRuntime") -> list[dict[str, Any]]:
-    if not hasattr(self.store, "list_sessions"):
-        return []
-    return await self.store.list_sessions(app_id=self.app_id)
+    return await sessions.list_sessions(self.store, app_id=self.app_id)
 
 
 async def get_session_signals(
@@ -85,10 +59,8 @@ async def get_session_signals(
     *,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    return await self.store.get_session_signals(
-        session_id=session_id,
-        app_id=self.app_id,
-        limit=limit,
+    return await sessions.session_signals(
+        self.store, app_id=self.app_id, session_id=session_id, limit=limit
     )
 
 
@@ -99,19 +71,9 @@ async def get_session_total_tokens(
     session_id_value = str(session_id or self.session_id).strip()
     if not session_id_value:
         raise ValueError("session_id is required")
-
-    turns = await self.store.get_turns(
-        session_id=session_id_value,
-        app_id=self.app_id,
-        limit=1,
+    return await sessions.session_total_tokens(
+        self.store, app_id=self.app_id, session_id=session_id_value
     )
-    if not turns:
-        return 0
-    value = turns[-1].get("session_total_tokens", 0)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
 
 
 async def compact_session(

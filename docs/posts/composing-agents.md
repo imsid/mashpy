@@ -97,7 +97,7 @@ flowchart TD
     pool --- PG
 ```
 
-`InvokeSubagent` has one durability nuance: it runs at workflow scope rather than inside a step checkpoint, because the child request is its own DBOS workflow and DBOS won't start workflows from step context. The result payload and events are the same as any tool; only the checkpoint boundary differs.
+`InvokeSubagent` runs as an ordinary step. The subagent request is its own DBOS workflow, submitted under a request id built from the primary's request id and the call's position (`{request_id}-sub-{loop}-{call}`). A replayed or retried step resubmits that id, and the subagent's runtime returns the request it already started instead of starting a second.
 
 ## The second registration kind
 

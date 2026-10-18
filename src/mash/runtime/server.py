@@ -89,6 +89,11 @@ class AgentServer:
                     methods=["GET"],
                 ),
                 Route(
+                    "/agent/{agent_id:str}/session/{session_id:str}/compact",
+                    self.compact_session,
+                    methods=["POST"],
+                ),
+                Route(
                     "/agent/{agent_id:str}/request",
                     self.submit_request,
                     methods=["POST"],
@@ -258,6 +263,39 @@ class AgentServer:
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
         return JSONResponse(accepted, status_code=202)
+
+    async def compact_session(self, request: Request) -> Response:
+        agent_id = request.path_params.get("agent_id", "").strip()
+        if agent_id != self.agent_id:
+            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+        session_id = request.path_params.get("session_id", "").strip()
+        if not session_id:
+            return _json_error(400, "INVALID_REQUEST", "session_id is required")
+
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return _json_error(400, "INVALID_JSON", "Request body must be valid JSON")
+        if not isinstance(payload, dict):
+            return _json_error(400, "INVALID_REQUEST", "Request body must be an object")
+
+        reason = payload.get("reason", "manual")
+        if not isinstance(reason, str) or not reason.strip():
+            return _json_error(400, "INVALID_REQUEST", "reason must be a non-empty string")
+        tokens_reset = payload.get("session_total_tokens_reset", 0)
+        if not isinstance(tokens_reset, int) or isinstance(tokens_reset, bool) or tokens_reset < 0:
+            return _json_error(
+                400,
+                "INVALID_REQUEST",
+                "session_total_tokens_reset must be a non-negative integer",
+            )
+
+        summary_text, trace_id = await self.runtime.compact_session(
+            session_id=session_id,
+            reason=reason.strip(),
+            session_total_tokens_reset=tokens_reset,
+        )
+        return JSONResponse({"summary_text": summary_text, "trace_id": trace_id})
 
     async def describe(self, request: Request) -> Response:
         agent_id = request.path_params.get("agent_id", "").strip()

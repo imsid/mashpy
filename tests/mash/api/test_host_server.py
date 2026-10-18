@@ -368,47 +368,6 @@ def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
             assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
 
-def test_register_agent_skill_endpoint_registers_dynamic_skill() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        with _build_test_client(root) as client:
-            response = client.post(
-                "/api/v1/agent/primary/skill",
-                json={
-                    "type": "dynamic",
-                    "name": "workflow:test:v1",
-                    "description": "Test workflow skill.",
-                    "content": "# Test workflow",
-                },
-            )
-
-            assert response.status_code == 200
-            assert response.json()["data"] == {
-                "agent_id": "primary",
-                "skill_name": "workflow:test:v1",
-            }
-            runtime = _runtime_state(client).pool.get_agent("primary")
-            assert runtime.skills.get("workflow:test:v1") is not None
-            assert "Skill" in runtime.agent.tools
-
-
-def test_register_agent_skill_endpoint_returns_not_found_for_unknown_agent() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        with _build_test_client(root) as client:
-            response = client.post(
-                "/api/v1/agent/missing/skill",
-                json={
-                    "type": "dynamic",
-                    "name": "workflow:test:v1",
-                    "content": "# Test workflow",
-                },
-            )
-
-            assert response.status_code == 404
-            assert response.json()["error"]["code"] == "AGENT_NOT_FOUND"
-
-
 def test_agent_scoped_request_and_session_routes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

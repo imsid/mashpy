@@ -18,7 +18,6 @@ from .trace_context import (
     bound_subagent_request_id,
     bound_trace_id,
     clear_request_id,
-    clear_subagent_request_id,
     clear_trace_id,
     get_host_id,
     get_request_id,
@@ -56,6 +55,5 @@ __all__ = [
     "get_request_id",
     "get_trace_id",
     "clear_request_id",
-    "clear_subagent_request_id",
     "clear_trace_id",
 ]

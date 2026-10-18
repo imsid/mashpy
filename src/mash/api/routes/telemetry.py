@@ -28,7 +28,7 @@ from .common import (
     build_api_filters,
     build_memory_search_service,
     build_observability_sse_payload,
-    memory_search_available,
+    get_runtime_store,
     normalize_optional_text,
     parse_limit,
     state_from_request,
@@ -50,15 +50,12 @@ def build_telemetry_router() -> APIRouter:
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        try:
-            agent = state.pool.get_agent(agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        store = get_runtime_store(request, agent_id)
 
         resolved_limit = parse_limit(limit, default=state.default_events_limit, max_value=20000)
         events = [
             serialize_runtime_event(item)
-            for item in await agent.runtime_store.list_events(
+            for item in await store.list_events(
                 app_id=agent_id,
                 session_id=normalize_optional_text(session_id),
                 trace_id=normalize_optional_text(trace_id),
@@ -204,19 +201,16 @@ def build_telemetry_router() -> APIRouter:
                 details={"param": "app_id"},
             )
 
-        try:
-            agent = state.pool.get_agent(app_id_value)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
-
-        if not memory_search_available(agent):
+        runtime_store = get_runtime_store(request, app_id_value)
+        memory_store = state.pool.get_memory_store(app_id_value)
+        if memory_store is None:
             raise APIError(
                 code="MEMORY_SEARCH_UNAVAILABLE",
                 message="memory search unavailable for this agent",
                 status_code=503,
             )
 
-        search_service = build_memory_search_service(agent)
+        search_service = build_memory_search_service(memory_store, runtime_store)
         resolved_limit = parse_limit(limit, default=state.default_search_limit, max_value=50)
         normalized_session_id = normalize_optional_text(session_id)
         try:
@@ -277,14 +271,15 @@ def build_telemetry_router() -> APIRouter:
 
         # With a session but no agent, list a session's traces across the pool
         # (subagents / cross-agent workflow tasks). Use any agent's shared store.
-        store_agent_id = resolved_agent_id or state.pool.list_agents()[0]
-        try:
-            agent = state.pool.get_agent(store_agent_id)
-        except (ValueError, IndexError) as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        if resolved_agent_id is not None:
+            store = get_runtime_store(request, resolved_agent_id)
+        else:
+            store = state.pool.get_runtime_store()
+            if store is None:
+                raise APIError(code="RUNTIME_UNAVAILABLE", message="pool is not started", status_code=503)
 
         resolved_host_id = normalize_optional_text(host_id)
-        traces = await agent.runtime_store.list_recent_traces(
+        traces = await store.list_recent_traces(
             resolved_agent_id,
             session_id=resolved_session_id,
             host_id=resolved_host_id,
@@ -311,7 +306,6 @@ def build_telemetry_router() -> APIRouter:
         from_ts: Optional[float] = Query(default=None),
         to_ts: Optional[float] = Query(default=None),
     ) -> dict[str, Any]:
-        state = state_from_request(request)
         normalized_bucket = str(bucket or "day").strip().lower()
         if normalized_bucket not in {"hour", "day"}:
             raise APIError(
@@ -321,14 +315,11 @@ def build_telemetry_router() -> APIRouter:
                 details={"param": "bucket"},
             )
 
-        try:
-            agent = state.pool.get_agent(agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        store = get_runtime_store(request, agent_id)
 
         resolved_host_id = normalize_optional_text(host_id)
         resolved_session_id = normalize_optional_text(session_id)
-        buckets = await agent.runtime_store.aggregate_usage(
+        buckets = await store.aggregate_usage(
             agent_id,
             host_id=resolved_host_id,
             session_id=resolved_session_id,
@@ -382,10 +373,9 @@ def build_telemetry_router() -> APIRouter:
         # rolls up every session. agent_id matches sessions the agent
         # participated in (as primary or subagent); workflow_id matches
         # sessions where that workflow ran.
-        agent_ids = state.pool.list_agents()
-        if not agent_ids:
+        store = state.pool.get_runtime_store()
+        if store is None or not state.pool.list_agents():
             return success({"sessions": [], "total": 0, "agent_id": participant_agent_id})
-        store = state.pool.get_agent(agent_ids[0]).runtime_store
         resolved_limit = (
             parse_limit(limit, default=state.default_events_limit, max_value=2000)
             if limit is not None
@@ -412,7 +402,6 @@ def build_telemetry_router() -> APIRouter:
         request: Request,
         body: CommandEventIngest,
     ) -> dict[str, Any]:
-        state = state_from_request(request)
         event_type = str(body.event_type or "").strip()
         if not event_type.startswith("command."):
             raise APIError(
@@ -423,10 +412,7 @@ def build_telemetry_router() -> APIRouter:
             )
 
         agent_id = str(body.agent_id or "").strip()
-        try:
-            agent = state.pool.get_agent(agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        store = get_runtime_store(request, agent_id)
 
         event = RuntimeEvent(
             app_id=agent_id,
@@ -443,7 +429,7 @@ def build_telemetry_router() -> APIRouter:
                 "error": body.error,
             },
         )
-        stored = await agent.runtime_store.append_event(event)
+        stored = await store.append_event(event)
         return success({"event": serialize_runtime_event(stored)})
 
     @router.get("/telemetry/command-events")
@@ -454,15 +440,12 @@ def build_telemetry_router() -> APIRouter:
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
         state = state_from_request(request)
-        try:
-            agent = state.pool.get_agent(agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        store = get_runtime_store(request, agent_id)
 
         resolved_limit = parse_limit(limit, default=state.default_events_limit, max_value=2000)
         events = [
             serialize_runtime_event(item)
-            for item in await agent.runtime_store.list_events(
+            for item in await store.list_events(
                 app_id=agent_id,
                 session_id=normalize_optional_text(session_id),
                 event_type_prefix="command.",
@@ -487,13 +470,9 @@ def build_telemetry_router() -> APIRouter:
         trace_id: str,
         stitch: bool = False,
     ) -> dict[str, Any]:
-        state = state_from_request(request)
-        try:
-            agent = state.pool.get_agent(agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        store = get_runtime_store(request, agent_id)
 
-        events = await agent.runtime_store.list_events(
+        events = await store.list_events(
             app_id=agent_id,
             session_id=session_id,
             trace_id=trace_id,
@@ -508,7 +487,7 @@ def build_telemetry_router() -> APIRouter:
             # Deferred: only pay for the masher package when stitching is requested.
             from mash.agents.masher.traces import stitch_subagent_traces  # pylint: disable=import-outside-toplevel
 
-            analysis = await stitch_subagent_traces(agent.runtime_store, analysis)
+            analysis = await stitch_subagent_traces(store, analysis)
 
         return success(
             {

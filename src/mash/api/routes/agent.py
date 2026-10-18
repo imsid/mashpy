@@ -10,17 +10,16 @@ from fastapi.responses import StreamingResponse
 from mash.runtime import AgentClientError
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.events import build_reasoning_trace
+from mash.memory.signals import build_default_signal_collector
+from mash.runtime import sessions
 from mash.runtime.structured_output import serialize_structured_output
-from mash.skills import Skill
 
 from .common import (
     APIError,
     CompactSessionRequest,
-    RegisterAgentSkillRequest,
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
-    normalize_optional_text,
     require_agent_id,
     require_message,
     require_session_id,
@@ -30,7 +29,7 @@ from .common import (
     telemetry_event_source,
 )
 from .common import (
-    get_agent as resolve_agent,
+    get_runtime_store,
 )
 
 
@@ -92,38 +91,6 @@ def build_agent_router() -> APIRouter:
                 "session": session_payload,
             }
         )
-
-    @router.post("/agent/{agent_id}/skill")
-    async def register_agent_skill(
-        request: Request,
-        agent_id: str,
-        body: RegisterAgentSkillRequest,
-    ) -> dict[str, Any]:
-        state = state_from_request(request)
-        resolved_agent_id = require_agent_id(agent_id)
-        try:
-            agent = state.pool.get_agent(resolved_agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
-
-        skill = Skill(
-            type=body.type,
-            name=body.name,
-            description=body.description,
-            location=body.location,
-            content=body.content,
-        )
-        existing = agent.skills.get(skill.name)
-        if existing is None:
-            try:
-                state.pool.register_agent_skill(resolved_agent_id, skill)
-            except ValueError as exc:
-                raise APIError(
-                    code="INVALID_AGENT_SKILL",
-                    message=str(exc),
-                    status_code=400,
-                ) from exc
-        return success({"agent_id": resolved_agent_id, "skill_name": skill.name})
 
     @router.post("/agent/{agent_id}/request")
     async def submit_request(
@@ -300,18 +267,51 @@ def build_agent_router() -> APIRouter:
             ) from exc
         return success(result)
 
+    def _session_store(request: Request, agent_id: str):
+        """The shared memory store holding ``agent_id``'s sessions."""
+        state = state_from_request(request)
+        try:
+            resolved_agent_id = state.pool.require_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(
+                code="AGENT_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        store = state.pool.get_memory_store(resolved_agent_id)
+        if store is None:
+            raise APIError(
+                code="SESSIONS_UNAVAILABLE",
+                message=(
+                    f"agent '{resolved_agent_id}' does not use the pool's shared "
+                    "memory store"
+                ),
+                status_code=503,
+            )
+        return resolved_agent_id, store
+
     @router.get("/agent/{agent_id}/sessions")
     async def list_sessions(request: Request, agent_id: str) -> dict[str, Any]:
-        agent = resolve_agent(request, agent_id)
-        return success({"sessions": await agent.list_sessions()})
+        resolved_agent_id, store = _session_store(request, agent_id)
+        return success(
+            {"sessions": await sessions.list_sessions(store, app_id=resolved_agent_id)}
+        )
 
     @router.get("/agent/{agent_id}/sessions/{session_id}")
     async def get_runtime_session(
         request: Request, agent_id: str, session_id: str
     ) -> dict[str, Any]:
-        agent = resolve_agent(request, agent_id)
+        resolved_agent_id, store = _session_store(request, agent_id)
+        resolved_session_id = require_session_id(session_id)
+        state = state_from_request(request)
+        settings = state.pool.get_agent_model_settings(resolved_agent_id)
         return success(
-            await agent.get_session_info(normalize_optional_text(session_id))
+            await sessions.session_info(
+                store,
+                state.pool.get_runtime_store(),
+                app_id=resolved_agent_id,
+                session_id=resolved_session_id,
+                model=settings["model"],
+                max_steps=settings["max_steps"],
+            )
         )
 
     @router.get("/agent/{agent_id}/sessions/{session_id}/history")
@@ -321,7 +321,7 @@ def build_agent_router() -> APIRouter:
         session_id: str,
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
-        agent = resolve_agent(request, agent_id)
+        resolved_agent_id, store = _session_store(request, agent_id)
         if not session_id.strip():
             raise APIError(
                 code="INVALID_REQUEST",
@@ -329,7 +329,11 @@ def build_agent_router() -> APIRouter:
                 status_code=400,
             )
         return success(
-            {"turns": await agent.get_history_turns(session_id, limit=limit)}
+            {
+                "turns": await sessions.history_turns(
+                    store, app_id=resolved_agent_id, session_id=session_id, limit=limit
+                )
+            }
         )
 
     @router.get("/agent/{agent_id}/sessions/{session_id}/signals")
@@ -339,7 +343,7 @@ def build_agent_router() -> APIRouter:
         session_id: str,
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
-        agent = resolve_agent(request, agent_id)
+        resolved_agent_id, store = _session_store(request, agent_id)
         normalized_session_id = session_id.strip()
         if not normalized_session_id:
             raise APIError(
@@ -349,11 +353,14 @@ def build_agent_router() -> APIRouter:
             )
         return success(
             {
-                "agent_id": agent.app_id,
+                "agent_id": resolved_agent_id,
                 "session_id": normalized_session_id,
-                "definitions": agent.get_signal_definitions(),
-                "turns": await agent.get_session_signals(
-                    normalized_session_id, limit=limit
+                "definitions": build_default_signal_collector().get_signal_definitions(),
+                "turns": await sessions.session_signals(
+                    store,
+                    app_id=resolved_agent_id,
+                    session_id=normalized_session_id,
+                    limit=limit,
                 ),
             }
         )
@@ -365,19 +372,21 @@ def build_agent_router() -> APIRouter:
         session_id: str,
         body: CompactSessionRequest,
     ) -> dict[str, Any]:
-        agent = resolve_agent(request, agent_id)
+        client = get_client(request, agent_id)
         if not session_id.strip():
             raise APIError(
                 code="INVALID_REQUEST",
                 message="session_id is required",
                 status_code=400,
             )
-        summary_text, trace_id = await agent.compact_session(
-            session_id=session_id,
+        result = await client.compact_session(
+            session_id.strip(),
             reason=body.reason,
             session_total_tokens_reset=body.session_total_tokens_reset,
         )
-        return success({"summary_text": summary_text, "trace_id": trace_id})
+        return success(
+            {"summary_text": result.get("summary_text"), "trace_id": result.get("trace_id")}
+        )
 
     async def _request_id_for_trace(
         request: Request, agent_id: str, trace_id: str
@@ -389,8 +398,8 @@ def build_agent_router() -> APIRouter:
         """
         resolved_agent_id = require_agent_id(agent_id)
         resolved_trace_id = require_trace_id(trace_id)
-        agent = resolve_agent(request, resolved_agent_id)
-        request_id = await agent.runtime_store.get_request_id_for_trace(
+        store = get_runtime_store(request, resolved_agent_id)
+        request_id = await store.get_request_id_for_trace(
             resolved_trace_id, app_id=resolved_agent_id
         )
         if not request_id:
@@ -481,18 +490,11 @@ def build_agent_router() -> APIRouter:
         session_id: str,
         trace_id: str,
     ) -> dict[str, Any]:
-        state = state_from_request(request)
         resolved_agent_id = require_agent_id(agent_id)
         resolved_session_id = require_session_id(session_id)
         resolved_trace_id = require_trace_id(trace_id)
-        try:
-            agent = state.pool.get_agent(resolved_agent_id)
-        except ValueError as exc:
-            raise APIError(
-                code="AGENT_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-
-        events = await agent.runtime_store.list_events(
+        store = get_runtime_store(request, resolved_agent_id)
+        events = await store.list_events(
             app_id=resolved_agent_id,
             session_id=resolved_session_id,
             trace_id=resolved_trace_id,

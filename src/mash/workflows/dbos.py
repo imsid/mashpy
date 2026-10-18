@@ -10,9 +10,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from mash.runtime.engine.dbos import start_request_workflow
-from mash.runtime.events import RuntimeEvent, RuntimeEventType
-from mash.runtime.requests import append_runtime_event
 from mash.runtime.structured_output import normalize_structured_output_schema
 
 from .spec import WorkflowSpec
@@ -285,6 +282,11 @@ async def execute_registered_workflow(
     return await FORWARD_PIPELINE_STRATEGY.run(ctx)
 
 
+def agent_step_request_id(workflow_run_id: str, task_id: str) -> str:
+    """The request id an agent step submits under: stable per run and step."""
+    return f"{workflow_run_id}-{task_id}"
+
+
 async def post_inline_agent_request(
     runner_id: str,
     *,
@@ -297,109 +299,31 @@ async def post_inline_agent_request(
     session_id: str,
     host_snapshot: dict[str, Any] | None = None,
 ) -> str:
-    """Start one agent request inline from within a workflow and return its id.
+    """Submit one agent request on behalf of a workflow step and return its id.
 
-    Used by the forward engine and orchestration-heavy code steps to run an
-    agent request as a child of the workflow. Pair with
+    The request id is fixed by run and task, so a replayed or retried submit
+    reattaches to the request it already started. Pair with
     ``collect_terminal_payload`` to await the result.
     """
     pool = require_runner(runner_id)
-    runtime = _resolve_inline_runtime(pool, agent_id)
     normalized = (
         normalize_structured_output_schema(structured_output)
         if isinstance(structured_output, dict)
         else _WORKFLOW_TASK_STRUCTURED_OUTPUT
     )
-    if runtime is not None:
-        return await _execute_inline_task_request(
-            runtime,
-            agent_id=agent_id,
-            message=message,
-            session_id=session_id,
-            structured_output=normalized,
-            workflow_id=workflow_id,
-            workflow_run_id=workflow_run_id,
-            task_id=task_id,
-            host_snapshot=host_snapshot,
-        )
-    client = pool.get_client(agent_id)
-    return await client.post_request(
+    return await pool.get_client(agent_id).post_request(
         message,
         session_id=session_id,
         structured_output=normalized,
+        request_id=agent_step_request_id(workflow_run_id, task_id),
+        host=host_snapshot,
+        parent={
+            "kind": "workflow",
+            "workflow_id": workflow_id,
+            "run_id": workflow_run_id,
+            "task_id": task_id,
+        },
     )
-
-
-def _resolve_inline_runtime(pool: "Pool", agent_id: str) -> Any | None:
-    get_agent = getattr(pool, "get_agent", None)
-    if not callable(get_agent):
-        return None
-    try:
-        return get_agent(agent_id)
-    except Exception:
-        return None
-
-
-async def _execute_inline_task_request(
-    runtime: Any,
-    *,
-    agent_id: str,
-    message: str,
-    session_id: str,
-    structured_output: dict[str, Any],
-    workflow_id: str,
-    workflow_run_id: str,
-    task_id: str,
-    host_snapshot: dict[str, Any] | None = None,
-) -> str:
-    request_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"mash.workflow.task:{agent_id}:{workflow_run_id}:{task_id}",
-        )
-    )
-    request_metadata: dict[str, Any] = {
-        "structured_output_request": dict(structured_output),
-        "workflow_id": workflow_id,
-        "workflow_run_id": workflow_run_id,
-        "task_id": task_id,
-    }
-    if host_snapshot is not None:
-        # Mirrors runtime.requests.submit_request: run the request against the
-        # given host composition (its subagents), not just the bare agent.
-        request_metadata["host"] = dict(host_snapshot)
-    await append_runtime_event(
-        runtime,
-        RuntimeEvent(
-            request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
-            session_id=session_id,
-            workflow_id=workflow_id,
-            workflow_run_id=workflow_run_id,
-            event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-            dedupe_key="request.accepted",
-            payload={
-                "message": message,
-                "initial_session_id": session_id,
-                "request_metadata": dict(request_metadata),
-            },
-        ),
-    )
-    def _resolve(requested_agent_id: str) -> Any:
-        if requested_agent_id != agent_id:
-            raise RuntimeError(f"runtime '{requested_agent_id}' is not registered")
-        return runtime
-
-    await start_request_workflow(
-        agent_id,
-        request_id,
-        message,
-        session_id,
-        request_metadata,
-        require_runtime_fallback=_resolve,
-    )
-    return request_id
 
 
 async def _collect_terminal_payload(
@@ -460,6 +384,7 @@ load_dbos_api = _load_dbos_api
 
 __all__ = [
     "WorkflowDeduplicatedError",
+    "agent_step_request_id",
     "collect_terminal_payload",
     "ensure_queue_registered",
     "execute_registered_workflow",

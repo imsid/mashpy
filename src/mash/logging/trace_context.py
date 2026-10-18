@@ -93,23 +93,13 @@ def bound_request_id(request_id: Optional[str]) -> Iterator[None]:
 
 
 def get_subagent_request_id() -> Optional[str]:
-    """Get the pending deterministic request id for the next subagent submit.
+    """Get the request id the current InvokeSubagent call submits under.
 
-    Set around a subagent invocation so the submit path can mint a
-    replay-stable child request id (derived from the primary request id + call
-    position) instead of a random uuid. A DBOS replay then reissues the child
-    under the same id and reattaches to the one existing child.
+    The durable loop binds it from the primary request id and the call's
+    position, so a replayed or retried call resubmits the same id and
+    reattaches to the subagent request it already started.
     """
     return _subagent_request_id.get()
-
-
-def clear_subagent_request_id() -> None:
-    """Consume the pending subagent request id.
-
-    Called right after the submit path reads it and before the child workflow
-    task is spawned, so the child never inherits the parent's key.
-    """
-    _subagent_request_id.set(None)
 
 
 @contextmanager

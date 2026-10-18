@@ -60,21 +60,6 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
 }
 ```
 
-- `RegisterAgentSkillRequest`
-
-```json
-{
-  "type": "required non-empty string",
-  "name": "required non-empty string",
-  "description": "optional string",
-  "location": "optional string (filesystem path)",
-  "content": "optional string (inline markdown)"
-}
-```
-
-At least one of `location` or `content` must be set (enforced by `Skill`
-validation).
-
 ## Endpoints
 
 ### Discovery And Meta
@@ -240,19 +225,6 @@ validation).
   - `request_id`
 - Returns the new request's accepted payload (`request_id`, `agent_id`,
   `session_id`, `status`). Stream the new `request_id` as usual.
-
-### Dynamic Publishing
-
-`POST /api/v1/agent/{agent_id}/skill`
-- Registers a dynamic or filesystem-backed skill on the named agent.
-- Path params:
-  - `agent_id`
-- Body: `RegisterAgentSkillRequest`
-- Returns:
-  - `agent_id`
-  - `skill_name`
-- Idempotent: if the skill name is already registered for that agent, the
-  request is a no-op (no error).
 
 ### Sessions
 
@@ -629,13 +601,13 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 ## Error Cases Worth Remembering
 - `401 UNAUTHORIZED`: missing or wrong API key
 - `404 AGENT_NOT_FOUND`: unknown `agent_id`
+- `503 SESSIONS_UNAVAILABLE`: session reads for an agent that overrides `build_memory_store()`; the host reads sessions from the pool's shared memory store only
 - `400 INVALID_REQUEST`: blank required path/body values after trimming
 - `503 MEMORY_SEARCH_UNAVAILABLE`: memory search unavailable for the target agent
 - `400 SEARCH_VALIDATION_ERROR`: invalid memory search arguments
 - `503 SEARCH_UNAVAILABLE`: search backend not available
 - `500 SEARCH_FAILED`: unexpected memory search failure
 - `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
-- `400 INVALID_AGENT_SKILL`: skill validation failed (for example, missing both `location` and `content`)
 - `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
 - `404 REQUEST_NOT_FOUND`: unknown `request_id` for status, resume, or cancel operations
 - `409 REQUEST_STALE`: resume rejected because the request's session has newer replayable turns

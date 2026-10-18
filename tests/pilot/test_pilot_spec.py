@@ -311,7 +311,18 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                         eval_agent = host.get_agent("eval-agent")
 
                         assert "bash" in primary.agent.tools
-                        assert "InvokeSubagent" in primary.agent.tools
+                        # InvokeSubagent is wired per request from the host
+                        # snapshot, so only the guide primary's turn agent has it.
+                        assert "InvokeSubagent" not in primary.agent.tools
+                        turn_agent = primary.build_turn_agent(
+                            session_id="s-1",
+                            trace_id="trace-1",
+                            host=host.snapshot_for(host.get_host("guide")),
+                        )
+                        try:
+                            assert "InvokeSubagent" in turn_agent.tools
+                        finally:
+                            await turn_agent.tools.shutdown()
                         assert "bash" in cli_agent.agent.tools
                         assert "bash" in api_agent.agent.tools
                         assert "bash" in mcp_agent.agent.tools

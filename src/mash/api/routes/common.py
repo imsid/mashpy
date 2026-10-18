@@ -14,7 +14,9 @@ from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import Pool
+from mash.memory.store import MemoryStore
 from mash.runtime.client import AgentClientLike
+from mash.runtime.events import RuntimeStore
 
 # Cookie the admin SPA sets so its same-origin API calls authenticate without
 # an explicit Authorization header.
@@ -73,14 +75,6 @@ class HostSubmitRequest(BaseModel):
 class CompactSessionRequest(BaseModel):
     reason: str = "manual"
     session_total_tokens_reset: int = 0
-
-
-class RegisterAgentSkillRequest(BaseModel):
-    type: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    description: str = ""
-    location: Optional[str] = None
-    content: Optional[str] = None
 
 
 class RunWorkflowRequest(BaseModel):
@@ -198,12 +192,17 @@ def get_client(request: Request, agent_id: str) -> AgentClientLike:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
 
 
-def get_agent(request: Request, agent_id: str):
+def get_runtime_store(request: Request, agent_id: str) -> RuntimeStore:
+    """The pool's shared runtime store, after checking ``agent_id`` is registered."""
     state = state_from_request(request)
     try:
-        return state.pool.get_agent(agent_id.strip())
+        state.pool.require_agent(agent_id)
     except ValueError as exc:
         raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+    store = state.pool.get_runtime_store()
+    if store is None:
+        raise APIError(code="RUNTIME_UNAVAILABLE", message="pool is not started", status_code=503)
+    return store
 
 
 def get_workflow_service(request: Request):
@@ -230,17 +229,15 @@ def api_event_source() -> str:
     return "api_event_log"
 
 
-def build_memory_search_service(agent: Any) -> MemorySearchService:
+def build_memory_search_service(
+    memory_store: MemoryStore, runtime_store: RuntimeStore
+) -> MemorySearchService:
     return MemorySearchService(
-        agent.memory_store,
-        event_logger=EventLogger(agent.runtime_store),
+        memory_store,
+        event_logger=EventLogger(runtime_store),
         retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
     )
-
-
-def memory_search_available(agent: Any) -> bool:
-    return hasattr(agent, "memory_store") and hasattr(agent, "runtime_store")
 
 
 def build_api_filters(**kwargs: Any):
