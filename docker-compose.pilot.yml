@@ -1,26 +1,27 @@
-# Local dogfooding compose file.
+# Pilot: a Mash host whose agents read this checkout.
 #
-# Setup (once):
-#   cp .env.example .env
-#   # Edit .env: set ANTHROPIC_API_KEY (or OPENAI_API_KEY)
+# Setup (once), from the repo root: put GEMINI_API_KEY, OPENROUTER_API_KEY and
+# MASH_HOST_SECRET (openssl rand -hex 32) in .env.
 #
-# Run:
-#   docker compose -f docker-compose.pilot.yml up -d
+# Run, from the repo root:
+#   docker compose -f docker-compose.pilot.yml up -d --build
 #
 # What this starts:
 #   db    — Postgres 17, published on 127.0.0.1:5433
-#   pilot — Mash host running pilot.spec:build_pool, published on 127.0.0.1:8000
+#   pilot — the Mash host running pilot.spec:build_pool, on 127.0.0.1:8000.
+#           Through the Docker socket it starts one computer per agent
+#           (mash-agent-<agent_id>); see `mash computer ls`.
+#
+# This checkout is mounted read-only at /home/agent/workspace/mashpy in the host
+# and in every computer, so the agents see your edits as you make them. Pilot's
+# own code is baked into the image: after changing src/pilot or src/mash, run
+# `up -d --build` and replace the computers (`mash computer restart <agent_id>`
+# does not pick up a new image; remove them with
+# `docker rm -f $(docker ps -aq --filter label=mash.agent)` and restart pilot).
 #
 # Once healthy, use the pilot CLI:
 #   pilot browse
-#   pilot compose guide --primary pilot --subagents admin,api,cli,mcp,runtime,workflow
 #   pilot repl --host guide
-#
-# The local repo is bind-mounted into the container and installed editable, so
-# code changes are picked up with a restart (no rebuild):
-#   docker compose -f docker-compose.pilot.yml restart pilot
-# Rebuild only when dependencies change:
-#   docker compose -f docker-compose.pilot.yml build pilot
 
 services:
   db:
@@ -33,6 +34,7 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks: [mash]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mash -d mash_pilot"]
       interval: 2s
@@ -48,18 +50,28 @@ services:
     environment:
       # Override the host-machine DB URL from .env with the internal network address.
       MASH_DATABASE_URL: postgresql://mash:mash@db:5432/mash_pilot
+      MASH_HOST_SECRET: ${MASH_HOST_SECRET:?set MASH_HOST_SECRET in .env}
+      # A Docker-host path, since the daemon resolves it for each computer.
+      MASH_COMPUTER_MOUNTS: ${PWD}:/home/agent/workspace/mashpy:ro
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The changelog workflow's code step reads CHANGELOG.md on the host.
+      - .:/home/agent/workspace/mashpy:ro
+    # The image runs as `mash`; the socket belongs to root's group (0) on
+    # Docker Desktop and usually to the `docker` group on Linux
+    # (`stat -c %g /var/run/docker.sock`).
+    group_add: ["0"]
     ports:
       - "127.0.0.1:8000:8000"
-    volumes:
-      # Live-mount the local repo over the built tree so the editable install
-      # imports live source. Edit locally, then `restart pilot` — no rebuild.
-      - .:/opt/mash
-      - pilotdata:/var/lib/pilot
+    networks: [mash]
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
 
+networks:
+  mash:
+    name: mash
+
 volumes:
   pgdata:
-  pilotdata:

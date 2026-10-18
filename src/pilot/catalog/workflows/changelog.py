@@ -22,9 +22,10 @@ from mash import AgentSpec, AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.skills.registry import SkillRegistry
+from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 
-from .._base import build_bash_tool, build_default_llm
+from .._base import REPO_ROOT, build_default_llm
 
 CHANGELOG_AGENT_ID = "changelog-summarizer"
 CHANGELOG_WORKFLOW_ID = "pilot-changelog"
@@ -92,9 +93,9 @@ def _slice_recent_releases(text: str, versions: int) -> ChangelogExtract:
     )
 
 
-def _make_read_changelog(workspace_root: Path):
-    """Build the ``read-changelog`` step body bound to a workspace root."""
-    changelog_path = (workspace_root / CHANGELOG_FILENAME).resolve()
+def _make_read_changelog(repo_root: Path):
+    """Build the ``read-changelog`` step body bound to a repo checkout."""
+    changelog_path = repo_root / CHANGELOG_FILENAME
 
     def read_changelog(inp: ChangelogIn, ctx: StepContext) -> ChangelogExtract:
         if not changelog_path.is_file():
@@ -133,15 +134,15 @@ Return only the structured output. Do not ask questions."""
 class ChangelogSummarizerSpec(AgentSpec):
     """Workflow agent that summarizes the changelog, scanning code when needed."""
 
-    def __init__(self, workspace_root: Path) -> None:
-        self.workspace_root = workspace_root.resolve()
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
 
     def get_agent_id(self) -> str:
         return CHANGELOG_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
-        tools.register(build_bash_tool(self.workspace_root))
+        tools.register(BashTool(working_dir=str(self.repo_root)))
         return tools
 
     def build_skills(self) -> SkillRegistry:
@@ -171,22 +172,21 @@ class ChangelogSummarizerSpec(AgentSpec):
         return False
 
 
-def build_changelog_workflow_spec(workspace_root: Path | None = None) -> WorkflowSpec:
+def build_changelog_workflow_spec(repo_root: Path = REPO_ROOT) -> WorkflowSpec:
     """The pilot-changelog definition: read CHANGELOG.md, then summarize it."""
-    resolved = (workspace_root or Path(".")).resolve()
     return WorkflowSpec(
         workflow_id=CHANGELOG_WORKFLOW_ID,
         input_model=ChangelogIn,
         steps=[
             CodeStep(
                 step_id=READ_STEP_ID,
-                run=_make_read_changelog(resolved),
+                run=_make_read_changelog(repo_root),
                 input=ChangelogIn,
                 output=ChangelogExtract,
             ),
             AgentStep(
                 step_id=SUMMARIZE_STEP_ID,
-                agent_spec=ChangelogSummarizerSpec(resolved),
+                agent_spec=ChangelogSummarizerSpec(repo_root),
                 input=ChangelogExtract,
                 output=ChangelogSummary,
             ),

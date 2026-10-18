@@ -9,7 +9,6 @@ enter one with `pilot repl --host <id>` — the REPL is scoped to that host.
 from __future__ import annotations
 
 import argparse
-import importlib
 import os
 from typing import Any, Sequence
 
@@ -19,7 +18,6 @@ from mash.cli.shell import MashRemoteShell, ShellTarget
 
 from . import store
 from .catalog.agents.pilot import PILOT_AGENT_ID
-from .catalog.workflows.quiz import QUIZ_WORKFLOW_ID, register_quiz_command
 
 PILOT_DEFAULT_API_BASE_URL = os.environ.get(
     "PILOT_API_BASE_URL",
@@ -104,40 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("hosts", help="List the hosts in your config file")
 
-    serve = subparsers.add_parser(
-        "serve", help="Run your own Pilot host (server install required)"
-    )
-    serve.add_argument(
-        "--workspace-root",
-        default=os.environ.get("PILOT_WORKSPACE_ROOT", "."),
-        help="Local mashpy clone the Pilot agents operate on",
-    )
-    serve.add_argument("--host", default="127.0.0.1", help="API bind host")
-    serve.add_argument("--port", type=int, default=8000, help="API bind port")
-    serve.add_argument(
-        "--api-key", dest="api_key", default=None, help="Optional API key to require"
-    )
     return parser
-
-
-def _run_serve(args: argparse.Namespace) -> int:
-    # Import by name so the PyInstaller CLI binary does not bundle the
-    # server stack; `serve` needs a source or pip install of mash-pilot.
-    try:
-        spec = importlib.import_module("pilot.spec")
-    except ImportError as exc:
-        raise ValueError(
-            "`pilot serve` requires the full server install, which this "
-            "binary does not include. Run it from a source checkout "
-            "(`uv pip install -e .`) or start the store with `docker run` "
-            f"or `docker compose up`. ({exc})"
-        ) from exc
-    return spec.serve(
-        workspace_root=args.workspace_root,
-        bind_host=args.host,
-        bind_port=args.port,
-        api_key=args.api_key,
-    )
 
 
 def _agent_listing_rows(agents: list[dict[str, Any]]) -> list[list[str]]:
@@ -252,7 +217,6 @@ def _run_repl(
     if not args.agent and not args.target_host:
         args.agent = PILOT_AGENT_ID
 
-    host_workflows: list[str] = []
     if args.agent:
         agent_id, host_id = args.agent, None
     else:
@@ -262,7 +226,6 @@ def _run_repl(
         host_id = args.target_host
         described = _describe_host(client, host_id)
         agent_id = described["primary"]["agent_id"].strip()
-        host_workflows = [str(w) for w in described.get("workflows") or []]
 
     target = ShellTarget(
         api_base_url=base_url,
@@ -273,10 +236,6 @@ def _run_repl(
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3
     # (default_commands reads ctx.host_id).
     shell = MashRemoteShell(client, target)
-    # Pilot's commands are scoped too: /quiz exists only in hosts that
-    # attach pilot-quiz.
-    if QUIZ_WORKFLOW_ID in host_workflows:
-        register_quiz_command(shell)
     shell.run()
     return 0
 
@@ -287,8 +246,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     renderer = RichRenderer()
 
     try:
-        if args.command == "serve":
-            return _run_serve(args)
         if args.command == "hosts":
             return _run_hosts(renderer)
         if args.command in ("repl", "browse", "compose"):

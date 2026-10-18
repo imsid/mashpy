@@ -3,7 +3,7 @@
 Lightweight reference for the HTTP surface composed by `src/mash/api/app.py`
 and implemented in `src/mash/api/routes/`.
 
-This README is intended to be prompt-cache friendly for the `api-copilot` agent: it lists the exposed routes, the common request/response conventions, and the main query/body fields without duplicating full OpenAPI schemas.
+This README lists the exposed routes, the common request/response conventions, and the main query/body fields without duplicating full OpenAPI schemas.
 
 ## Base Surface
 - Default bind: `http://127.0.0.1:8000`

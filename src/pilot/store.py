@@ -19,15 +19,8 @@ from typing import Any, Iterable
 DEFAULT_HOSTS: dict[str, dict[str, Any]] = {
     "guide": {
         "primary": "pilot",
-        "subagents": [
-            "cli-copilot",
-            "api-copilot",
-            "mcp-copilot",
-            "runtime-copilot",
-            "workflow-copilot",
-            "admin-copilot",
-        ],
-        "workflows": ["pilot-quiz", "pilot-changelog"],
+        "subagents": ["builder"],
+        "workflows": ["pilot-changelog"],
     },
 }
 
