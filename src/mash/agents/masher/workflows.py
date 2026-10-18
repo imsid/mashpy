@@ -1,11 +1,7 @@
 """Masher's bundled workflow definitions.
 
-Four workflows, sorted along the judgment/computation line:
+Two workflows, sorted along the judgment/computation line:
 
-- ``masher-trace-digest`` — all code. Deterministic latency analysis over
-  runtime traces; no model inference anywhere.
-- ``masher-online-eval-curation`` — all code. Mechanical extraction of eval
-  rows from runtime traces.
 - ``gen-synthetic-evals`` — code, agent, code. Deterministic host profiling,
   one agent-loop generation step (dataset rows + rubric as structured output),
   deterministic persistence into the eval store.
@@ -15,11 +11,6 @@ Four workflows, sorted along the judgment/computation line:
 Code steps close over a :class:`MasherRuntimeContext`; its dependencies are
 bound by ``HostBuilder.build()`` (pool) and API startup (eval service), before
 any run executes.
-
-Batch scans take an optional ``since_ts`` watermark in ``workflow_input`` and
-report ``latest_event_at`` in the run result — the caller persists it and
-passes it back as the next run's ``since_ts`` (cross-run state lives at the
-trigger boundary, never inside the workflow).
 """
 
 from __future__ import annotations
@@ -41,289 +32,13 @@ from ...evals.metrics import METRIC_EVENT_TYPES, compute_row_metrics
 from .context import MasherRuntimeContext
 from .judge import EVAL_JUDGE_STRUCTURED_OUTPUT, build_judge_message, parse_judge_output
 from .spec import EVAL_JUDGE_AGENT_ID
-from .traces import (
-    append_jsonl_unique,
-    build_online_eval_row,
-    build_trace_digest,
-    list_traces_since,
-    load_trace_events,
-    stitch_subagent_traces,
-)
-from ...runtime.events import analyze_trace, build_runtime_trace, build_span_tree
 from ...runtime.spec import AgentSpec
 
-MASHER_TRACE_DIGEST_WORKFLOW_ID = "masher-trace-digest"
-MASHER_ONLINE_EVAL_WORKFLOW_ID = "masher-online-eval-curation"
 MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID = "gen-synthetic-evals"
 MASHER_RUN_EXPERIMENT_WORKFLOW_ID = "run-experiment"
 GEN_SYNTHETIC_EVALS_SKILL_NAME = "gen-synthetic-evals"
 
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-
-
-# --- Trace scanning (shared by the two all-code workflows) --------------------
-
-
-class TraceScanInput(BaseModel):
-    """``workflow_input`` for both trace-scanning workflows.
-
-    ``trace`` mode analyzes exactly one trace; ``batch`` mode scans all of the
-    target's traces newer than ``since_ts`` (capped at ``limit``).
-    """
-
-    mode: Literal["trace", "batch"] = "batch"
-    target_agent_id: _Text
-    session_id: str | None = None
-    trace_id: str | None = None
-    since_ts: float = 0.0
-    limit: int = Field(default=100, ge=1)
-
-    @model_validator(mode="after")
-    def _require_trace_coordinates(self) -> "TraceScanInput":
-        if self.mode == "trace" and not (
-            (self.session_id or "").strip() and (self.trace_id or "").strip()
-        ):
-            raise ValueError("mode 'trace' requires session_id and trace_id")
-        return self
-
-
-class TraceRef(BaseModel):
-    session_id: str
-    trace_id: str
-
-
-class TraceListing(BaseModel):
-    traces: list[TraceRef]
-    latest_event_at: float | None = None
-
-
-def _build_list_traces(context: MasherRuntimeContext):
-    async def list_traces(inp: TraceScanInput, _ctx: StepContext) -> TraceListing:
-        if inp.mode == "trace":
-            # The input validator guarantees both coordinates in trace mode.
-            return TraceListing(
-                traces=[
-                    TraceRef(
-                        session_id=inp.session_id or "",
-                        trace_id=inp.trace_id or "",
-                    )
-                ]
-            )
-        store = context.require_runtime_store()
-        traces = await list_traces_since(
-            store,
-            target_agent_id=inp.target_agent_id,
-            since_ts=inp.since_ts,
-            limit=inp.limit,
-        )
-        return TraceListing(
-            traces=[
-                TraceRef(session_id=item["session_id"], trace_id=item["trace_id"])
-                for item in traces
-            ],
-            latest_event_at=max(
-                (float(item["latest_event_at"]) for item in traces), default=None
-            ),
-        )
-
-    return list_traces
-
-
-# --- masher-trace-digest -------------------------------------------------------
-
-
-class _AnalyzeTracesIn(BaseModel):
-    mode: Literal["trace", "batch"] = "batch"
-    target_agent_id: str
-    traces: list[TraceRef]
-    latest_event_at: float | None = None
-
-
-class DigestBatch(BaseModel):
-    digests: list[dict[str, Any]]
-    latest_event_at: float | None = None
-
-
-class _AppendDigestsIn(BaseModel):
-    mode: Literal["trace", "batch"] = "batch"
-    digests: list[dict[str, Any]]
-    latest_event_at: float | None = None
-
-
-class TraceDigestResult(BaseModel):
-    schema_version: int = 3
-    mode: str
-    processed_trace_count: int
-    appended_trace_count: int = 0
-    artifact_path: str | None = None
-    digest: dict[str, Any] | None = None
-    latest_event_at: float | None = None
-
-
-def _build_digest_traces(context: MasherRuntimeContext):
-    async def digest_traces(inp: _AnalyzeTracesIn, _ctx: StepContext) -> DigestBatch:
-        store = context.require_runtime_store()
-        digests: list[dict[str, Any]] = []
-        for ref in inp.traces:
-            try:
-                events = await load_trace_events(
-                    store,
-                    target_agent_id=inp.target_agent_id,
-                    session_id=ref.session_id,
-                    trace_id=ref.trace_id,
-                )
-            except RuntimeError:
-                if inp.mode == "trace":
-                    raise
-                continue
-            bundle = build_runtime_trace(events)
-            analysis = analyze_trace(build_span_tree(events))
-            analysis = await stitch_subagent_traces(store, analysis)
-            digests.append(build_trace_digest(bundle, analysis))
-        return DigestBatch(digests=digests, latest_event_at=inp.latest_event_at)
-
-    return digest_traces
-
-
-def _build_append_digests(context: MasherRuntimeContext):
-    def append_digests(inp: _AppendDigestsIn, _ctx: StepContext) -> TraceDigestResult:
-        # Trace mode returns the digest inline and never writes the artifact,
-        # matching the trace-mode contract.
-        if inp.mode == "trace":
-            return TraceDigestResult(
-                mode="trace",
-                processed_trace_count=len(inp.digests),
-                digest=inp.digests[0] if inp.digests else None,
-            )
-        path = context.require_trace_digest_jsonl_path()
-        appended = sum(1 for digest in inp.digests if append_jsonl_unique(path, digest))
-        return TraceDigestResult(
-            mode="batch",
-            processed_trace_count=len(inp.digests),
-            appended_trace_count=appended,
-            artifact_path=str(path),
-            latest_event_at=inp.latest_event_at,
-        )
-
-    return append_digests
-
-
-def build_trace_digest_workflow(context: MasherRuntimeContext) -> WorkflowSpec:
-    return WorkflowSpec(
-        workflow_id=MASHER_TRACE_DIGEST_WORKFLOW_ID,
-        input_model=TraceScanInput,
-        steps=[
-            CodeStep(
-                step_id="list-traces",
-                run=_build_list_traces(context),
-                input=TraceScanInput,
-                output=TraceListing,
-            ),
-            CodeStep(
-                step_id="digest-traces",
-                run=_build_digest_traces(context),
-                input=_AnalyzeTracesIn,
-                output=DigestBatch,
-            ),
-            CodeStep(
-                step_id="append-digests",
-                run=_build_append_digests(context),
-                input=_AppendDigestsIn,
-                output=TraceDigestResult,
-            ),
-        ],
-    )
-
-
-# --- masher-online-eval-curation ------------------------------------------------
-
-
-class EvalRowBatch(BaseModel):
-    rows: list[dict[str, Any]]
-    latest_event_at: float | None = None
-
-
-class _AppendRowsIn(BaseModel):
-    mode: Literal["trace", "batch"] = "batch"
-    rows: list[dict[str, Any]]
-    latest_event_at: float | None = None
-
-
-class OnlineEvalResult(BaseModel):
-    schema_version: int = 3
-    mode: str
-    processed_trace_count: int
-    appended_trace_count: int
-    artifact_path: str
-    record: dict[str, Any] | None = None
-    latest_event_at: float | None = None
-
-
-def _build_extract_rows(context: MasherRuntimeContext):
-    async def extract_rows(inp: _AnalyzeTracesIn, _ctx: StepContext) -> EvalRowBatch:
-        store = context.require_runtime_store()
-        rows: list[dict[str, Any]] = []
-        for ref in inp.traces:
-            try:
-                events = await load_trace_events(
-                    store,
-                    target_agent_id=inp.target_agent_id,
-                    session_id=ref.session_id,
-                    trace_id=ref.trace_id,
-                )
-            except RuntimeError:
-                if inp.mode == "trace":
-                    raise
-                continue
-            bundle = build_runtime_trace(events)
-            analysis = analyze_trace(build_span_tree(events))
-            rows.append(build_online_eval_row(bundle, analysis))
-        return EvalRowBatch(rows=rows, latest_event_at=inp.latest_event_at)
-
-    return extract_rows
-
-
-def _build_append_rows(context: MasherRuntimeContext):
-    def append_rows(inp: _AppendRowsIn, _ctx: StepContext) -> OnlineEvalResult:
-        path = context.require_online_eval_jsonl_path()
-        appended = sum(1 for row in inp.rows if append_jsonl_unique(path, row))
-        return OnlineEvalResult(
-            mode=inp.mode,
-            processed_trace_count=len(inp.rows),
-            appended_trace_count=appended,
-            artifact_path=str(path),
-            record=inp.rows[0] if inp.mode == "trace" and inp.rows else None,
-            latest_event_at=inp.latest_event_at,
-        )
-
-    return append_rows
-
-
-def build_online_eval_curation_workflow(context: MasherRuntimeContext) -> WorkflowSpec:
-    return WorkflowSpec(
-        workflow_id=MASHER_ONLINE_EVAL_WORKFLOW_ID,
-        input_model=TraceScanInput,
-        steps=[
-            CodeStep(
-                step_id="list-traces",
-                run=_build_list_traces(context),
-                input=TraceScanInput,
-                output=TraceListing,
-            ),
-            CodeStep(
-                step_id="extract-rows",
-                run=_build_extract_rows(context),
-                input=_AnalyzeTracesIn,
-                output=EvalRowBatch,
-            ),
-            CodeStep(
-                step_id="append-rows",
-                run=_build_append_rows(context),
-                input=_AppendRowsIn,
-                output=OnlineEvalResult,
-            ),
-        ],
-    )
 
 
 # --- gen-synthetic-evals ---------------------------------------------------------
@@ -841,8 +556,6 @@ def build_masher_workflows(eval_agent_spec: AgentSpec) -> list[WorkflowSpec]:
     """Build the complete workflow set attached to every host."""
     context: MasherRuntimeContext = eval_agent_spec.runtime_context  # type: ignore[attr-defined]
     return [
-        build_trace_digest_workflow(context),
-        build_online_eval_curation_workflow(context),
         build_gen_synthetic_evals_workflow(eval_agent_spec),
         build_run_experiment_workflow(context),
     ]
@@ -852,29 +565,18 @@ __all__ = [
     "GEN_SYNTHETIC_EVALS_SKILL_NAME",
     "AgentProfile",
     "DatasetRow",
-    "DigestBatch",
-    "EvalRowBatch",
     "GenSyntheticEvalsInput",
     "GenSyntheticEvalsResult",
     "GeneratedEval",
     "GenerationBrief",
     "HostProfile",
     "MASHER_GEN_SYNTHETIC_EVALS_WORKFLOW_ID",
-    "MASHER_ONLINE_EVAL_WORKFLOW_ID",
     "MASHER_RUN_EXPERIMENT_WORKFLOW_ID",
-    "MASHER_TRACE_DIGEST_WORKFLOW_ID",
-    "OnlineEvalResult",
     "Rubric",
     "RubricCriterion",
     "RunExperimentInput",
     "RunExperimentResult",
-    "TraceDigestResult",
-    "TraceListing",
-    "TraceRef",
-    "TraceScanInput",
     "build_gen_synthetic_evals_workflow",
     "build_masher_workflows",
-    "build_online_eval_curation_workflow",
     "build_run_experiment_workflow",
-    "build_trace_digest_workflow",
 ]

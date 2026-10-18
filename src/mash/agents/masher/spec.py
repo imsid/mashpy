@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from mash.core.config import AgentConfig
 from mash.core.llm import (
@@ -21,9 +20,6 @@ from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
 from .context import MasherRuntimeContext
-
-if TYPE_CHECKING:
-    from mash.runtime.service import AgentRuntime
 
 EVAL_AGENT_ID = "eval-agent"
 EVAL_JUDGE_AGENT_ID = "eval-judge-agent"
@@ -151,7 +147,6 @@ class EvalAgentSpec(AgentSpec):
 
     def __init__(self) -> None:
         self.runtime_context = MasherRuntimeContext()
-        self.runtime_context.configure_artifacts(AgentSpec.get_data_root())
 
     def get_agent_id(self) -> str:
         return EVAL_AGENT_ID
@@ -185,9 +180,6 @@ class EvalAgentSpec(AgentSpec):
 
     def enable_runtime_tools(self) -> bool:
         return False
-
-    def on_startup(self, runtime: "AgentRuntime") -> None:
-        self.runtime_context.bind_runtime_store(runtime.runtime_store)
 
 
 class EvalJudgeAgentSpec(AgentSpec):

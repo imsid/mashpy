@@ -63,8 +63,6 @@ class _InlineDBOS:
 
 
 MASHER_WORKFLOW_IDS = [
-    "masher-trace-digest",
-    "masher-online-eval-curation",
     "gen-synthetic-evals",
     "run-experiment",
 ]

@@ -57,14 +57,14 @@ are recognized.
 
 ```markdown
 ---
-name: trace-digest-workflow
-description: Run Masher's diagnostic trace digest workflow.
+name: gen-synthetic-evals
+description: Generate a synthetic eval dataset and scoring rubric for a host composition.
 ---
 
-# Trace Digest Workflow
+# Gen Synthetic Evals
 
-Use this skill only for workflow id `masher-trace-digest` and task id
-`digest-traces`.
+Use this skill only for workflow id `gen-synthetic-evals` and step id
+`generate`.
 
 (Markdown body follows…)
 ```
@@ -77,8 +77,8 @@ shaped like:
 {
   "base_path": "/abs/path/to/skill-dir",
   "skill_path": "/abs/path/to/skill-dir/SKILL.md",
-  "skill_name": "trace-digest-workflow",
-  "skill_md": "---\nname: ...\n---\n\n# Trace Digest Workflow\n..."
+  "skill_name": "gen-synthetic-evals",
+  "skill_md": "---\nname: ...\n---\n\n# Gen Synthetic Evals\n..."
 }
 ```
 
@@ -96,9 +96,9 @@ class PrimaryAgent(AgentSpec):
         registry.register(
             Skill(
                 type="custom",
-                name="trace-digest-workflow",
-                description="Run Masher's diagnostic trace digest workflow.",
-                location="/path/to/skills/trace-digest-workflow",
+                name="gen-synthetic-evals",
+                description="Generate a synthetic eval dataset and scoring rubric for a host composition.",
+                location="/path/to/skills/gen-synthetic-evals",
             )
         )
         return registry
