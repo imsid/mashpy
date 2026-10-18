@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import pwd
 import queue
 import re
 import subprocess
@@ -20,36 +22,99 @@ _BASH_SENTINEL_PREFIX = "__mash_bash_done__"
 _BASH_EXIT_PREFIX = "__mash_bash_exit__"
 _ROOT_FIND_RE = re.compile(r"(^|[;&|()]\\s*)find\\s+/($|\\s)")
 
+# On an agent computer, bash runs as this user, which holds none of the
+# runtime's secrets and can only read its own home.
+AGENT_USER = "agent"
+AGENT_HOME = "/home/agent"
+AGENT_WORKSPACE = f"{AGENT_HOME}/workspace"
+_AGENT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 
 def _matches_root_find(command: str) -> bool:
     """Detect full-disk scans like `find / ...`."""
     return bool(_ROOT_FIND_RE.search(command))
 
 
+def resolve_bash_user() -> Optional[str]:
+    """Return the user bash should run as, or None to run as the current user.
+
+    Bash switches to ``agent`` when that user exists and is not the current
+    user, which is the case on an agent computer.
+    """
+    try:
+        entry = pwd.getpwnam(AGENT_USER)
+    except KeyError:
+        return None
+    if entry.pw_uid == os.geteuid():
+        return None
+    return AGENT_USER
+
+
+def resolve_bash_working_dir(working_dir: Optional[str]) -> Optional[str]:
+    """Use the explicit working dir, else the agent workspace when it exists."""
+    if working_dir:
+        return working_dir
+    if os.path.isdir(AGENT_WORKSPACE):
+        return AGENT_WORKSPACE
+    return None
+
+
+def build_bash_env(user: Optional[str], working_dir: Optional[str]) -> Dict[str, str]:
+    """Build the clean environment bash starts with.
+
+    Nothing from the runtime's environment reaches bash except locale and,
+    when bash runs as the current user, its HOME and PATH.
+    """
+    if user is not None:
+        home = pwd.getpwnam(user).pw_dir
+        path = _AGENT_PATH
+    else:
+        home = os.environ.get("HOME", "/")
+        path = os.environ.get("PATH", _AGENT_PATH)
+    return {
+        "HOME": home,
+        "PATH": path,
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PWD": working_dir or os.getcwd(),
+    }
+
+
 class BashSession:
     """Persistent bash session for executing commands."""
 
-    def __init__(self, working_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        working_dir: Optional[str] = None,
+        *,
+        user: Optional[str] = None,
+    ) -> None:
         """Initialize bash session.
 
         Args:
             working_dir: Working directory for the session.
+            user: User to run bash as through ``sudo``; None runs it as the
+                current user.
         """
         self.working_dir = working_dir
+        self.user = user
         self._process: Optional[subprocess.Popen[str]] = None
         self._stdout_queue: queue.Queue[str] = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
 
     def _start_process(self) -> None:
         """Start the bash process."""
+        argv = ["/bin/bash"]
+        if self.user is not None:
+            argv = ["sudo", "-n", "-u", self.user, "/bin/bash"]
         self._process = subprocess.Popen(
-            ["/bin/bash"],
+            argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
             cwd=self.working_dir,
+            env=build_bash_env(self.user, self.working_dir),
         )
         self._stdout_queue = queue.Queue()
         self._reader_thread = threading.Thread(
@@ -202,7 +267,8 @@ class BashTool:
         """Initialize bash tool.
 
         Args:
-            working_dir: Working directory for bash commands.
+            working_dir: Working directory for bash commands. Defaults to the
+                agent workspace when it exists.
         """
         self.name = "bash"
         self.description = (
@@ -238,7 +304,10 @@ class BashTool:
         }
         self.requires_approval = False
         self.parallel_safe = False
-        self._session = BashSession(working_dir=working_dir)
+        self._session = BashSession(
+            working_dir=resolve_bash_working_dir(working_dir),
+            user=resolve_bash_user(),
+        )
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the bash command.
