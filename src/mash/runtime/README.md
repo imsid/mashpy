@@ -322,6 +322,9 @@ lifecycle.
   - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`
   - `HostRelay`: the runtime's pool access on a computer; subagent clients point at the host's `/h2a` relay
 
+- [`file_memory.py`](./file_memory.py)
+  - file memory on the agent's computer: `INDEX.md` injection, the curator prompt, transcripts for memory updates
+
 - [`sessions.py`](./sessions.py)
   - session reads over the memory store and event log, shared by the runtime and the host
 
@@ -400,6 +403,31 @@ lifecycle.
 
 - `host/docker_engine.py`
   - minimal async Docker Engine API client over the Unix socket (`DOCKER_HOST`, `/var/run/docker.sock`, or Docker Desktop's `~/.docker/run/docker.sock`)
+
+## File Memory
+
+Opt in per agent with `AgentConfig(memory_enabled=True)`. Memory is markdown in
+the memory directory (`/home/agent/memory` on a computer, `MASH_MEMORY_DIR` to
+override): `INDEX.md` has one line per file, and each file holds one topic.
+Conversation history stays in Postgres and is not copied into memory.
+
+- **Injection.** `context.load` reads `INDEX.md` and appends it to the system
+  prompt as a `## Memory` block, capped at `memory_index_max_chars` (default
+  8000) with a truncation marker. The read happens inside the checkpointed
+  step, so a replay sees what the request originally saw. The agent reads full
+  files with `cat`.
+- **Updates.** After `request.completed`, the workflow enqueues a memory update
+  for top-level and subagent requests (not workflow steps, not updates
+  themselves). The update is an ordinary request of the same agent, id
+  `{request_id}-memory`, on the DBOS queue `mash.memory.<agent_id>` with
+  concurrency 1, which only that agent's computer listens to. It runs with a
+  curator prompt plus the current index, the completed request's transcript as
+  its message, no conversation history, and one tool: bash in the memory
+  directory. Its turn is not replayable, and its `request.started` event carries
+  `trace_kind: "memory.update"` and `source_request_id`.
+- **Pruning.** The curator keeps `INDEX.md` under the cap by merging related
+  files and deleting stale ones.
+- A failure to enqueue is logged and leaves the request completed.
 
 ## Request Lifecycle
 

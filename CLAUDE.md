@@ -204,6 +204,8 @@ AgentConfig(
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
+    memory_enabled=False,                 # file memory on the agent's computer (INDEX.md + update job)
+    memory_index_max_chars=8000,          # cap on the INDEX.md injected into each request
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
