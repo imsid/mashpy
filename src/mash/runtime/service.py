@@ -188,6 +188,8 @@ class AgentRuntime:
         host_snapshot: dict[str, Any] | None = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        parent: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
@@ -197,7 +199,40 @@ class AgentRuntime:
             host_snapshot=host_snapshot,
             context=context,
             metadata=metadata,
+            request_id=request_id,
+            parent=parent,
         )
+
+    def describe(self) -> dict[str, Any]:
+        """The agent's registered tools and skills."""
+        tools = []
+        for name in self.tools.list_tools():
+            tool = self.tools.get(name)
+            if tool is None:
+                continue
+            tools.append(
+                {
+                    "name": tool.name,
+                    "description": getattr(tool, "description", ""),
+                    "parameters": getattr(tool, "parameters", {}),
+                    "requires_approval": getattr(tool, "requires_approval", False),
+                    "parallel_safe": getattr(tool, "parallel_safe", True),
+                }
+            )
+        skills = [
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "type": skill.type,
+                "content": skill.content,
+            }
+            for skill in self.skills.list_skills()
+        ]
+        return {"agent_id": self.app_id, "tools": tools, "skills": skills}
+
+    async def get_accepted_request(self, request_id: str) -> dict[str, Any] | None:
+        self.require_open()
+        return await request_helpers.get_accepted_request(self, request_id)
 
     async def submit_subagent_request(
         self,

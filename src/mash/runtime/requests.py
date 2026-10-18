@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
 from ..logging.trace_context import (
     bound_host_id,
+    bound_workflow_ids,
     clear_subagent_request_id,
     get_host_id,
     get_subagent_request_id,
@@ -24,6 +27,101 @@ if TYPE_CHECKING:
     from .service import AgentRuntime
 
 
+# Caller-supplied request ids end up inside DBOS workflow ids
+# (``{agent_id}:{request_id}``), so they are kept to a conservative charset.
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+
+
+class RequestIdConflictError(ValueError):
+    """A caller-supplied request id already belongs to another agent."""
+
+
+def validate_request_id(request_id: Any) -> str:
+    if not isinstance(request_id, str) or not _REQUEST_ID_RE.match(request_id):
+        raise ValueError(
+            "request_id must be 1-255 characters of letters, digits, '.', '_', ':' or '-'"
+        )
+    return request_id
+
+
+def _require_str(parent: dict[str, Any], key: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"parent.{key} is required")
+    return value.strip()
+
+
+def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
+    """Map an H2A ``parent`` object onto the request metadata the engine reads.
+
+    The engine keeps subagent and workflow turns out of replayed conversation
+    history by these keys, and binds workflow ids onto the request's events.
+    """
+    if not isinstance(parent, dict):
+        raise ValueError("parent must be an object")
+    kind = parent.get("kind")
+    if kind == "subagent":
+        invoke_opts = parent.get("invoke_opts")
+        if invoke_opts is None:
+            invoke_opts = {}
+        if not isinstance(invoke_opts, dict):
+            raise ValueError("parent.invoke_opts must be an object")
+        normalized = {
+            "kind": "subagent",
+            "request_id": _require_str(parent, "request_id"),
+            "agent_id": _require_str(parent, "agent_id"),
+            "session_id": _require_str(parent, "session_id"),
+            "invoke_opts": dict(invoke_opts),
+        }
+        return {
+            "parent": normalized,
+            "primary_session_id": normalized["session_id"],
+            "primary_app_id": normalized["agent_id"],
+            "subagent_id": agent_id,
+            "subagent_invoke_opts": dict(invoke_opts),
+        }
+    if kind == "workflow":
+        normalized = {
+            "kind": "workflow",
+            "workflow_id": _require_str(parent, "workflow_id"),
+            "run_id": _require_str(parent, "run_id"),
+            "task_id": _require_str(parent, "task_id"),
+        }
+        return {
+            "parent": normalized,
+            "workflow_id": normalized["workflow_id"],
+            "workflow_run_id": normalized["run_id"],
+            "task_id": normalized["task_id"],
+        }
+    raise ValueError("parent.kind must be 'subagent' or 'workflow'")
+
+
+async def get_accepted_request(
+    self: "AgentRuntime",
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Return the accepted payload of an existing request, or None.
+
+    Raises ``RequestIdConflictError`` when the id belongs to another agent.
+    """
+    events = await self.runtime_store.list_request_events(request_id)
+    accepted = next(
+        (
+            event
+            for event in events
+            if event.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    if accepted is None:
+        return None
+    if accepted.agent_id != self.app_id:
+        raise RequestIdConflictError(
+            f"request_id '{request_id}' belongs to another agent"
+        )
+    return to_public_event(accepted)["data"]
+
+
 async def submit_request(
     self: "AgentRuntime",
     *,
@@ -33,9 +131,16 @@ async def submit_request(
     host_snapshot: dict[str, Any] | None = None,
     context: str | None = None,
     metadata: dict[str, Any] | None = None,
+    request_id: str | None = None,
+    parent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Submit one request. A known ``request_id`` returns the existing request."""
+    if request_id is not None:
+        validate_request_id(request_id)
     normalized_structured_output = serialize_structured_output(structured_output)
     request_metadata: dict[str, Any] = {}
+    if parent is not None:
+        request_metadata.update(parent_request_metadata(parent, agent_id=self.app_id))
     if normalized_structured_output is not None:
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:
@@ -49,6 +154,7 @@ async def submit_request(
         message=message,
         session_id=session_id,
         request_metadata=request_metadata or None,
+        request_id=request_id,
     )
 
 
@@ -85,6 +191,7 @@ async def _submit_request(
     message: str,
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     self.require_open()
     if not isinstance(session_id, str):
@@ -93,12 +200,26 @@ async def _submit_request(
     if not target_session_id:
         raise ValueError("session_id is required")
 
-    with bound_host_id(host_id_from_request_metadata(request_metadata)):
+    if request_id is not None:
+        existing = await get_accepted_request(self, request_id)
+        if existing is not None:
+            return existing
+
+    # Only a workflow-parented request binds workflow ids here; binding None
+    # would hide ids an enclosing workflow step already bound.
+    metadata_view = request_metadata or {}
+    workflow_scope = nullcontext()
+    if metadata_view.get("workflow_id"):
+        workflow_scope = bound_workflow_ids(
+            metadata_view["workflow_id"], metadata_view.get("workflow_run_id")
+        )
+    with bound_host_id(host_id_from_request_metadata(request_metadata)), workflow_scope:
         return await _submit_request_inner(
             self,
             message=message,
             session_id=target_session_id,
             request_metadata=request_metadata,
+            request_id=request_id,
         )
 
 
@@ -172,18 +293,18 @@ async def _submit_request_inner(
     message: str,
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     target_session_id = session_id
     # A subagent invocation binds a deterministic request id so a DBOS replay
     # reissues the child under the same workflow id and reattaches to the one
     # existing child instead of starting a second. Consume it before the child
     # workflow task is spawned so the child never inherits the parent's key.
+    # A caller-supplied request id takes precedence.
     deterministic_request_id = get_subagent_request_id()
     if deterministic_request_id:
         clear_subagent_request_id()
-        request_id = deterministic_request_id
-    else:
-        request_id = str(uuid.uuid4())
+    request_id = request_id or deterministic_request_id or str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
     accepted_event = await append_runtime_event(
         self,

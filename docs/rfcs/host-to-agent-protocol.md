@@ -2,9 +2,9 @@
 
 Status: Draft
 
-Version: 0.3.0
+Version: 0.4.0
 
-Last Updated: 2026-10-04
+Last Updated: 2026-10-17
 
 ## 1. Overview
 
@@ -203,11 +203,27 @@ Inputs:
 - `session_id: string`
 - optional `structured_output: object`: a JSON schema the final response must satisfy
 - optional `metadata: object`: opaque caller context stored with the request and readable by tools; it is never shown to the model
+- optional `request_id: string`: the id to give the request, so a caller that retries submission reaches the same request
+- optional `context: string`: prompt text added to the request
+- optional `host: object`: the host composition snapshot the request runs against (`host_id`, `primary`, `subagents`)
+- optional `parent: object`: the request or workflow step that issued this request
+
+`parent` has one of two shapes:
+
+```json
+{"kind": "subagent", "request_id": "req_1", "agent_id": "concierge",
+ "session_id": "s-1", "invoke_opts": {}}
+{"kind": "workflow", "workflow_id": "changelog", "run_id": "run_9",
+ "task_id": "summarize"}
+```
+
+A `subagent` parent names the primary's request, agent and session; `invoke_opts` is optional. A `workflow` parent names the workflow, run and step. Requests with a parent are kept out of the agent's replayed conversation history, and a workflow parent's ids are recorded on every event of the request.
 
 Rules:
 
 - `message` MUST be present and MUST be a non-empty string.
 - `session_id` MUST be present and MUST be a non-empty string.
+- `request_id`, when present, MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:` or `-`.
 - Requests that share a `session_id` MUST be accepted. The runtime does not wait for an earlier request in the same session to finish.
 
 The accepted payload contains:
@@ -332,14 +348,15 @@ For one addressable agent:
 - one client MUST use exactly one endpoint for that agent: a base URL for the HTTP binding, or a runtime reference for the in-process binding
 - `post_request`, `stream_response`, and `post_interaction` together form the asynchronous request contract
 
-A client also provides these control operations:
+A client also provides these operations:
 
 - `get_request_status`: report the execution state of a request (section 10.4)
 - `cancel_request`: stop a running request
 - `resume_request`: continue a cancelled request from its last recorded step
 - `rerun_request`: start a previous request over as a new request
+- `describe`: list the agent's tools and skills (section 8.7)
 
-H2A does not define idempotent request submission.
+Request submission is idempotent on `request_id`. When `post_request` names a `request_id` that already belongs to a request of the same agent, the runtime returns that request's accepted payload and does not start a new execution. Its stream then replays from the first event. A `request_id` that belongs to another agent is rejected. Without `request_id`, every submission creates a new request.
 
 ## 7. Interactions
 
@@ -441,6 +458,7 @@ Each agent is exposed by one HTTP server that handles health checks, request cre
 The HTTP plus SSE binding defines these endpoints for one agent:
 
 - `GET /health`
+- `GET /agent/{agent_id}/describe`
 - `POST /agent/{agent_id}/request`
 - `GET /agent/{agent_id}/request/{request_id}`
 - `POST /agent/{agent_id}/request/{request_id}/interaction`
@@ -462,8 +480,11 @@ For `POST /agent/{agent_id}/request`, the server MUST:
 5. validate that `session_id` is a non-empty string, returning `400 INVALID_REQUEST` otherwise
 6. if `structured_output` is present, validate it as a JSON schema object, returning `400 INVALID_STRUCTURED_OUTPUT` otherwise
 7. if `metadata` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
-8. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, and `metadata`
-9. return `202 Accepted` with the accepted payload as the body
+8. if `context` is present, validate that it is a string, and if `host` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
+9. if `parent` is present, validate it against the shapes in section 6.1, returning `400 INVALID_PARENT` otherwise
+10. if `request_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. If it belongs to a request of this agent, return `200 OK` with that request's accepted payload. If it belongs to another agent, return `409 REQUEST_ID_CONFLICT`
+11. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, and `parent`
+12. return `202 Accepted` with the accepted payload as the body
 
 Example error:
 
@@ -511,11 +532,24 @@ For the `status`, `resume`, `cancel`, and `rerun` routes, the server MUST:
 
 Results and semantics are the same as the host routes in section 10.4.
 
-### 8.6 Runtime Requirements Behind The Server
+### 8.6 Authentication
+
+A server MAY be configured with a bearer token. When it is, every route except `GET /health` MUST require `Authorization: Bearer <token>` and return `401 UNAUTHORIZED` when the header is missing or does not match. The client sends the token on every call.
+
+### 8.7 Describe Handling
+
+For `GET /agent/{agent_id}/describe`, the server MUST return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves, and otherwise `200 OK` with:
+
+- `agent_id: string`
+- `tools`: one object per registered tool with `name`, `description`, `parameters`, `requires_approval`, and `parallel_safe`
+- `skills`: one object per registered skill with `name`, `description`, `type`, and `content`
+
+### 8.8 Runtime Requirements Behind The Server
 
 The runtime attached to one agent HTTP server MUST provide:
 
 - request submission
+- lookup of an existing request's accepted payload by `request_id`
 - request existence checks
 - ordered event reads for one request, from a cursor, together with whether the request is terminal
 
@@ -625,11 +659,12 @@ A failed request is started over with rerun (section 10.4).
 
 HTTP status codes used by the bindings:
 
-- `200 OK` for successful stream establishment, health checks, interaction delivery, and host responses
+- `200 OK` for successful stream establishment, health checks, interaction delivery, host responses, and resubmission of a known `request_id`
 - `202 Accepted` for request submission on the per-agent HTTP server
 - `400 Bad Request` for invalid JSON or invalid field values
+- `401 Unauthorized` for a missing or invalid bearer token
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
-- `409 Conflict` for resuming a stale request
+- `409 Conflict` for resuming a stale request, or a `request_id` that belongs to another agent
 - `422 Unprocessable Entity` for host request bodies that fail schema validation
 - `500 Internal Server Error` for unexpected failures
 

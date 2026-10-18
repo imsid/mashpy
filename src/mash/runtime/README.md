@@ -21,7 +21,7 @@ Import the public API from `mash.runtime`:
 
 - `AgentSpec`: build contract for one agent
 - `AgentRuntime`: per-agent execution core
-- `AgentServer`: per-agent HTTP/SSE adapter
+- `AgentServer`: per-agent HTTP/SSE adapter; `token=` requires a bearer token on every route but `/health`
 - `Pool`: deployed pool of role-less agents and workflows
 - `Host`: immutable composition over the pool (primary + subagents + workflows)
 - `HostBuilder`: pool construction API
@@ -390,6 +390,11 @@ At a high level, one request flows like this:
 
 1. `AgentServer` receives a request and calls `AgentRuntime.submit_request(...)`.
 2. `AgentRuntime` validates the required session id and appends `request.accepted`.
+   A caller-supplied `request_id` that already exists for the agent returns the
+   existing accepted payload instead (`AgentServer` answers `200`, not `202`).
+   A `parent` object (`kind: "subagent"` or `"workflow"`) is mapped onto the
+   request metadata keys the engine reads (`subagent_id`, `workflow_id`,
+   `workflow_run_id`, `task_id`).
 3. `AgentRuntime` delegates execution start to the configured `RequestEngine`.
 4. The workflow engine runs durable steps from `engine/workflow.py` and `engine/steps.py`.
 5. Those steps load/build context, run think/tool phases, persist turns, and append `RuntimeEvent`s.
