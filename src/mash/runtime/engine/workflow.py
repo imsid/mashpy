@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from typing import Any
 
 from dbos import DBOS
@@ -38,8 +36,6 @@ from .steps import (
     start_request_trace,
 )
 
-
-logger = logging.getLogger(__name__)
 
 def workflow_id_for(agent_id: str, request_id: str) -> str:
     return f"{agent_id}:{request_id}"
@@ -271,30 +267,6 @@ async def _run_tool_batch_for_workflow(
     )
 
 
-async def _enqueue_memory_update(
-    runtime: Any,
-    *,
-    request_id: str,
-    session_id: str,
-    message: str,
-    workflow_state: dict[str, Any],
-    request_metadata: dict[str, Any],
-) -> None:
-    # At workflow scope: DBOS starts the queued update as a child workflow,
-    # which it refuses from step context. A failure here leaves the request
-    # completed; the update is lost, not the request.
-    try:
-        await runtime.enqueue_memory_update(
-            request_id=request_id,
-            session_id=session_id,
-            message=message,
-            context_payload=dict(workflow_state.get("context") or {}),
-            request_metadata=request_metadata,
-        )
-    except Exception:
-        logger.exception("failed to enqueue the memory update for request %s", request_id)
-
-
 async def execute_request_workflow(
     agent_id: str,
     request_id: str,
@@ -327,7 +299,6 @@ async def execute_request_workflow(
                 request_id,
                 session_id,
                 message,
-                request_metadata,
             )
             workflow_state = await DBOS.run_step_async(
                 {"name": "context.load"},
@@ -520,7 +491,7 @@ async def execute_request_workflow(
                         trace_id,
                         turn_payload,
                     )
-                    break
+                    return
         except Exception as exc:
             error_payload = classify_error(exc)
             await DBOS.run_step_async(
@@ -533,11 +504,3 @@ async def execute_request_workflow(
                 error_payload,
             )
             raise RuntimeError(str(exc)) from None
-        await _enqueue_memory_update(
-            require_runtime(agent_id),
-            request_id=request_id,
-            session_id=session_id,
-            message=message,
-            workflow_state=workflow_state,
-            request_metadata=request_metadata,
-        )

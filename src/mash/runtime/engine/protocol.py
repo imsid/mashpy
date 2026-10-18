@@ -22,17 +22,6 @@ class RequestEngine(Protocol):
     ) -> None:
         ...
 
-    async def enqueue_memory_update(
-        self,
-        *,
-        request_id: str,
-        message: str,
-        session_id: str,
-        request_metadata: dict[str, Any],
-    ) -> None:
-        """Run a memory update request on the agent's memory queue (one at a time)."""
-        ...
-
     async def get_request_status(
         self,
         *,

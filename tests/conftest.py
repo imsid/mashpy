@@ -456,7 +456,6 @@ async def _execute_request_inline(
                 request_id,
                 session_id=session_id,
                 message=message,
-                request_metadata=request_metadata,
             )
             workflow_state = await load_request_context(
                 runtime.app_id,
@@ -528,7 +527,7 @@ async def _execute_request_inline(
                     trace_id,
                     turn_payload,
                 )
-                break
+                return
         except Exception as exc:
             # Mirror the real engine: the error payload is whatever
             # classify_error makes of the exception, so tests see the same
@@ -540,14 +539,6 @@ async def _execute_request_inline(
                 trace_id,
                 classify_error(exc),
             )
-            return
-        await runtime.enqueue_memory_update(
-            request_id=request_id,
-            session_id=session_id,
-            message=message,
-            context_payload=dict(workflow_state.get("context") or {}),
-            request_metadata=request_metadata,
-        )
 
 
 class _TestDBOSRequestEngine:
@@ -555,7 +546,6 @@ class _TestDBOSRequestEngine:
         self._runtime = runtime
         self._database_url = database_url
         self._tasks: set[asyncio.Task[None]] = set()
-        self._memory_lock = asyncio.Lock()
 
     async def open(self) -> None:
         register_runtime(self._runtime)
@@ -590,30 +580,6 @@ class _TestDBOSRequestEngine:
             ),
             name=f"TestRequest-{self._runtime.app_id}-{request_id}",
         )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def enqueue_memory_update(
-        self,
-        *,
-        request_id: str,
-        message: str,
-        session_id: str,
-        request_metadata: dict[str, Any],
-    ) -> None:
-        """Mirror the memory queue: updates run one at a time, in order."""
-
-        async def _run() -> None:
-            async with self._memory_lock:
-                await _execute_request_inline(
-                    self._runtime,
-                    request_id=request_id,
-                    message=message,
-                    session_id=session_id,
-                    request_metadata=dict(request_metadata or {}),
-                )
-
-        task = asyncio.create_task(_run(), name=f"TestMemory-{request_id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 

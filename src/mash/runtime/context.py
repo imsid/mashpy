@@ -110,13 +110,12 @@ async def build_context_with_history(
     message: str,
     *,
     system_prompt: Any = None,
-    include_history: bool = True,
 ) -> Context:
     context = Context(
         system_prompt=system_prompt if system_prompt is not None else self.system_prompt
     )
 
-    if include_history and self.agent.config.conversation_history_turns > 0:
+    if self.agent.config.conversation_history_turns > 0:
         turns = await self.store.get_turns(
             session_id=session_id,
             app_id=self.app_id,
@@ -184,11 +183,10 @@ async def build_context_payload(
     session_id: str,
     message: str,
     system_prompt: Any = None,
-    include_history: bool = True,
 ) -> dict[str, Any]:
     compaction_summary_text: Optional[str] = None
     compaction_summary_trace_id: Optional[str] = None
-    if include_history and self.agent.config.compaction_token_threshold > 0:
+    if self.agent.config.compaction_token_threshold > 0:
         session_total_tokens = await self.get_session_total_tokens(session_id)
         if session_total_tokens >= self.agent.config.compaction_token_threshold:
             compaction_summary_text, compaction_summary_trace_id = await self.compact_session(
@@ -197,11 +195,7 @@ async def build_context_payload(
                 session_total_tokens_reset=0,
             )
     context = await build_context_with_history(
-        self,
-        session_id,
-        message,
-        system_prompt=system_prompt,
-        include_history=include_history,
+        self, session_id, message, system_prompt=system_prompt
     )
     return {
         "context": serialize_context(context),

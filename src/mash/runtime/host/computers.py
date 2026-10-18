@@ -32,7 +32,6 @@ from .tokens import MASH_HOST_SECRET_ENV, derive_agent_token
 AGENT_PORT = 9000
 AGENT_LABEL = "mash.agent"
 CONTAINER_PREFIX = "mash-agent-"
-MEMORY_MOUNT = "/home/agent/memory"
 WORKSPACE_MOUNT = "/home/agent/workspace"
 MASH_COMPUTER_IMAGE_ENV = "MASH_COMPUTER_IMAGE"
 MASH_COMPUTER_NETWORK_ENV = "MASH_COMPUTER_NETWORK"
@@ -72,8 +71,8 @@ def container_name(agent_id: str) -> str:
     return f"{CONTAINER_PREFIX}{agent_id}"
 
 
-def volume_names(agent_id: str) -> tuple[str, str]:
-    return f"{agent_id}-memory", f"{agent_id}-workspace"
+def workspace_volume(agent_id: str) -> str:
+    return f"{agent_id}-workspace"
 
 
 def computer_env(environ: Mapping[str, str]) -> dict[str, str]:
@@ -154,10 +153,8 @@ class DockerComputerProvider:
         await self._prepare()
         name = container_name(agent_id)
         token = derive_agent_token(self._host_secret, agent_id)
-        memory_volume, workspace_volume = volume_names(agent_id)
         labels = {AGENT_LABEL: agent_id}
-        await self._engine.ensure_volume(memory_volume, labels=labels)
-        await self._engine.ensure_volume(workspace_volume, labels=labels)
+        await self._engine.ensure_volume(workspace_volume(agent_id), labels=labels)
 
         container = await self._engine.inspect_container(name)
         if container is None:
@@ -201,7 +198,6 @@ class DockerComputerProvider:
         self._prepared = True
 
     def _container_config(self, agent_id: str, token: str) -> dict:
-        memory_volume, workspace_volume = volume_names(agent_id)
         env = {
             **computer_env(self._environ),
             "MASH_HOST_APP": self._host_app,
@@ -211,8 +207,7 @@ class DockerComputerProvider:
         host_config: dict = {
             "RestartPolicy": {"Name": "always"},
             "Mounts": [
-                {"Type": "volume", "Source": memory_volume, "Target": MEMORY_MOUNT},
-                {"Type": "volume", "Source": workspace_volume, "Target": WORKSPACE_MOUNT},
+                {"Type": "volume", "Source": workspace_volume(agent_id), "Target": WORKSPACE_MOUNT},
             ],
             "ExtraHosts": ["host.docker.internal:host-gateway"],
         }
@@ -269,8 +264,8 @@ class DockerComputerProvider:
 async def replace_computer(engine: DockerEngine, agent_id: str) -> None:
     """Replace an agent's container with a fresh one of the same configuration.
 
-    Volumes are kept, so memory and workspace survive; anything else on the
-    container layer (apt installs, files outside the mounts) is gone.
+    The workspace volume is kept; anything else on the container layer (apt
+    installs, files outside the workspace) is gone.
     """
     name = container_name(agent_id)
     current = await engine.inspect_container(name)
@@ -299,5 +294,5 @@ __all__ = [
     "computer_env",
     "container_name",
     "replace_computer",
-    "volume_names",
+    "workspace_volume",
 ]

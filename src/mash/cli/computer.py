@@ -18,7 +18,7 @@ from mash.runtime.host.computers import (
     WORKSPACE_MOUNT,
     container_name,
     replace_computer,
-    volume_names,
+    workspace_volume,
 )
 from mash.runtime.host.docker_engine import DockerEngine, DockerEngineError
 
@@ -43,7 +43,7 @@ def add_computer_parser(subparsers) -> None:
     shell.set_defaults(handler=_run_shell)
 
     restart = computer_subparsers.add_parser(
-        "restart", help="Replace an agent's container, keeping its volumes"
+        "restart", help="Replace an agent's container, keeping its workspace volume"
     )
     restart.add_argument("agent_id")
     restart.set_defaults(handler=_run_restart)
@@ -75,7 +75,7 @@ async def _list_rows() -> list[list[str]]:
                     str(state.get("Status") or summary.get("State") or ""),
                     _uptime(str(state.get("StartedAt") or ""), bool(state.get("Running"))),
                     str(details.get("RestartCount", 0)),
-                    ", ".join(volume_names(agent_id)),
+                    workspace_volume(agent_id),
                 ]
             )
         return rows
@@ -94,7 +94,7 @@ def _run_ls(args) -> int:
     if not rows:
         renderer.info("No agent computers.")
         return 0
-    renderer.table(["Agent", "Status", "Uptime", "Restarts", "Volumes"], rows)
+    renderer.table(["Agent", "Status", "Uptime", "Restarts", "Volume"], rows)
     return 0
 
 
@@ -139,7 +139,7 @@ def _run_restart(args) -> int:
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1
-    renderer.info(f"Replaced {container_name(args.agent_id)}; volumes kept.")
+    renderer.info(f"Replaced {container_name(args.agent_id)}; workspace kept.")
     return 0
 
 

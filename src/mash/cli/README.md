@@ -54,9 +54,9 @@ Agent computers
 
 Computer administration (run on the Docker host; computers are found by the `mash.agent` label)
 
-- `computer ls`: list computers with status, uptime, restart count, and volume names.
+- `computer ls`: list computers with status, uptime, restart count, and workspace volume.
 - `computer shell <agent_id> [--root]`: `docker exec -it` a bash shell as `agent` in `/home/agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspace/.admin_history`; admin commands are not in the event log.
-- `computer restart <agent_id>`: replace the container with a fresh one of the same configuration. Volumes are kept; anything else on the container layer is gone.
+- `computer restart <agent_id>`: replace the container with a fresh one of the same configuration. The workspace volume is kept; anything else on the container layer is gone.
 
 Notes
 

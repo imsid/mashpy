@@ -20,9 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf 
     && useradd --create-home --shell /bin/bash mash \
     && useradd --create-home --shell /bin/bash agent \
     && chmod 0700 /home/mash \
-    && mkdir -p /home/agent/memory /home/agent/workspace \
+    && mkdir -p /home/agent/workspace \
     && chown -R agent:agent /home/agent \
-    && chmod 0755 /home/agent /home/agent/memory /home/agent/workspace \
+    && chmod 0755 /home/agent /home/agent/workspace \
     && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
     && chmod 0440 /etc/sudoers.d/mash-agent \
     && mkdir -p /var/lib/mash \
