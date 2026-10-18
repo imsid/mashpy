@@ -383,3 +383,4 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `OPENAI_API_KEY` | host | none | OpenAI API key; passed to computers |
 | `GEMINI_API_KEY` | host | none | Google Gemini API key; passed to computers |
 | `DBOS_CONDUCTOR_KEY` | host | none | DBOS Conductor key; passed to computers |
+| `CORTEX_AGENT_<PROVIDER>_MODEL` | host | the provider's default | Model for `cortex-agent` in a pool with Cortex enabled (`ANTHROPIC`, `OPENAI`, `GEMINI`); passed to computers |

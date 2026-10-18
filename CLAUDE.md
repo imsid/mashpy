@@ -63,6 +63,10 @@ agent's token.
 - **WorkflowSpec / CodeStep / AgentStep** — durable, observable ordered step
   pipelines. Code owns the control flow; nondeterminism is contained inside
   typed steps with schema-checked boundaries.
+- **Cortex** — opt-in per-user memory managed by the host and shared by every
+  agent in the pool. Requests carrying a `user_id` see that user's profile and
+  can call `search_cortex`; the on-demand `cortex-build` workflow builds it
+  from the user's conversations, and apps inspect and edit it over the API.
 
 The authoring surface imports from the package root:
 
@@ -561,6 +565,42 @@ pool = (
   `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
   the REPL (`/workflow run|status|resume`).
 
+## Cortex (User Memory)
+
+Cortex is opt-in per pool. It keeps one memory per user in Postgres
+(`cortex_user` and `cortex_entry`), shared by every agent in the pool:
+
+```python
+pool = (
+    HostBuilder()
+    .agent(ConciergeAgent(), metadata=AgentMetadata(...))
+    .enable_cortex(profile_max_chars=4000)   # default 4000
+    .build()
+)
+```
+
+- **Reads.** A request with a `user_id` (see Multi-Agent Composition) gets the
+  user's profile as an `ABOUT THIS USER` block in its system prompt and a
+  read-only `search_cortex` tool over the user's entries. Both are scoped to
+  the request's user; requests without one get neither.
+- **Building.** Nothing writes Cortex after a request. Run the `cortex-build`
+  workflow on demand for one user:
+  `POST /api/v1/workflow/cortex-build/run` with
+  `{"input": {"user_id": "u-42", "limit": 200}}`. It reads the user's turns
+  since the last build (workflow and subagent turns excluded) with the tools
+  each turn ran, has the built-in `cortex-agent` curate them into a profile
+  and entries, and writes the result in one transaction. Rerun while the
+  result's `remaining` is above 0. A build fails with a version conflict if
+  the app edited the user's Cortex while it ran; run it again.
+- **App API.** Under `/api/v1/cortex/users/{user_id}`: `GET` (profile,
+  version, entry count), `GET .../entries` (`q`, `origin`, `limit`, `after`),
+  `POST .../entries` (`topic`, `content`), `PATCH`/`DELETE .../entries/{entry_id}`,
+  and `DELETE` for the whole Cortex. Entries an app creates or edits are
+  pinned (`origin: app`): builds never change or delete them. The profile is
+  written only by builds.
+- `cortex-agent` picks its provider like masher's agents;
+  `CORTEX_AGENT_<PROVIDER>_MODEL` overrides the model.
+
 ## Structured Output
 
 ```python
@@ -658,3 +698,4 @@ on a specific subsystem:
 - [CLI](https://github.com/imsid/mashpy/blob/main/src/mash/cli/README.md)
 - [Memory](https://github.com/imsid/mashpy/blob/main/src/mash/memory/README.md)
 - [MCP integration](https://github.com/imsid/mashpy/blob/main/src/mash/mcp/README.md)
+- [Cortex](https://github.com/imsid/mashpy/blob/main/src/mash/agents/cortex/README.md)

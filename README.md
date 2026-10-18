@@ -299,6 +299,7 @@ mash repl --host assistant
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
 | **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
+| **Cortex** | Opt-in per-user memory kept by the host and shared by every agent; requests with a `user_id` read it, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
 
 ## Mushy / Thoughts
 

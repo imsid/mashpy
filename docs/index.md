@@ -285,6 +285,7 @@ mash repl --host assistant
 - [**Workflows**](posts/workflows-as-step-pipelines.md): durable step pipelines mixing code steps and agent steps
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 - [**Synthetic evals**](posts/synthetic-evals.md): generated datasets and rubrics, experiments over the live host, read-time comparison
+- [**Cortex**](posts/cortex.md): per-user memory managed by the host, built on demand, edited by apps
 
 ## Guides
 

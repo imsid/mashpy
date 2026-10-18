@@ -38,6 +38,18 @@ class CortexEntry:
 
 
 @dataclass(frozen=True)
+class CortexUserInfo:
+    """A user's Cortex summary, as the app API reports it."""
+
+    user_id: str
+    profile: str
+    built_through: float
+    version: int
+    entry_count: int
+    updated_at: float
+
+
+@dataclass(frozen=True)
 class CortexSnapshot:
     """A user's Cortex as a build reads it. ``version`` is 0 for a new user."""
 

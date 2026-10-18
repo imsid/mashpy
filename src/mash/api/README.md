@@ -472,6 +472,36 @@ the `gen-synthetic-evals` and `run-experiment` workflows through the normal
   - `runs`: one record per dataset row — `input`, `actual_output`, `weighted_score`, per-criterion `scores` with rationales, `session_id` (links the row's execution to the telemetry surface), `error` when the row could not be scored, and `metrics` (per-row operational cost)
   - `total`: count of returned records
 
+### Cortex
+
+Mounted only when the pool calls `HostBuilder.enable_cortex()`. Entries an app
+creates or edits are pinned (`origin: app`); `cortex-build` never changes or
+deletes them. See `src/mash/agents/cortex/README.md`.
+
+`GET /api/v1/cortex/users/{user_id}`
+- Returns `user_id`, `profile`, `built_through`, `version`, `entry_count`, `updated_at`.
+
+`GET /api/v1/cortex/users/{user_id}/entries`
+- Query: optional `q` (every term in topic and content), `origin` (`build` or
+  `app`), `limit` (1-200, default 50), `after` (the previous page's `next`).
+- Returns `entries` newest first and `next`.
+
+`POST /api/v1/cortex/users/{user_id}/entries`
+- Body: `topic`, `content`. Creates an `app` entry, and the user's row if missing.
+- Returns `entry` and the user's new `version`.
+
+`PATCH /api/v1/cortex/users/{user_id}/entries/{entry_id}`
+- Body: `topic` and/or `content`. The entry becomes `app`.
+- Returns `entry` and `version`.
+
+`DELETE /api/v1/cortex/users/{user_id}/entries/{entry_id}`
+- Returns `deleted` and `version`.
+
+`DELETE /api/v1/cortex/users/{user_id}`
+- Deletes the user's profile and entries and resets the build watermark.
+
+Errors: `404 CORTEX_NOT_FOUND` for an unknown user or entry, `400 INVALID_USER_ID`.
+
 ### Observability
 
 Memory search uses the target agent's `memory_store`.

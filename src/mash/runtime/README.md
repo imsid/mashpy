@@ -319,7 +319,7 @@ lifecycle.
   - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached
 
 - [`computer.py`](./computer.py)
-  - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`; registers `bash` on the agent unless its spec has its own
+  - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`; registers `bash` on the agent unless its spec has its own, and gives the runtime a `CortexReader` when the pool enables Cortex (`runtime.enable_cortex`): requests with a `user_id` get the profile block in `context.load` and `search_cortex`
   - `HostRelay`: the runtime's pool access on a computer; subagent clients point at the host's `/h2a` relay
 
 - [`sessions.py`](./sessions.py)
