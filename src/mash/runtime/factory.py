@@ -14,10 +14,7 @@ from mash.skills.tool import SkillTool
 from ..core.agent import Agent
 from ..core.config import SystemPrompt
 from ..memory.signals import build_default_signal_collector
-from . import file_memory
-from ..skills.registry import SkillRegistry
 from ..tools.bash import BashTool
-from ..tools.registry import ToolRegistry
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import InvokeSubagentTool
 from .host.subagents import (
@@ -77,24 +74,6 @@ def resolve_host_system_prompt(
     return append_context_block(prompt, context)
 
 
-def append_memory_block(self: "AgentRuntime", prompt: SystemPrompt) -> SystemPrompt:
-    """Add the agent's memory index to a system prompt when memory is on."""
-    memory_dir = getattr(self, "memory_dir", None)
-    if memory_dir is None:
-        return prompt
-    index_text = file_memory.read_index(
-        memory_dir, self.agent.config.memory_index_max_chars
-    )
-    return append_context_block(prompt, file_memory.memory_block(memory_dir, index_text))
-
-
-def _build_memory_update_agent(self: "AgentRuntime", *, llm: Any, config: Any) -> Agent:
-    """The agent for a memory update: bash in the memory directory and nothing else."""
-    tools = ToolRegistry()
-    tools.register(BashTool(working_dir=str(self.memory_dir)))
-    return Agent(llm=llm, tools=tools, skills=SkillRegistry(), config=config)
-
-
 def register_computer_bash(self: "AgentRuntime", agent: Agent) -> None:
     """Register bash on a computer's agent; a spec's own ``bash`` tool wins."""
     if self._computer_bash and "bash" not in agent.tools:
@@ -107,7 +86,6 @@ def build_agent_instance(
     session_id: str,
     shared_llm: Any = None,
     host: dict[str, Any] | None = None,
-    memory_update: bool = False,
 ) -> Agent:
     tools = self.definition.build_tools()
     skills = getattr(self, "skills", None) or self.definition.build_skills()
@@ -127,10 +105,6 @@ def build_agent_instance(
     base_prompt = getattr(self, "system_prompt", None)
     if base_prompt is not None:
         config.system_prompt = base_prompt
-    if memory_update:
-        agent = _build_memory_update_agent(self, llm=llm, config=config)
-        agent.set_signal_collector(self.signal_collector)
-        return agent
     host_subagents = resolve_host_subagents(self, host)
     if host_subagents:
         config.system_prompt = build_subagent_prompt_block(

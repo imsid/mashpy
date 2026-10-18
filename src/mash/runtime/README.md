@@ -322,9 +322,6 @@ lifecycle.
   - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`; registers `bash` on the agent unless its spec has its own
   - `HostRelay`: the runtime's pool access on a computer; subagent clients point at the host's `/h2a` relay
 
-- [`file_memory.py`](./file_memory.py)
-  - file memory on the agent's computer: `INDEX.md` injection, the curator prompt, transcripts for memory updates
-
 - [`sessions.py`](./sessions.py)
   - session reads over the memory store and event log, shared by the runtime and the host
 
@@ -395,7 +392,7 @@ lifecycle.
   - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
 
 - `host/computers.py`
-  - `DockerComputerProvider.ensure(agent_id)`: volumes `<agent_id>-memory` and `<agent_id>-workspace`, container `mash-agent-<agent_id>` on the private network (`MASH_COMPUTER_NETWORK`, default `mash`) with restart policy `always`, then a `/health` wait
+  - `DockerComputerProvider.ensure(agent_id)`: volume `<agent_id>-workspace`, container `mash-agent-<agent_id>` on the private network (`MASH_COMPUTER_NETWORK`, default `mash`) with restart policy `always`, then a `/health` wait
   - the host's environment passes through, minus process variables (`PATH`, `HOME`, ...) and the host's own secrets (`MASH_HOST_SECRET`, `MASH_API_KEY`)
   - host in a container: computers run the host's own image id and are reached by name; the host joins the network itself. The host container needs the Docker socket mounted and its group added (`group_add`), since the image runs as `mash`
   - host on the Docker host (local development): `MASH_COMPUTER_IMAGE` is required and must contain the app; each computer's port is published on `127.0.0.1` at a port fixed at create time, and computers reach the host at `host.docker.internal`. Env values pass through unchanged, so a `localhost` database URL must be written as `host.docker.internal`
@@ -403,31 +400,6 @@ lifecycle.
 
 - `host/docker_engine.py`
   - minimal async Docker Engine API client over the Unix socket (`DOCKER_HOST`, `/var/run/docker.sock`, or Docker Desktop's `~/.docker/run/docker.sock`)
-
-## File Memory
-
-Opt in per agent with `AgentConfig(memory_enabled=True)`. Memory is markdown in
-the memory directory (`/home/agent/memory` on a computer, `MASH_MEMORY_DIR` to
-override): `INDEX.md` has one line per file, and each file holds one topic.
-Conversation history stays in Postgres and is not copied into memory.
-
-- **Injection.** `context.load` reads `INDEX.md` and appends it to the system
-  prompt as a `## Memory` block, capped at `memory_index_max_chars` (default
-  8000) with a truncation marker. The read happens inside the checkpointed
-  step, so a replay sees what the request originally saw. The agent reads full
-  files with `cat`.
-- **Updates.** After `request.completed`, the workflow enqueues a memory update
-  for top-level and subagent requests (not workflow steps, not updates
-  themselves). The update is an ordinary request of the same agent, id
-  `{request_id}-memory`, on the DBOS queue `mash.memory.<agent_id>` with
-  concurrency 1, which only that agent's computer listens to. It runs with a
-  curator prompt plus the current index, the completed request's transcript as
-  its message, no conversation history, and one tool: bash in the memory
-  directory. Its turn is not replayable, and its `request.started` event carries
-  `trace_kind: "memory.update"` and `source_request_id`.
-- **Pruning.** The curator keeps `INDEX.md` under the cap by merging related
-  files and deleting stale ones.
-- A failure to enqueue is logged and leaves the request completed.
 
 ## Request Lifecycle
 

@@ -40,9 +40,8 @@ agent's token.
   starts, each agent gets a computer and the pool keeps an HTTP client for it.
 - **Agent computer** — a container (`mash-agent-<agent_id>`) that serves one
   agent's runtime behind an H2A HTTP server, built from the host's own image.
-  The agent's memory (`/home/agent/memory`) and workspace
-  (`/home/agent/workspace`) are named volumes, so the container can be replaced
-  without losing them. Every agent on a computer has a `bash` tool, so it can
+  The agent's workspace (`/home/agent/workspace`) is a named volume, so the
+  container can be replaced without losing it. Every agent on a computer has a `bash` tool, so it can
   write and run code and keep files without registering anything. Its bash
   sessions run as an `agent` user with a clean environment and no access to
   the runtime's secrets.
@@ -226,8 +225,6 @@ AgentConfig(
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
-    memory_enabled=False,                 # file memory on the agent's computer (INDEX.md + update job)
-    memory_index_max_chars=8000,          # cap on the INDEX.md injected into each request
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
@@ -613,26 +610,17 @@ run_host(
 ```
 
 A deployment runs one host replica. Computers outlive the host and restart on
-crash with the same volumes. Manage them on the Docker host:
+crash with the same workspace volume. Manage them on the Docker host:
 
 ```bash
-mash computer ls                  # status, uptime, restarts, volumes
+mash computer ls                  # status, uptime, restarts, volume
 mash computer shell <agent_id>    # bash as `agent` (--root for root)
-mash computer restart <agent_id>  # replace the container, keep the volumes
+mash computer restart <agent_id>  # replace the container, keep the workspace
 ```
 
 For full deployment instructions (compose file, server deployment, the
 environment reference, and external API access), see
 [how-to-deploy.md](docs/posts/how-to-deploy.md).
-
-## File Memory
-
-Opt in per agent with `AgentConfig(memory_enabled=True)`. Each request's system
-prompt carries `/home/agent/memory/INDEX.md`, and the agent reads full memory
-files with `cat`. The agent does not write memory while it works: after each
-top-level or subagent request completes, a memory update runs on a queue local
-to the computer, one at a time, with the request's transcript and bash in the
-memory directory. Conversation history stays in Postgres.
 
 ## Project Structure Convention
 

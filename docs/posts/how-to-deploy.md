@@ -17,8 +17,8 @@ server with Docker. The steps apply to any Mash application; the examples use
 ## Architecture
 
 Every agent in the pool runs on its own computer: a container that serves the
-agent's runtime behind an H2A HTTP server, with its memory and workspace on
-named volumes. The host runs the API, host compositions and workflows, and
+agent's runtime behind an H2A HTTP server, with its workspace on a named
+volume. The host runs the API, host compositions and workflows, and
 reaches each agent over HTTP.
 
 ```
@@ -29,7 +29,6 @@ reaches each agent over HTTP.
    ┌──────────────────────────────┐          │
    │ mash-agent-research          │──────────┘
    │  mash agent serve :9000      │
-   │  /home/agent/memory     ◄── volume research-memory
    │  /home/agent/workspace  ◄── volume research-workspace
    └──────────────┬───────────────┘
                   ▼
@@ -41,7 +40,7 @@ reaches each agent over HTTP.
   imports the same `build_pool()` and serves one agent from it.
 - When the host starts, it makes sure each registered agent has a running
   container named `mash-agent-<agent_id>`. A crashed container is restarted
-  by Docker (restart policy `always`) with the same volumes.
+  by Docker (restart policy `always`) with the same workspace volume.
 - Containers outlive the host. A restarted host finds them running and leaves
   their in-flight requests alone.
 - A primary calls its subagents through the host's `/h2a` relay, which checks
@@ -51,7 +50,7 @@ reaches each agent over HTTP.
   `agent` user with a clean environment, so the agent cannot read the
   runtime's database URL or API keys.
 - All durable state (events, sessions, DBOS workflows, workflow runs) lives in
-  Postgres. Memory and workspace files live on the volumes.
+  Postgres. Workspace files live on the volume.
 
 A deployment runs one host replica.
 
@@ -87,9 +86,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends sudo \
     && useradd --create-home --shell /bin/bash mash \
     && useradd --create-home --shell /bin/bash agent \
     && chmod 0700 /home/mash \
-    && mkdir -p /home/agent/memory /home/agent/workspace \
+    && mkdir -p /home/agent/workspace \
     && chown -R agent:agent /home/agent \
-    && chmod 0755 /home/agent /home/agent/memory /home/agent/workspace \
+    && chmod 0755 /home/agent /home/agent/workspace \
     && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
     && chmod 0440 /etc/sudoers.d/mash-agent \
     && mkdir -p /var/lib/mash && chown mash:mash /var/lib/mash
@@ -221,17 +220,16 @@ These commands run on the Docker host and find computers by their
 `mash.agent` label:
 
 ```bash
-mash computer ls                   # status, uptime, restart count, volumes
+mash computer ls                   # status, uptime, restart count, volume
 mash computer shell research       # bash as `agent` in /home/agent
 mash computer shell research --root
-mash computer restart research     # replace the container, keep its volumes
+mash computer restart research     # replace the container, keep its workspace
 ```
 
-- `restart` recreates the container from its own configuration. Memory and
-  workspace survive; anything else on the container layer (apt installs,
-  files outside the two mounts) is gone. An agent that needs system packages
-  across replacements records the install steps in memory or keeps a venv in
-  its workspace.
+- `restart` recreates the container from its own configuration. The
+  workspace survives; anything else on the container layer (apt installs,
+  files outside the workspace) is gone. An agent that needs packages across
+  replacements keeps a venv or install script in its workspace.
 - Commands run from an admin shell are not in the event log. Their history is
   appended to `/home/agent/workspace/.admin_history`.
 - A call to an agent whose computer is down returns `503 AGENT_UNAVAILABLE`
@@ -342,10 +340,10 @@ CLI flag (repeatable) or configure `cors_allow_origins` in `MashHostConfig`.
 - **Restart the host:** the new process calls `build_pool()`, reconnects to
   Postgres, finds the running computers, and starts serving.
 - **Stop everything:** stop the host, then `docker rm -f` the
-  `mash-agent-*` containers. Postgres and the volumes keep all state; the next
-  host start recreates the containers on the same volumes.
-- **Remove an agent's memory and workspace:** delete its two volumes,
-  `<agent_id>-memory` and `<agent_id>-workspace`, after removing its container.
+  `mash-agent-*` containers. Postgres and the workspace volumes keep all
+  state; the next host start recreates the containers on the same volumes.
+- **Remove an agent's workspace:** delete its volume, `<agent_id>-workspace`,
+  after removing its container.
 - **Database migrations:** Mash runs pending migrations automatically on
   startup. See [Schema migrations](#schema-migrations) below.
 
@@ -381,7 +379,6 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | computer | set by the host | The computer's agent token |
 | `MASH_HOST_API_URL` | computer | set by the host | The host address for subagent calls |
-| `MASH_MEMORY_DIR` | computer | `/home/agent/memory` | File memory directory, for agents with `memory_enabled` |
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; passed to computers |
 | `OPENAI_API_KEY` | host | none | OpenAI API key; passed to computers |
 | `GEMINI_API_KEY` | host | none | Google Gemini API key; passed to computers |

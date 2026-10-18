@@ -124,10 +124,10 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         kwargs.update(overrides)
         return DockerComputerProvider(**kwargs)
 
-    async def test_creates_volumes_network_and_container(self) -> None:
+    async def test_creates_volume_network_and_container(self) -> None:
         endpoint = await self._provider().ensure("research")
 
-        self.assertEqual(self.daemon.volumes, {"research-memory", "research-workspace"})
+        self.assertEqual(self.daemon.volumes, {"research-workspace"})
         self.assertIn("mash", self.daemon.networks)
         container = self.daemon.containers["mash-agent-research"]
         self.assertTrue(container["State"]["Running"])
@@ -141,7 +141,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(create["HostConfig"]["RestartPolicy"], {"Name": "always"})
         self.assertEqual(
             [(m["Source"], m["Target"]) for m in create["HostConfig"]["Mounts"]],
-            [("research-memory", "/home/agent/memory"), ("research-workspace", "/home/agent/workspace")],
+            [("research-workspace", "/home/agent/workspace")],
         )
         self.assertEqual(create["Labels"], {"mash.agent": "research"})
         self.assertEqual(endpoint.token, derive_agent_token("secret", "research"))
@@ -225,7 +225,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["_create"]["Cmd"], before["_create"]["Cmd"])
         self.assertEqual(after["_create"]["HostConfig"], before["HostConfig"])
         self.assertEqual(after["_create"]["NetworkingConfig"], {"EndpointsConfig": {"mash": {}}})
-        self.assertEqual(self.daemon.volumes, {"research-memory", "research-workspace"})
+        self.assertEqual(self.daemon.volumes, {"research-workspace"})
 
     async def test_replace_unknown_agent_raises(self) -> None:
         with self.assertRaises(ValueError):

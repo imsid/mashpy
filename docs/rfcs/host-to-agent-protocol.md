@@ -582,7 +582,7 @@ H2A is per-agent at the HTTP transport boundary.
 - A host with multiple agents MUST maintain one client per agent server.
 - Separate processes or containers are not required by the protocol.
 
-A Mash pool runs each agent's server on its own computer, a container with the agent's memory and workspace volumes, and keeps one client per computer.
+A Mash pool runs each agent's server on its own computer, a container with the agent's workspace volume, and keeps one client per computer.
 
 When an agent runtime starts its HTTP server, it MUST bind a host and port, associate the server with exactly one `agent_id`, and provide a base URL that clients use for `post_request`, `stream_response`, and `post_interaction`.
 

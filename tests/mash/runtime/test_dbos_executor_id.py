@@ -66,13 +66,13 @@ class DBOSExecutorIdTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_FakeDBOS.listened, [])
 
-    async def test_agent_process_listens_only_to_its_memory_queue(self) -> None:
+    async def test_agent_process_uses_agent_executor_and_listens_to_no_queues(self) -> None:
         engine_dbos.configure_agent_process("research")
 
         await engine_dbos.ensure_dbos_ready("postgresql://db/mash")
 
         self.assertEqual(_FakeDBOS.configs[0]["executor_id"], "agent:research")
-        self.assertEqual(_FakeDBOS.listened, [["mash.memory.research"]])
+        self.assertEqual(_FakeDBOS.listened, [[]])
 
     def test_agent_executor_id_requires_agent_id(self) -> None:
         with self.assertRaises(ValueError):
