@@ -116,8 +116,11 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 `POST /api/v1/hosts/{host_id}/request`
 - Submits a request to the host: it routes to the host's primary agent with
   the host's composition snapshotted onto the request.
-- Body: `HostSubmitRequest` (`message`, `session_id`, optional
-  `structured_output`, optional `context`, optional `metadata`)
+- Body: `HostSubmitRequest` (`message`, `session_id`, optional `user_id`,
+  optional `structured_output`, optional `context`, optional `metadata`)
+- `user_id` is the end user the request acts for. It is stored on the request
+  and its turns, never reaches the prompt, and subagent calls inherit it. An
+  invalid value returns `400 INVALID_USER_ID`.
 - `context` is a freeform string the host appends to the primary agent's
   system prompt for this request only (after the subagent routing block).
   Use it to pass per-request/session facts like user profile, workspace
@@ -127,7 +130,8 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
   reruns with the same metadata), bound for the duration of the run so tools
   can read it via `mash.logging.get_request_metadata()`, and inherited by
   subagent requests made through `InvokeSubagent`.
-- Returns `request_id`, `agent_id` (the primary), and `session_id`. Stream
+- Returns `request_id`, `agent_id` (the primary), `session_id`, and
+  `user_id`. Stream
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
 `GET /api/v1/agent/{agent_id}`
@@ -152,6 +156,7 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 - Optionally accepts a `metadata` JSON object — opaque caller context that
   never reaches the model. Readable during execution via
   `mash.logging.get_request_metadata()` and inherited by subagent requests.
+- Optionally accepts a `user_id`, as on the host route.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
 - Server-Sent Events stream for async request progress.

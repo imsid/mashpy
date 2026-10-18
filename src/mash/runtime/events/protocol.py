@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-from .types import FeedbackRecord, RequestStatus, RuntimeEvent
+from .types import FeedbackRecord, RequestIdentity, RequestStatus, RuntimeEvent
 
 
 class RuntimeStore(Protocol):
@@ -49,6 +49,10 @@ class RuntimeStore(Protocol):
     async def is_request_terminal(self, request_id: str) -> bool: ...
 
     async def get_request_lifecycle(self, request_id: str) -> RequestStatus | None: ...
+
+    async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
+        """The agent and user a request was accepted for, or None if unknown."""
+        ...
 
     async def read_request_stream(
         self,

@@ -16,7 +16,11 @@ from ...logging.events import AgentTraceEvent
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
-from ..requests import append_runtime_event, fetch_request_attempt
+from ..requests import (
+    append_runtime_event,
+    fetch_request_attempt,
+    user_id_from_request_metadata,
+)
 
 if TYPE_CHECKING:
     from ..service import AgentRuntime
@@ -156,9 +160,10 @@ async def _plan_step_payload(
     session_id: str,
     trace_id: str,
     host: dict[str, Any] | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     agent = runtime.build_turn_agent(
-        session_id=session_id, trace_id=trace_id, host=host
+        session_id=session_id, trace_id=trace_id, host=host, user_id=user_id
     )
     try:
         plan = await agent.plan_step(context)
@@ -195,9 +200,10 @@ async def _run_tool_call_payload(
     session_id: str,
     trace_id: str,
     host: dict[str, Any] | None = None,
+    user_id: str | None = None,
 ) -> tuple[ContextToolResult, int]:
     agent = runtime.build_turn_agent(
-        session_id=session_id, trace_id=trace_id, host=host
+        session_id=session_id, trace_id=trace_id, host=host, user_id=user_id
     )
     started_at = time.time()
     try:
@@ -293,6 +299,7 @@ async def _persist_turn_payload(
         task_id = response_metadata.get("task_id") or None
         is_subagent = bool(response_metadata.get("subagent_id"))
         await runtime.store.save_turn(
+            user_id=user_id_from_request_metadata(response_metadata),
             trace_id=resolved_trace_id,
             session_id=session_id,
             app_id=runtime.app_id,
@@ -407,6 +414,7 @@ async def load_request_context(
         "context": dict(context_payload.get("context") or {}),
         "compaction": dict(context_payload.get("compaction") or {}),
         "host": host,
+        "user_id": user_id_from_request_metadata(metadata),
         "loop_index": 0,
         "aggregate_usage": {"input": 0, "output": 0},
         "tool_usage": {},
@@ -450,6 +458,7 @@ async def plan_request_step(
         session_id=session_id,
         trace_id=trace_id,
         host=workflow_state.get("host") or None,
+        user_id=workflow_state.get("user_id"),
     )
     action_payload = {
         key: value
@@ -517,6 +526,7 @@ async def _execute_and_record_tool_call(
     loop_index: int,
     tool_call: ToolCall,
     host: dict[str, Any] | None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Run one tool call, emitting its started/completed events.
 
@@ -548,6 +558,7 @@ async def _execute_and_record_tool_call(
         session_id=session_id,
         trace_id=trace_id,
         host=host,
+        user_id=user_id,
     )
     result_payload = _step_tool_result_payload(
         tool_call,
@@ -604,6 +615,7 @@ async def run_step_tool_call(
         loop_index=loop_index,
         tool_call=tool_call,
         host=workflow_state.get("host") or None,
+        user_id=workflow_state.get("user_id"),
     )
     return {
         **dict(workflow_state or {}),
@@ -669,6 +681,7 @@ async def run_step_tool_batch(
     runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
     host = workflow_state.get("host") or None
+    user_id = workflow_state.get("user_id")
     tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
@@ -683,6 +696,7 @@ async def run_step_tool_batch(
             loop_index=loop_index,
             tool_call=tool_calls[index],
             host=host,
+            user_id=user_id,
         ),
     )
 

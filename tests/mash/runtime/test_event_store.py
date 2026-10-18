@@ -15,6 +15,7 @@ from conftest import seed_lifecycle
 from mash.runtime.events.store import PostgresRuntimeStore
 from mash.runtime.events.types import (
     FeedbackRecord,
+    RequestIdentity,
     RequestStatus,
     RuntimeEvent,
     RuntimeEventType,
@@ -261,6 +262,36 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
             await self.store.get_request_lifecycle(self.request_id),
             RequestStatus.COMPLETED,
         )
+
+    async def test_request_identity_is_recorded_and_rebuildable(self) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                dedupe_key="request.accepted",
+                payload={"request_metadata": {"user_id": "u-1"}},
+            )
+        )
+        await self._append(RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0")
+        expected = RequestIdentity(agent_id="store-test", user_id="u-1")
+        self.assertEqual(await self.store.get_request_identity(self.request_id), expected)
+
+        backfill = (
+            Path(mash.storage.migrations.__file__).parent / "004_user_identity.sql"
+        ).read_text()
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE runtime_request SET agent_id = NULL, user_id = NULL WHERE request_id = %s",
+                (self.request_id,),
+            )
+            self.assertIsNone(await self.store.get_request_identity(self.request_id))
+            conn.execute(backfill)
+
+        self.assertEqual(await self.store.get_request_identity(self.request_id), expected)
 
     async def test_read_request_stream_never_reports_undelivered_terminal(self) -> None:
         """``terminal`` must imply the terminal event is in the same batch.

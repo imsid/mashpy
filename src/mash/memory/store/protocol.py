@@ -68,6 +68,7 @@ class MemoryStore(Protocol):
         workflow_run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         replayable: bool = True,
+        user_id: Optional[str] = None,
     ) -> str:
         """Save a conversation turn with signals.
 
@@ -153,8 +154,12 @@ class MemoryStore(Protocol):
         self,
         pairs: List[Dict[str, str]],
         app_id: str,
+        user_id: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Get turns by exact session/turn identifier pairs in one lookup."""
+        """Get turns by exact session/turn identifier pairs in one lookup.
+
+        With ``user_id``, only that user's turns are returned.
+        """
         ...
 
     async def keyword_search(
@@ -164,6 +169,7 @@ class MemoryStore(Protocol):
         limit: int,
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search turns by keyword in a single column."""
         ...
@@ -176,6 +182,7 @@ class MemoryStore(Protocol):
         limit: int,
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search turns semantically in a single column."""
         ...

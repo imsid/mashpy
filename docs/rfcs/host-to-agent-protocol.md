@@ -2,9 +2,9 @@
 
 Status: Draft
 
-Version: 0.4.0
+Version: 0.5.0
 
-Last Updated: 2026-10-17
+Last Updated: 2026-10-18
 
 ## 1. Overview
 
@@ -207,6 +207,7 @@ Inputs:
 - optional `context: string`: prompt text added to the request
 - optional `host: object`: the host composition snapshot the request runs against (`host_id`, `primary`, `subagents`)
 - optional `parent: object`: the request or workflow step that issued this request
+- optional `user_id: string`: the end user the request acts for. Like `metadata`, it is stored with the request and never shown to the model
 
 `parent` has one of two shapes:
 
@@ -224,6 +225,9 @@ Rules:
 - `message` MUST be present and MUST be a non-empty string.
 - `session_id` MUST be present and MUST be a non-empty string.
 - `request_id`, when present, MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:` or `-`.
+- `user_id`, when present, MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:`, `@` or `-`.
+- A request with a `subagent` parent MUST carry the parent request's `user_id`, or none when the parent has none. A host relay enforces this (section 10.5).
+- A request with a `workflow` parent MUST NOT carry a `user_id`.
 - Requests that share a `session_id` MUST be accepted. The runtime does not wait for an earlier request in the same session to finish.
 
 The accepted payload contains:
@@ -232,6 +236,7 @@ The accepted payload contains:
 - `agent_id: string`
 - `session_id: string`
 - `status: "accepted"`
+- `user_id: string`, when the request has one
 
 Example:
 
@@ -484,9 +489,10 @@ For `POST /agent/{agent_id}/request`, the server MUST:
 7. if `metadata` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
 8. if `context` is present, validate that it is a string, and if `host` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
 9. if `parent` is present, validate it against the shapes in section 6.1, returning `400 INVALID_PARENT` otherwise
-10. if `request_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. If it belongs to a request of this agent, return `200 OK` with that request's accepted payload. If it belongs to another agent, return `409 REQUEST_ID_CONFLICT`
-11. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, and `parent`
-12. return `202 Accepted` with the accepted payload as the body
+10. if `user_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. A `user_id` on a request with a `workflow` parent also returns `400 INVALID_REQUEST`
+11. if `request_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. If it belongs to a request of this agent, return `200 OK` with that request's accepted payload. If it belongs to another agent, return `409 REQUEST_ID_CONFLICT`
+12. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, and `user_id`
+13. return `202 Accepted` with the accepted payload as the body
 
 Example error:
 
@@ -618,7 +624,7 @@ A body that fails schema validation, including an empty `message` or `session_id
 
 ### 10.2 Agent Requests
 
-- `POST /agent/{agent_id}/request`: body `{message, session_id, structured_output?, metadata?}`. Returns `200` with `{"data": {"request_id": ...}}`.
+- `POST /agent/{agent_id}/request`: body `{message, session_id, user_id?, structured_output?, metadata?}`. Returns `200` with `{"data": {"request_id": ...}}`. An invalid `user_id` returns `400 INVALID_USER_ID`.
 - `GET /agent/{agent_id}/request/{request_id}/events`: the SSE stream for the request (section 6.2). The host closes the stream after writing `request.completed`, `request.error`, or `request.cancelled`.
 - `POST /agent/{agent_id}/request/{request_id}/interaction`: body `{interaction_id, response}`. Returns `200` with `{"data": {"ok": true, "interaction_id": ...}}`.
 
@@ -626,7 +632,9 @@ A body that fails schema validation, including an empty `message` or `session_id
 
 A host MAY expose named compositions of a primary agent and its subagents. A request submitted to a composition runs on the primary agent with a snapshot of the composition taken at submit time, so redefining the composition does not affect requests already accepted.
 
-- `POST /hosts/{host_id}/request`: body `{message, session_id, structured_output?, context?, metadata?}`. `context` is prompt text added for this request. Returns `200` with `{"data": {"request_id", "agent_id", "session_id"}}`, where `agent_id` is the primary. An unknown `host_id` returns `404 HOST_NOT_FOUND`.
+- `POST /hosts/{host_id}/request`: body `{message, session_id, user_id?, structured_output?, context?, metadata?}`. `context` is prompt text added for this request. Returns `200` with `{"data": {"request_id", "agent_id", "session_id", "user_id"}}`, where `agent_id` is the primary. An unknown `host_id` returns `404 HOST_NOT_FOUND`, and an invalid `user_id` returns `400 INVALID_USER_ID`.
+
+The host is the trust boundary for `user_id`: the user application authenticates to the host and asserts the user, and the host passes it unchanged to the primary.
 
 The caller streams and answers interactions through the agent routes using the returned `agent_id`.
 
@@ -644,7 +652,10 @@ Unknown request ids return `404 REQUEST_NOT_FOUND` on all four routes.
 A host whose agents run on separate computers MAY expose a relay that agents use to call their subagents. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
 
 - Each agent authenticates with its own bearer token. The relay returns `401 UNAUTHORIZED` for a token that matches no agent.
-- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller, and a `host` snapshot whose `subagents` contain `subagent_id`. Otherwise the relay returns `403 FORBIDDEN`. An allowed request is forwarded to the subagent's client.
+- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller, and a `host` snapshot whose `subagents` contain `subagent_id`. Otherwise the relay returns `403 FORBIDDEN`.
+- The relay looks up the parent request. A parent request it does not know returns `400 INVALID_PARENT`, and one that belongs to another agent returns `403 FORBIDDEN`.
+- The relay sets the forwarded request's `user_id` to the parent request's. A `user_id` in the body that differs from the parent's returns `403 FORBIDDEN`. An agent cannot act for another user through its subagents.
+- An allowed request is forwarded to the subagent's client.
 - `GET /agent/{subagent_id}/request/{request_id}` streams the request's events. Only the agent named in the request's `parent` may stream it.
 
 ## 11. Error Model
@@ -672,7 +683,7 @@ HTTP status codes used by the bindings:
 - `202 Accepted` for request submission on the per-agent HTTP server
 - `400 Bad Request` for invalid JSON or invalid field values
 - `401 Unauthorized` for a missing or invalid bearer token
-- `403 Forbidden` for an agent relay call the caller's token does not permit (section 10.5)
+- `403 Forbidden` for an agent relay call the caller's token or the parent request does not permit (section 10.5)
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
 - `409 Conflict` for resuming a stale request, or a `request_id` that belongs to another agent
 - `422 Unprocessable Entity` for host request bodies that fail schema validation

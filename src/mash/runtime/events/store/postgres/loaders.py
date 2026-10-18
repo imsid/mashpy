@@ -10,7 +10,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ...types import FeedbackRecord, RequestStatus, RuntimeEvent, RuntimeEventType
+from ...types import (
+    FeedbackRecord,
+    RequestIdentity,
+    RequestStatus,
+    RuntimeEvent,
+    RuntimeEventType,
+    accepted_user_id,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,18 +125,23 @@ async def _project_lifecycle(
     status = RequestStatus(event.lifecycle)
     await cursor.execute(
         """
-        INSERT INTO runtime_request (request_id, status, terminal_seq, updated_at)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO runtime_request
+            (request_id, status, terminal_seq, updated_at, agent_id, user_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (request_id) DO UPDATE
             SET status = EXCLUDED.status,
                 terminal_seq = EXCLUDED.terminal_seq,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                agent_id = COALESCE(runtime_request.agent_id, EXCLUDED.agent_id),
+                user_id = COALESCE(runtime_request.user_id, EXCLUDED.user_id)
         """,
         (
             event.request_id,
             status.value,
             request_seq if status.terminal else None,
             float(event.created_at),
+            event.agent_id,
+            accepted_user_id(event),
         ),
     )
 
@@ -434,6 +446,20 @@ async def get_request_id_for_trace(
             )
             row = await cursor.fetchone()
     return str(row["request_id"]) if row is not None else None
+
+
+async def get_request_identity(pool: Any, request_id: str) -> RequestIdentity | None:
+    """The agent and user a request was accepted for, or None if unknown."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT agent_id, user_id FROM runtime_request WHERE request_id = %s",
+                (request_id,),
+            )
+            row = await cursor.fetchone()
+    if row is None or row["agent_id"] is None:
+        return None
+    return RequestIdentity(agent_id=str(row["agent_id"]), user_id=row["user_id"])
 
 
 async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None:

@@ -38,6 +38,7 @@ class AgentClientLike(Protocol):
         context: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
         timeout: float = 30.0,
     ) -> str: ...
 
@@ -281,6 +282,7 @@ class AgentClient:
         context: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
         timeout: float = 30.0,
     ) -> str:
         """Submit a request. Resubmitting a known ``request_id`` returns it again."""
@@ -302,6 +304,8 @@ class AgentClient:
             payload["host"] = dict(host)
         if parent is not None:
             payload["parent"] = dict(parent)
+        if user_id is not None:
+            payload["user_id"] = user_id
 
         try:
             async with self._session() as client:

@@ -233,6 +233,7 @@ class Pool:
         structured_output: Any = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         host = self.get_host(host_id)
         request_id = await self.get_client(host.primary).post_request(
@@ -242,11 +243,13 @@ class Pool:
             metadata=metadata,
             context=context,
             host=self.snapshot_for(host),
+            user_id=user_id,
         )
         return {
             "request_id": request_id,
             "agent_id": host.primary,
             "session_id": session_id,
+            "user_id": user_id,
             "status": "accepted",
         }
 

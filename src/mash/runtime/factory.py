@@ -86,6 +86,7 @@ def build_agent_instance(
     session_id: str,
     shared_llm: Any = None,
     host: dict[str, Any] | None = None,
+    user_id: str | None = None,
 ) -> Agent:
     tools = self.definition.build_tools()
     skills = getattr(self, "skills", None) or self.definition.build_skills()
@@ -124,7 +125,7 @@ def build_agent_instance(
     if chain_renderer is not None:
         agent.set_chain_renderer(chain_renderer)
     if self.definition.enable_runtime_tools():
-        configure_runtime_tools(self, agent, session_id=session_id)
+        configure_runtime_tools(self, agent, session_id=session_id, user_id=user_id)
     mcp_servers = self.get_mcp_servers()
     if mcp_servers:
         configure_remote_tools(self, agent, mcp_servers)
@@ -141,11 +142,13 @@ def configure_runtime_tools(
     agent: Agent,
     *,
     session_id: str,
+    user_id: str | None = None,
 ) -> None:
     builder = RuntimeToolBuilder(
         store=self.memory_store,
         app_id=self.app_id,
         session_id=session_id,
+        user_id=user_id,
         event_logger=self.event_logger,
     )
     for tool in builder.build_tools():

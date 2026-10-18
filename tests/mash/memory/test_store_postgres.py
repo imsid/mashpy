@@ -73,6 +73,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         workflow_id: str | None = None,
         workflow_run_id: str | None = None,
         task_id: str | None = None,
+        user_id: str | None = None,
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
@@ -89,6 +90,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             workflow_run_id=workflow_run_id,
             task_id=task_id,
             replayable=workflow_id is None,
+            user_id=user_id,
         )
         return turn_id
 
@@ -485,6 +487,29 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(matching_b)
         assert matching_b is not None
         self.assertEqual([turn["trace_id"] for turn in matching_b], [turn_b])
+
+    async def test_search_and_lookup_scope_to_one_user(self) -> None:
+        mine = await self._save_turn(
+            session_id="s-a", user_message="invoice totals", agent_response="ok", user_id="u-1"
+        )
+        theirs = await self._save_turn(
+            session_id="s-b", user_message="invoice totals", agent_response="ok", user_id="u-2"
+        )
+
+        hits = await self.store.keyword_search(
+            "user_message", "invoice", limit=10, app_id=self.app_id, user_id="u-1"
+        )
+        self.assertEqual([hit["trace_id"] for hit in hits], [mine])
+
+        turns = await self.store.get_turn_by_ids(
+            pairs=[
+                {"session_id": "s-a", "trace_id": mine},
+                {"session_id": "s-b", "trace_id": theirs},
+            ],
+            app_id=self.app_id,
+            user_id="u-1",
+        )
+        self.assertEqual([turn["trace_id"] for turn in turns or []], [mine])
 
     async def test_keyword_search_returns_empty_for_blank_query_or_non_positive_limit(
         self,

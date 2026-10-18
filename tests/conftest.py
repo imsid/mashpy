@@ -30,9 +30,11 @@ from mash.runtime.engine.steps import (
 )
 from mash.runtime.events.types import (
     FeedbackRecord,
+    RequestIdentity,
     RequestStatus,
     RuntimeEvent,
     RuntimeEventType,
+    accepted_user_id,
 )
 from mash.workflows.store import WorkflowStepEventRecord
 
@@ -91,6 +93,8 @@ class _RequestState:
 
     status: RequestStatus
     terminal_seq: int | None
+    agent_id: str | None = None
+    user_id: str | None = None
 
 
 class _TestRuntimeStore:
@@ -158,9 +162,12 @@ class _TestRuntimeStore:
         if event.lifecycle is None or not event.request_id:
             return
         status = RequestStatus(event.lifecycle)
+        previous = self._request_state.get(event.request_id)
         self._request_state[event.request_id] = _RequestState(
             status=status,
             terminal_seq=request_seq if status.terminal else None,
+            agent_id=(previous.agent_id if previous else None) or event.agent_id,
+            user_id=(previous.user_id if previous else None) or accepted_user_id(event),
         )
 
     async def list_request_events(
@@ -219,6 +226,13 @@ class _TestRuntimeStore:
         async with self._lock:
             state = self._request_state.get(request_id)
         return state.status if state is not None else None
+
+    async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
+        async with self._lock:
+            state = self._request_state.get(request_id)
+        if state is None or state.agent_id is None:
+            return None
+        return RequestIdentity(agent_id=state.agent_id, user_id=state.user_id)
 
     async def read_request_stream(
         self,
@@ -733,6 +747,7 @@ class _TestMemoryStore:
         workflow_run_id: str | None = None,
         task_id: str | None = None,
         replayable: bool = True,
+        user_id: str | None = None,
     ) -> str:
         if any(t["trace_id"] == trace_id for t in self._turns):
             return trace_id
@@ -750,6 +765,7 @@ class _TestMemoryStore:
                 "workflow_run_id": workflow_run_id,
                 "task_id": task_id,
                 "replayable": replayable,
+                "user_id": user_id,
                 "created_at": time.time(),
             }
         )
@@ -859,10 +875,26 @@ class _TestMemoryStore:
         return list(reversed(rows))[:max(1, int(limit))]
 
     async def get_turn_by_ids(
-        self, pairs: list[dict[str, str]], app_id: str
+        self, pairs: list[dict[str, str]], app_id: str, user_id: str | None = None
     ) -> list[dict[str, Any]] | None:
-        del pairs, app_id
-        return None
+        found = []
+        for pair in pairs:
+            for t in self._turns:
+                if (
+                    t["session_id"] == pair.get("session_id")
+                    and t["trace_id"] == pair.get("trace_id")
+                    and t["app_id"] == app_id
+                    and (user_id is None or t.get("user_id") == user_id)
+                ):
+                    found.append(
+                        {
+                            "trace_id": t["trace_id"],
+                            "session_id": t["session_id"],
+                            "user_message": t["user_message"],
+                            "agent_response": t["agent_response"],
+                        }
+                    )
+        return found or None
 
     async def keyword_search(
         self,
@@ -871,6 +903,7 @@ class _TestMemoryStore:
         limit: int,
         session_id: str | None = None,
         app_id: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         col = str(column)
         term = query_term.lower()
@@ -879,6 +912,8 @@ class _TestMemoryStore:
             if session_id is not None and t["session_id"] != session_id:
                 continue
             if app_id is not None and t["app_id"] != app_id:
+                continue
+            if user_id is not None and t.get("user_id") != user_id:
                 continue
             text = str(t.get(col, "") or "")
             if term in text.lower():
@@ -901,8 +936,9 @@ class _TestMemoryStore:
         limit: int,
         session_id: str | None = None,
         app_id: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        del column, query_term, query_embedding, limit, session_id, app_id
+        del column, query_term, query_embedding, limit, session_id, app_id, user_id
         return []
 
 

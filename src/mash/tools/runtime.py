@@ -14,7 +14,11 @@ from .base import FunctionTool, Tool, ToolResult
 
 
 class RuntimeToolBuilder:
-    """Builder for runtime tools with app and session context."""
+    """Builder for runtime tools with app, session and user context.
+
+    Conversation tools reach the current session, or with ``user_id`` the
+    user's sessions with this agent. They never reach another user's turns.
+    """
 
     def __init__(
         self,
@@ -23,9 +27,11 @@ class RuntimeToolBuilder:
         event_logger: EventLogger,
         session_id: str | None = None,
         session_id_provider: Callable[[], str] | None = None,
+        user_id: str | None = None,
     ) -> None:
         self._store = store
         self._app_id = app_id
+        self._user_id = user_id
         if session_id_provider is not None:
             self._session_id_provider = session_id_provider
         elif session_id is not None:
@@ -170,12 +176,14 @@ class RuntimeToolBuilder:
             except (TypeError, ValueError):
                 return ToolResult.error("limit must be an integer")
 
+            scopes = self._search_scopes()
+            scope_error = "scope must be " + " or ".join(f"'{value}'" for value in scopes)
             scope = args.get("scope", "session")
             if not isinstance(scope, str):
-                return ToolResult.error("scope must be 'session' or 'app'")
+                return ToolResult.error(scope_error)
             scope = scope.strip().lower() or "session"
-            if scope not in {"session", "app"}:
-                return ToolResult.error("scope must be 'session' or 'app'")
+            if scope not in scopes:
+                return ToolResult.error(scope_error)
 
             search_session_id = self._session_id() if scope == "session" else None
             try:
@@ -185,6 +193,7 @@ class RuntimeToolBuilder:
                     app_id=self._app_id,
                     limit=limit,
                     session_id=search_session_id,
+                    user_id=self._user_id,
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 return ToolResult.error(str(exc))
@@ -195,7 +204,6 @@ class RuntimeToolBuilder:
                 "query": query,
                 "effective_queries": normalized_queries,
                 "scope": scope,
-                "app_id": self._app_id,
                 "session_id": search_session_id,
                 "limit": limit,
                 "results": [asdict(result) for result in results],
@@ -206,19 +214,28 @@ class RuntimeToolBuilder:
             name="search_conversations",
             description=(
                 "Search stored conversation turns and return ranked previews plus "
-                "the session_id and trace_id needed to retrieve full messages."
+                "the session_id and trace_id needed to retrieve full messages. "
+                + (
+                    "Scope 'session' searches this conversation; 'user' searches all "
+                    "of this user's conversations with you."
+                    if self._user_id
+                    else "Searches this conversation."
+                )
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "limit": {"type": "integer"},
-                    "scope": {"type": "string", "enum": ["session", "app"]},
+                    "scope": {"type": "string", "enum": self._search_scopes()},
                 },
                 "required": ["query"],
             },
             _executor=execute,
         )
+
+    def _search_scopes(self) -> list[str]:
+        return ["session", "user"] if self._user_id else ["session"]
 
     @staticmethod
     def _normalize_search_queries(query: str) -> list[str]:
@@ -235,6 +252,7 @@ class RuntimeToolBuilder:
         app_id: str,
         limit: int,
         session_id: str | None,
+        user_id: str | None,
     ) -> list[SearchResult]:
         merged: dict[tuple[str, str], SearchResult] = {}
         for prefixed_query in queries:
@@ -243,6 +261,7 @@ class RuntimeToolBuilder:
                 app_id=app_id,
                 limit=limit,
                 session_id=session_id,
+                user_id=user_id,
             ):
                 key = (result.session_id, result.trace_id)
                 existing = merged.get(key)
@@ -276,10 +295,24 @@ class RuntimeToolBuilder:
                     {"session_id": session_id.strip(), "trace_id": trace_id.strip()}
                 )
 
+            # Without a user, only this session's turns are reachable; pairs
+            # from other sessions come back as missing.
+            lookup_pairs = normalized_pairs
+            if self._user_id is None:
+                current_session_id = self._session_id()
+                lookup_pairs = [
+                    pair for pair in normalized_pairs
+                    if pair["session_id"] == current_session_id
+                ]
             try:
-                turns = await self._store.get_turn_by_ids(
-                    pairs=normalized_pairs,
-                    app_id=self._app_id,
+                turns = (
+                    await self._store.get_turn_by_ids(
+                        pairs=lookup_pairs,
+                        app_id=self._app_id,
+                        user_id=self._user_id,
+                    )
+                    if lookup_pairs
+                    else []
                 )
             except Exception as exc:  # pragma: no cover
                 return ToolResult.error(f"failed to fetch turns: {exc}")

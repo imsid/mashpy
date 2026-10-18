@@ -248,6 +248,7 @@ class PostgresStore(MemoryStore):
         workflow_run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         replayable: bool = True,
+        user_id: Optional[str] = None,
     ) -> str:
         timestamp = time.time()
         metadata_json = json.dumps(metadata or {}, default=str)
@@ -270,9 +271,10 @@ class PostgresStore(MemoryStore):
                             task_id,
                             replayable,
                             metadata,
-                            created_at
+                            created_at,
+                            user_id
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                         ON CONFLICT (trace_id) DO NOTHING
                         """,
                         (
@@ -288,6 +290,7 @@ class PostgresStore(MemoryStore):
                             bool(replayable),
                             metadata_json,
                             timestamp,
+                            user_id,
                         ),
                     )
                     if signals:
@@ -591,6 +594,7 @@ class PostgresStore(MemoryStore):
         self,
         pairs: List[Dict[str, str]],
         app_id: str,
+        user_id: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         await self.open()
         if not pairs:
@@ -612,6 +616,10 @@ class PostgresStore(MemoryStore):
         for session_id, trace_id, idx in requested_rows:
             params.extend([session_id, trace_id, idx])
         params.append(app_id)
+        user_filter = ""
+        if user_id is not None:
+            user_filter = "AND t.user_id = %s"
+            params.append(user_id)
         sql = f"""
             WITH requested(session_id, trace_id, ord) AS (
                 VALUES {values_sql}
@@ -626,7 +634,7 @@ class PostgresStore(MemoryStore):
             JOIN memory_turns AS t
               ON t.session_id = r.session_id
              AND t.trace_id = r.trace_id
-            WHERE t.app_id = %s
+            WHERE t.app_id = %s {user_filter}
             ORDER BY r.ord ASC
         """
 
@@ -659,6 +667,7 @@ class PostgresStore(MemoryStore):
         limit: int,
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         normalized_limit = max(0, int(limit))
         if normalized_limit <= 0:
@@ -680,6 +689,9 @@ class PostgresStore(MemoryStore):
         if app_id is not None:
             filters.append("app_id = %s")
             params.append(app_id)
+        if user_id is not None:
+            filters.append("user_id = %s")
+            params.append(user_id)
 
         sql = f"""
             SELECT
@@ -716,8 +728,9 @@ class PostgresStore(MemoryStore):
         limit: int,
         session_id: Optional[str] = None,
         app_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        del column, query_term, query_embedding, limit, session_id, app_id
+        del column, query_term, query_embedding, limit, session_id, app_id, user_id
         raise NotImplementedError("PostgresStore.semantic_search is not implemented yet")
 
     @staticmethod

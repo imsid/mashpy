@@ -368,6 +368,32 @@ def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
             assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
 
+def test_host_and_agent_requests_take_a_user_id() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            submitted = client.post(
+                "/api/v1/hosts/assistant/request",
+                json={"message": "hello", "session_id": "s-user-1", "user_id": "u-42"},
+            )
+            assert submitted.status_code == 200
+            assert submitted.json()["data"]["user_id"] == "u-42"
+
+            direct = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-user-2", "user_id": "u-42"},
+            )
+            assert direct.status_code == 200
+
+            for route in ("/api/v1/hosts/assistant/request", "/api/v1/agent/primary/request"):
+                invalid = client.post(
+                    route,
+                    json={"message": "hello", "session_id": "s-user-3", "user_id": "has space"},
+                )
+                assert invalid.status_code == 400
+                assert invalid.json()["error"]["code"] == "INVALID_USER_ID"
+
+
 def test_agent_scoped_request_and_session_routes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
