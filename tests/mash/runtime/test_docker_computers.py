@@ -162,6 +162,26 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         for leaked in ("MASH_HOST_SECRET", "MASH_API_KEY", "PATH", "HOME"):
             self.assertNotIn(leaked, env)
 
+    async def test_mounts_from_env_follow_the_workspace(self) -> None:
+        environ = {
+            "MASH_COMPUTER_MOUNTS": "/src/repo:/home/agent/workspace/repo:ro,/data:/data",
+        }
+        await self._provider(environ=environ).ensure("research")
+
+        mounts = self.daemon.containers["mash-agent-research"]["_create"]["HostConfig"]["Mounts"]
+        self.assertEqual(
+            mounts[1:],
+            [
+                {"Type": "bind", "Source": "/src/repo", "Target": "/home/agent/workspace/repo", "ReadOnly": True},
+                {"Type": "bind", "Source": "/data", "Target": "/data", "ReadOnly": False},
+            ],
+        )
+
+    def test_rejects_malformed_mounts(self) -> None:
+        for entry in ("/src", "src:/dst", "/src:dst", "/src:/dst:rw", "/a:/b:ro:x"):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                self._provider(mounts=[entry])
+
     async def test_dev_mode_publishes_a_fixed_local_port(self) -> None:
         endpoint = await self._provider().ensure("research")
 
