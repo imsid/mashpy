@@ -1,7 +1,8 @@
-"""Deployed pool managing per-agent runtimes, their clients, and registered workflows."""
+"""Deployed pool: agent registrations, their computers' clients, hosts, and workflows."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict
 from typing import Any, Dict
@@ -14,10 +15,10 @@ from mash.workflows.dbos import resolve_runner_id
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
 from mash.workflows.store import WorkflowStore
 
-from ..client import AgentClientLike, InProcessAgentClient
+from ..client import AgentClient, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
-from ..service import AgentRuntime
 from ..spec import AgentSpec
+from .computers import ComputerProvider
 from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
 
@@ -30,6 +31,10 @@ class Pool:
     time or over the control API, and re-define them after a restart.
     Workflows are registered on the pool directly and served pool-wide; a
     pool with no user agents is a valid, workflow-only deploy.
+
+    Every agent runs on its own computer. ``start()`` asks the computer
+    provider to ensure each agent's computer and registers an ``AgentClient``
+    for it; the pool itself runs no agent runtimes.
     """
 
     def __init__(
@@ -42,7 +47,7 @@ class Pool:
         self.runtime_database_url = str(runtime_database_url or "").strip() or None
         self._registered: Dict[str, AgentRegistration] = {}
         self._hosts: Dict[str, Host] = {}
-        self._agents: Dict[str, AgentRuntime] = {}
+        self._computer_provider: ComputerProvider | None = None
         self._clients: Dict[str, AgentClientLike] = {}
         self._model_settings: Dict[str, dict[str, Any]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
@@ -59,6 +64,18 @@ class Pool:
     def configure_runtime_database_url(self, database_url: str | None) -> None:
         value = str(database_url or "").strip()
         self.runtime_database_url = value or None
+
+    def configure_computer_provider(self, provider: ComputerProvider) -> None:
+        """Set the provider that runs this pool's agent computers.
+
+        The pool owns it from here and closes it in ``close()``.
+        """
+        if self._clients:
+            raise RuntimeError("computer provider must be configured before start()")
+        self._computer_provider = provider
+
+    def has_computer_provider(self) -> bool:
+        return self._computer_provider is not None
 
     def register_agent(
         self,
@@ -299,25 +316,18 @@ class Pool:
             await shared_memory_store.open()
             await shared_workflow_store.open()
 
-            for registered in self._registered.values():
-                memory_store: MemoryStore = (
-                    shared_memory_store
-                    if _uses_default_memory_store(registered.definition)
-                    else registered.definition.build_memory_store()
+            if self._registered:
+                if self._computer_provider is None:
+                    raise RuntimeError(
+                        "a computer provider is required to start a pool with agents"
+                    )
+                endpoints = await asyncio.gather(
+                    *(self._computer_provider.ensure(agent_id) for agent_id in self._registered)
                 )
-                runtime = AgentRuntime.from_spec(
-                    registered.definition,
-                    runtime_database_url=self.runtime_database_url,
-                    session_id=registered.session_id,
-                    runtime_store=shared_runtime_store,
-                    memory_store=memory_store,
-                )
-                runtime.attach_pool(self)
-                self._agents[registered.agent_id] = runtime
-
-            for agent_id, runtime in self._agents.items():
-                await runtime.open()
-                self._clients[agent_id] = InProcessAgentClient(runtime)
+                for endpoint in endpoints:
+                    self._clients[endpoint.agent_id] = AgentClient(
+                        endpoint.base_url, endpoint.agent_id, token=endpoint.token
+                    )
         except Exception:
             await self.close()
             raise
@@ -327,12 +337,6 @@ class Pool:
         if client is None:
             raise ValueError(f"agent client '{agent_id}' is not registered")
         return client
-
-    def get_agent(self, agent_id: str) -> AgentRuntime:
-        agent = self._agents.get(agent_id)
-        if agent is None:
-            raise ValueError(f"agent '{agent_id}' is not registered")
-        return agent
 
     def get_runtime_store(self) -> RuntimeStore | None:
         """Shared runtime event store, or None before the pool is started."""
@@ -358,6 +362,10 @@ class Pool:
 
     def get_workflow_service(self) -> WorkflowService:
         return self._workflow_service
+
+    def list_registered_agents(self) -> list[str]:
+        """Every registered agent, workflow-only agents included."""
+        return list(self._registered)
 
     def list_agents(self) -> list[str]:
         return [
@@ -394,41 +402,33 @@ class Pool:
             for host in self._hosts.values()
         ]
 
-    def describe_tools(self) -> list[dict[str, Any]]:
+    async def _describe_all(self) -> dict[str, dict[str, Any]]:
+        return {
+            agent_id: await self.get_client(agent_id).describe()
+            for agent_id in self.list_agents()
+        }
+
+    async def describe_tools(self) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         agents_by_tool: dict[str, list[str]] = {}
-        for agent_id, runtime in self._agents.items():
-            for name in runtime.tools.list_tools():
-                tool = runtime.tools.get(name)
-                if tool is None:
-                    continue
-                if name not in seen:
-                    seen[name] = {
-                        "name": tool.name,
-                        "description": getattr(tool, "description", ""),
-                        "parameters": getattr(tool, "parameters", {}),
-                        "requires_approval": getattr(tool, "requires_approval", False),
-                        "parallel_safe": getattr(tool, "parallel_safe", True),
-                    }
+        for agent_id, described in (await self._describe_all()).items():
+            for tool in described.get("tools") or []:
+                name = tool["name"]
+                seen.setdefault(name, dict(tool))
                 agents_by_tool.setdefault(name, []).append(agent_id)
         return [
             {"tool": tool, "agents": agents_by_tool[name]}
             for name, tool in seen.items()
         ]
 
-    def describe_skills(self) -> list[dict[str, Any]]:
+    async def describe_skills(self) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         agents_by_skill: dict[str, list[str]] = {}
-        for agent_id, runtime in self._agents.items():
-            for skill in runtime.skills.list_skills():
-                if skill.name not in seen:
-                    seen[skill.name] = {
-                        "name": skill.name,
-                        "description": skill.description,
-                        "type": skill.type,
-                        "content": skill.content,
-                    }
-                agents_by_skill.setdefault(skill.name, []).append(agent_id)
+        for agent_id, described in (await self._describe_all()).items():
+            for skill in described.get("skills") or []:
+                name = skill["name"]
+                seen.setdefault(name, dict(skill))
+                agents_by_skill.setdefault(name, []).append(agent_id)
         return [
             {"skill": skill, "agents": agents_by_skill[name]}
             for name, skill in seen.items()
@@ -481,10 +481,9 @@ class Pool:
         for client in self._clients.values():
             await client.close()
         self._clients.clear()
-
-        for agent in self._agents.values():
-            await agent.shutdown()
-        self._agents.clear()
+        if self._computer_provider is not None:
+            # Closes the provider's handle only; computers keep running.
+            await self._computer_provider.close()
 
         if self._shared_runtime_store is not None:
             await self._shared_runtime_store.close()

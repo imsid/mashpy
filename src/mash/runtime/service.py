@@ -20,7 +20,7 @@ from .events import RuntimeStore
 from .spec import AgentSpec
 
 if TYPE_CHECKING:
-    from .host.subagents import SubagentPoolAccess
+    from .host.subagents import SubagentAccess
 
 
 def _resolve_runtime_database_url(explicit_value: str | None = None) -> str:
@@ -65,7 +65,7 @@ class AgentRuntime:
         self._shutdown_started = False
         self._shutdown_complete = False
 
-        self._pool: SubagentPoolAccess | None = None
+        self._subagent_access: SubagentAccess | None = None
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
         self.has_mcp_manager = False
         self.mcp_manager: Optional[MCPManager] = None
@@ -125,11 +125,12 @@ class AgentRuntime:
     def get_mcp_servers(self) -> Sequence[MCPServerConfig]:
         return self._mcp_servers
 
-    def attach_pool(self, pool: SubagentPoolAccess) -> None:
-        self._pool = pool
+    def attach_subagent_access(self, access: SubagentAccess) -> None:
+        """Give the runtime its route to subagents (the host relay on a computer)."""
+        self._subagent_access = access
 
-    def get_pool(self) -> SubagentPoolAccess | None:
-        return self._pool
+    def get_subagent_access(self) -> SubagentAccess | None:
+        return self._subagent_access
 
     async def get_session_info(
         self,
@@ -301,7 +302,7 @@ class AgentRuntime:
             return
         self._shutdown_started = True
         try:
-            self._pool = None
+            self._subagent_access = None
 
             if self.has_mcp_manager and self.mcp_manager is not None:
                 self.mcp_manager.disconnect_all()

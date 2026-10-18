@@ -40,14 +40,14 @@ def resolve_host_subagents(
     subagent_ids = [str(value) for value in host.get("subagents") or []]
     if not subagent_ids:
         return {}
-    pool = self.get_pool()
-    if pool is None:
+    access = self.get_subagent_access()
+    if access is None:
         raise RuntimeError(
-            f"agent '{self.app_id}' received a host snapshot but has no pool attached"
+            f"agent '{self.app_id}' received a host snapshot but has no subagent access"
         )
     resolved: dict[str, AgentMetadata] = {}
     for agent_id in subagent_ids:
-        metadata = pool.get_agent_metadata(agent_id)
+        metadata = access.get_agent_metadata(agent_id)
         if metadata is None:
             raise RuntimeError(
                 f"host '{host.get('host_id')}' references unknown agent '{agent_id}'"
@@ -264,10 +264,10 @@ def configure_subagent_tools(
     session_id: str,
     host: dict[str, Any],
 ) -> None:
-    pool = self.get_pool()
-    if pool is None:
+    access = self.get_subagent_access()
+    if access is None:
         raise RuntimeError(
-            f"agent '{self.app_id}' received a host snapshot but has no pool attached"
+            f"agent '{self.app_id}' received a host snapshot but has no subagent access"
         )
     host_id = str(host.get("host_id") or "")
     allowed = {str(value) for value in host.get("subagents") or []}
@@ -277,7 +277,7 @@ def configure_subagent_tools(
             raise ValueError(
                 f"subagent '{agent_id}' is not in host '{host_id}'"
             )
-        return pool.get_client(agent_id)
+        return access.get_client(agent_id)
 
     if "InvokeSubagent" in agent.tools:
         agent.tools.unregister("InvokeSubagent")

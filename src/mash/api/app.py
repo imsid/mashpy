@@ -32,6 +32,7 @@ from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
+from mash.runtime.host.computers import DockerComputerProvider
 from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
@@ -41,6 +42,22 @@ from mash.workflows import (
 
 from .config import MashHostConfig
 from .admin_ui import mount_admin_ui
+
+
+def default_computer_provider(pool: Pool, config: MashHostConfig) -> DockerComputerProvider:
+    """Docker computers for a pool served without a configured provider."""
+    del pool
+    host_secret = config.resolved_host_secret()
+    if not config.host_app or not host_secret:
+        raise RuntimeError(
+            "agent computers need the host app and a host secret: pass --host-app "
+            "(or MASH_HOST_APP) and set MASH_HOST_SECRET"
+        )
+    return DockerComputerProvider(
+        host_app=config.host_app,
+        host_secret=host_secret,
+        host_api_port=config.bind_port,
+    )
 
 
 def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
@@ -53,6 +70,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         pool.configure_runtime_database_url(
             resolved_config.resolved_runtime_database_url()
         )
+        if pool.list_registered_agents() and not pool.has_computer_provider():
+            pool.configure_computer_provider(
+                default_computer_provider(pool, resolved_config)
+            )
         await pool.start()
         database_url = resolved_config.resolved_runtime_database_url() or ""
         api_event_store = PostgresAPIEventStore(database_url)

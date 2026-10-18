@@ -27,6 +27,8 @@ class MashHostConfig:
     api_key: Optional[str] = None
     # Derives each agent computer's token; falls back to MASH_HOST_SECRET.
     host_secret: Optional[str] = None
+    # The ``module:attribute`` each agent computer imports to serve its agent.
+    host_app: Optional[str] = None
     cors_allow_origins: Sequence[str] = field(default_factory=lambda: _DEFAULT_CORS_ORIGINS)
     default_events_limit: int = 2000
     default_search_limit: int = 10

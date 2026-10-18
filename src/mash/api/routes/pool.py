@@ -15,11 +15,11 @@ def build_pool_router() -> APIRouter:
     @router.get("/tools")
     async def list_tools(request: Request) -> dict[str, Any]:
         state = state_from_request(request)
-        return success({"tools": state.pool.describe_tools()})
+        return success({"tools": await state.pool.describe_tools()})
 
     @router.get("/skills")
     async def list_skills(request: Request) -> dict[str, Any]:
         state = state_from_request(request)
-        return success({"skills": state.pool.describe_skills()})
+        return success({"skills": await state.pool.describe_skills()})
 
     return router

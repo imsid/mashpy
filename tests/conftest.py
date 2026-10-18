@@ -14,7 +14,9 @@ from mash.runtime.requests import (
     caller_metadata_from_request_metadata,
     host_id_from_request_metadata,
 )
+from mash.runtime import Pool
 from mash.runtime.engine.dbos import register_runtime, unregister_runtime
+from mash.testing.computers import LocalComputerProvider
 from mash.runtime.engine.steps import (
     commit_request_step,
     complete_request,
@@ -1004,5 +1006,19 @@ def _patch_hosted_runtime_for_tests():
     patcher.setattr("mash.runtime.host.host.WorkflowStore", _TestWorkflowStore)
     patcher.setattr("mash.runtime.server.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.service.DBOSRequestEngine", _TestDBOSRequestEngine)
+    # Every pool a test starts runs its agents on localhost computers unless
+    # the test configures a provider itself.
+    patcher.setattr(
+        "mash.api.app.default_computer_provider",
+        lambda pool, config: LocalComputerProvider(pool),
+    )
+    original_start = Pool.start
+
+    async def _start_with_local_computers(self):
+        if self.list_registered_agents() and not self.has_computer_provider():
+            self.configure_computer_provider(LocalComputerProvider(self))
+        await original_start(self)
+
+    patcher.setattr(Pool, "start", _start_with_local_computers)
     yield
     patcher.undo()

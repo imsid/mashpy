@@ -265,21 +265,18 @@ This is intentionally append-only and request-scoped.
 
 ### Store lifecycle and sharing
 
-`AgentRuntime` does not create or close its stores — callers own that
-lifecycle. This design enables connection sharing across agents:
+`AgentRuntime` does not create or close its stores; callers own that
+lifecycle.
 
-- **`Pool`** creates one shared `PostgresRuntimeStore` and one shared
-  `PostgresStore` for all agents that use the default `build_memory_store()`.
-  Agents whose spec overrides `build_memory_store()` get their own instance.
-  The pool opens the shared stores before creating runtimes and closes them
-  after all runtimes shut down.
+- **`AgentServer`** (on each agent computer) creates its stores in
+  `from_spec()` and closes them in its lifespan shutdown, after the runtime
+  shuts down. Each computer holds its own Postgres connections.
 
-- **`AgentServer`** creates its own stores in `from_spec()` and closes them
-  in its lifespan shutdown, after the runtime shuts down.
-
-This keeps the total Postgres connection count constant regardless of agent
-count (one pool + one LISTEN connection + one memory connection), rather than
-scaling linearly per agent.
+- **`Pool`** (on the host) opens one shared `PostgresRuntimeStore`, one shared
+  `PostgresStore` and one `WorkflowStore` for the host's own reads: traces,
+  telemetry, sessions, feedback, and workflow runs. It runs no agent runtimes.
+  Session reads cover agents that use the default `build_memory_store()`; an
+  agent that overrides it keeps its store on its computer only.
 
 ## File and Module Guide
 
@@ -319,7 +316,7 @@ scaling linearly per agent.
   - per-agent HTTP/SSE surface
 
 - [`client.py`](./client.py)
-  - H2A and in-process clients for request submission, event streaming, and interaction delivery
+  - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached
 
 - [`computer.py`](./computer.py)
   - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`
@@ -379,7 +376,7 @@ scaling linearly per agent.
 
 - `host/host.py`
   - `Pool`
-  - in-process runtime lifecycle and the host (composition) registry
+  - agent registrations, one `AgentClient` per agent computer (from the configured `ComputerProvider` at `start()`), and the host (composition) registry. The pool runs no agent runtimes
 
 - `host/builder.py`
   - `HostBuilder`
@@ -565,7 +562,7 @@ If no response arrives within `timeout_seconds`:
 
 ### Client Operation
 
-Both `AgentClient` (HTTP) and `InProcessAgentClient` expose `post_interaction(request_id, *, interaction_id, response)`. The HTTP client POSTs to `/agent/{agent_id}/request/{request_id}/interaction`. The in-process client calls `DBOS.send()` directly.
+`AgentClient.post_interaction(request_id, *, interaction_id, response)` POSTs to `/agent/{agent_id}/request/{request_id}/interaction`; the agent's server delivers the response with `DBOS.send()`.
 
 ## Error Classification and Resumability
 
@@ -631,7 +628,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 - `rerun_request(request_id)` — submits a new request built from the original's `request.accepted` payload (message plus full request metadata, including the host snapshot), with `rerun_of` stamped into the metadata. New request id, new trace, and `context.load` runs fresh against the session's current history. Works regardless of the original's terminal state.
 
-These are also available through `AgentClient`, `InProcessAgentClient`, and the HTTP API:
+These are also available through `AgentClient` and the HTTP API:
 
 - `GET /agent/{agent_id}/request/{request_id}/status`
 - `POST /agent/{agent_id}/request/{request_id}/cancel`
