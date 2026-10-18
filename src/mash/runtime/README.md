@@ -321,6 +321,13 @@ scaling linearly per agent.
 - [`client.py`](./client.py)
   - H2A and in-process clients for request submission, event streaming, and interaction delivery
 
+- [`computer.py`](./computer.py)
+  - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`
+  - `HostRelay`: the runtime's pool access on a computer; subagent clients point at the host's `/h2a` relay
+
+- [`sessions.py`](./sessions.py)
+  - session reads over the memory store and event log, shared by the runtime and the host
+
 - [`spec.py`](./spec.py)
   - `AgentSpec` contract
 

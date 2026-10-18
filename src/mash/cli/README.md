@@ -40,6 +40,17 @@ Host management
 - `--api-key`: optional bearer API key, or `MASH_API_KEY`.
 - `--cors-origin`: repeatable allowed CORS origin.
 - `--disable-observability`: disable telemetry endpoints.
+- `MASH_HOST_SECRET`: derives each agent computer's token and enables the `/h2a` relay.
+
+Agent computers
+
+- `agent serve --agent ID [options]`: serve one agent of the pool behind its own `AgentServer`. The pool is imported but not started; subagent calls go to the host's `/h2a` relay.
+- `--host-app module:attribute` or `MASH_HOST_APP`: the same host target the host runs.
+- `--host`: bind host. Defaults to `127.0.0.1` or `MASH_AGENT_BIND_HOST`.
+- `--port`: bind port. Defaults to `9000` or `MASH_AGENT_PORT`.
+- `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
+- `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls.
+- DBOS runs as executor `agent:<agent_id>` and listens to no queues, so the process recovers only this agent's requests and never runs the host's workflow runs.
 
 Notes
 

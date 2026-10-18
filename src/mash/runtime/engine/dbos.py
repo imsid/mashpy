@@ -32,6 +32,7 @@ class _DBOSRuntimeState:
     ready: bool = False
     database_url: str | None = None
     executor_id: str = HOST_EXECUTOR_ID
+    listen_queues: bool = True
     registered_workflow: Any = None
     runtime_registry: dict[str, "AgentRuntime"] = field(default_factory=dict)
 
@@ -87,6 +88,17 @@ def get_executor_id() -> str:
     return _STATE.executor_id
 
 
+def configure_agent_process(agent_id: str) -> None:
+    """Configure DBOS for an agent computer. Must run before DBOS launches.
+
+    The computer runs as ``agent:<agent_id>``, so it recovers only that agent's
+    requests, and listens to no queues, so it never dequeues the host's
+    workflow runs.
+    """
+    configure_executor_id(agent_executor_id(agent_id))
+    _STATE.listen_queues = False
+
+
 async def ensure_dbos_ready(database_url: str) -> None:
     resolved_url = str(database_url or "").strip()
     conductor_key = os.getenv("DBOS_CONDUCTOR_KEY") or None
@@ -112,6 +124,8 @@ async def ensure_dbos_ready(database_url: str) -> None:
     # resolve them; the run queue is a system-database row and can only be
     # declared once launch has opened it.
     register_workflow(dbos_class)
+    if not _STATE.listen_queues:
+        dbos_class.listen_queues([])
     dbos_class.launch()
     await ensure_queue_registered(dbos_class)
     _STATE.ready = True
@@ -391,6 +405,7 @@ __all__ = [
     "RequestEngine",
     "HOST_EXECUTOR_ID",
     "agent_executor_id",
+    "configure_agent_process",
     "configure_executor_id",
     "ensure_dbos_ready",
     "get_executor_id",
