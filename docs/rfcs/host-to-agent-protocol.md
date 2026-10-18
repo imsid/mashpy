@@ -12,7 +12,7 @@ The Host-to-Agent Protocol (H2A) defines an interoperability protocol for intera
 
 In the H2A model, each addressable agent is exposed as a runtime endpoint and has an associated client used to communicate with it. A host keeps track of the available clients and uses them to interact with one or more agents on behalf of user applications.
 
-The protocol semantics are defined independently of any specific transport. This document defines two bindings: HTTP plus Server-Sent Events (SSE) for the per-agent endpoint, and an in-process binding for hosts that run their agents in the same process.
+The protocol semantics are defined independently of any specific transport. This document defines one binding: HTTP plus Server-Sent Events (SSE) for the per-agent endpoint.
 
 H2A assumes a user-facing application interacts with a host, and the host acts as the bridge to one or more agents. H2A therefore standardizes the host-to-client and client-to-agent lifecycle that user-facing hosts depend on, rather than agent internals or tool interoperability.
 
@@ -65,7 +65,7 @@ H2A is host-centric in v1:
 
 In a typical deployment:
 
-- an agent is exposed over one binding, such as HTTP plus SSE or in-process calls
+- an agent is exposed over its own HTTP plus SSE server
 - a client communicates with exactly one agent endpoint
 - the host tracks the set of available clients and selects the appropriate client for a requested `agent_id`
 
@@ -85,9 +85,9 @@ flowchart TD
 
 ### 3.3 Conformance
 
-An implementation claiming H2A conformance MUST implement the H2A request flow defined by this specification and at least one supported binding.
+An implementation claiming H2A conformance MUST implement the H2A request flow defined by this specification and the HTTP plus SSE binding.
 
-H2A conformance is defined in terms of hosts, agents, clients, and protocol behavior rather than a separate deployment boundary. A host MAY run its agents in the same process and reach them through the in-process binding (section 9.2).
+H2A conformance is defined in terms of hosts, agents, clients, and protocol behavior rather than a deployment boundary.
 
 ## 4. Protocol Structure
 
@@ -107,7 +107,7 @@ The host resolves `agent_id` to the associated client and uses that client to cr
 
 ### 4.3 Client To Agent
 
-The client reaches one agent runtime through a binding: the per-agent HTTP plus SSE server (section 8) or direct calls into an in-process runtime (section 9.2).
+The client reaches one agent runtime through its per-agent HTTP plus SSE server (section 8).
 
 ## 5. Lifecycle
 
@@ -345,7 +345,7 @@ Transient errors (rate limits, timeouts, network errors, provider overload) in m
 For one addressable agent:
 
 - one client MUST target exactly one `agent_id`
-- one client MUST use exactly one endpoint for that agent: a base URL for the HTTP binding, or a runtime reference for the in-process binding
+- one client MUST use exactly one base URL for that agent
 - `post_request`, `stream_response`, and `post_interaction` together form the asynchronous request contract
 
 A client also provides these operations:
@@ -573,16 +573,16 @@ The runtime execution model MAY vary internally. The reference behavior is:
 - requests that share a `session_id` run concurrently; they are not serialized
 - each step of the execution is checkpointed, so a runtime restart resumes the request from its last completed step
 
-## 9. Bindings
-
-### 9.1 Per-Agent HTTP Binding
+## 9. Per-Agent HTTP Binding
 
 H2A is per-agent at the HTTP transport boundary.
 
-- Each agent exposed over HTTP MUST have its own HTTP server instance or an equivalent per-agent endpoint surface.
+- Each agent MUST have its own HTTP server instance or an equivalent per-agent endpoint surface.
 - Each server instance MUST bind exactly one runtime and exactly one `agent_id`.
-- A host with multiple HTTP-exposed agents MUST maintain one client per agent server.
+- A host with multiple agents MUST maintain one client per agent server.
 - Separate processes or containers are not required by the protocol.
+
+A Mash pool runs each agent's server on its own computer, a container with the agent's memory and workspace volumes, and keeps one client per computer.
 
 When an agent runtime starts its HTTP server, it MUST bind a host and port, associate the server with exactly one `agent_id`, and provide a base URL that clients use for `post_request`, `stream_response`, and `post_interaction`.
 
@@ -595,17 +595,6 @@ The resulting interaction model is:
 5. the per-agent HTTP server streams the lifecycle for that request
 6. if `request.interaction.create` is received, the client calls `post_interaction`
 7. the per-agent HTTP server delivers the response and execution resumes
-
-### 9.2 In-Process Binding
-
-A host that runs its agents in its own process MAY give each agent an in-process client in place of an HTTP server and client. The in-process client calls the runtime directly and MUST preserve the semantics of sections 6 and 7:
-
-- `post_request` submits through the runtime's request-submission operation and returns `request_id`.
-- `stream_response` reads events from the runtime from cursor 0 until the runtime reports the request terminal.
-- `post_interaction` delivers the response to the request's execution on topic `interaction_id`.
-- The control operations of section 6.5 call the runtime's corresponding operations.
-
-The Mash pool deployment uses this binding for every agent.
 
 ## 10. User Application To Host HTTP Binding
 

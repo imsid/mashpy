@@ -65,6 +65,11 @@ class _FakeLLMProvider(LLMProvider):
         del trace_id
 
 
+
+def _computer_runtime(pool, agent_id: str):
+    """The runtime serving ``agent_id`` on its local computer."""
+    return pool._computer_provider.agent_servers[agent_id].runtime
+
 def test_primary_and_subagent_prompts_are_app_specific() -> None:
     workspace_root = Path("/tmp/mashpy")
 
@@ -228,7 +233,7 @@ def test_build_host_registers_primary_cli_api_and_masher() -> None:
                             CHANGELOG_WORKFLOW_ID,
                         }
 
-                        primary = host.get_agent(PILOT_AGENT_ID)
+                        primary = _computer_runtime(host, PILOT_AGENT_ID)
                         assert CLI_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert API_COPILOT_AGENT_ID in str(primary.system_prompt)
                         assert MCP_COPILOT_AGENT_ID in str(primary.system_prompt)
@@ -302,13 +307,13 @@ def test_tool_shape_matches_mash_copilot_design() -> None:
                     host.configure_runtime_database_url("postgresql://test/runtime")
                     await host.start()
                     try:
-                        primary = host.get_agent(PILOT_AGENT_ID)
-                        cli_agent = host.get_agent(CLI_COPILOT_AGENT_ID)
-                        api_agent = host.get_agent(API_COPILOT_AGENT_ID)
-                        mcp_agent = host.get_agent(MCP_COPILOT_AGENT_ID)
-                        runtime_agent = host.get_agent(RUNTIME_COPILOT_AGENT_ID)
-                        workflow_agent = host.get_agent(WORKFLOW_COPILOT_AGENT_ID)
-                        eval_agent = host.get_agent("eval-agent")
+                        primary = _computer_runtime(host, PILOT_AGENT_ID)
+                        cli_agent = _computer_runtime(host, CLI_COPILOT_AGENT_ID)
+                        api_agent = _computer_runtime(host, API_COPILOT_AGENT_ID)
+                        mcp_agent = _computer_runtime(host, MCP_COPILOT_AGENT_ID)
+                        runtime_agent = _computer_runtime(host, RUNTIME_COPILOT_AGENT_ID)
+                        workflow_agent = _computer_runtime(host, WORKFLOW_COPILOT_AGENT_ID)
+                        eval_agent = _computer_runtime(host, "eval-agent")
 
                         assert "bash" in primary.agent.tools
                         # InvokeSubagent is wired per request from the host

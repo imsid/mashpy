@@ -178,10 +178,10 @@ def _save_workflow_turn(
     user_message: str = "workflow input",
     agent_response: str = '{"status":"ok"}',
 ) -> str:
-    runtime = _runtime_state(client).pool.get_agent("changelog-agent")
+    memory_store = _runtime_state(client).pool.get_memory_store("changelog-agent")
     turn_id = f"trace-{run_id.replace(':', '-')}"
     asyncio.run(
-        runtime.memory_store.save_turn(
+        memory_store.save_turn(
             trace_id=turn_id,
             session_id=f"session-{run_id.replace(':', '-')}",
             app_id="changelog-agent",
@@ -778,9 +778,7 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
             request_id = submitted.json()["data"]["request_id"]
             _collect_terminal_response(client, "primary", request_id)
 
-            store = _runtime_state(client).pool.get_agent(
-                "primary"
-            ).runtime_store
+            store = _runtime_state(client).pool.get_runtime_store()
             asyncio.run(
                 store.append_event(
                     RuntimeEvent(

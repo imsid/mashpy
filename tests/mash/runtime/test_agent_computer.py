@@ -1,9 +1,10 @@
 """Agent computers: ``build_agent_server`` and the host's H2A relay.
 
 The end-to-end test runs the host app and two agent servers as ASGI apps on
-one in-memory "network": a primary on its own computer calls its subagent
-through the host relay, which forwards to the subagent's computer. Each hop is
-a real H2A HTTP call with the agent's token.
+one in-memory "network": the host reaches each computer through its
+``AgentClient``, and a primary on its own computer calls its subagent through
+the host relay, which forwards to the subagent's computer. Each hop is a real
+H2A HTTP call with the agent's token.
 """
 
 from __future__ import annotations
@@ -23,10 +24,10 @@ from mash.api import create_app
 from mash.api.config import MashHostConfig
 from mash.api.routes.h2a import build_h2a_router
 from mash.runtime import Host, HostBuilder
-from mash.runtime.client import AgentClient
 from mash.runtime.computer import HostRelay, build_agent_server
 from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
+from mash.runtime.host.computers import ComputerEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
 from mash.testing.runtime_fixtures import build_delegating_spec, build_spec, metadata
 
@@ -62,6 +63,20 @@ class _Network(httpx.AsyncBaseTransport):
         return await self._transports[request.url.host].handle_async_request(request)
 
 
+class _FixedComputers:
+    """Computers already running, each addressed by its agent id as host name."""
+
+    async def ensure(self, agent_id: str) -> ComputerEndpoint:
+        return ComputerEndpoint(
+            agent_id=agent_id,
+            base_url=f"http://{agent_id}",
+            token=derive_agent_token(SECRET, agent_id),
+        )
+
+    async def close(self) -> None:
+        return None
+
+
 class TokenTests(unittest.TestCase):
     def test_tokens_are_per_agent_and_resolve_back(self) -> None:
         primary = derive_agent_token(SECRET, "primary-app")
@@ -93,7 +108,7 @@ class BuildAgentServerTests(unittest.TestCase):
             _build_pool(), "primary-app", token="tok", host_api_url="http://host/"
         )
 
-        relay = server.runtime.get_pool()
+        relay = server.runtime.get_subagent_access()
         self.assertIsInstance(relay, HostRelay)
         client = relay.get_client("research")
         self.assertEqual(client.base_url, "http://host/h2a")
@@ -250,6 +265,9 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
             _build_pool(), "research", token=research_token, host_api_url="http://host"
         )
         host_pool = _build_pool()
+        host_pool.configure_computer_provider(
+            _FixedComputers()
+        )
         host_app = create_app(
             host_pool,
             config=MashHostConfig(
@@ -272,14 +290,6 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
         await research_server.runtime.open()
         try:
             async with host_app.router.lifespan_context(host_app):
-                # Until the cutover, point the host's clients at the computers.
-                host_pool._clients["primary-app"] = AgentClient(
-                    "http://primary-app", "primary-app", token=primary_token
-                )
-                host_pool._clients["research"] = AgentClient(
-                    "http://research", "research", token=research_token
-                )
-
                 accepted = await host_pool.submit_host_request(
                     "assistant", message="delegate", session_id="s-1"
                 )

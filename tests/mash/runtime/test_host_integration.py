@@ -527,7 +527,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "primary-ok")
 
-                    primary = pool.get_agent("primary")
+                    primary = _computer_runtime(pool, "primary")
                     sessions = await primary.list_sessions()
                     self.assertEqual(len(sessions), 1)
                     self.assertEqual(sessions[0]["session_id"], "s-1")
@@ -671,7 +671,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                         self.assertEqual(output["result"], {"ok": True})
                         run_id = f"mw:{pool.runner_id}:wf:test"
-                        worker = pool.get_agent("worker")
+                        worker = _computer_runtime(pool, "worker")
                         sessions = await worker.list_sessions()
                         # The run executes under the threaded caller session (no
                         # synthetic workflow:...:run: scheme), tagged by run id.
@@ -804,7 +804,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     # Every event of a host-routed request is stamped with the
                     # composition's host_id, and the store can filter on it.
-                    primary = pool.get_agent("primary-app")
+                    primary = _computer_runtime(pool, "primary-app")
                     request_events = await primary.runtime_store.list_request_events(
                         accepted["request_id"]
                     )
@@ -822,7 +822,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         [],
                     )
 
-                    research = pool.get_agent("research")
+                    research = _computer_runtime(pool, "research")
                     expected_subagent_session = "s-1"
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
@@ -949,7 +949,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
                     # The subagent request ran with the parent's caller metadata.
-                    research = pool.get_agent("research")
+                    research = _computer_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-1",
                         app_id=research.app_id,
@@ -1002,7 +1002,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                    research = pool.get_agent("research")
+                    research = _computer_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-1",
                         app_id=research.app_id,
@@ -1048,7 +1048,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     request_id = await client.post_request("delegate", session_id="s-2")
                     await _collect_events(client, request_id, timeout=5)
 
-                    primary = pool.get_agent("primary-app")
+                    primary = _computer_runtime(pool, "primary-app")
                     request_events = await primary.runtime_store.list_request_events(
                         request_id
                     )
@@ -1064,7 +1064,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     for event in request_events:
                         self.assertIsNone(event.host_id)
 
-                    research = pool.get_agent("research")
+                    research = _computer_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-2",
                         app_id=research.app_id,
@@ -1088,10 +1088,10 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     # A subagent request carries the primary's host snapshot.
                     host = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
-                    primary_agent = pool.get_agent("primary-app").build_turn_agent(
+                    primary_agent = _computer_runtime(pool, "primary-app").build_turn_agent(
                         session_id="s-1", trace_id="t-1", host=host
                     )
-                    research_agent = pool.get_agent("research").build_turn_agent(
+                    research_agent = _computer_runtime(pool, "research").build_turn_agent(
                         session_id="s-1", trace_id="t-2", host=host
                     )
                     try:
@@ -1146,7 +1146,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await _collect_events(
                         client, accepted["request_id"], timeout=5
                     )
-                    research = pool.get_agent("research")
+                    research = _computer_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-1",
                         app_id=research.app_id,
@@ -1156,7 +1156,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_subagent_step_submits_its_request_outside_step_context(self) -> None:
+    async def test_subagent_call_inside_a_dbos_step_submits_over_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 with patch(
@@ -1203,7 +1203,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         result = await _collect_terminal_payload(client, request_id, timeout=5)
                         self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                        primary = pool.get_agent("primary-app")
+                        primary = _computer_runtime(pool, "primary-app")
                         request_events = await primary.runtime_store.list_request_events(request_id)
                         subagent_events = [
                             event
@@ -1217,7 +1217,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             .get("request_id")
                         )
 
-                        research = pool.get_agent("research")
+                        research = _computer_runtime(pool, "research")
                         expected_subagent_session = "s-1"
                         turns = await research.store.get_turns(
                             session_id=expected_subagent_session,
@@ -1263,7 +1263,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(first["request_id"], "req-1-sub-0-0")
                     self.assertEqual(second["request_id"], "req-1-sub-0-0")
                     self.assertEqual(second["text"], "research-ok")
-                    research = pool.get_agent("research")
+                    research = _computer_runtime(pool, "research")
                     accepted = [
                         e
                         for e in await research.runtime_store.list_request_events("req-1-sub-0-0")
@@ -1301,6 +1301,11 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("boom", str(events[-1]["data"]["error"]))
                 finally:
                     await pool.close()
+
+def _computer_runtime(pool, agent_id: str):
+    """The runtime serving ``agent_id`` on its local computer."""
+    return pool._computer_provider.agent_servers[agent_id].runtime
+
 
 async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []

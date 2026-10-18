@@ -24,18 +24,23 @@ MASH_HOST_API_URL_ENV = "MASH_HOST_API_URL"
 
 
 class HostRelay:
-    """Pool access for a runtime on a computer: subagents resolve to the host."""
+    """Subagent access for a runtime on a computer: subagents resolve to the host."""
 
     def __init__(self, pool: Any, *, host_api_url: str, token: str) -> None:
         self._pool = pool
         self._relay_url = f"{host_api_url.rstrip('/')}/h2a"
         self._token = token
+        self._clients: dict[str, AgentClient] = {}
 
     def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None:
         return self._pool.get_agent_metadata(agent_id)
 
     def get_client(self, agent_id: str) -> AgentClient:
-        return AgentClient(self._relay_url, agent_id, token=self._token)
+        client = self._clients.get(agent_id)
+        if client is None:
+            client = AgentClient(self._relay_url, agent_id, token=self._token)
+            self._clients[agent_id] = client
+        return client
 
 
 def build_agent_server(
@@ -67,7 +72,9 @@ def build_agent_server(
         session_id=str(uuid.uuid4()),
         token=token,
     )
-    server.runtime.attach_pool(HostRelay(pool, host_api_url=host_api_url, token=token))
+    server.runtime.attach_subagent_access(
+        HostRelay(pool, host_api_url=host_api_url, token=token)
+    )
     return server
 
 

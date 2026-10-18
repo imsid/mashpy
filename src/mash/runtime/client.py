@@ -1,11 +1,9 @@
-"""Async H2A clients for interacting with one agent runtime."""
+"""Async H2A HTTP client for one agent server."""
 
 from __future__ import annotations
 
-import asyncio
-import contextvars
+import contextlib
 import json
-import time
 from typing import Any, AsyncIterator, Dict, Optional, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -127,6 +125,15 @@ class AgentClient:
                     self._headers[key] = str(value)
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
+        self._client: httpx.AsyncClient | None = None
+
+    @contextlib.asynccontextmanager
+    async def _session(self) -> AsyncIterator[httpx.AsyncClient]:
+        # One httpx client for the AgentClient's lifetime: building one per
+        # call costs ~15ms (a fresh TLS context) on every request and stream.
+        if self._client is None:
+            self._client = httpx.AsyncClient(headers=self._headers)
+        yield self._client
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
@@ -198,7 +205,7 @@ class AgentClient:
 
     async def health(self, *, timeout: float = 5.0) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.get(
                     self._health_url(),
                     headers={"Accept": "application/json"},
@@ -217,7 +224,7 @@ class AgentClient:
 
     async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.get(
                     self._describe_url(),
                     headers={"Accept": "application/json"},
@@ -243,7 +250,7 @@ class AgentClient:
         timeout: float = 120.0,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.post(
                     self._compact_url(session_id),
                     json={
@@ -297,7 +304,7 @@ class AgentClient:
             payload["parent"] = dict(parent)
 
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.post(
                     self._request_url(),
                     json=payload,
@@ -330,7 +337,7 @@ class AgentClient:
             "response": response,
         }
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 resp = await client.post(
                     self._interaction_url(request_id),
                     json=payload,
@@ -368,7 +375,7 @@ class AgentClient:
         timeout_config = None if timeout is None else httpx.Timeout(timeout)
 
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 async with client.stream(
                     "GET",
                     self._request_stream_url(request_id),
@@ -410,7 +417,7 @@ class AgentClient:
         timeout: float = 10.0,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.get(
                     self._request_status_url(request_id),
                     timeout=timeout,
@@ -435,7 +442,7 @@ class AgentClient:
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.post(
                     self._request_resume_url(request_id),
                     timeout=timeout,
@@ -460,7 +467,7 @@ class AgentClient:
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.post(
                     self._request_cancel_url(request_id),
                     timeout=timeout,
@@ -483,7 +490,7 @@ class AgentClient:
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(headers=self._headers) as client:
+            async with self._session() as client:
                 response = await client.post(
                     self._request_rerun_url(request_id),
                     timeout=timeout,
@@ -500,166 +507,9 @@ class AgentClient:
         return response.json()
 
     async def close(self) -> None:
-        return None
-
-
-class InProcessAgentClient:
-    """Client adapter for talking to an in-process runtime without HTTP."""
-
-    def __init__(self, runtime: Any) -> None:
-        self.runtime = runtime
-        self.agent_id = runtime.app_id
-        self.base_url = f"inproc://{self.agent_id}"
-        self._headers: Dict[str, str] = {}
-
-    async def health(self, *, timeout: float = 5.0) -> dict[str, Any]:
-        del timeout
-        session_info = await self.runtime.get_session_info()
-        return {
-            "status": "ok",
-            "agent_id": self.agent_id,
-            "app_id": self.runtime.app_id,
-            "session": session_info,
-        }
-
-    async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]:
-        del timeout
-        return self.runtime.describe()
-
-    async def compact_session(
-        self,
-        session_id: str,
-        *,
-        reason: str = "manual",
-        session_total_tokens_reset: int = 0,
-        timeout: float = 120.0,
-    ) -> dict[str, Any]:
-        del timeout
-        summary_text, trace_id = await self.runtime.compact_session(
-            session_id=session_id,
-            reason=reason,
-            session_total_tokens_reset=session_total_tokens_reset,
-        )
-        return {"summary_text": summary_text, "trace_id": trace_id}
-
-    async def post_request(
-        self,
-        message: str,
-        *,
-        session_id: str,
-        structured_output: Any = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        request_id: Optional[str] = None,
-        context: Optional[str] = None,
-        host: Optional[Dict[str, Any]] = None,
-        parent: Optional[Dict[str, Any]] = None,
-        timeout: float = 30.0,
-    ) -> str:
-        del timeout
-        # Submit from an empty context, as an HTTP submit would: the caller may
-        # be inside a DBOS step (InvokeSubagent, a workflow AgentStep), and DBOS
-        # refuses to start a workflow from step context. The request starts as
-        # its own top-level workflow either way.
-        accepted = await contextvars.Context().run(
-            asyncio.create_task,
-            self.runtime.submit_request(
-                message=message,
-                session_id=session_id,
-                structured_output=structured_output,
-                host_snapshot=host,
-                context=context,
-                metadata=metadata,
-                request_id=request_id,
-                parent=parent,
-            ),
-        )
-        request_id = str(accepted.get("request_id") or "").strip()
-        if not request_id:
-            raise AgentClientError("Agent POST response missing request_id")
-        return request_id
-
-    async def post_interaction(
-        self,
-        request_id: str,
-        *,
-        interaction_id: str,
-        response: Any,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        del timeout
-        from dbos import DBOS as _DBOS
-
-        from .engine.workflow import workflow_id_for
-
-        wf_id = workflow_id_for(self.agent_id, request_id)
-        await _DBOS.send_async(wf_id, response, topic=interaction_id)
-        return {"ok": True, "interaction_id": interaction_id}
-
-    async def stream_response(
-        self,
-        request_id: str,
-        *,
-        timeout: Optional[float] = None,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        cursor = 0
-        started_at = time.time()
-        poll_timeout = 0.25
-        while True:
-            elapsed = time.time() - started_at
-            if timeout is not None and elapsed > timeout:
-                raise TimeoutError("agent stream timed out")
-
-            wait_timeout = poll_timeout
-            if timeout is not None:
-                wait_timeout = max(0.0, min(poll_timeout, timeout - elapsed))
-            events, cursor, done = await self.runtime.stream_response_events(
-                request_id,
-                cursor=cursor,
-                wait_timeout=wait_timeout,
-            )
-            for event in events:
-                yield event
-            if done:
-                return
-
-    async def get_request_status(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 10.0,
-    ) -> dict[str, Any]:
-        del timeout
-        return await self.runtime.get_request_status(request_id)
-
-    async def resume_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        del timeout
-        return await self.runtime.resume_request(request_id)
-
-    async def cancel_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        del timeout
-        return await self.runtime.cancel_request(request_id)
-
-    async def rerun_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        del timeout
-        return await self.runtime.rerun_request(request_id)
-
-    async def close(self) -> None:
-        return None
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
 
 __all__ = [
@@ -667,5 +517,4 @@ __all__ = [
     "AgentClientError",
     "AgentClientLike",
     "AgentUnavailableError",
-    "InProcessAgentClient",
 ]

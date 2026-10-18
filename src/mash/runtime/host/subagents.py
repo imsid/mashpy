@@ -35,8 +35,8 @@ class AgentMetadata:
                 raise ValueError("agent metadata capabilities must be non-empty")
 
 
-class SubagentPoolAccess(Protocol):
-    """Narrow pool surface a runtime needs to wire subagents per turn."""
+class SubagentAccess(Protocol):
+    """What a runtime needs to wire subagents per turn: their metadata and clients."""
 
     def get_client(self, agent_id: str) -> Any: ...
 

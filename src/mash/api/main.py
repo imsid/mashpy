@@ -96,6 +96,7 @@ def _run_serve_command(args) -> int:
         bind_port=args.port,
         runtime_database_url=args.runtime_database_url,
         api_key=api_key,
+        host_app=args.host_app,
         cors_allow_origins=(
             args.cors_origin
             if args.cors_origin is not None
