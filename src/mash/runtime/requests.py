@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 # Caller-supplied request ids end up inside DBOS workflow ids
 # (``{agent_id}:{request_id}``), so they are kept to a conservative charset.
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,255}$")
 
 
 class RequestIdConflictError(ValueError):
@@ -40,6 +41,14 @@ def validate_request_id(request_id: Any) -> str:
             "request_id must be 1-255 characters of letters, digits, '.', '_', ':' or '-'"
         )
     return request_id
+
+
+def validate_user_id(user_id: Any) -> str:
+    if not isinstance(user_id, str) or not _USER_ID_RE.match(user_id):
+        raise ValueError(
+            "user_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
+        )
+    return user_id
 
 
 def _require_str(parent: dict[str, Any], key: str) -> str:
@@ -131,14 +140,23 @@ async def submit_request(
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit one request. A known ``request_id`` returns the existing request."""
     if request_id is not None:
         validate_request_id(request_id)
+    if user_id is not None:
+        validate_user_id(user_id)
     normalized_structured_output = serialize_structured_output(structured_output)
     request_metadata: dict[str, Any] = {}
     if parent is not None:
         request_metadata.update(parent_request_metadata(parent, agent_id=self.app_id))
+        if user_id is not None and parent.get("kind") == "workflow":
+            raise ValueError("a request with a workflow parent cannot carry a user_id")
+    if user_id is not None:
+        # Caller context like ``metadata``: stored with the request, never
+        # shown to the model.
+        request_metadata["user_id"] = user_id
     if normalized_structured_output is not None:
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:
@@ -247,6 +265,13 @@ def find_pending_interaction(
         return None
     # dicts preserve insertion order; the last still-open create wins.
     return next(reversed(pending))
+
+
+def user_id_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[str]:
+    user_id = dict(request_metadata or {}).get("user_id")
+    return user_id if isinstance(user_id, str) and user_id else None
 
 
 def caller_metadata_from_request_metadata(
@@ -520,15 +545,18 @@ async def append_runtime_event(
 
 def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
     if event.event_type == RuntimeEventType.REQUEST_ACCEPTED.value:
-        return {
-            "event": "request.accepted",
-            "data": {
-                "request_id": event.request_id,
-                "agent_id": event.agent_id,
-                "session_id": event.session_id,
-                "status": "accepted",
-            },
+        data = {
+            "request_id": event.request_id,
+            "agent_id": event.agent_id,
+            "session_id": event.session_id,
+            "status": "accepted",
         }
+        user_id = user_id_from_request_metadata(
+            (event.payload or {}).get("request_metadata")
+        )
+        if user_id is not None:
+            data["user_id"] = user_id
+        return {"event": "request.accepted", "data": data}
     if event.event_type == RuntimeEventType.TRACE_STARTED.value:
         return {
             "event": "request.started",

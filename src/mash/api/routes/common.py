@@ -17,6 +17,7 @@ from mash.runtime import Pool
 from mash.memory.store import MemoryStore
 from mash.runtime.client import AgentClientLike
 from mash.runtime.events import RuntimeStore
+from mash.runtime.requests import validate_user_id
 
 # Cookie the admin SPA sets so its same-origin API calls authenticate without
 # an explicit Authorization header.
@@ -55,6 +56,7 @@ class AppRuntimeState:
 class SubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    user_id: Optional[str] = None
     structured_output: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
 
@@ -68,6 +70,7 @@ class DefineHostRequest(BaseModel):
 class HostSubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    user_id: Optional[str] = None
     structured_output: Optional[dict[str, Any]] = None
     context: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
@@ -154,6 +157,15 @@ def require_session_id(value: str) -> str:
     if not text:
         raise APIError(code="INVALID_REQUEST", message="session_id is required", status_code=400)
     return text
+
+
+def optional_user_id(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return validate_user_id(value)
+    except ValueError as exc:
+        raise APIError(code="INVALID_USER_ID", message=str(exc), status_code=400) from exc
 
 
 def require_trace_id(value: str) -> str:

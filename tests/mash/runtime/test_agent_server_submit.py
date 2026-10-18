@@ -108,6 +108,28 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.assertIsNone(submission["context"])
         self.assertIsNone(submission["host_snapshot"])
         self.assertIsNone(submission["parent"])
+        self.assertIsNone(submission["user_id"])
+
+    def test_forwards_user_id(self) -> None:
+        resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": "u@acme.io"})
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(self.runtime.submissions[0]["user_id"], "u@acme.io")
+
+    def test_invalid_user_id_returns_400(self) -> None:
+        for user_id in ("", "has space", 42, "x" * 256):
+            resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": user_id})
+            self.assertEqual(resp.status_code, 400, user_id)
+        self.assertEqual(self.runtime.submissions, [])
+
+    def test_workflow_parent_with_user_id_returns_400(self) -> None:
+        parent = {"kind": "workflow", "workflow_id": "wf", "run_id": "r", "task_id": "t"}
+        resp = self._post(
+            {"message": "step", "session_id": "s-1", "user_id": "u-1", "parent": parent}
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.runtime.submissions, [])
 
     def test_forwards_request_id_context_host_and_parent(self) -> None:
         host = {"host_id": "assistant", "primary": "concierge", "subagents": ["agent-a"]}

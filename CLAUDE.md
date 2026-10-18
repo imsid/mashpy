@@ -476,6 +476,15 @@ prompt text). It is stored on the request, so a crash-replayed request reruns
 with the same metadata; tools read it during execution via
 `mash.logging.get_request_metadata()`, and subagent requests inherit it.
 
+Submit bodies also take an optional `user_id`: the end user the request acts
+for (1 to 255 letters, digits, `.`, `_`, `:`, `@` or `-`). The host is the
+trust boundary: the app asserts the user, and the host passes it to the
+primary. It is stored on the request and its turns and never shown to the
+model. Subagent calls carry the parent request's user, set by the host's
+`/h2a` relay, so an agent cannot act for another user. `search_conversations`
+offers scope `user` (the user's conversations with that agent) only on
+requests with a `user_id`; without one it searches the current session only.
+
 From the CLI, `mash compose` defines the host on the deployment (idempotent
 PUT) and pins later commands to it:
 

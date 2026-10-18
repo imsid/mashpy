@@ -92,3 +92,20 @@ class RuntimeEvent:
     # Set only by the five events that move a request between lifecycle states;
     # None on everything else. The store projects it onto runtime_request.
     lifecycle: Optional[RequestStatus] = None
+
+
+@dataclass(frozen=True)
+class RequestIdentity:
+    """The agent a request was accepted for, and the user it acts for."""
+
+    agent_id: str
+    user_id: Optional[str] = None
+
+
+def accepted_user_id(event: RuntimeEvent) -> Optional[str]:
+    """The ``user_id`` an accepted event's request carries, or None."""
+    if event.event_type != RuntimeEventType.REQUEST_ACCEPTED.value:
+        return None
+    request_metadata = (event.payload or {}).get("request_metadata") or {}
+    user_id = request_metadata.get("user_id")
+    return user_id if isinstance(user_id, str) and user_id else None

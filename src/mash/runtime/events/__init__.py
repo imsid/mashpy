@@ -27,12 +27,14 @@ from .trace import (
 from .types import (
     FeedbackRecord,
     FeedbackType,
+    RequestIdentity,
     RequestStatus,
     RuntimeEvent,
     RuntimeEventType,
 )
 
 __all__ = [
+    "RequestIdentity",
     "analyze_trace",
     "build_reasoning_trace",
     "build_runtime_trace",

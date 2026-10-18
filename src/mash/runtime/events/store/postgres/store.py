@@ -204,6 +204,10 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.get_request_status(self._pool, request_id)
 
+    async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
+        await self.open()
+        return await loaders.get_request_identity(self._pool, request_id)
+
     async def read_request_stream(
         self, request_id: str, *, after_seq: int = 0
     ) -> tuple[list[RuntimeEvent], bool]:

@@ -5,7 +5,9 @@ never directly. They speak H2A as ``AgentServer`` does (no ``{data}``
 envelope), so the computer uses a plain ``AgentClient`` pointed at
 ``{host}/h2a``. Each call authenticates with the caller's agent token; the
 host checks it against the request's ``parent`` and host snapshot, then
-forwards to the subagent's client.
+forwards to the subagent's client. The subagent request acts for the parent
+request's user: the host copies ``user_id`` from the parent's stored request,
+so a primary cannot name another user.
 """
 
 from __future__ import annotations
@@ -79,6 +81,22 @@ def build_h2a_router() -> APIRouter:
                 403, "FORBIDDEN", f"subagent '{agent_id}' is not in the request's host"
             )
 
+        state = state_from_request(request)
+        store = state.pool.get_runtime_store()
+        if store is None:
+            return _h2a_error(503, "H2A_UNAVAILABLE", "runtime store is not available")
+        identity = await store.get_request_identity(str(parent.get("request_id")))
+        if identity is None:
+            return _h2a_error(400, "INVALID_PARENT", "parent request not found")
+        if identity.agent_id != caller:
+            return _h2a_error(
+                403, "FORBIDDEN", f"parent request does not belong to agent '{caller}'"
+            )
+        if "user_id" in body and body.get("user_id") != identity.user_id:
+            return _h2a_error(
+                403, "FORBIDDEN", "user_id must match the parent request's user"
+            )
+
         message = body.get("message")
         session_id = body.get("session_id")
         if not isinstance(message, str) or not message.strip():
@@ -92,7 +110,6 @@ def build_h2a_router() -> APIRouter:
             except ValueError as exc:
                 return _h2a_error(400, "INVALID_REQUEST", str(exc))
 
-        state = state_from_request(request)
         try:
             client = state.pool.get_client(agent_id)
         except ValueError as exc:
@@ -107,6 +124,7 @@ def build_h2a_router() -> APIRouter:
                 context=body.get("context"),
                 host=host,
                 parent=parent,
+                user_id=identity.user_id,
             )
         except AgentUnavailableError as exc:
             return _h2a_error(503, "AGENT_UNAVAILABLE", str(exc))

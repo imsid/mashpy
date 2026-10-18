@@ -17,7 +17,12 @@ from starlette.routing import Route
 from .engine.workflow import workflow_id_for
 from .errors import RequestStaleError
 from .events import PostgresRuntimeStore
-from .requests import RequestIdConflictError, parent_request_metadata, validate_request_id
+from .requests import (
+    RequestIdConflictError,
+    parent_request_metadata,
+    validate_request_id,
+    validate_user_id,
+)
 from .service import AgentRuntime
 from .structured_output import serialize_structured_output
 
@@ -236,6 +241,17 @@ class AgentServer:
             except ValueError as exc:
                 return _json_error(400, "INVALID_PARENT", str(exc))
 
+        user_id = payload.get("user_id")
+        if user_id is not None:
+            try:
+                validate_user_id(user_id)
+            except ValueError as exc:
+                return _json_error(400, "INVALID_REQUEST", str(exc))
+            if parent is not None and parent.get("kind") == "workflow":
+                return _json_error(
+                    400, "INVALID_REQUEST", "a workflow step request cannot carry a user_id"
+                )
+
         request_id = payload.get("request_id")
         if request_id is not None:
             try:
@@ -259,6 +275,7 @@ class AgentServer:
                 metadata=metadata,
                 request_id=request_id,
                 parent=parent,
+                user_id=user_id,
             )
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))

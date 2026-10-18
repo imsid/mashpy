@@ -27,7 +27,7 @@ from mash.api.routes.h2a import build_h2a_router
 from mash.runtime import Host, HostBuilder
 from mash.runtime.computer import HostRelay, build_agent_server
 from mash.runtime.engine import dbos as engine_dbos
-from mash.runtime.events import RuntimeEvent, RuntimeEventType
+from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.computers import ComputerEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
 from mash.runtime.factory import build_agent_instance
@@ -172,6 +172,26 @@ class H2ARelayAuthTests(unittest.TestCase):
         app.state.runtime_state = SimpleNamespace(pool=pool, host_secret=SECRET)
         self.app = app
         self.http = TestClient(app)
+        self._accept("req-1", agent_id="primary-app", user_id="u-1")
+
+    def _accept(self, request_id: str, *, agent_id: str, user_id: str | None = None) -> None:
+        import asyncio
+
+        request_metadata = {"user_id": user_id} if user_id else {}
+        asyncio.run(
+            self.store.append_event(
+                RuntimeEvent(
+                    request_id=request_id,
+                    app_id=agent_id,
+                    agent_id=agent_id,
+                    session_id="s-1",
+                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    dedupe_key="request.accepted",
+                    lifecycle=RequestStatus.RUNNING,
+                    payload={"request_metadata": request_metadata},
+                )
+            )
+        )
 
     def _submit(self, *, caller: str = "primary-app", **overrides: Any):
         body = {
@@ -202,6 +222,50 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(call["request_id"], "req-1-sub-0-0")
         self.assertEqual(call["host"], HOST_SNAPSHOT)
         self.assertEqual(call["parent"]["agent_id"], "primary-app")
+        self.assertEqual(call["user_id"], "u-1")
+
+    def test_matching_user_id_is_forwarded(self) -> None:
+        resp = self._submit(user_id="u-1")
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(self.client_for_research.calls[0]["user_id"], "u-1")
+
+    def test_another_user_id_is_403(self) -> None:
+        resp = self._submit(user_id="u-2")
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
+
+    def test_parent_without_a_user_forwards_none(self) -> None:
+        self._accept("req-anon", agent_id="primary-app")
+
+        resp = self._submit(parent={
+            "kind": "subagent", "request_id": "req-anon",
+            "agent_id": "primary-app", "session_id": "s-1",
+        })
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertIsNone(self.client_for_research.calls[0]["user_id"])
+
+    def test_unknown_parent_request_is_400(self) -> None:
+        resp = self._submit(parent={
+            "kind": "subagent", "request_id": "req-missing",
+            "agent_id": "primary-app", "session_id": "s-1",
+        })
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "INVALID_PARENT")
+
+    def test_parent_request_of_another_agent_is_403(self) -> None:
+        self._accept("req-other", agent_id="other", user_id="u-9")
+
+        resp = self._submit(parent={
+            "kind": "subagent", "request_id": "req-other",
+            "agent_id": "primary-app", "session_id": "s-1",
+        })
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
 
     def test_invalid_token_is_401(self) -> None:
         resp = self.http.post(
@@ -325,7 +389,7 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with host_app.router.lifespan_context(host_app):
                 accepted = await host_pool.submit_host_request(
-                    "assistant", message="delegate", session_id="s-1"
+                    "assistant", message="delegate", session_id="s-1", user_id="u-1"
                 )
                 events = [
                     event
@@ -335,6 +399,7 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 # The subagent ran on its own computer, under the parent session.
                 turns = await memory_store.get_turns(session_id="s-1", app_id="research")
+                turn_users = {(t["app_id"], t["user_id"]) for t in memory_store._turns}
         finally:
             await primary_server.runtime.shutdown()
             await research_server.runtime.shutdown()
@@ -349,6 +414,9 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(subagent_completed), 1)
         self.assertEqual(turns[-1]["user_message"], "analyze")
+        # The host copied the primary request's user onto the subagent call,
+        # so both turns are stored for that user.
+        self.assertEqual(turn_users, {("primary-app", "u-1"), ("research", "u-1")})
 
 
 if __name__ == "__main__":

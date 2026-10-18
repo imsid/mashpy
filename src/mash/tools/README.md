@@ -19,7 +19,10 @@
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.
 - `ask_user.py`: `AskUser`, lets agents request information from the user mid-execution.
-- `runtime.py`: runtime-facing helpers for tool execution.
+- `runtime.py`: the runtime tools `search_conversations` and
+  `get_full_turn_message`. They reach the current session, or with a request
+  `user_id` that user's sessions with the agent, and never another user's
+  turns.
 
 ## Tool Approval
 

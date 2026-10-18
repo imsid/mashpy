@@ -17,6 +17,7 @@ class FakeEventLogger:
 class FakeStore:
     def __init__(self) -> None:
         self.turn_lookup_calls: list[list[dict[str, str]]] = []
+        self.turn_lookup_user_ids: list[str | None] = []
         self.turn_lookup_result: list[dict[str, object]] | None = None
         self.turn_lookup_error: Exception | None = None
 
@@ -24,9 +25,11 @@ class FakeStore:
         self,
         pairs: list[dict[str, str]],
         app_id: str,
+        user_id: str | None = None,
     ) -> list[dict[str, object]] | None:
         del app_id
         self.turn_lookup_calls.append(list(pairs))
+        self.turn_lookup_user_ids.append(user_id)
         if self.turn_lookup_error is not None:
             raise self.turn_lookup_error
         return self.turn_lookup_result
@@ -46,6 +49,7 @@ class FakeSearchService:
         app_id: str,
         limit: int = 10,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> list[SearchResult]:
         self.calls.append(
             {
@@ -53,6 +57,7 @@ class FakeSearchService:
                 "app_id": app_id,
                 "limit": limit,
                 "session_id": session_id,
+                "user_id": user_id,
             }
         )
         if self.error is not None:
@@ -69,6 +74,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
             store=self.store,  # type: ignore[arg-type]
             app_id="db",
             session_id="s1",
+            user_id="u-1",
             event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         self.search_service = FakeSearchService()
@@ -103,16 +109,39 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["results"]), 1)
         self.assertEqual(payload["results"][0]["trace_id"], "t1")
 
-    async def test_search_app_scope_uses_none_session(self) -> None:
+    async def test_search_user_scope_searches_the_users_sessions(self) -> None:
         result = await self.search_tool.execute(
-            {"query": "@agent:answer", "scope": "app"}
+            {"query": "@agent:answer", "scope": "user"}
         )
 
         self.assertFalse(result.is_error)
         self.assertEqual(self.search_service.calls[0]["session_id"], None)
+        self.assertEqual(self.search_service.calls[0]["user_id"], "u-1")
         payload = json.loads(result.content)
-        self.assertEqual(payload["scope"], "app")
+        self.assertEqual(payload["scope"], "user")
         self.assertIsNone(payload["session_id"])
+        self.assertNotIn("u-1", result.content)
+
+    async def test_without_a_user_only_the_session_is_searchable(self) -> None:
+        builder = RuntimeToolBuilder(
+            store=self.store,  # type: ignore[arg-type]
+            app_id="db",
+            session_id="s1",
+            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
+        )
+        builder._search_service = self.search_service  # type: ignore[assignment]
+        search_tool = next(
+            tool for tool in builder.build_tools() if tool.name == "search_conversations"
+        )
+
+        rejected = await search_tool.execute({"query": "@user:test", "scope": "user"})
+        allowed = await search_tool.execute({"query": "@user:test"})
+
+        self.assertTrue(rejected.is_error)
+        self.assertFalse(allowed.is_error)
+        self.assertEqual(len(self.search_service.calls), 1)
+        self.assertEqual(self.search_service.calls[0]["session_id"], "s1")
+        self.assertIsNone(self.search_service.calls[0]["user_id"])
 
     async def test_default_scope_is_session(self) -> None:
         result = await self.search_tool.execute({"query": "@user:test"})
@@ -158,7 +187,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
         }
 
         result = await self.search_tool.execute(
-            {"query": "ad conversion metrics", "scope": "app", "limit": 10}
+            {"query": "ad conversion metrics", "scope": "user", "limit": 10}
         )
 
         self.assertFalse(result.is_error)
@@ -229,6 +258,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
             store=self.store,  # type: ignore[arg-type]
             app_id="db",
             session_id="s1",
+            user_id="u-1",
             event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         self.builder._search_service = FakeSearchService()  # type: ignore[assignment]
@@ -271,6 +301,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
                 {"trace_id": "t3", "session_id": "s9"},
             ]],
         )
+        self.assertEqual(self.store.turn_lookup_user_ids, ["u-1"])
         payload = json.loads(result.content)
         self.assertEqual(payload["requested_count"], 2)
         self.assertEqual(payload["found_count"], 2)
@@ -366,6 +397,52 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class RuntimeFullTurnWithoutUserTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.store = FakeStore()
+        builder = RuntimeToolBuilder(
+            store=self.store,  # type: ignore[arg-type]
+            app_id="db",
+            session_id="s1",
+            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
+        )
+        builder._search_service = FakeSearchService()  # type: ignore[assignment]
+        self.turn_tool = next(
+            tool for tool in builder.build_tools() if tool.name == "get_full_turn_message"
+        )
+
+    async def test_other_sessions_come_back_missing(self) -> None:
+        self.store.turn_lookup_result = [
+            {"trace_id": "t1", "session_id": "s1", "user_message": "hi", "agent_response": "yo"}
+        ]
+
+        result = await self.turn_tool.execute(
+            {
+                "pairs": [
+                    {"trace_id": "t1", "session_id": "s1"},
+                    {"trace_id": "t2", "session_id": "s2"},
+                ]
+            }
+        )
+
+        self.assertEqual(
+            self.store.turn_lookup_calls, [[{"trace_id": "t1", "session_id": "s1"}]]
+        )
+        self.assertEqual(self.store.turn_lookup_user_ids, [None])
+        payload = json.loads(result.content)
+        self.assertEqual(payload["found_count"], 1)
+        self.assertEqual(payload["missing_pairs"], [{"trace_id": "t2", "session_id": "s2"}])
+
+    async def test_only_other_sessions_skip_the_store(self) -> None:
+        result = await self.turn_tool.execute(
+            {"pairs": [{"trace_id": "t2", "session_id": "s2"}]}
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(self.store.turn_lookup_calls, [])
+        self.assertEqual(json.loads(result.content)["found_count"], 0)
+
+
 class RuntimeToolMetadataTests(unittest.TestCase):
     def setUp(self) -> None:
         self.builder = RuntimeToolBuilder(
@@ -396,7 +473,20 @@ class RuntimeToolMetadataTests(unittest.TestCase):
         self.assertEqual(search_tool.parameters["properties"]["query"]["type"], "string")
         self.assertEqual(
             search_tool.parameters["properties"]["scope"]["enum"],
-            ["session", "app"],
+            ["session"],
+        )
+        user_builder = RuntimeToolBuilder(
+            store=FakeStore(),  # type: ignore[arg-type]
+            app_id="db",
+            session_id="s1",
+            user_id="u-1",
+            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
+        )
+        user_search = next(
+            tool for tool in user_builder.build_tools() if tool.name == "search_conversations"
+        )
+        self.assertEqual(
+            user_search.parameters["properties"]["scope"]["enum"], ["session", "user"]
         )
         self.assertEqual(search_tool.parameters["required"], ["query"])
 

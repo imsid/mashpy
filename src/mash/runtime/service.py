@@ -197,6 +197,7 @@ class AgentRuntime:
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
@@ -208,6 +209,7 @@ class AgentRuntime:
             metadata=metadata,
             request_id=request_id,
             parent=parent,
+            user_id=user_id,
         )
 
     def describe(self) -> dict[str, Any]:
@@ -288,9 +290,14 @@ class AgentRuntime:
         session_id: str,
         trace_id: str,
         host: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> Any:
         agent = factory_helpers.build_agent_instance(
-            self, session_id=session_id, shared_llm=self._shared_llm, host=host,
+            self,
+            session_id=session_id,
+            shared_llm=self._shared_llm,
+            host=host,
+            user_id=user_id,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent
