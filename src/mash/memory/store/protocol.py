@@ -90,6 +90,25 @@ class MemoryStore(Protocol):
         """Get conversation turns for a session."""
         ...
 
+    async def list_user_turns(
+        self,
+        user_id: str,
+        *,
+        after: float = 0.0,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """The user's own turns after ``after``, oldest first, across agents.
+
+        Leaves out workflow and subagent turns: these are the turns where the
+        user spoke to the pool. Each row has ``trace_id``, ``session_id``,
+        ``app_id``, ``user_message``, ``agent_response`` and ``created_at``.
+        """
+        ...
+
+    async def count_user_turns(self, user_id: str, *, after: float = 0.0) -> int:
+        """How many turns ``list_user_turns`` would return without a limit."""
+        ...
+
     async def list_workflow_turns(
         self,
         app_id: str,

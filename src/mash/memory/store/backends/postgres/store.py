@@ -379,6 +379,49 @@ class PostgresStore(MemoryStore):
             )
         return turns
 
+    _USER_TURNS_FILTER = """
+        user_id = %s
+        AND workflow_id IS NULL
+        AND NOT (metadata ? 'subagent_id')
+        AND created_at > %s
+    """
+
+    async def list_user_turns(
+        self,
+        user_id: str,
+        *,
+        after: float = 0.0,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        await self.open()
+        sql = f"""
+            SELECT trace_id, session_id, app_id, user_message, agent_response, created_at
+            FROM memory_turns
+            WHERE {self._USER_TURNS_FILTER}
+            ORDER BY created_at ASC, trace_id ASC
+            LIMIT %s
+        """
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, [user_id, float(after), int(limit)])
+        return [
+            {
+                "trace_id": str(row["trace_id"]),
+                "session_id": str(row["session_id"]),
+                "app_id": str(row["app_id"]),
+                "user_message": str(row["user_message"] or ""),
+                "agent_response": str(row["agent_response"] or ""),
+                "created_at": float(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    async def count_user_turns(self, user_id: str, *, after: float = 0.0) -> int:
+        await self.open()
+        sql = f"SELECT COUNT(*) AS n FROM memory_turns WHERE {self._USER_TURNS_FILTER}"
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, [user_id, float(after)])
+        return int(rows[0]["n"]) if rows else 0
+
     async def list_workflow_turns(
         self,
         app_id: str,

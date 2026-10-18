@@ -65,7 +65,8 @@ class HostBuilder:
         """Turn on Cortex, per-user memory shared by every agent in the pool.
 
         Agents serving a request with a ``user_id`` get the user's profile in
-        their context and the read-only ``search_cortex`` tool.
+        their context and the read-only ``search_cortex`` tool. The pool also
+        gets ``cortex-agent`` and the on-demand ``cortex-build`` workflow.
         """
         from mash.agents.cortex import DEFAULT_PROFILE_MAX_CHARS, CortexSettings
 
@@ -108,6 +109,18 @@ class HostBuilder:
             pool.register_default_workflow(workflow)
         for workflow in self._workflows:
             pool.register_workflow(workflow)
+        if self._cortex is not None:
+            cortex = importlib.import_module("mash.agents.cortex")
+            cortex_agent_spec = cortex.CortexAgentSpec(self._cortex)
+            cortex_agent_spec.runtime_context.bind_pool(pool)
+            pool.register_agent(
+                cortex_agent_spec,
+                metadata=cortex.build_cortex_agent_metadata(),
+                agent_id=cortex.CORTEX_AGENT_ID,
+            )
+            pool.register_workflow(
+                cortex.build_cortex_build_workflow(cortex_agent_spec.runtime_context)
+            )
         # Hosts are defined last so workflow-id validation sees every
         # registered workflow. Pool defaults are appended to both these hosts
         # and hosts defined later through the control API.
