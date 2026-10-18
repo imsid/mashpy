@@ -49,6 +49,7 @@ class AppRuntimeState:
     api_key: Optional[str]
     default_events_limit: int
     default_search_limit: int
+    host_secret: Optional[str] = None
 
 
 class SubmitRequest(BaseModel):

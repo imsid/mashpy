@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from mash.api.logging import PostgresAPIEventStore
 from mash.api.middleware import APILoggingMiddleware
 from mash.api.routes.agent import build_agent_router
+from mash.api.routes.h2a import build_h2a_router
 from mash.api.routes.evals import build_evals_router
 from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
@@ -68,6 +69,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             api_event_store=api_event_store,
             eval_service=eval_service,
             api_key=resolved_config.resolved_api_key(),
+            host_secret=resolved_config.resolved_host_secret(),
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
             default_search_limit=max(1, int(resolved_config.default_search_limit)),
         )
@@ -196,6 +198,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api.include_router(build_feedback_router())
     api.include_router(build_evals_router())
     app.include_router(api)
+    app.include_router(build_h2a_router())
 
     @app.get("/")
     async def root() -> dict[str, object]:

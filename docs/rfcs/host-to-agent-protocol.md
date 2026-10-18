@@ -650,6 +650,14 @@ The caller streams and answers interactions through the agent routes using the r
 
 Unknown request ids return `404 REQUEST_NOT_FOUND` on all four routes.
 
+### 10.5 Agent Relay
+
+A host whose agents run on separate computers MAY expose a relay that agents use to call their subagents. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
+
+- Each agent authenticates with its own bearer token. The relay returns `401 UNAUTHORIZED` for a token that matches no agent.
+- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller, and a `host` snapshot whose `subagents` contain `subagent_id`. Otherwise the relay returns `403 FORBIDDEN`. An allowed request is forwarded to the subagent's client.
+- `GET /agent/{subagent_id}/request/{request_id}` streams the request's events. Only the agent named in the request's `parent` may stream it.
+
 ## 11. Error Model
 
 Transport and validation errors MUST be returned as JSON objects of the form:
@@ -675,6 +683,7 @@ HTTP status codes used by the bindings:
 - `202 Accepted` for request submission on the per-agent HTTP server
 - `400 Bad Request` for invalid JSON or invalid field values
 - `401 Unauthorized` for a missing or invalid bearer token
+- `403 Forbidden` for an agent relay call the caller's token does not permit (section 10.5)
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
 - `409 Conflict` for resuming a stale request, or a `request_id` that belongs to another agent
 - `422 Unprocessable Entity` for host request bodies that fail schema validation

@@ -22,6 +22,19 @@ This README is intended to be prompt-cache friendly for the `api-copilot` agent:
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
 - `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
+- `/h2a/*` is the relay agent computers use for subagent calls. It does not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret the relay returns `503 H2A_UNAVAILABLE`.
+
+## H2A Relay
+
+Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient` at `{host}/h2a`.
+
+`POST /h2a/agent/{subagent_id}/request`
+- Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot.
+- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id` or `subagent_id` is not in `host.subagents`.
+- Forwards to the subagent's client and returns `202` with the accepted payload.
+
+`GET /h2a/agent/{subagent_id}/request/{request_id}`
+- Streams the subagent request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`

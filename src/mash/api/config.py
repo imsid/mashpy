@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 from mash.core.database import resolve_database_url
+from mash.runtime.host.tokens import resolve_host_secret
 
 _DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
@@ -24,6 +25,8 @@ class MashHostConfig:
     bind_port: int = 8000
     runtime_database_url: Optional[str] = None
     api_key: Optional[str] = None
+    # Derives each agent computer's token; falls back to MASH_HOST_SECRET.
+    host_secret: Optional[str] = None
     cors_allow_origins: Sequence[str] = field(default_factory=lambda: _DEFAULT_CORS_ORIGINS)
     default_events_limit: int = 2000
     default_search_limit: int = 10
@@ -43,6 +46,9 @@ class MashHostConfig:
     def resolved_api_key(self) -> Optional[str]:
         value = (self.api_key or "").strip()
         return value or None
+
+    def resolved_host_secret(self) -> Optional[str]:
+        return resolve_host_secret(self.host_secret)
 
     def resolved_runtime_database_url(self) -> Optional[str]:
         return resolve_database_url(self.runtime_database_url)

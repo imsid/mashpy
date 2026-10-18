@@ -6,8 +6,15 @@ import importlib
 import os
 from typing import Any, Sequence
 
+import uvicorn
+
 from mash.core.database import resolve_database_url
 from mash.runtime import Pool, HostBuilder
+from mash.runtime.computer import (
+    build_agent_server,
+    resolve_agent_token,
+    resolve_host_api_url,
+)
 
 from .app import run_host
 from .config import MashHostConfig
@@ -97,6 +104,61 @@ def _run_serve_command(args) -> int:
     )
     pool = _resolve_host(args.host_app)
     run_host(pool, config=config)
+    return 0
+
+
+def add_agent_serve_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "serve", help="Serve one agent of a pool on its own computer"
+    )
+    parser.set_defaults(handler=_run_agent_serve_command)
+    parser.add_argument(
+        "--host-app",
+        default=os.environ.get("MASH_HOST_APP"),
+        help="Host application reference in module:attribute format.",
+    )
+    parser.add_argument("--agent", required=True, help="Agent id to serve")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("MASH_AGENT_BIND_HOST", "127.0.0.1"),
+        help="Agent server bind host",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("MASH_AGENT_PORT") or "9000"),
+        help="Agent server bind port",
+    )
+    parser.add_argument(
+        "--database-url",
+        dest="runtime_database_url",
+        default=resolve_database_url(),
+        help="Shared Postgres database URL.",
+    )
+
+
+def _run_agent_serve_command(args) -> int:
+    if not args.host_app:
+        raise SystemExit("host app is required. Set --host-app or MASH_HOST_APP.")
+    token = resolve_agent_token()
+    if token is None:
+        raise SystemExit("agent token is required. Set MASH_AGENT_TOKEN.")
+    host_api_url = resolve_host_api_url()
+    if host_api_url is None:
+        raise SystemExit("host API URL is required. Set MASH_HOST_API_URL.")
+
+    pool = _resolve_host(args.host_app)
+    try:
+        server = build_agent_server(
+            pool,
+            args.agent,
+            token=token,
+            host_api_url=host_api_url,
+            runtime_database_url=args.runtime_database_url,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    uvicorn.run(server.app, host=args.host, port=args.port)
     return 0
 
 
