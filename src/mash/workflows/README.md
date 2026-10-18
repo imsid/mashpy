@@ -19,7 +19,8 @@ Each step is one of:
 - **`CodeStep`** — deterministic Python: `run(inp, ctx) -> output`, sync or async.
   Pydantic-typed on both edges. Authored in Python only. The default body is a
   memoized DBOS step. An opt-in `orchestration=True` body instead runs in the
-  parent workflow context so it can start durable child workflows. Declare any
+  parent workflow context so it can submit and await many agent requests,
+  and is replayed after recovery, so it owns its own idempotency. Declare any
   statically known agent dependencies with `agent_ids=[...]`, independently of
   execution mode; registration validates them and tooling can discover them.
 - **`AgentStep`** — one run of a registered agent's loop. `output` may be a

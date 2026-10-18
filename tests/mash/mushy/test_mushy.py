@@ -56,11 +56,11 @@ def api_client():
         "latest_thought_at": 10, "summaries": [{"event_id": 1,
         "thought_summary": "**Investigating**\n\nI'm now diving deep into potential pitfalls.  \n"}],
     }]))
-    def agent(agent_id):
+    def require_agent(agent_id):
         if agent_id != "pilot":
             raise ValueError("Agent not found")
-        return SimpleNamespace(runtime_store=store)
-    pool = SimpleNamespace(get_runtime_store=lambda: store, get_agent=agent)
+        return agent_id
+    pool = SimpleNamespace(get_runtime_store=lambda: store, require_agent=require_agent)
     app = create_app(pool, config=MashHostConfig(api_logging_enabled=False))
     app.state.runtime_state = SimpleNamespace(pool=pool, api_key="secret")
     return TestClient(app), store

@@ -108,69 +108,9 @@ A skill discovered by `SkillRegistry.get_custom_skills(skills_dir)` is
 registered with `type="custom"` and `location` set to the discovered
 directory.
 
-## Registering Skills Dynamically
-
-`Pool` exposes runtime registration. If the agent runtime is already
-started, the live `SkillTool` is refreshed in place (see
-[`_register_runtime_skill`](../runtime/host/host.py) and
-[`_refresh_runtime_skill_tool`](../runtime/host/host.py)). If the runtime has
-not started yet, the skill is queued and installed when the runtime opens.
-
-```python
-from mash.skills import Skill
-
-host.register_agent_skill(
-    "data",
-    Skill(
-        type="dynamic",
-        name="workflow:experiment-readout:v1",
-        description="Execute Experiment Readout workflow v1.",
-        content="# Experiment Readout\n\nLoad and run the workflow…",
-    ),
-)
-
-# Later:
-host.unregister_agent_skill("data", "workflow:experiment-readout:v1")
-```
-
-Re-registering the same `name` for the same `agent_id` raises `ValueError`.
-Unregister first if you want to replace inline content.
-
-## HTTP API
-
-`POST /api/v1/agent/{agent_id}/skill` accepts a `RegisterAgentSkillRequest`
-body (see
-[`src/mash/api/routes/common.py`](../api/routes/common.py)):
-
-```json
-{
-  "type": "dynamic",
-  "name": "workflow:experiment-readout:v1",
-  "description": "Execute Experiment Readout workflow v1.",
-  "location": null,
-  "content": "# Experiment Readout\n\nLoad and run the workflow…"
-}
-```
-
-`location` and `content` are both optional in the schema but at least one
-must be set (Skill validation rule).
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/agent/data/skill \
-  -H "Authorization: Bearer $MASH_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "dynamic",
-    "name": "workflow:experiment-readout:v1",
-    "description": "Execute Experiment Readout workflow v1.",
-    "content": "# Experiment Readout\n\nLoad and run the workflow…"
-  }'
-```
-
-Response: `{"data": {"agent_id": "data", "skill_name": "workflow:experiment-readout:v1"}}`.
-
-There is no DELETE endpoint yet; dynamic unregistration is only available
-through the in-process host API.
+`build_skills()` is the only place skills are registered. A skill whose markdown
+comes from another system is registered there too, with the markdown as
+`content` and no `location`.
 
 ## How Skills Are Surfaced To The Model
 

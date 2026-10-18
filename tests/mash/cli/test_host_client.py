@@ -128,32 +128,6 @@ class MashHostClientTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
-    def test_register_agent_skill_posts_skill_payload(self) -> None:
-        client = MashHostClient("http://localhost:8000")
-        session = _RecordingSession()
-        session.responses.append(
-            _FakeResponse(
-                {"data": {"agent_id": "primary", "skill_name": "workflow:test:v1"}}
-            )
-        )
-        client._session = session  # type: ignore[assignment]
-        payload = {
-            "type": "dynamic",
-            "name": "workflow:test:v1",
-            "description": "Test skill.",
-            "content": "# Test",
-        }
-
-        result = client.register_agent_skill("primary", payload)
-
-        self.assertEqual(result["skill_name"], "workflow:test:v1")
-        self.assertEqual(session.calls[-1]["method"], "POST")
-        self.assertEqual(
-            session.calls[-1]["url"],
-            "http://localhost:8000/api/v1/agent/primary/skill",
-        )
-        self.assertEqual(session.calls[-1]["json"], payload)
-
     def test_submit_feedback_posts_session_context(self) -> None:
         client = MashHostClient("http://localhost:8000")
         session = _RecordingSession()

@@ -1,11 +1,8 @@
-"""Tests for Phase 3: deterministic, replay-stable subagent request ids.
+"""Tests for deterministic, replay-stable subagent request ids.
 
-The workflow binds a deterministic child request id around a subagent
-invocation so a DBOS replay reissues the child under the same id and reattaches
-to the one existing child instead of starting a second. Full reattach behavior
-needs live DBOS (spike-verified separately); here we cover the plumbing: the
-submit path uses the bound id and consumes it before the child task spawns, and
-the id is stable/distinct per call position.
+The durable loop binds a request id fixed by the call's position around each
+InvokeSubagent step; the tool submits under it, so a replay resubmits the same
+id and idempotent submission reattaches to the existing subagent request.
 """
 
 from __future__ import annotations
@@ -74,13 +71,13 @@ class DeterministicIdSubmitTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(runtime.shutdown)
         return runtime
 
-    async def test_submit_uses_bound_id_and_consumes_it(self) -> None:
+    async def test_bound_id_does_not_reach_submit(self) -> None:
+        # InvokeSubagent passes the bound id as an explicit request_id; the
+        # submit path itself never reads it.
         runtime = await self._runtime()
         with bound_subagent_request_id("req-1-sub-0-0"):
             accepted = await runtime.submit_request(message="hi", session_id="s-1")
-            # Consumed during submit, before any child task could inherit it.
-            self.assertIsNone(get_subagent_request_id())
-        self.assertEqual(accepted["request_id"], "req-1-sub-0-0")
+        self.assertNotEqual(accepted["request_id"], "req-1-sub-0-0")
 
     async def test_submit_without_bound_id_mints_uuid(self) -> None:
         runtime = await self._runtime()

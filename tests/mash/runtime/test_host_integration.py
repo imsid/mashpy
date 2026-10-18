@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import json
 import os
 import tempfile
 import unittest
@@ -22,12 +23,11 @@ from mash.core.llm.types import (
     LLMResponse,
     LLMTokenUsage,
 )
-from mash.logging import get_request_metadata
+from mash.logging import bound_request_id, bound_subagent_request_id, get_request_metadata
 from mash.runtime.client import AgentClientError
 from mash.runtime.engine.dbos import register_runtime, require_runtime, unregister_runtime
 from mash.runtime.engine.workflow import execute_request_workflow
 from mash.runtime import AgentSpec, Host, HostBuilder
-from mash.skills import Skill
 from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import (
     build_delegating_spec,
@@ -36,6 +36,7 @@ from mash.testing.runtime_fixtures import (
 )
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
+from mash.tools.subagent import InvokeSubagentTool
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
 
@@ -544,74 +545,6 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_dynamic_skill_registered_before_start_is_available_at_runtime(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                pool = HostBuilder().agent(
-                    build_spec(agent_id="primary", response_text="primary-ok"),
-                    metadata=metadata(),
-                ).build()
-                pool.register_agent_skill(
-                    "primary",
-                    Skill(
-                        type="dynamic",
-                        name="workflow:test:v1",
-                        description="Test workflow skill.",
-                        content="# Test workflow",
-                    ),
-                )
-                pool.configure_runtime_database_url("postgresql://test/runtime")
-                await pool.start()
-                try:
-                    runtime = pool.get_agent("primary")
-                    self.assertIsNotNone(runtime.skills.get("workflow:test:v1"))
-                    self.assertIn("Skill", runtime.agent.tools)
-                finally:
-                    await pool.close()
-
-    async def test_dynamic_skill_registered_after_start_updates_live_runtime(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                pool = HostBuilder().agent(
-                    build_spec(agent_id="primary", response_text="primary-ok"),
-                    metadata=metadata(),
-                ).build()
-                pool.configure_runtime_database_url("postgresql://test/runtime")
-                await pool.start()
-                try:
-                    runtime = pool.get_agent("primary")
-                    self.assertIsNone(runtime.skills.get("workflow:test:v1"))
-                    self.assertNotIn("Skill", runtime.agent.tools)
-
-                    pool.register_agent_skill(
-                        "primary",
-                        Skill(
-                            type="dynamic",
-                            name="workflow:test:v1",
-                            description="Test workflow skill.",
-                            content="# Test workflow",
-                        ),
-                    )
-
-                    self.assertIsNotNone(runtime.skills.get("workflow:test:v1"))
-                    self.assertIn("Skill", runtime.agent.tools)
-                    turn_agent = runtime.build_turn_agent(
-                        session_id="s-1",
-                        trace_id="trace-1",
-                    )
-                    try:
-                        self.assertIsNotNone(turn_agent.skills.get("workflow:test:v1"))
-                        self.assertIn("Skill", turn_agent.tools)
-                    finally:
-                        await turn_agent.tools.shutdown()
-
-                    pool.unregister_agent_skill("primary", "workflow:test:v1")
-
-                    self.assertIsNone(runtime.skills.get("workflow:test:v1"))
-                    self.assertNotIn("Skill", runtime.agent.tools)
-                finally:
-                    await pool.close()
-
     async def test_host_start_does_not_self_probe_runtime_health_over_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
@@ -686,7 +619,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_workflow_task_request_runs_inline_from_host_workflow(self) -> None:
+    async def test_workflow_agent_step_submits_through_the_client(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 with patch(
@@ -759,6 +692,10 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(events)
                         self.assertTrue(
                             all(e.workflow_run_id == run_id for e in events)
+                        )
+                        # The step submits under a request id fixed by run and step.
+                        self.assertEqual(
+                            {e.request_id for e in events}, {f"{run_id}-task"}
                         )
                     finally:
                         await pool.close()
@@ -1137,6 +1074,35 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
+    async def test_only_the_host_primary_gets_subagent_wiring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool = (
+                    HostBuilder()
+                    .agent(build_spec(agent_id="primary-app", response_text="p"), metadata=metadata())
+                    .agent(build_spec(agent_id="research", response_text="r"), metadata=metadata())
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    # A subagent request carries the primary's host snapshot.
+                    host = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
+                    primary_agent = pool.get_agent("primary-app").build_turn_agent(
+                        session_id="s-1", trace_id="t-1", host=host
+                    )
+                    research_agent = pool.get_agent("research").build_turn_agent(
+                        session_id="s-1", trace_id="t-2", host=host
+                    )
+                    try:
+                        self.assertIn("InvokeSubagent", primary_agent.tools)
+                        self.assertNotIn("InvokeSubagent", research_agent.tools)
+                    finally:
+                        await primary_agent.tools.shutdown()
+                        await research_agent.tools.shutdown()
+                finally:
+                    await pool.close()
+
     async def test_host_snapshot_gates_subagent_membership(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
@@ -1190,7 +1156,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_subagent_invocation_starts_child_workflow_outside_step_context(self) -> None:
+    async def test_subagent_step_submits_its_request_outside_step_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 with patch(
@@ -1261,6 +1227,58 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(turns[-1]["user_message"], "analyze")
                     finally:
                         await pool.close()
+
+    async def test_replayed_subagent_call_reattaches_to_the_same_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool = (
+                    HostBuilder()
+                    .agent(build_spec(agent_id="primary-app", response_text="p"), metadata=metadata())
+                    .agent(build_spec(agent_id="research", response_text="research-ok"), metadata=metadata())
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    tool = InvokeSubagentTool(
+                        client_resolver=pool.get_client,
+                        primary_app_id="primary-app",
+                        primary_session_id="s-1",
+                    )
+
+                    async def _call() -> dict[str, Any]:
+                        # A replay re-runs the step under the same bound ids.
+                        with bound_request_id("req-1"), bound_subagent_request_id(
+                            "req-1-sub-0-0"
+                        ):
+                            result = await tool.execute(
+                                {"agent_id": "research", "prompt": "analyze"}
+                            )
+                        self.assertFalse(result.is_error, result.content)
+                        return json.loads(result.content)
+
+                    first = await _call()
+                    second = await _call()
+
+                    self.assertEqual(first["request_id"], "req-1-sub-0-0")
+                    self.assertEqual(second["request_id"], "req-1-sub-0-0")
+                    self.assertEqual(second["text"], "research-ok")
+                    research = pool.get_agent("research")
+                    accepted = [
+                        e
+                        for e in await research.runtime_store.list_request_events("req-1-sub-0-0")
+                        if e.event_type == "runtime.request.accepted"
+                    ]
+                    self.assertEqual(len(accepted), 1)
+                    metadata_ = accepted[0].payload["request_metadata"]
+                    self.assertEqual(metadata_["subagent_id"], "research")
+                    self.assertEqual(metadata_["parent"]["request_id"], "req-1")
+                    turns = await research.store.get_turns(
+                        session_id="s-1", app_id="research"
+                    )
+                    self.assertEqual(len(turns), 1)
+                finally:
+                    await pool.close()
 
     async def test_request_error_emits_terminal_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
-from ..logging import AgentTraceEvent, get_request_metadata, get_trace_id
+from ..logging import (
+    AgentTraceEvent,
+    get_request_id,
+    get_request_metadata,
+    get_subagent_request_id,
+    get_trace_id,
+)
 from ..runtime.errors import classify_error
 from .base import ToolResult
 
@@ -28,21 +33,20 @@ class _SubagentCancelled(Exception):
         self.request_id = request_id
 
 
-class SupportsSubagentStream(Protocol):
-    """Client protocol for host-managed subagent request streaming."""
+class SupportsSubagentClient(Protocol):
+    """The H2A client operations a subagent call uses."""
 
-    async def post_subagent_request(
+    async def post_request(
         self,
         message: str,
         *,
         session_id: str,
-        primary_session_id: str,
-        primary_app_id: str,
-        subagent_id: str,
-        subagent_invoke_opts: Dict[str, Any],
         metadata: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
+        host: Optional[Dict[str, Any]] = None,
+        parent: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Submit one subagent request with parent-call context."""
+        """Submit one request; a known ``request_id`` returns the existing one."""
 
     def stream_response(
         self,
@@ -65,7 +69,7 @@ class InvokeSubagentTool:
 
     name = "InvokeSubagent"
     requires_approval = False
-    # Spawns a child workflow at workflow scope; never run concurrently.
+    # Runs a whole subagent request; never run concurrently.
     parallel_safe = False
     description = (
         "Invoke a subagent by id with a focused prompt. "
@@ -98,15 +102,17 @@ class InvokeSubagentTool:
         self,
         *,
         primary_app_id: str,
-        client_resolver: Callable[[str], SupportsSubagentStream],
+        client_resolver: Callable[[str], SupportsSubagentClient],
         primary_session_id_provider: Optional[Callable[[], str]] = None,
         primary_session_id: Optional[str] = None,
+        host: Optional[Dict[str, Any]] = None,
         event_logger: Optional[SupportsEventEmit] = None,
     ) -> None:
         if client_resolver is None:
             raise ValueError("client_resolver is required")
         self._client_resolver = client_resolver
         self._primary_app_id = primary_app_id
+        self._host = dict(host) if host is not None else None
         self._event_logger = event_logger
         if primary_session_id_provider is not None:
             self._primary_session_id_provider = primary_session_id_provider
@@ -248,25 +254,30 @@ class InvokeSubagentTool:
                     timeout_ms = DEFAULT_SUBAGENT_TIMEOUT_MS
 
             client = self._client_resolver(agent_id)
-            if not callable(getattr(client, "post_subagent_request", None)):
-                raise RuntimeError("subagent client does not support subagent request submission")
-            if not callable(getattr(client, "stream_response", None)):
-                raise RuntimeError("subagent client does not support request streaming")
 
             # The parent request's caller metadata is bound for the duration of
             # its run; forward it so the subagent request inherits the context.
             inherited_metadata = get_request_metadata()
+            parent = {
+                "kind": "subagent",
+                "request_id": get_request_id() or "",
+                "agent_id": self._primary_app_id,
+                "session_id": primary_session_id,
+                "invoke_opts": dict(opts),
+            }
 
             async def _invoke() -> Dict[str, Any] | None:
                 nonlocal request_id
-                request_id = await client.post_subagent_request(
+                # The durable loop binds a request id fixed by this call's
+                # position, so a replayed or retried call resubmits the same id
+                # and reattaches to the subagent request it already started.
+                request_id = await client.post_request(
                     prompt,
                     session_id=subagent_session_id,
-                    primary_session_id=primary_session_id,
-                    primary_app_id=self._primary_app_id,
-                    subagent_id=agent_id,
-                    subagent_invoke_opts=dict(opts),
                     metadata=inherited_metadata or None,
+                    request_id=get_subagent_request_id(),
+                    host=self._host,
+                    parent=parent,
                 )
                 timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
 

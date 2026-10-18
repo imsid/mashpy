@@ -234,28 +234,6 @@ class AgentRuntime:
         self.require_open()
         return await request_helpers.get_accepted_request(self, request_id)
 
-    async def submit_subagent_request(
-        self,
-        *,
-        message: str,
-        session_id: str,
-        primary_session_id: str,
-        primary_app_id: str,
-        subagent_id: str,
-        subagent_invoke_opts: dict[str, Any],
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return await request_helpers.submit_subagent_request(
-            self,
-            message=message,
-            session_id=session_id,
-            primary_session_id=primary_session_id,
-            primary_app_id=primary_app_id,
-            subagent_id=subagent_id,
-            subagent_invoke_opts=subagent_invoke_opts,
-            metadata=metadata,
-        )
-
     async def stream_response_events(
         self,
         request_id: str,

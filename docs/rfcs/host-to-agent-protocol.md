@@ -355,6 +355,7 @@ A client also provides these operations:
 - `resume_request`: continue a cancelled request from its last recorded step
 - `rerun_request`: start a previous request over as a new request
 - `describe`: list the agent's tools and skills (section 8.7)
+- `compact_session`: summarize a session's history and reset its token accounting (section 8.8)
 
 Request submission is idempotent on `request_id`. When `post_request` names a `request_id` that already belongs to a request of the same agent, the runtime returns that request's accepted payload and does not start a new execution. Its stream then replays from the first event. A `request_id` that belongs to another agent is rejected. Without `request_id`, every submission creates a new request.
 
@@ -459,6 +460,7 @@ The HTTP plus SSE binding defines these endpoints for one agent:
 
 - `GET /health`
 - `GET /agent/{agent_id}/describe`
+- `POST /agent/{agent_id}/session/{session_id}/compact`
 - `POST /agent/{agent_id}/request`
 - `GET /agent/{agent_id}/request/{request_id}`
 - `POST /agent/{agent_id}/request/{request_id}/interaction`
@@ -544,7 +546,17 @@ For `GET /agent/{agent_id}/describe`, the server MUST return `404 ROUTE_NOT_FOUN
 - `tools`: one object per registered tool with `name`, `description`, `parameters`, `requires_approval`, and `parallel_safe`
 - `skills`: one object per registered skill with `name`, `description`, `type`, and `content`
 
-### 8.8 Runtime Requirements Behind The Server
+### 8.8 Session Compaction Handling
+
+For `POST /agent/{agent_id}/session/{session_id}/compact`, the server MUST:
+
+1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
+2. read the body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
+3. validate optional `reason` as a non-empty string (default `"manual"`) and optional `session_total_tokens_reset` as a non-negative integer (default `0`), returning `400 INVALID_REQUEST` otherwise
+4. run the runtime's compaction for the session
+5. return `200 OK` with `summary_text` and `trace_id`, each `null` when there was nothing to compact
+
+### 8.9 Runtime Requirements Behind The Server
 
 The runtime attached to one agent HTTP server MUST provide:
 

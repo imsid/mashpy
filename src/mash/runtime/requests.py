@@ -13,9 +13,7 @@ from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
 from ..logging.trace_context import (
     bound_host_id,
     bound_workflow_ids,
-    clear_subagent_request_id,
     get_host_id,
-    get_subagent_request_id,
     get_workflow_id,
     get_workflow_run_id,
 )
@@ -158,33 +156,6 @@ async def submit_request(
     )
 
 
-async def submit_subagent_request(
-    self: "AgentRuntime",
-    *,
-    message: str,
-    session_id: str,
-    primary_session_id: str,
-    primary_app_id: str,
-    subagent_id: str,
-    subagent_invoke_opts: dict[str, Any],
-    metadata: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    request_metadata: dict[str, Any] = {
-        "primary_session_id": primary_session_id,
-        "primary_app_id": primary_app_id,
-        "subagent_id": subagent_id,
-        "subagent_invoke_opts": dict(subagent_invoke_opts),
-    }
-    if metadata:
-        request_metadata["metadata"] = dict(metadata)
-    return await _submit_request(
-        self,
-        message=message,
-        session_id=session_id,
-        request_metadata=request_metadata,
-    )
-
-
 async def _submit_request(
     self: "AgentRuntime",
     *,
@@ -296,15 +267,7 @@ async def _submit_request_inner(
     request_id: str | None = None,
 ) -> dict[str, Any]:
     target_session_id = session_id
-    # A subagent invocation binds a deterministic request id so a DBOS replay
-    # reissues the child under the same workflow id and reattaches to the one
-    # existing child instead of starting a second. Consume it before the child
-    # workflow task is spawned so the child never inherits the parent's key.
-    # A caller-supplied request id takes precedence.
-    deterministic_request_id = get_subagent_request_id()
-    if deterministic_request_id:
-        clear_subagent_request_id()
-    request_id = request_id or deterministic_request_id or str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
     accepted_event = await append_runtime_event(
         self,

@@ -1,4 +1,4 @@
-"""Deployed pool managing in-process per-agent runtimes and registered workflows."""
+"""Deployed pool managing per-agent runtimes, their clients, and registered workflows."""
 
 from __future__ import annotations
 
@@ -8,15 +8,11 @@ from typing import Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
-from mash.skills.base import Skill
-from mash.skills.tool import SkillTool
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.dbos import register_runner as register_workflow_runner
 from mash.workflows.dbos import resolve_runner_id
 from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
 from mash.workflows.store import WorkflowStore
-
-from mash.tools.subagent import InvokeSubagentTool
 
 from ..client import AgentClientLike, InProcessAgentClient
 from ..events import PostgresRuntimeStore, RuntimeStore
@@ -48,7 +44,7 @@ class Pool:
         self._hosts: Dict[str, Host] = {}
         self._agents: Dict[str, AgentRuntime] = {}
         self._clients: Dict[str, AgentClientLike] = {}
-        self._agent_skills: Dict[str, Dict[str, Skill]] = {}
+        self._model_settings: Dict[str, dict[str, Any]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
         self._shared_workflow_store: WorkflowStore | None = None
@@ -222,15 +218,20 @@ class Pool:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         host = self.get_host(host_id)
-        runtime = self.get_agent(host.primary)
-        return await runtime.submit_request(
-            message=message,
+        request_id = await self.get_client(host.primary).post_request(
+            message,
             session_id=session_id,
             structured_output=structured_output,
-            host_snapshot=self.snapshot_for(host),
-            context=context,
             metadata=metadata,
+            context=context,
+            host=self.snapshot_for(host),
         )
+        return {
+            "request_id": request_id,
+            "agent_id": host.primary,
+            "session_id": session_id,
+            "status": "accepted",
+        }
 
     def register_workflow(self, workflow: WorkflowSpec) -> None:
         self._ensure_workflow_task_agents(workflow)
@@ -241,43 +242,35 @@ class Pool:
         self.register_workflow(workflow)
         self._default_workflow_ids.append(workflow.workflow_id)
 
-    def register_agent_skill(self, agent_id: str, skill: Skill) -> None:
+    def require_agent(self, agent_id: str) -> str:
+        """Return the registered agent id, or raise ``ValueError`` if unknown."""
         resolved_agent_id = str(agent_id or "").strip()
-        if not resolved_agent_id:
-            raise ValueError("agent_id is required")
-        self._require_registered_agent(resolved_agent_id)
+        if resolved_agent_id not in self._registered:
+            raise ValueError(f"agent '{resolved_agent_id}' is not registered")
+        return resolved_agent_id
 
-        agent_skills = self._agent_skills.get(resolved_agent_id, {})
-        if skill.name in agent_skills:
-            raise ValueError(
-                f"Skill '{skill.name}' is already registered for agent '{resolved_agent_id}'"
-            )
+    def get_agent_model_settings(self, agent_id: str) -> dict[str, Any]:
+        """The agent's ``model`` and ``max_steps``, read from its spec once.
 
-        runtime = self._agents.get(resolved_agent_id)
-        if runtime is not None:
-            self._register_runtime_skill(runtime, skill)
-        agent_skills = self._agent_skills.setdefault(resolved_agent_id, {})
-        agent_skills[skill.name] = skill
-
-    def unregister_agent_skill(self, agent_id: str, skill_name: str) -> None:
-        resolved_agent_id = str(agent_id or "").strip()
-        if not resolved_agent_id:
-            raise ValueError("agent_id is required")
-        self._require_registered_agent(resolved_agent_id)
-        resolved_skill_name = str(skill_name or "").strip()
-        if not resolved_skill_name:
-            raise ValueError("skill_name is required")
-
-        agent_skills = self._agent_skills.get(resolved_agent_id)
-        if agent_skills is not None:
-            agent_skills.pop(resolved_skill_name, None)
-            if not agent_skills:
-                self._agent_skills.pop(resolved_agent_id, None)
-
-        runtime = self._agents.get(resolved_agent_id)
-        if runtime is not None:
-            runtime.skills.unregister(resolved_skill_name)
-            self._refresh_runtime_skill_tool(runtime)
+        Best-effort like ``_snapshot_agent_spec``: a value the spec can't build
+        (e.g. missing provider credentials) is None.
+        """
+        resolved_agent_id = self.require_agent(agent_id)
+        cached = self._model_settings.get(resolved_agent_id)
+        if cached is not None:
+            return cached
+        spec = self._registered[resolved_agent_id].definition
+        settings: dict[str, Any] = {"model": None, "max_steps": None}
+        try:
+            settings["max_steps"] = spec.build_agent_config().max_steps
+        except Exception:  # pragma: no cover - defensive
+            pass
+        try:
+            settings["model"] = getattr(spec.build_llm(), "model", None)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        self._model_settings[resolved_agent_id] = settings
+        return settings
 
     def get_registered_agent_spec(self, agent_id: str) -> AgentSpec | None:
         registered = self._registered.get(str(agent_id or "").strip())
@@ -307,13 +300,9 @@ class Pool:
             await shared_workflow_store.open()
 
             for registered in self._registered.values():
-                uses_default_memory = (
-                    type(registered.definition).build_memory_store
-                    is AgentSpec.build_memory_store
-                )
                 memory_store: MemoryStore = (
                     shared_memory_store
-                    if uses_default_memory
+                    if _uses_default_memory_store(registered.definition)
                     else registered.definition.build_memory_store()
                 )
                 runtime = AgentRuntime.from_spec(
@@ -324,49 +313,11 @@ class Pool:
                     memory_store=memory_store,
                 )
                 runtime.attach_pool(self)
-                agent_skills = self._agent_skills.get(registered.agent_id, {})
-                for skill in agent_skills.values():
-                    self._register_runtime_skill(runtime, skill)
                 self._agents[registered.agent_id] = runtime
 
             for agent_id, runtime in self._agents.items():
                 await runtime.open()
                 self._clients[agent_id] = InProcessAgentClient(runtime)
-
-            # For each defined host, inject InvokeSubagent into the primary's
-            # tool registry so it is available from pool startup (not just at
-            # request time). This lets callers inspect tools without submitting
-            # a request.
-            for host in self._hosts.values():
-                primary_runtime = self._agents.get(host.primary)
-                if primary_runtime is None or not host.subagents:
-                    continue
-                allowed = set(host.subagents)
-
-                def _make_client_resolver(
-                    _pool: "Pool", _allowed: frozenset[str], _host_id: str
-                ):
-                    def _resolver(agent_id: str) -> Any:
-                        if agent_id not in _allowed:
-                            raise ValueError(
-                                f"subagent '{agent_id}' is not in host '{_host_id}'"
-                            )
-                        return _pool.get_client(agent_id)
-
-                    return _resolver
-
-                if "InvokeSubagent" in primary_runtime.agent.tools:
-                    primary_runtime.agent.tools.unregister("InvokeSubagent")
-                primary_runtime.agent.tools.register(
-                    InvokeSubagentTool(
-                        client_resolver=_make_client_resolver(
-                            self, frozenset(allowed), host.host_id
-                        ),
-                        primary_app_id=primary_runtime.app_id,
-                        primary_session_id=primary_runtime.session_id,
-                        event_logger=primary_runtime.get_event_logger(),
-                    )
-                )
         except Exception:
             await self.close()
             raise
@@ -386,6 +337,17 @@ class Pool:
     def get_runtime_store(self) -> RuntimeStore | None:
         """Shared runtime event store, or None before the pool is started."""
         return self._shared_runtime_store
+
+    def get_memory_store(self, agent_id: str) -> MemoryStore | None:
+        """The pool's shared memory store if ``agent_id`` uses it.
+
+        None before the pool is started, or for an agent that overrides
+        ``build_memory_store()``; that store lives only in the agent's runtime.
+        """
+        spec = self.get_registered_agent_spec(agent_id)
+        if spec is None or not _uses_default_memory_store(spec):
+            return None
+        return self._shared_memory_store
 
     def get_workflow_store(self) -> WorkflowStore | None:
         """Shared workflow run/step store, or None before the pool is started."""
@@ -569,22 +531,6 @@ class Pool:
                         f"'{step.step_id}' is not registered"
                     )
 
-    def _require_registered_agent(self, agent_id: str) -> None:
-        if agent_id not in self._registered:
-            raise ValueError(f"agent '{agent_id}' is not registered")
-
-    def _register_runtime_skill(self, runtime: AgentRuntime, skill: Skill) -> None:
-        runtime.skills.register(skill)
-        self._refresh_runtime_skill_tool(runtime)
-
-    def _refresh_runtime_skill_tool(self, runtime: AgentRuntime) -> None:
-        if "Skill" in runtime.agent.tools:
-            runtime.agent.tools.unregister("Skill")
-        if runtime.skills.list_skills():
-            runtime.agent.tools.register(SkillTool(runtime.skills))
-        runtime.tools = runtime.agent.tools
-        runtime.skills = runtime.agent.skills
-
     async def __aenter__(self) -> "Pool":
         await self.start()
         return self
@@ -592,6 +538,10 @@ class Pool:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         del exc_type, exc, tb
         await self.close()
+
+
+def _uses_default_memory_store(spec: AgentSpec) -> bool:
+    return type(spec).build_memory_store is AgentSpec.build_memory_store
 
 
 __all__ = ["Pool"]

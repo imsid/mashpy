@@ -20,7 +20,7 @@ def build_thoughts_router() -> APIRouter:
         trace_id = normalize_optional_text(trace_id)
         if agent_id is not None:
             try:
-                pool.get_agent(agent_id)
+                pool.require_agent(agent_id)
             except ValueError as exc:
                 raise APIError(code='AGENT_NOT_FOUND', message=str(exc), status_code=404) from exc
         store = pool.get_runtime_store()

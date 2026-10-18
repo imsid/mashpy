@@ -73,24 +73,26 @@ an entry to CHANGELOG.md following the existing format…
 
 When the model invokes `Skill(name="changelog")`, the tool reads `SKILL.md` at invocation time and returns a JSON payload with the markdown plus its paths (`base_path`, `skill_path`), so instructions can reference files relative to the skill directory. Reading at invocation time also means editing a `SKILL.md` on disk takes effect on the next invocation.
 
-A **dynamic** skill skips the filesystem: the markdown is supplied as `content` at registration. This is the flavor for hosts that generate instructions from another system, like an app that authors workflows elsewhere and publishes them to Mash as skills.
+A **dynamic** skill skips the filesystem: the markdown is supplied as `content` at registration. This is the flavor for instructions generated from another system, like an app that authors workflows elsewhere.
 
-## Registration: build time and runtime
+## Registration
 
-Static skills go in `AgentSpec.build_skills()` and live with the codebase. Dynamic skills can be pushed to a running host:
+Every skill is registered in `AgentSpec.build_skills()` and lives with the codebase. A dynamic skill is registered there too, with its markdown fetched or generated when the spec builds its registry:
 
 ```python
-host.register_agent_skill("pilot", Skill(
-    type="dynamic",
-    name="workflow:experiment-readout:v1",
-    description="Execute Experiment Readout workflow v1.",
-    content=generated_markdown,
-))
+class PilotAgent(AgentSpec):
+    def build_skills(self) -> SkillRegistry:
+        registry = SkillRegistry()
+        registry.register(Skill(
+            type="dynamic",
+            name="workflow:experiment-readout:v1",
+            description="Execute Experiment Readout workflow v1.",
+            content=generated_markdown,
+        ))
+        return registry
 ```
 
-or over HTTP with `POST /api/v1/agent/{agent_id}/skill`. If the agent's runtime is already started, the live `SkillTool` is refreshed in place, and the model's next request sees the new skill in the tool's enum. If the runtime hasn't started yet, the skill is queued and installed when it opens.
-
-Dynamic skills are live host state. A host restart forgets them, and the application that owns authoring is expected to republish them on startup. Mash surfaces skills; storing and versioning them is the owning application's job, which is why the example name carries a `:v1`.
+Mash surfaces skills; storing and versioning them is the owning application's job, which is why the example name carries a `:v1`.
 
 ## Skills are not tools
 

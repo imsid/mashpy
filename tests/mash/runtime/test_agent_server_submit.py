@@ -23,6 +23,7 @@ class _Runtime:
         self.store = _Store()
         self.submissions: list[dict] = []
         self.known: dict[str, dict] = {}
+        self.compactions: list[dict] = []
 
     async def open(self) -> None:
         return None
@@ -40,6 +41,10 @@ class _Runtime:
 
     def describe(self) -> dict:
         return {"agent_id": self.app_id, "tools": [{"name": "bash"}], "skills": []}
+
+    async def compact_session(self, **kwargs) -> tuple:
+        self.compactions.append(kwargs)
+        return "summary", "trace-c"
 
     async def submit_request(self, **kwargs) -> dict:
         self.submissions.append(kwargs)
@@ -162,6 +167,28 @@ class AgentServerSubmitTests(unittest.TestCase):
                 resp = self._post({"message": "plan it", "session_id": "s-1", **body})
                 self.assertEqual(resp.status_code, 400)
                 self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")
+
+    def test_compact_runs_on_the_runtime(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/session/s-1/compact",
+            json={"reason": "manual", "session_total_tokens_reset": 10},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"summary_text": "summary", "trace_id": "trace-c"})
+        self.assertEqual(
+            self.runtime.compactions,
+            [{"session_id": "s-1", "reason": "manual", "session_total_tokens_reset": 10}],
+        )
+
+    def test_compact_rejects_invalid_reset(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/session/s-1/compact",
+            json={"session_total_tokens_reset": -1},
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.runtime.compactions, [])
 
     def test_describe_returns_tools_and_skills(self) -> None:
         resp = self.client.get("/agent/agent-a/describe")

@@ -13,7 +13,7 @@ tags:
 
 # Agent Loop Walkthrough
 
-A request to a Mash agent runs as one DBOS workflow inside the host process. This page steps through that workflow for five kinds of request. Each entry in the timeline is one operation in [`execute_request_workflow`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/engine/workflow.py): a checkpointed DBOS step, a durable wait, or code that runs at workflow scope.
+A request to a Mash agent runs as one DBOS workflow inside the host process. This page steps through that workflow for five kinds of request. Each entry in the timeline is one operation in [`execute_request_workflow`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/engine/workflow.py): a checkpointed DBOS step, a durable wait, or plain code in the workflow function.
 
 ## Where DBOS runs
 
@@ -45,7 +45,6 @@ Ids, token counts, and tool names in the walkthrough are illustrative. Step name
 |---|---|---|
 | DBOS step | `DBOS.run_step_async({"name": ...}, fn, ...)` | Returns the recorded output without calling `fn` |
 | DBOS recv | `DBOS.recv_async(topic, timeout_seconds=...)` | Returns the recorded message, or waits again if none was received |
-| workflow scope | Called directly in the workflow function, as `InvokeSubagent` is | Runs again; the deterministic child id attaches it to the existing child workflow |
 | plain code | Loop control, the approval-denied results | Runs again and computes the same values from replayed inputs |
 
 ## Step names

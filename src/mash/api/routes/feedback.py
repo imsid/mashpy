@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from mash.runtime.events import FeedbackRecord, FeedbackType
 
 from .common import (
-    APIError,
+    get_runtime_store,
     normalize_optional_text,
     parse_limit,
     state_from_request,
@@ -37,17 +37,10 @@ class SubmitFeedbackRequest(BaseModel):
 def build_feedback_router() -> APIRouter:
     router = APIRouter()
 
-    def _resolve_agent(state, agent_id: str):
-        try:
-            return state.pool.get_agent(agent_id)
-        except ValueError as exc:
-            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
-
     @router.post("/feedback")
     async def submit_feedback(request: Request, body: SubmitFeedbackRequest) -> dict[str, Any]:
-        state = state_from_request(request)
         agent_id = body.agent_id.strip()
-        agent = _resolve_agent(state, agent_id)
+        store = get_runtime_store(request, agent_id)
 
         record = FeedbackRecord(
             app_id=agent_id,
@@ -59,7 +52,7 @@ def build_feedback_router() -> APIRouter:
             trace_id=normalize_optional_text(body.trace_id),
             context=body.context or {},
         )
-        stored = await agent.runtime_store.append_feedback(record)
+        stored = await store.append_feedback(record)
         return success({"feedback": asdict(stored)})
 
     @router.get("/feedback")
@@ -75,10 +68,10 @@ def build_feedback_router() -> APIRouter:
     ) -> dict[str, Any]:
         state = state_from_request(request)
         agent_id_value = agent_id.strip()
-        agent = _resolve_agent(state, agent_id_value)
+        store = get_runtime_store(request, agent_id_value)
 
         resolved_limit = parse_limit(limit, default=state.default_events_limit, max_value=1000)
-        records = await agent.runtime_store.list_feedback(
+        records = await store.list_feedback(
             agent_id_value,
             after=after,
             before=before,

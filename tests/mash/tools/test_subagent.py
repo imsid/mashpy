@@ -7,7 +7,13 @@ import json
 import unittest
 from typing import Any, AsyncIterator, Dict, Optional
 
-from mash.logging import bound_request_metadata, clear_trace_id, set_trace_id
+from mash.logging import (
+    bound_request_id,
+    bound_request_metadata,
+    bound_subagent_request_id,
+    clear_trace_id,
+    set_trace_id,
+)
 from mash.tools.subagent import InvokeSubagentTool
 
 
@@ -34,34 +40,18 @@ class _FakeClient:
         message: str,
         *,
         session_id: str,
-    ) -> str:
-        self.last_call = {
-            "message": message,
-            "session_id": session_id,
-            "request_kind": "plain",
-        }
-        return self._request_id
-
-    async def post_subagent_request(
-        self,
-        message: str,
-        *,
-        session_id: str,
-        primary_session_id: str,
-        primary_app_id: str,
-        subagent_id: str,
-        subagent_invoke_opts: Dict[str, Any],
         metadata: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
+        host: Optional[Dict[str, Any]] = None,
+        parent: Optional[Dict[str, Any]] = None,
     ) -> str:
         self.last_call = {
             "message": message,
             "session_id": session_id,
-            "request_kind": "subagent",
-            "primary_session_id": primary_session_id,
-            "primary_app_id": primary_app_id,
-            "subagent_id": subagent_id,
-            "subagent_invoke_opts": subagent_invoke_opts,
             "metadata": metadata,
+            "submitted_request_id": request_id,
+            "host": host,
+            "parent": parent,
         }
         return self._request_id
 
@@ -122,9 +112,11 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metadata["subagent_session_id"], expected_subagent_session_id)
         assert self.client.last_call is not None
         self.assertEqual(self.client.last_call["session_id"], expected_subagent_session_id)
-        self.assertEqual(self.client.last_call["request_kind"], "subagent")
-        self.assertEqual(self.client.last_call["primary_app_id"], "primary-app")
-        self.assertEqual(self.client.last_call["subagent_invoke_opts"]["x"], 1)
+        parent = self.client.last_call["parent"]
+        self.assertEqual(parent["kind"], "subagent")
+        self.assertEqual(parent["agent_id"], "primary-app")
+        self.assertEqual(parent["session_id"], "s1")
+        self.assertEqual(parent["invoke_opts"]["x"], 1)
         self.assertEqual(self.client.last_call["timeout"], 360.0)
         streamed_event_types = [event.event_type for event in self.event_logger.events]
         self.assertEqual(
@@ -295,10 +287,25 @@ class InvokeSubagentToolTests(unittest.IsolatedAsyncioTestCase):
         assert client.last_call is not None
         self.assertEqual(client.last_call["session_id"], expected_subagent_session_id)
         self.assertEqual(client.last_call["timeout"], 2.5)
-        self.assertEqual(
-            client.last_call["primary_app_id"],  # type: ignore[index]
-            "primary-app",
+        self.assertEqual(client.last_call["parent"]["agent_id"], "primary-app")
+
+    async def test_submits_under_bound_request_ids_with_host(self) -> None:
+        host = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
+        tool = InvokeSubagentTool(
+            client_resolver=lambda _agent_id: self.client,
+            primary_app_id="primary-app",
+            primary_session_id="s1",
+            host=host,
         )
+
+        with bound_request_id("req-1"), bound_subagent_request_id("req-1-sub-0-0"):
+            result = await tool.execute({"agent_id": "research", "prompt": "Summarize"})
+
+        self.assertFalse(result.is_error)
+        assert self.client.last_call is not None
+        self.assertEqual(self.client.last_call["submitted_request_id"], "req-1-sub-0-0")
+        self.assertEqual(self.client.last_call["parent"]["request_id"], "req-1")
+        self.assertEqual(self.client.last_call["host"], host)
 
     def test_constructor_requires_client_resolver(self) -> None:
         with self.assertRaises(ValueError):

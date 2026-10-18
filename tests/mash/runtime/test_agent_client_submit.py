@@ -61,5 +61,14 @@ class AgentClientSubmitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(described["tools"], [{"name": "bash"}])
 
 
+    async def test_compact_session(self) -> None:
+        client = AgentClient("http://agent", "agent-a", token="tok-1")
+
+        result = await client.compact_session("s-1", reason="manual")
+
+        self.assertEqual(result["summary_text"], "summary")
+        self.assertEqual(self.runtime.compactions[0]["session_id"], "s-1")
+
+
 if __name__ == "__main__":
     unittest.main()
