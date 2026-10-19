@@ -347,7 +347,7 @@ class AgentServer:
         response_value = payload.get("response")
 
         wf_id = workflow_id_for(agent_id, request_id)
-        DBOS.send(wf_id, response_value, topic=interaction_id.strip())
+        await DBOS.send_async(wf_id, response_value, topic=interaction_id.strip())
 
         return JSONResponse({"ok": True, "interaction_id": interaction_id.strip()})
 
