@@ -9,6 +9,18 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.25.0](https://github.com/imsid/mashpy/compare/mashpy-v0.24.0...mashpy-v0.25.0) (2026-10-19)
+
+
+### Features
+
+* **runtime:** namespace agent computers per deployment ([#233](https://github.com/imsid/mashpy/issues/233)) ([a2cf5a2](https://github.com/imsid/mashpy/commit/a2cf5a2dc0c8940aba50192a509d7bebcd1ff722))
+
+
+### Bug Fixes
+
+* **runtime:** deliver interaction responses with DBOS.send_async ([#232](https://github.com/imsid/mashpy/issues/232)) ([f031454](https://github.com/imsid/mashpy/commit/f03145484a51ba0c37702991a9b3e34a12d097c8))
+
 ## [0.24.0](https://github.com/imsid/mashpy/compare/mashpy-v0.23.2...mashpy-v0.24.0) (2026-10-18)
 
 
