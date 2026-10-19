@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import socket
 import time
 from dataclasses import dataclass
@@ -31,13 +32,16 @@ from .tokens import MASH_HOST_SECRET_ENV, derive_agent_token
 
 AGENT_PORT = 9000
 AGENT_LABEL = "mash.agent"
+NAMESPACE_LABEL = "mash.namespace"
 CONTAINER_PREFIX = "mash-agent-"
 WORKSPACE_MOUNT = "/home/agent/workspace"
 MASH_COMPUTER_IMAGE_ENV = "MASH_COMPUTER_IMAGE"
 MASH_COMPUTER_NETWORK_ENV = "MASH_COMPUTER_NETWORK"
 MASH_COMPUTER_HOST_API_URL_ENV = "MASH_COMPUTER_HOST_API_URL"
 MASH_COMPUTER_MOUNTS_ENV = "MASH_COMPUTER_MOUNTS"
+MASH_COMPUTER_NAMESPACE_ENV = "MASH_COMPUTER_NAMESPACE"
 DEFAULT_NETWORK = "mash"
+_NAMESPACE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
 
 # Process-specific variables of the host, and secrets a computer must not hold.
 # Everything else in the host's environment passes through, because a spec may
@@ -68,12 +72,44 @@ _ENV_EXCLUDED = frozenset(
 )
 
 
-def container_name(agent_id: str) -> str:
+def resolve_namespace(
+    explicit_value: str | None = None, environ: Mapping[str, str] | None = None
+) -> str | None:
+    """The deployment's computer namespace, or None for the unprefixed names.
+
+    Container and volume names are global on a Docker daemon, so two
+    deployments with an agent id in common (every pool has masher's
+    ``eval-agent``) each set their own namespace.
+    """
+    env = os.environ if environ is None else environ
+    value = str(explicit_value or env.get(MASH_COMPUTER_NAMESPACE_ENV) or "").strip()
+    if not value:
+        return None
+    if not _NAMESPACE.match(value):
+        raise ValueError(
+            f"computer namespace '{value}' must be lowercase letters, digits, '_', '.' "
+            "or '-', starting with a letter or digit"
+        )
+    return value
+
+
+def container_name(agent_id: str, namespace: str | None = None) -> str:
+    if namespace:
+        return f"{namespace}-agent-{agent_id}"
     return f"{CONTAINER_PREFIX}{agent_id}"
 
 
-def workspace_volume(agent_id: str) -> str:
+def workspace_volume(agent_id: str, namespace: str | None = None) -> str:
+    if namespace:
+        return f"{namespace}-{agent_id}-workspace"
     return f"{agent_id}-workspace"
+
+
+def computer_labels(agent_id: str, namespace: str | None = None) -> dict[str, str]:
+    labels = {AGENT_LABEL: agent_id}
+    if namespace:
+        labels[NAMESPACE_LABEL] = namespace
+    return labels
 
 
 def computer_env(environ: Mapping[str, str]) -> dict[str, str]:
@@ -145,6 +181,7 @@ class DockerComputerProvider:
         network: str | None = None,
         host_api_url: str | None = None,
         mounts: Sequence[str] | None = None,
+        namespace: str | None = None,
         in_container: bool | None = None,
         environ: Mapping[str, str] | None = None,
         engine: DockerEngine | None = None,
@@ -168,6 +205,7 @@ class DockerComputerProvider:
         if mounts is None:
             mounts = self._environ.get(MASH_COMPUTER_MOUNTS_ENV, "").split(",")
         self._mounts = parse_mounts(mounts)
+        self._namespace = resolve_namespace(namespace, self._environ)
         self._in_container = _running_in_container() if in_container is None else in_container
         self._engine = engine or DockerEngine()
         self._health_timeout = float(health_timeout)
@@ -178,10 +216,10 @@ class DockerComputerProvider:
 
     async def ensure(self, agent_id: str) -> ComputerEndpoint:
         await self._prepare()
-        name = container_name(agent_id)
+        name = container_name(agent_id, self._namespace)
         token = derive_agent_token(self._host_secret, agent_id)
-        labels = {AGENT_LABEL: agent_id}
-        await self._engine.ensure_volume(workspace_volume(agent_id), labels=labels)
+        labels = computer_labels(agent_id, self._namespace)
+        await self._engine.ensure_volume(workspace_volume(agent_id, self._namespace), labels=labels)
 
         container = await self._engine.inspect_container(name)
         if container is None:
@@ -234,7 +272,11 @@ class DockerComputerProvider:
         host_config: dict = {
             "RestartPolicy": {"Name": "always"},
             "Mounts": [
-                {"Type": "volume", "Source": workspace_volume(agent_id), "Target": WORKSPACE_MOUNT},
+                {
+                    "Type": "volume",
+                    "Source": workspace_volume(agent_id, self._namespace),
+                    "Target": WORKSPACE_MOUNT,
+                },
                 *self._mounts,
             ],
             "ExtraHosts": ["host.docker.internal:host-gateway"],
@@ -256,7 +298,7 @@ class DockerComputerProvider:
                 "--port", str(AGENT_PORT),
             ],
             "Env": [f"{key}={value}" for key, value in sorted(env.items())],
-            "Labels": {AGENT_LABEL: agent_id},
+            "Labels": computer_labels(agent_id, self._namespace),
             "ExposedPorts": {f"{AGENT_PORT}/tcp": {}},
             "HostConfig": host_config,
             "NetworkingConfig": {"EndpointsConfig": {self._network: {}}},
@@ -289,13 +331,15 @@ class DockerComputerProvider:
                 await asyncio.sleep(0.5)
 
 
-async def replace_computer(engine: DockerEngine, agent_id: str) -> None:
+async def replace_computer(
+    engine: DockerEngine, agent_id: str, namespace: str | None = None
+) -> None:
     """Replace an agent's container with a fresh one of the same configuration.
 
     The workspace volume is kept; anything else on the container layer (apt
     installs, files outside the workspace) is gone.
     """
-    name = container_name(agent_id)
+    name = container_name(agent_id, namespace)
     current = await engine.inspect_container(name)
     if current is None:
         raise ValueError(f"agent '{agent_id}' has no computer")
@@ -315,13 +359,16 @@ async def replace_computer(engine: DockerEngine, agent_id: str) -> None:
 __all__ = [
     "AGENT_LABEL",
     "AGENT_PORT",
+    "NAMESPACE_LABEL",
     "ComputerEndpoint",
     "ComputerProvider",
     "ComputerUnavailableError",
     "DockerComputerProvider",
     "computer_env",
+    "computer_labels",
     "container_name",
     "parse_mounts",
     "replace_computer",
+    "resolve_namespace",
     "workspace_volume",
 ]

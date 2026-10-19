@@ -398,7 +398,8 @@ lifecycle.
   - host in a container: computers run the host's own image id and are reached by name; the host joins the network itself. The host container needs the Docker socket mounted and its group added (`group_add`), since the image runs as `mash`
   - host on the Docker host (local development): `MASH_COMPUTER_IMAGE` is required and must contain the app; each computer's port is published on `127.0.0.1` at a port fixed at create time, and computers reach the host at `host.docker.internal`. Env values pass through unchanged, so a `localhost` database URL must be written as `host.docker.internal`
   - `MASH_COMPUTER_MOUNTS`: comma-separated `source:target[:ro]` bind mounts (Docker-host sources) added to every computer after the workspace volume
-  - `replace_computer(engine, agent_id)`: recreate a container from its own configuration, keeping volumes
+  - `MASH_COMPUTER_NAMESPACE`: container and volume names are global on a Docker daemon, so a deployment that shares one sets a namespace: container `<namespace>-agent-<agent_id>`, volume `<namespace>-<agent_id>-workspace`, label `mash.namespace`. Without it the names above are unchanged
+  - `replace_computer(engine, agent_id, namespace=None)`: recreate a container from its own configuration, keeping volumes
 
 - `host/docker_engine.py`
   - minimal async Docker Engine API client over the Unix socket (`DOCKER_HOST`, `/var/run/docker.sock`, or Docker Desktop's `~/.docker/run/docker.sock`)

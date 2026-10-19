@@ -247,6 +247,56 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["_create"]["NetworkingConfig"], {"EndpointsConfig": {"mash": {}}})
         self.assertEqual(self.daemon.volumes, {"research-workspace"})
 
+    async def test_namespace_prefixes_container_and_volume_names(self) -> None:
+        provider = self._provider(environ={"MASH_COMPUTER_NAMESPACE": "fudge"})
+        endpoint = await provider.ensure("eval-agent")
+
+        self.assertEqual(self.daemon.volumes, {"fudge-eval-agent-workspace"})
+        create = self.daemon.containers["fudge-agent-eval-agent"]["_create"]
+        self.assertEqual(
+            create["HostConfig"]["Mounts"][0]["Source"], "fudge-eval-agent-workspace"
+        )
+        self.assertEqual(
+            create["Labels"], {"mash.agent": "eval-agent", "mash.namespace": "fudge"}
+        )
+        self.assertNotIn("mash-agent-eval-agent", self.daemon.containers)
+        self.assertTrue(endpoint.base_url.startswith("http://127.0.0.1:"))
+
+    async def test_namespaced_deployments_do_not_share_computers(self) -> None:
+        self.daemon.add_container("mash-agent-eval-agent", running=True)
+        self.daemon.containers["mash-agent-eval-agent"]["HostConfig"] = {
+            "PortBindings": {"9000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "1"}]}
+        }
+
+        await self._provider(namespace="fudge").ensure("eval-agent")
+
+        self.assertIn(("POST", "/containers/create"), self.daemon.calls)
+        self.assertTrue(self.daemon.containers["fudge-agent-eval-agent"]["State"]["Running"])
+
+    async def test_in_container_namespace_names_the_endpoint(self) -> None:
+        self.daemon.add_container("host-1", running=True, config={"Image": "sha256:abc", "HostConfig": {}})
+        with patch("mash.runtime.host.computers.socket.gethostname", return_value="host-1"):
+            endpoint = await self._provider(
+                in_container=True, image=None, namespace="fudge"
+            ).ensure("research")
+
+        self.assertEqual(endpoint.base_url, "http://fudge-agent-research:9000")
+
+    def test_rejects_malformed_namespace(self) -> None:
+        for namespace in ("Fudge", "-fudge", "fu dge", "fudge/x"):
+            with self.subTest(namespace=namespace), self.assertRaises(ValueError):
+                self._provider(namespace=namespace)
+
+    async def test_replace_finds_a_namespaced_computer(self) -> None:
+        await self._provider(namespace="fudge").ensure("research")
+        before = self.daemon.containers["fudge-agent-research"]
+
+        await replace_computer(self.engine, "research", "fudge")
+
+        after = self.daemon.containers["fudge-agent-research"]
+        self.assertIsNot(after, before)
+        self.assertEqual(after["_create"]["HostConfig"], before["HostConfig"])
+
     async def test_replace_unknown_agent_raises(self) -> None:
         with self.assertRaises(ValueError):
             await replace_computer(self.engine, "missing")
@@ -285,6 +335,39 @@ class AgentUnavailableTests(unittest.IsolatedAsyncioTestCase):
                     "hi", session_id="s-1"
                 )
 
+
+
+class ComputerListTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ls_filters_by_namespace_and_names_each_volume(self) -> None:
+        from mash.cli.computer import _list_rows
+
+        filters: list[str] = []
+        containers = [
+            {"Id": "a", "Labels": {"mash.agent": "eval-agent"}},
+            {"Id": "b", "Labels": {"mash.agent": "eval-agent", "mash.namespace": "fudge"}},
+        ]
+
+        def _daemon(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/containers/json":
+                [label] = json.loads(request.url.params["filters"])["label"]
+                filters.append(label)
+                if label == "mash.namespace=fudge":
+                    return httpx.Response(200, json=containers[1:])
+                return httpx.Response(200, json=containers)
+            return httpx.Response(200, json={"State": {"Status": "running"}})
+
+        transport = httpx.MockTransport(_daemon)
+        with patch("mash.cli.computer.DockerEngine", lambda: DockerEngine(transport=transport)):
+            every = await _list_rows(None)
+            fudge = await _list_rows("fudge")
+
+        self.assertEqual(filters, ["mash.agent", "mash.namespace=fudge"])
+        self.assertEqual(
+            [(row[0], row[1], row[-1]) for row in every],
+            [("-", "eval-agent", "eval-agent-workspace"),
+             ("fudge", "eval-agent", "fudge-eval-agent-workspace")],
+        )
+        self.assertEqual([row[0] for row in fudge], ["fudge"])
 
 if __name__ == "__main__":
     unittest.main()
