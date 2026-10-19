@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from starlette.testclient import TestClient
 
+from mash.runtime.engine.workflow import workflow_id_for
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.server import AgentServer
 
@@ -13,6 +15,22 @@ from mash.runtime.server import AgentServer
 class _Store:
     async def close(self) -> None:
         return None
+
+    async def has_request(self, request_id: str) -> bool:
+        return request_id != "missing"
+
+
+class _DBOS:
+    """DBOS 3 rejects its sync calls inside a running event loop."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, object, str]] = []
+
+    def send(self, *args, **kwargs) -> None:
+        raise RuntimeError("send() was called while an event loop is running.")
+
+    async def send_async(self, destination_id: str, message: object, topic: str) -> None:
+        self.sent.append((destination_id, message, topic))
 
 
 class _Runtime:
@@ -95,6 +113,17 @@ class AgentServerControlRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.json()["error"]["code"], "ROUTE_NOT_FOUND")
         self.assertEqual(self.runtime.calls, [])
+
+    def test_interaction_response_is_sent_without_blocking_the_loop(self) -> None:
+        dbos = _DBOS()
+        with patch("mash.runtime.server.DBOS", dbos):
+            resp = self.client.post(
+                "/agent/agent-a/request/req-1/interaction",
+                json={"interaction_id": "int-1", "response": "yes"},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True, "interaction_id": "int-1"})
+        self.assertEqual(dbos.sent, [(workflow_id_for("agent-a", "req-1"), "yes", "int-1")])
 
 
 if __name__ == "__main__":
