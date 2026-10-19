@@ -52,11 +52,11 @@ Agent computers
 - `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls.
 - DBOS runs as executor `agent:<agent_id>` and listens to no queues, so the process recovers only this agent's requests and never runs the host's workflow runs.
 
-Computer administration (run on the Docker host; computers are found by the `mash.agent` label)
+Computer administration (run on the Docker host; computers are found by the `mash.agent` label; `--namespace` defaults to `MASH_COMPUTER_NAMESPACE`)
 
-- `computer ls`: list computers with status, uptime, restart count, and workspace volume.
-- `computer shell <agent_id> [--root]`: `docker exec -it` a bash shell as `agent` in `/home/agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspace/.admin_history`; admin commands are not in the event log.
-- `computer restart <agent_id>`: replace the container with a fresh one of the same configuration. The workspace volume is kept; anything else on the container layer is gone.
+- `computer ls [--namespace NS]`: list computers with namespace, status, uptime, restart count, and workspace volume; only namespace `NS` when given.
+- `computer shell <agent_id> [--root] [--namespace NS]`: `docker exec -it` a bash shell as `agent` in `/home/agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspace/.admin_history`; admin commands are not in the event log.
+- `computer restart <agent_id> [--namespace NS]`: replace the container with a fresh one of the same configuration. The workspace volume is kept; anything else on the container layer is gone.
 
 Notes
 

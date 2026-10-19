@@ -225,10 +225,11 @@ exist.
 ## Operating computers
 
 These commands run on the Docker host and find computers by their
-`mash.agent` label:
+`mash.agent` label. For a namespaced deployment, pass `--namespace` or set
+`MASH_COMPUTER_NAMESPACE`; `ls` without one lists every deployment's computers.
 
 ```bash
-mash computer ls                   # status, uptime, restart count, volume
+mash computer ls                   # namespace, status, uptime, restart count, volume
 mash computer shell research       # bash as `agent` in /home/agent
 mash computer shell research --root
 mash computer restart research     # replace the container, keep its workspace
@@ -384,6 +385,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_COMPUTER_NETWORK` | host | `mash` | Docker network the host and computers share |
 | `MASH_COMPUTER_HOST_API_URL` | host | derived | Override the host address computers call |
 | `MASH_COMPUTER_MOUNTS` | host | none | Comma-separated `source:target[:ro]` bind mounts added to every computer; sources are Docker-host paths |
+| `MASH_COMPUTER_NAMESPACE` | host, CLI | none | Names computers `<namespace>-agent-<agent_id>` with volumes `<namespace>-<agent_id>-workspace`, so deployments sharing a Docker daemon keep separate computers |
 | `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | computer | set by the host | The computer's agent token |
