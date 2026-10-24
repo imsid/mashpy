@@ -14,8 +14,15 @@ design draws:
   metadata, and generation skill registration.
 - `judge.py` — the run-experiment judging prompt and response contract.
 
-`HostBuilder` registers `eval-agent` and `eval-judge-agent` through the normal
-agent path. Every pool also receives both workflows.
+Evals are opt-in:
+
+```python
+pool = HostBuilder().agent(...).enable_evals().build()
+```
+
+`enable_evals()` registers `eval-agent` and `eval-judge-agent` through the
+normal agent path and both workflows, which attach to every host. Their runs
+take a `user_id` like any workflow that uses agents.
 
 ## Workflows
 

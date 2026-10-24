@@ -340,7 +340,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
                     sorted(described.keys()),
-                    ["eval-agent", "eval-judge-agent", "primary", "research"],
+                    ["primary", "research"],
                 )
                 for item in described.values():
                     self.assertNotIn("role", item)
@@ -395,22 +395,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 workflow_ids = {
                     item.workflow_id for item in pool.get_workflow_registry().list()
                 }
-                self.assertEqual(
-                    workflow_ids,
-                    {
-                        "changelog",
-                        "gen-synthetic-evals",
-                        "run-experiment",
-                    },
-                )
-                self.assertEqual(
-                    pool.get_host("changelog-host").workflows,
-                    (
-                        "changelog",
-                        "gen-synthetic-evals",
-                        "run-experiment",
-                    ),
-                )
+                self.assertEqual(workflow_ids, {"changelog"})
+                self.assertEqual(pool.get_host("changelog-host").workflows, ("changelog",))
 
     def test_code_step_declared_agents_must_be_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -498,19 +484,12 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
                     sorted(described.keys()),
-                    ["eval-agent", "eval-judge-agent", "primary"],
+                    ["primary"],
                 )
-                self.assertEqual(
-                    pool.list_agents(), ["primary", "eval-agent", "eval-judge-agent"]
-                )
+                self.assertEqual(pool.list_agents(), ["primary"])
                 self.assertEqual(
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
-                    [
-                        "gen-synthetic-evals",
-                        "run-experiment",
-                        "wf-a",
-                        "wf-b",
-                    ],
+                    ["wf-a", "wf-b"],
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
@@ -604,7 +583,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     workflow_service = pool.get_workflow_service()
                     self.assertIsNotNone(workflow_service)
                     listed = await workflow_service.list_workflows()
-                    self.assertEqual(len(listed), 3)
+                    self.assertEqual(len(listed), 1)
                     self.assertIn("changelog", {item["workflow_id"] for item in listed})
 
                     async def start_workflow_run(**_kwargs):

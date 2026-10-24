@@ -6,14 +6,15 @@ Masher is Mash's built-in eval workflow package: a code→agent→code
 eval-generation pipeline, a three-code-step experiment workflow, and dedicated
 generation and judging agents.
 
-`HostBuilder` always registers both eval agents as normal visible agents and
-registers both workflows. There is no opt-out or partial-registration mode.
+Masher is off unless the app calls `HostBuilder.enable_evals()`. Then the
+builder registers both eval agents as normal visible agents and both workflows,
+attached to every host. There is no partial-registration mode.
 
 ## What Must Stay True
 
 - The eval agent only generates and the eval judge only judges; neither has tools.
 - `gen-synthetic-evals` and `run-experiment` require the generation and judge
-  agents respectively. Both are part of every pool.
+  agents respectively. `enable_evals()` registers all four together.
 - Every step is typed: pydantic models on both edges of code steps; agent-step
   output models are the structured-output schema.
 - `workflow_input` is trigger input and is immutable for the run. There is no

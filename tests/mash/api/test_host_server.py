@@ -96,6 +96,7 @@ def _build_test_client(
     *,
     api_key: str | None = None,
     workflow_enabled: bool = False,
+    evals: bool = False,
     workflow_response_text: str = '{"last_run_ts":"2026-05-14T00:00:00Z"}',
 ):
     with patch.dict(
@@ -146,6 +147,8 @@ def _build_test_client(
                     )
                 )
             )
+        if evals:
+            builder = builder.enable_evals()
         host = builder.build()
         app = create_app(
             host,
@@ -199,7 +202,7 @@ def _save_workflow_turn(
 def test_health_and_agent_contract() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with _build_test_client(root) as client:
+        with _build_test_client(root, evals=True) as client:
             admin = client.get("/admin")
             assert admin.status_code == 200
             assert "text/html" in admin.headers["content-type"]
@@ -303,7 +306,7 @@ def test_host_snapshot_route_returns_live_composition_and_specs() -> None:
 def test_workflow_list_host_filter() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with _build_test_client(root, workflow_enabled=True) as client:
+        with _build_test_client(root, workflow_enabled=True, evals=True) as client:
             unfiltered = client.get("/api/v1/workflow")
             assert unfiltered.status_code == 200
             assert [
@@ -1119,7 +1122,7 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
 def test_workflow_routes_include_default_workflows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with _build_test_client(root) as client:
+        with _build_test_client(root, evals=True) as client:
             listed = client.get("/api/v1/workflow")
             assert listed.status_code == 200
             assert [
@@ -1240,14 +1243,9 @@ def test_workflow_only_pool_serves_and_completes_runs() -> None:
                 ),
             )
             with TestClient(app) as client:
-                # Only the always-registered masher eval agents are in the pool.
                 listed_agents = client.get("/api/v1/agent")
                 assert listed_agents.status_code == 200
-                agent_ids = {
-                    agent["agent_id"]
-                    for agent in listed_agents.json()["data"]["agents"]
-                }
-                assert agent_ids == {"eval-agent", "eval-judge-agent"}
+                assert listed_agents.json()["data"]["agents"] == []
 
                 listed = client.get("/api/v1/workflow")
                 assert listed.status_code == 200
