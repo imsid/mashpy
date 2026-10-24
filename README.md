@@ -268,11 +268,19 @@ MASH_HOST_SECRET=...   # openssl rand -hex 32
 
 **Start the host:**
 
+The host runs each agent as its own subprocess. For agents to get `bash`, it
+also needs a Docker daemon and an image to start each user's sandbox from,
+built from the Dockerfile in [the deploy guide](docs/posts/how-to-deploy.md#the-image).
+Without Docker the host still runs, and its agents get no `bash`.
+
 ```bash
+docker build -t my-app:dev .
+export MASH_SANDBOX_IMAGE=my-app:dev
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
-**Connect as a user and browse available agents:**
+**Connect as a user and browse available agents.** Every request acts for a
+user, so the connection saves one:
 ```bash
 mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
 mash browse
@@ -298,7 +306,7 @@ mash repl --host assistant
 | **Pool** | The deployed pool of role-less agents the API server runs; each agent runs as a subprocess of the host |
 | **Sandbox** | A container per user where agents' `bash` commands run, holding that user's workspaces and nothing else |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
-| **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `bash` when it has sandboxes |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |

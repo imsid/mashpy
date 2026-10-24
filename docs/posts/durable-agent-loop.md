@@ -14,7 +14,7 @@ The agent loop in Mash is a think/act/observe cycle. Almost everything the agent
 
 A trace spans one user message through the full loop run to the final response, written as one row in `memory_turns` on completion. Within a trace, each iteration of the loop is a turn — one think/act/observe cycle.
 
-The runtime wraps each request in a [DBOS](https://docs.dbos.dev) workflow. The LLM call and the commit are each a checkpoint; each tool call gets its own checkpoint. If the agent's computer crashes mid-run, Docker restarts it and the workflow resumes from the last completed checkpoint.
+The runtime wraps each request in a [DBOS](https://docs.dbos.dev) workflow. The LLM call and the commit are each a checkpoint; each tool call gets its own checkpoint. If the agent's process crashes mid-run, the host restarts it and the workflow resumes from the last completed checkpoint.
 
 ## The loop
 

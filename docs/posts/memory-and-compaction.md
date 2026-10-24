@@ -92,6 +92,6 @@ The two-step shape follows the same economics as [skills](skills-on-demand.md): 
 
 ## Per-agent scoping
 
-Everything above is scoped by `app_id`. Every read and write carries it, so an agent's memory is its own even when several agents share a store. Search is also scoped by user: a request that carries a `user_id` can search that user's other conversations with the agent, and a request without one searches only its own session. That matters in the next post, where a host runs a primary agent plus its specialists in one process.
+Everything above is scoped by `app_id`. Every read and write carries it, so an agent's memory is its own even when several agents share a store. Search is also scoped by user: every request carries a `user_id`, and it can search that user's other conversations with the agent. That matters in the next post, where a host runs a primary agent plus its specialists, each in its own process.
 
 *Next: [Composing Agents Under One Host](composing-agents.md).*

@@ -129,7 +129,7 @@ agent via `compaction_token_threshold` and `compaction_turn_limit` in
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
-- **BashTool**: execute shell commands in the host environment
+- **bash**: run shell commands in the sandbox of the user the request acts for, when the host has sandboxes
 - **AskUserTool**: pause execution to ask the user a question
 - **InvokeSubagent**: delegate work to a registered subagent and stream its response back
 - **search_conversations**: search stored conversation turns and return ranked previews
@@ -252,8 +252,8 @@ The host is the unit of deploy and the unit of evaluation. Mash evals run a
 dataset through the full composition, primary agent, delegation, and
 subagents, so what gets scored is the response the application actually
 receives. Synthetic evals ship as two Masher workflows backed by Mash's built-in
-generation and judging agents. Every pool includes both agents and both
-workflows; their specs appear in agent listings.
+generation and judging agents. `HostBuilder.enable_evals()` registers both
+agents and both workflows; their specs then appear in agent listings.
 
 - **`gen-synthetic-evals`** reads a host's declared capabilities and the
   developer's guidance and generates the eval: a dataset of test scenarios
@@ -404,7 +404,7 @@ and converse through it.
 
 ```bash
 mash host serve --host-app <MASH_HOST> --port 8001
-mash connect --api-base-url <MASH_HOST_URL> --api-key secret
+mash connect --api-base-url <MASH_HOST_URL> --api-key secret --user-id u-1
 mash compose --host pilot --primary pilot --subagents cli-copilot,api-copilot
 mash repl
 ```
@@ -421,7 +421,7 @@ curl -X PUT <MASH_HOST_URL>/api/v1/hosts/pilot \
   -d '{"primary": "pilot", "subagents": ["cli-copilot", "api-copilot"]}'
 
 curl -X POST <MASH_HOST_URL>/api/v1/hosts/pilot/request \
-  -d '{"message": "...", "session_id": "s-1"}'
+  -d '{"message": "...", "session_id": "s-1", "user_id": "u-1"}'
 ```
 
 Each request snapshots the composition it was submitted with, so redefining a

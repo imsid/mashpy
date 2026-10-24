@@ -73,7 +73,7 @@ class InvokeSubagentTool:
     }
 ```
 
-Each agent runs on its own computer, so invoking it is an HTTP call. The primary's computer submits a normal Mash request to the host's `/h2a` relay with the primary's agent token, a `parent` naming the calling request, and the request's host snapshot. The relay refuses an agent id outside the snapshot's subagent list, even if it exists in the pool, and forwards the rest to the subagent's computer. The child request goes down the same `submit_request` path and durable workflow as any external request, and the subagent's response streams back through the relay to become the tool result the primary observes on its next think.
+Each agent runs in its own process, so invoking it is an HTTP call. The primary's process submits a normal Mash request to the host's `/h2a` relay with the primary's agent token, a `parent` naming the calling request, and the request's host snapshot. The relay refuses an agent id outside the snapshot's subagent list, even if it exists in the pool, and forwards the rest to the subagent's process. The child request goes down the same `submit_request` path and durable workflow as any external request, and the subagent's response streams back through the relay to become the tool result the primary observes on its next think.
 
 Two details keep this delegation well-behaved:
 
@@ -84,9 +84,9 @@ Two details keep this delegation well-behaved:
 ```mermaid
 flowchart TD
     H["host: pilot\n(primary + subagent ids, /h2a relay)"]
-    P["computer: pilot\n(directory + InvokeSubagent, per request)"]
-    A["computer: cli-copilot\nown model, memory scope"]
-    B["computer: api-copilot"]
+    P["process: pilot\n(directory + InvokeSubagent, per request)"]
+    A["process: cli-copilot\nown model, memory scope"]
+    B["process: api-copilot"]
     W["workflow-only agents\n(hidden from delegation)"]
     H -- "request + snapshot" --> P
     P -- "subagent call" --> H

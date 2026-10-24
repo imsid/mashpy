@@ -352,7 +352,7 @@
 
   <pre><code><span class="cm">// 1. Submit</span>
 <span class="key">POST</span> /api/v1/agent/chat/request
-{ <span class="str">"message"</span>: <span class="str">"What is AI?"</span>, <span class="str">"session_id"</span>: <span class="str">"moma-chat-alice-2026-06-28"</span> }
+{ <span class="str">"message"</span>: <span class="str">"What is AI?"</span>, <span class="str">"session_id"</span>: <span class="str">"moma-chat-alice-2026-06-28"</span>, <span class="str">"user_id"</span>: <span class="str">"alice"</span> }
 → 202  { data: { request_id: <span class="str">"r_abc"</span> } }
 
 <span class="cm">// 2. Stream</span>

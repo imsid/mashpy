@@ -119,7 +119,7 @@ the merged view for one (`404 HOST_NOT_FOUND` for unknown ids).
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
   -H "Content-Type: application/json" \
-  -d '{"message": "triage my inbox and block focus time", "session_id": "s-1"}'
+  -d '{"message": "triage my inbox and block focus time", "session_id": "s-1", "user_id": "u-42"}'
 ```
 
 ```json
@@ -127,7 +127,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
   "data": {
     "request_id": "5f0c2b1e-...",
     "agent_id": "concierge",
-    "session_id": "s-1"
+    "session_id": "s-1",
+    "user_id": "u-42"
   }
 }
 ```
@@ -248,7 +249,8 @@ client.define_host("assistant", primary="concierge",
                    subagents=["email", "calendar"])
 accepted = client.submit_host_request("assistant",
                                       message="triage my inbox",
-                                      session_id="s-1")
+                                      session_id="s-1",
+                                      user_id="u-42")
 for event in client.stream_request(accepted["agent_id"], accepted["request_id"]):
     if event["event"] == "request.completed":
         print(event["data"]["response"]["text"])

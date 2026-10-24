@@ -29,11 +29,11 @@ pool = (
 )
 ```
 
-`enable_cortex()` does three things. It records `CortexSettings` on the pool, registers a built-in `cortex-agent`, and registers the `cortex-build` workflow. Every agent computer imports the same `build_pool()`, so each one sees the setting when `mash agent serve` builds its runtime.
+`enable_cortex()` does three things. It records `CortexSettings` on the pool, registers a built-in `cortex-agent`, and registers the `cortex-build` workflow. Every agent process imports the same `build_pool()`, so each one sees the setting when `mash agent serve` builds its runtime.
 
 ## Who the user is
 
-Memory per user needs a user the runtime can trust. H2A 0.5.0 added `user_id` to requests. The application sends it to the host with the message:
+Memory per user needs a user the runtime can trust. H2A 0.5.0 added `user_id` to requests, and 0.6.0 made it required on every one. The application sends it to the host with the message:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
@@ -41,7 +41,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
   -d '{"message": "plan a site visit", "session_id": "s-7", "user_id": "u-42"}'
 ```
 
-The host is the trust boundary. The application authenticates to it with the API key and asserts the user, and the host passes `user_id` to the primary's computer unchanged. It is stored on the request and on every turn the request saves, and it is never shown to the model.
+The host is the trust boundary. The application authenticates to it with the API key and asserts the user, and the host passes `user_id` to the primary's process unchanged. It is stored on the request and on every turn the request saves, and it is never shown to the model.
 
 Subagent calls are where an agent could try to act as someone else. A primary calls its subagents through the host's `/h2a` relay, and the relay looks up the parent request before forwarding anything:
 
@@ -49,13 +49,13 @@ Subagent calls are where an agent could try to act as someone else. A primary ca
 # src/mash/api/routes/h2a.py
 identity = await store.get_request_identity(str(parent.get("request_id")))
 if identity is None:
-    return _h2a_error(400, "INVALID_PARENT", "parent request not found")
+    return h2a_error(400, "INVALID_PARENT", "parent request not found")
 if identity.agent_id != caller:
-    return _h2a_error(
+    return h2a_error(
         403, "FORBIDDEN", f"parent request does not belong to agent '{caller}'"
     )
 if "user_id" in body and body.get("user_id") != identity.user_id:
-    return _h2a_error(
+    return h2a_error(
         403, "FORBIDDEN", "user_id must match the parent request's user"
     )
 ```
@@ -64,7 +64,7 @@ The forwarded request gets `identity.user_id`, read from `runtime_request`, whic
 
 ## What an agent sees
 
-When a request with a `user_id` reaches a computer in a Cortex pool, the runtime does two things for that request only.
+When a request reaches an agent in a Cortex pool, the runtime does two things for that request only.
 
 The `context.load` step appends the user's profile to the system prompt:
 
@@ -88,9 +88,9 @@ The agent built for each turn also gets `search_cortex`, a read-only tool over t
 entries = await store.search_entries(user_id, query, limit=max(1, limit))
 ```
 
-A `user_id` the model puts in the arguments is ignored, and the tool's output does not include the user id. A request without a user gets neither the block nor the tool.
+A `user_id` the model puts in the arguments is ignored, and the tool's output does not include the user id.
 
-These reads run in the runtime's `mash` process, which holds the database credentials. The agent's bash runs as the `agent` user with a clean environment and cannot reach Postgres. The only way an agent sees memory is the block and the tool, and both are cut to one user.
+These reads run in the agent's process, which holds the database credentials. The agent's bash runs in the user's sandbox, which has no database access. The only way an agent sees memory is the block and the tool, and both are cut to one user.
 
 ## The tables
 
@@ -108,7 +108,7 @@ Nothing writes Cortex when a request completes. A build runs only when something
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/workflow/cortex-build/run \
   -H "Content-Type: application/json" \
-  -d '{"input": {"user_id": "u-42", "limit": 200}}'
+  -d '{"user_id": "u-42", "input": {"limit": 200}}'
 ```
 
 `cortex-build` is a three-step workflow on the same layer as [masher's](synthetic-evals.md):
@@ -166,6 +166,6 @@ Deletes are permanent for turns already built. The watermark is past them, so th
 
 ## Conversation search follows the user
 
-The same `user_id` also scopes the older runtime tools. `search_conversations` offers scope `user`, the user's sessions with that agent, only on a request with a user, and `get_full_turn_message` returns only that user's turns. Without a user both tools stay inside the current session. An agent in a Cortex pool reaches its own user's history and no one else's.
+The same `user_id` also scopes the older runtime tools. `search_conversations` offers scope `user`, the user's sessions with that agent, and `get_full_turn_message` returns only that user's turns. An agent in a Cortex pool reaches its own user's history and no one else's.
 
 For running a pool with Cortex in production, including the `CORTEX_AGENT_<PROVIDER>_MODEL` setting, see the [deploy guide](how-to-deploy.md).

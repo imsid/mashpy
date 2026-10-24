@@ -13,11 +13,11 @@ tags:
 
 # Agent Loop Walkthrough
 
-A request to a Mash agent runs as one DBOS workflow on the agent's computer, inside its `mash agent serve` process. This page steps through that workflow for five kinds of request. Each entry in the timeline is one operation in [`execute_request_workflow`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/engine/workflow.py): a checkpointed DBOS step, a durable wait, or plain code in the workflow function.
+A request to a Mash agent runs as one DBOS workflow in the agent's process, the `mash agent serve` subprocess the host runs for it. This page steps through that workflow for five kinds of request. Each entry in the timeline is one operation in [`execute_request_workflow`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/engine/workflow.py): a checkpointed DBOS step, a durable wait, or plain code in the workflow function.
 
 ## Where DBOS runs
 
-DBOS is a Python library. The agent's computer imports it and launches it when the agent runtime opens: [`ensure_dbos_ready`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/engine/dbos.py) constructs DBOS with `system_database_url` set to `MASH_DATABASE_URL` and executor id `agent:<agent_id>`, registers the request workflow, and calls `DBOS.launch()`. No separate DBOS server or worker runs. Workflows execute as tasks on the computer's event loop, and on launch DBOS recovers only the pending requests recorded under that executor id.
+DBOS is a Python library. The agent's process imports it and launches it when the agent runtime opens: [`ensure_dbos_ready`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/engine/dbos.py) constructs DBOS with `system_database_url` set to `MASH_DATABASE_URL` and executor id `agent:<agent_id>`, registers the request workflow, and calls `DBOS.launch()`. No separate DBOS server or worker runs. Workflows execute as tasks on the process's event loop, and on launch DBOS recovers only the pending requests recorded under that executor id.
 
 DBOS keeps its state in the same Postgres database as the Mash tables. Three of its tables come up in the walkthrough:
 
@@ -33,7 +33,7 @@ Each request runs the workflow function `mash.runtime.execute_request` under the
 
 Pick a scenario, then step with **Next** and **Prev** or the arrow keys. Clicking a timeline entry jumps to it. The map at the top highlights the parts of the process and the tables each step touches. The two panels on the right show the workflow variables after the step and the rows in `runtime_event_log` so far, with each row's dedupe key and the event name the stream sends.
 
-**Crash during this step** kills the computer's process at the current step and plays out the restart: `DBOS.launch()` recovery, replay of the recorded steps, and the re-run of the step that was in flight. One crash per run; **Reset** clears it.
+**Crash during this step** kills the agent's process at the current step and plays out the restart: `DBOS.launch()` recovery, replay of the recorded steps, and the re-run of the step that was in flight. One crash per run; **Reset** clears it.
 
 <div data-mash-viz="agent-loop"><noscript>This walkthrough needs JavaScript.</noscript></div>
 

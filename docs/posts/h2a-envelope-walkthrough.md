@@ -15,7 +15,7 @@ tags:
 
 The [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) defines four roles: a user application, a host, a client per agent, and the agent. A request crosses them with three operations: `post_request` to submit, `stream_response` to read the event stream, and `post_interaction` to answer a paused request. This page follows each operation hop by hop through the Mash code.
 
-Mash has one binding for these roles: HTTP plus SSE. Each agent runs behind its own [`AgentServer`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/server.py), on its own computer in a pool deploy (`mash host serve`), and the host reaches it with an [`AgentClient`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/client.py). The walkthrough has two views: a pool deploy, where the user application talks to the host, and code that holds an `AgentClient` for one server directly. Both end at the same `AgentRuntime` methods.
+Mash has one binding for these roles: HTTP plus SSE. Each agent runs behind its own [`AgentServer`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/server.py), in its own process in a pool deploy (`mash host serve`), and the host reaches it with an [`AgentClient`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/client.py). The walkthrough has two views: a pool deploy, where the user application talks to the host, and code that holds an `AgentClient` for one server directly. Both end at the same `AgentRuntime` methods.
 
 ## Following a request
 

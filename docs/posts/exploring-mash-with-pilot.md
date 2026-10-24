@@ -22,9 +22,10 @@ observable in one running system.
 ## Start your store
 
 A Pilot deployment is Postgres and a Mash host, run with Docker Compose from a
-checkout of the repo. The host starts one container per agent, its computer,
-through the Docker socket, and mounts the checkout read-only into each one at
-`/home/agent/workspace/mashpy`. Put `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and
+checkout of the repo. The host runs each agent as a process inside its
+container. Through the Docker socket it starts a sandbox per user for the bash
+commands the agents run, and mounts the checkout read-only into each one at
+`/home/agent/mashpy`. Put `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and
 `MASH_HOST_SECRET` (`openssl rand -hex 32`) in `.env`, then:
 
 ```bash
@@ -32,6 +33,7 @@ git clone https://github.com/imsid/mashpy.git && cd mashpy
 docker compose -f docker-compose.pilot.yml up -d --build
 
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot browse
 ```
 
@@ -39,7 +41,8 @@ pilot browse
 masher's eval agents, each listed through the `AgentMetadata` it registered
 with. The same metadata becomes the delegation directory when an agent serves
 as a subagent, as [the composition post](composing-agents.md) covered.
-`mash computer ls` on the Docker host lists the computers behind them.
+Every request acts for the user `mash connect` saved, and that user's bash
+commands run in their own sandbox. `mash sandbox ls` lists the sandboxes.
 
 ## Compose a team
 
@@ -80,13 +83,13 @@ defined in code and is also the default entry in the host config file:
 > Build me an agent with a knowledge base search tool and human approval for refunds.
 ```
 
-The guide answers from the repository with `rg` and `sed` in its bash session,
+The guide answers from the repository with `rg` and `sed` in its bash tool,
 and its prompt carries a map of where each module and post is documented. When
 you ask for an app, it delegates to the builder. The builder follows the
 `build-mash-agent`, `build-mash-workflow`, or `build-mash-host` skill, writes the
-app under `/home/agent/workspace/apps/<name>`, installs mashpy with uv, and runs
-the app's tests. It cannot serve the app, because a computer has no Docker;
-copy it out with `docker cp`. The shell renders the subagent trace frames live,
+app under `/home/agent/workspaces/builder/apps/<name>` in your sandbox, installs
+mashpy with uv, and runs the app's tests. It cannot serve the app, because a
+sandbox has no Docker; copy it out with `docker cp`. The shell renders the subagent trace frames live,
 so you watch the delegation happen.
 
 ## The changelog workflow
