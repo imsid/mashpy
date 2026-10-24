@@ -74,10 +74,17 @@ def resolve_host_system_prompt(
     return append_context_block(prompt, context)
 
 
-def register_computer_bash(self: "AgentRuntime", agent: Agent) -> None:
-    """Register bash on a computer's agent; a spec's own ``bash`` tool wins."""
-    if self._computer_bash and "bash" not in agent.tools:
-        agent.tools.register(BashTool())
+def register_sandbox_bash(self: "AgentRuntime", agent: Agent) -> None:
+    """Register bash in the request user's sandbox, when the host has sandboxes."""
+    if self._sandbox_bash is None:
+        return
+    if "bash" in agent.tools:
+        raise ValueError(
+            f"agent '{self.app_id}' registers its own 'bash' tool; bash runs in the "
+            "request user's sandbox, so remove it from build_tools()"
+        )
+    host_api_url, token = self._sandbox_bash
+    agent.tools.register(BashTool(host_api_url=host_api_url, token=token))
 
 
 def build_agent_instance(
@@ -113,7 +120,7 @@ def build_agent_instance(
         )
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
-    register_computer_bash(self, agent)
+    register_sandbox_bash(self, agent)
     if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
         agent.tools.register(SkillTool(skills))
     collector = getattr(self, "signal_collector", None)

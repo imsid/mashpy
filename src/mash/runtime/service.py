@@ -66,7 +66,7 @@ class AgentRuntime:
         self._shutdown_complete = False
 
         self._subagent_access: SubagentAccess | None = None
-        self._computer_bash = False
+        self._sandbox_bash: tuple[str, str] | None = None
         self._cortex: Any = None
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
         self.has_mcp_manager = False
@@ -141,10 +141,10 @@ class AgentRuntime:
     def get_cortex(self) -> Any:
         return self._cortex
 
-    def enable_computer_bash(self) -> None:
-        """Give every turn agent bash on its computer, unless the spec has its own."""
-        self._computer_bash = True
-        factory_helpers.register_computer_bash(self, self.agent)
+    def enable_sandbox_bash(self, *, host_api_url: str, token: str) -> None:
+        """Give every turn agent bash in the request user's sandbox, via the host."""
+        self._sandbox_bash = (host_api_url, token)
+        factory_helpers.register_sandbox_bash(self, self.agent)
 
     async def get_session_info(
         self,

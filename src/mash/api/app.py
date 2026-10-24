@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -19,6 +21,7 @@ from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
+from mash.api.routes.sandbox import build_sandbox_router
 from mash.api.routes.common import (
     APIError,
     AppRuntimeState,
@@ -33,6 +36,15 @@ from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
 from mash.runtime.host.computers import DockerComputerProvider
+from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
+from mash.sandbox.manager import (
+    DEFAULT_IDLE_SECONDS,
+    DEFAULT_MAX_RUNNING,
+    MASH_SANDBOX_IDLE_SECONDS_ENV,
+    MASH_SANDBOX_MAX_RUNNING_ENV,
+    SandboxManager,
+)
+from mash.sandbox.provider import DockerSandboxProvider
 from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
@@ -45,9 +57,39 @@ from .config import MashHostConfig
 from .admin_ui import mount_admin_ui
 
 
+logger = logging.getLogger(__name__)
+
+
+async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:
+    """Docker sandboxes when a Docker daemon answers, otherwise none.
+
+    Without sandboxes the host runs and its agents get no ``bash`` tool.
+    """
+    host_secret = config.resolved_host_secret()
+    if not host_secret:
+        logger.warning("no MASH_HOST_SECRET: running without sandboxes; agents get no bash")
+        return None
+    engine = DockerEngine()
+    provider = DockerSandboxProvider(host_secret=host_secret, engine=engine)
+    try:
+        await engine.ping()
+        await provider.prepare()
+    except (DockerEngineError, RuntimeError) as exc:
+        await engine.close()
+        logger.warning("running without sandboxes, agents get no bash: %s", exc)
+        return None
+    logger.info("sandboxes: Docker, namespace '%s'", provider.namespace)
+    return SandboxManager(
+        provider,
+        idle_seconds=float(
+            os.environ.get(MASH_SANDBOX_IDLE_SECONDS_ENV) or DEFAULT_IDLE_SECONDS
+        ),
+        max_running=int(os.environ.get(MASH_SANDBOX_MAX_RUNNING_ENV) or DEFAULT_MAX_RUNNING),
+    )
+
+
 def default_computer_provider(pool: Pool, config: MashHostConfig) -> DockerComputerProvider:
     """Docker computers for a pool served without a configured provider."""
-    del pool
     host_secret = config.resolved_host_secret()
     if not config.host_app or not host_secret:
         raise RuntimeError(
@@ -58,6 +100,7 @@ def default_computer_provider(pool: Pool, config: MashHostConfig) -> DockerCompu
         host_app=config.host_app,
         host_secret=host_secret,
         host_api_port=config.bind_port,
+        sandboxes=pool.get_sandboxes() is not None,
     )
 
 
@@ -71,6 +114,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         pool.configure_runtime_database_url(
             resolved_config.resolved_runtime_database_url()
         )
+        if pool.get_sandboxes() is None:
+            sandboxes = await default_sandboxes(resolved_config)
+            if sandboxes is not None:
+                pool.configure_sandboxes(sandboxes)
         if pool.list_registered_agents() and not pool.has_computer_provider():
             pool.configure_computer_provider(
                 default_computer_provider(pool, resolved_config)
@@ -248,6 +295,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         api.include_router(build_cortex_router())
     app.include_router(api)
     app.include_router(build_h2a_router())
+    app.include_router(build_sandbox_router())
 
     @app.get("/")
     async def root() -> dict[str, object]:

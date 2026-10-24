@@ -118,31 +118,39 @@ class BuildAgentServerTests(unittest.TestCase):
         self.assertEqual(client._headers["Authorization"], "Bearer tok")
         self.assertIsNotNone(relay.get_agent_metadata("research"))
 
-    def test_agent_gets_bash(self) -> None:
+    def test_agent_gets_sandbox_bash_when_the_host_has_sandboxes(self) -> None:
         server = build_agent_server(
-            _build_pool(), "research", token="tok", host_api_url="http://host"
+            _build_pool(), "research", token="tok", host_api_url="http://host", sandbox_bash=True
         )
 
         self.assertIsInstance(server.runtime.tools.get("bash"), BashTool)
         turn_agent = build_agent_instance(server.runtime, session_id="s-1")
-        self.assertIsInstance(turn_agent.tools.get("bash"), BashTool)
+        bash = turn_agent.tools.get("bash")
+        self.assertIsInstance(bash, BashTool)
+        self.assertEqual(bash._exec_url, "http://host/sandbox/exec")
 
-    def test_spec_bash_is_kept(self) -> None:
-        spec_bash = BashTool(working_dir="/srv/data")
+    def test_agent_gets_no_bash_without_sandboxes(self) -> None:
+        server = build_agent_server(
+            _build_pool(), "research", token="tok", host_api_url="http://host"
+        )
+
+        self.assertNotIn("bash", server.runtime.tools)
+
+    def test_spec_bash_conflicts_with_sandbox_bash(self) -> None:
         spec = build_spec(agent_id="research", response_text="ok")
         build_tools = spec.build_tools
 
         def tools_with_bash():
             tools = build_tools()
-            tools.register(spec_bash)
+            tools.register(BashTool(host_api_url="http://elsewhere", token="t"))
             return tools
 
         spec.build_tools = tools_with_bash
         pool = HostBuilder().agent(spec, metadata=metadata()).build()
-        server = build_agent_server(pool, "research", token="tok", host_api_url="http://host")
-
-        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
-        self.assertIs(turn_agent.tools.get("bash"), spec_bash)
+        with self.assertRaisesRegex(ValueError, "registers its own 'bash' tool"):
+            build_agent_server(
+                pool, "research", token="tok", host_api_url="http://host", sandbox_bash=True
+            )
 
     def test_unknown_agent_raises(self) -> None:
         with self.assertRaises(ValueError):

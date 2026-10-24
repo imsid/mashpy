@@ -224,6 +224,70 @@ class DelegatingAgentSpec(AgentSpec):
         return AgentConfig(app_id=self.agent_id, system_prompt=f"You are {self.agent_id}.")
 
 
+class ToolCallingLLMProvider(LLMProvider):
+    """Calls one tool once, then answers with the tool's result text."""
+
+    def __init__(self, *, tool_name: str, arguments: dict[str, Any]) -> None:
+        self._tool_name = tool_name
+        self._arguments = dict(arguments)
+        self.last_session_id: str | None = None
+        self.last_system: Any = None
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        self.last_system = request.system
+        result_text: str | None = None
+        for message in request.messages:
+            for block in message.content:
+                if block.type == "tool_result":
+                    content = block.data.get("content")
+                    result_text = content if isinstance(content, str) else str(content)
+        if result_text is None:
+            return LLMResponse(
+                thought_summary="",
+                text="",
+                tool_calls=[
+                    ToolCall(id="call-1", name=self._tool_name, arguments=self._arguments)
+                ],
+                content_blocks=[
+                    LLMContentBlock.tool_call(
+                        tool_call_id="call-1",
+                        name=self._tool_name,
+                        arguments=self._arguments,
+                    )
+                ],
+                stop_reason="tool_call",
+                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+            )
+        return LLMResponse(
+            thought_summary="",
+            text=result_text,
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text(result_text)],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, app_id
+        self.last_session_id = session_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+    def get_event_logger_session_id(self) -> str | None:
+        return self.last_session_id
+
+
+class ToolCallingAgentSpec(DeterministicAgentSpec):
+    def __init__(self, *, agent_id: str, tool_name: str, arguments: dict[str, Any]) -> None:
+        super().__init__(agent_id=agent_id)
+        self.provider = ToolCallingLLMProvider(tool_name=tool_name, arguments=arguments)
+
+
 def metadata() -> AgentMetadata:
     return AgentMetadata(
         display_name="Research",
@@ -261,3 +325,10 @@ def build_delegating_spec(
         subagent_id=subagent_id,
         subagent_prompt=subagent_prompt,
     )
+
+
+def build_tool_calling_spec(
+    *, agent_id: str, tool_name: str, arguments: dict[str, Any]
+) -> ToolCallingAgentSpec:
+    """A spec whose model calls ``tool_name`` once and answers with its result."""
+    return ToolCallingAgentSpec(agent_id=agent_id, tool_name=tool_name, arguments=arguments)

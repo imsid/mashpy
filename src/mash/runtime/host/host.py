@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
@@ -21,6 +21,9 @@ from ..spec import AgentSpec
 from .computers import ComputerProvider
 from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
+
+if TYPE_CHECKING:
+    from mash.sandbox.manager import SandboxManager
 
 
 class Pool:
@@ -48,6 +51,7 @@ class Pool:
         self._registered: Dict[str, AgentRegistration] = {}
         self._hosts: Dict[str, Host] = {}
         self._computer_provider: ComputerProvider | None = None
+        self._sandboxes: SandboxManager | None = None
         self._clients: Dict[str, AgentClientLike] = {}
         self._model_settings: Dict[str, dict[str, Any]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
@@ -79,6 +83,19 @@ class Pool:
 
     def has_computer_provider(self) -> bool:
         return self._computer_provider is not None
+
+    def configure_sandboxes(self, sandboxes: "SandboxManager") -> None:
+        """Set where agents' bash commands run: each request user's sandbox.
+
+        Without sandboxes, agents get no ``bash`` tool. The pool owns the
+        manager from here and closes it in ``close()``.
+        """
+        if self._clients:
+            raise RuntimeError("sandboxes must be configured before start()")
+        self._sandboxes = sandboxes
+
+    def get_sandboxes(self) -> "SandboxManager | None":
+        return self._sandboxes
 
     def register_agent(
         self,
@@ -321,6 +338,8 @@ class Pool:
             await shared_runtime_store.open()
             await shared_memory_store.open()
             await shared_workflow_store.open()
+            if self._sandboxes is not None:
+                await self._sandboxes.start()
 
             if self._registered:
                 if self._computer_provider is None:
@@ -490,6 +509,8 @@ class Pool:
         if self._computer_provider is not None:
             # Closes the provider's handle only; computers keep running.
             await self._computer_provider.close()
+        if self._sandboxes is not None:
+            await self._sandboxes.close()
 
         if self._shared_runtime_store is not None:
             await self._shared_runtime_store.close()

@@ -1077,6 +1077,14 @@ def _patch_hosted_runtime_for_tests():
         "mash.api.app.default_computer_provider",
         lambda pool, config: LocalComputerProvider(pool),
     )
+
+    # No test reaches a real Docker daemon for sandboxes; a test that wants
+    # them configures a LocalSandboxProvider-backed SandboxManager itself.
+    async def _no_sandboxes(config):
+        del config
+        return None
+
+    patcher.setattr("mash.api.app.default_sandboxes", _no_sandboxes)
     original_start = Pool.start
 
     async def _start_with_local_computers(self):

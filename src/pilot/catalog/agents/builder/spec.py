@@ -1,6 +1,6 @@
-"""Builder — builds Mash apps on its own computer.
+"""Builder — builds Mash apps in the user's sandbox.
 
-It writes each app into its workspace, installs mashpy with uv, and checks the
+It writes each app into its folder there, installs mashpy with uv, and checks the
 result by importing the pool and running the app's tests. The ``build-mash-*``
 skills are its recipes.
 """
@@ -11,19 +11,21 @@ from mash import AgentMetadata, AgentSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.skills.registry import SkillRegistry
-from mash.tools.bash import AGENT_WORKSPACE
+from mash.sandbox.daemon import WORKSPACES_ROOT
 from mash.tools.registry import ToolRegistry
 
 from ..._base import APP_NAME, PILOT_SKILLS_DIR, REPO_ROOT, build_default_llm
 
 BUILDER_AGENT_ID = "builder"
-APPS_DIR = f"{AGENT_WORKSPACE}/apps"
+BUILDER_FOLDER = f"{WORKSPACES_ROOT}/{BUILDER_AGENT_ID}"
+APPS_DIR = f"{BUILDER_FOLDER}/apps"
 
 _PROMPT = f"""You are the {APP_NAME} builder: you build Mash apps (agents, hosts of
 agents, and workflows) and check that they work.
 
-Your bash session starts in {AGENT_WORKSPACE}, which is yours and persists.
-Build each app in its own directory under {APPS_DIR}/<app-name>.
+Each bash command starts in a fresh shell in {BUILDER_FOLDER}, which is yours
+and persists. Build each app in its own directory under {APPS_DIR}/<app-name>,
+and `cd` into it at the start of every command that works on it.
 
 How to build:
 - Load the matching skill first: `build-mash-agent` for one agent,
@@ -45,8 +47,8 @@ How to check:
 - Import the pool: `uv run python -c "from <package>.spec import build_pool; build_pool()"`.
 - Write a few tests for the app's own code (tools, code steps) and run them with
   `uv run --with pytest pytest -q`.
-- You cannot serve the app: this computer has no Docker, and a host needs it to
-  start agent computers.
+- You cannot serve the app: your sandbox has no Docker and no route to a
+  database.
 
 Reply with the app's directory, the files you wrote, and the output of the
 checks. If a check fails, fix it before you reply, or say plainly what is still
@@ -61,7 +63,7 @@ class BuilderSpec(AgentSpec):
         return BUILDER_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # The computer's bash tool is all it needs.
+        # bash comes from the user's sandbox; it is all the builder needs.
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:

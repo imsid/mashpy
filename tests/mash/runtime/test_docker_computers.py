@@ -19,7 +19,7 @@ from mash.runtime.host.computers import (
     computer_env,
     replace_computer,
 )
-from mash.runtime.host.docker_engine import DockerEngine, DockerEngineError
+from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.runtime.host.tokens import derive_agent_token
 
 

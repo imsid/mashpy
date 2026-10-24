@@ -27,7 +27,8 @@ from typing import Mapping, Protocol, Sequence
 
 import httpx
 
-from .docker_engine import DockerEngine
+from mash.sandbox.docker_engine import DockerEngine
+from ..computer import MASH_SANDBOX_ENABLED_ENV
 from .tokens import MASH_HOST_SECRET_ENV, derive_agent_token
 
 AGENT_PORT = 9000
@@ -186,6 +187,7 @@ class DockerComputerProvider:
         environ: Mapping[str, str] | None = None,
         engine: DockerEngine | None = None,
         health_timeout: float = 300.0,
+        sandboxes: bool = False,
     ) -> None:
         if not str(host_app or "").strip():
             raise ValueError("host_app is required to start agent computers")
@@ -209,6 +211,7 @@ class DockerComputerProvider:
         self._in_container = _running_in_container() if in_container is None else in_container
         self._engine = engine or DockerEngine()
         self._health_timeout = float(health_timeout)
+        self._sandboxes = sandboxes
         self._prepared = False
 
     async def close(self) -> None:
@@ -268,6 +271,7 @@ class DockerComputerProvider:
             "MASH_HOST_APP": self._host_app,
             "MASH_AGENT_TOKEN": token,
             "MASH_HOST_API_URL": str(self._host_api_url),
+            MASH_SANDBOX_ENABLED_ENV: "1" if self._sandboxes else "0",
         }
         host_config: dict = {
             "RestartPolicy": {"Name": "always"},

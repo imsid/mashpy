@@ -8,13 +8,12 @@ from pathlib import Path
 from mash.core.llm import LLMProvider
 from mash.core.llm.gemini import GeminiProvider
 from mash.core.llm.oss import GemmaProvider
-from mash.tools.bash import AGENT_WORKSPACE
 
 APP_NAME = "Mash Pilot"
 
-# The mashpy checkout, bind-mounted read-only into every computer's workspace
-# (MASH_COMPUTER_MOUNTS) and into the host container at the same path.
-REPO_ROOT = Path(AGENT_WORKSPACE) / "mashpy"
+# The mashpy checkout, bind-mounted read-only into every sandbox
+# (MASH_SANDBOX_MOUNTS) and into the host container at the same path.
+REPO_ROOT = Path("/home/agent/mashpy")
 
 # pilot/skills — recipes the builder loads on demand.
 PILOT_SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"

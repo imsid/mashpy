@@ -12,6 +12,8 @@ from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
 from mash.agents.masher import EVAL_AGENT_ID, EVAL_JUDGE_AGENT_ID
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
+from mash.sandbox.manager import SandboxManager
+from mash.testing.sandboxes import LocalSandboxProvider
 from mash.workflows import StepContext
 from pilot.catalog._base import APP_NAME, REPO_ROOT
 from pilot.catalog.agents.builder import BUILDER_AGENT_ID
@@ -92,11 +94,12 @@ def test_agents_on_their_computers() -> None:
         async def _run() -> None:
             pool = build_pool()
             pool.configure_runtime_database_url("postgresql://test/runtime")
+            pool.configure_sandboxes(SandboxManager(LocalSandboxProvider()))
             await pool.start()
             try:
                 guide = _computer_runtime(pool, PILOT_AGENT_ID)
+                # bash comes from the sandbox, not from the specs.
                 assert {"AskUser", "bash"} <= set(guide.agent.tools.list_tools())
-                assert guide.agent.tools.get("bash")._session.working_dir == str(REPO_ROOT)
                 turn_agent = guide.build_turn_agent(
                     session_id="s-1",
                     trace_id="trace-1",
@@ -116,7 +119,8 @@ def test_agents_on_their_computers() -> None:
                 ]
 
                 summarizer = _computer_runtime(pool, CHANGELOG_AGENT_ID)
-                assert summarizer.agent.tools.get("bash")._session.working_dir == str(REPO_ROOT)
+                assert "bash" in summarizer.agent.tools
+                assert str(REPO_ROOT) in str(summarizer.agent.config.system_prompt)
             finally:
                 await pool.close()
 

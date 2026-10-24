@@ -14,6 +14,7 @@ from mash.runtime.computer import (
     build_agent_server,
     resolve_agent_token,
     resolve_host_api_url,
+    resolve_sandbox_enabled,
 )
 
 from .app import run_host
@@ -156,6 +157,7 @@ def _run_agent_serve_command(args) -> int:
             token=token,
             host_api_url=host_api_url,
             runtime_database_url=args.runtime_database_url,
+            sandbox_bash=resolve_sandbox_enabled(),
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

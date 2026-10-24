@@ -1,103 +1,99 @@
-"""Tests for BashTool lazy session startup."""
+"""BashTool posts each command to the host's sandbox relay."""
 
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
+import json
 import unittest
 from unittest.mock import patch
 
-from mash.tools.bash import (
-    BashSession,
-    BashTool,
-    build_bash_env,
-    resolve_bash_working_dir,
-)
+import httpx
 
+from mash.logging import bound_request_id
+from mash.tools import bash as bash_module
+from mash.tools.bash import BashTool
 
-class _FakeStdin:
-    def write(self, value: str) -> int:
-        return len(value)
-
-    def flush(self) -> None:
-        return None
-
-
-class _FakeProcess:
-    def __init__(self) -> None:
-        self.stdin = _FakeStdin()
-        self.stdout = []
-
-    def terminate(self) -> None:
-        return None
-
-    def wait(self, timeout: float | None = None) -> int:
-        del timeout
-        return 0
-
-    def kill(self) -> None:
-        return None
+_AsyncClient = httpx.AsyncClient
 
 
 class BashToolTests(unittest.TestCase):
-    def test_constructor_does_not_spawn_bash_process(self) -> None:
-        with patch("mash.tools.bash.subprocess.Popen") as popen:
-            tool = BashTool(working_dir="/tmp")
-            try:
-                self.assertFalse(popen.called)
-            finally:
-                tool.shutdown()
+    def setUp(self) -> None:
+        self.requests: list[httpx.Request] = []
+        self.reply = httpx.Response(200, json={"output": "ok", "exit_code": 0, "timed_out": False})
 
-    def test_execute_starts_bash_process_on_first_use_and_reuses_it(self) -> None:
-        with patch(
-            "mash.tools.bash.subprocess.Popen",
-            side_effect=lambda *args, **kwargs: _FakeProcess(),
-        ) as popen:
-            with patch.object(
-                BashSession,
-                "_read_until_sentinel",
-                return_value=(["ok"], 0, 1),
-            ):
-                tool = BashTool(working_dir="/tmp")
-                try:
-                    first = asyncio.run(tool.execute({"command": "pwd"}))
-                    second = asyncio.run(tool.execute({"command": "pwd"}))
-                finally:
-                    tool.shutdown()
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            return self.reply
 
-        self.assertFalse(first.is_error)
-        self.assertEqual(first.content, "ok")
-        self.assertFalse(second.is_error)
-        self.assertEqual(second.content, "ok")
-        self.assertEqual(popen.call_count, 1)
+        transport = httpx.MockTransport(handler)
+        client = patch.object(
+            bash_module.httpx,
+            "AsyncClient",
+            lambda **kwargs: _AsyncClient(transport=transport, **kwargs),
+        )
+        client.start()
+        self.addCleanup(client.stop)
+        self.tool = BashTool(host_api_url="http://host:8000/", token="agent-tok")
 
+    def _run(self, args: dict, *, request_id: str | None = "req-1"):
+        async def _execute():
+            with bound_request_id(request_id):
+                return await self.tool.execute(args)
 
-class BashEnvTests(unittest.TestCase):
-    def test_env_excludes_runtime_variables(self) -> None:
-        with patch.dict(
-            os.environ,
-            {"MASH_DATABASE_URL": "postgresql://secret", "ANTHROPIC_API_KEY": "sk-secret"},
+        return asyncio.run(_execute())
+
+    def test_posts_the_command_with_the_request_and_agent_token(self) -> None:
+        result = self._run({"command": "ls", "timeout": 60})
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.content, "ok")
+        [request] = self.requests
+        self.assertEqual(str(request.url), "http://host:8000/sandbox/exec")
+        self.assertEqual(request.headers["Authorization"], "Bearer agent-tok")
+        self.assertEqual(
+            json.loads(request.content),
+            {"request_id": "req-1", "command": "ls", "timeout": 60},
+        )
+
+    def test_nonzero_exit_is_output_not_error(self) -> None:
+        self.reply = httpx.Response(200, json={"output": "no", "exit_code": 2, "timed_out": False})
+        result = self._run({"command": "false"})
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.metadata, {"exit_code": 2})
+
+    def test_timeout_is_an_error(self) -> None:
+        self.reply = httpx.Response(200, json={"output": "", "exit_code": None, "timed_out": True})
+        result = self._run({"command": "sleep 99", "timeout": 1})
+
+        self.assertTrue(result.is_error)
+        self.assertIn("timed out after 1 seconds", result.content)
+
+    def test_relay_errors_reach_the_model(self) -> None:
+        self.reply = httpx.Response(
+            503, json={"error": {"code": "SANDBOX_CAPACITY", "message": "all 20 sandboxes are busy"}}
+        )
+        result = self._run({"command": "ls"})
+
+        self.assertTrue(result.is_error)
+        self.assertIn("all 20 sandboxes are busy", result.content)
+
+    def test_needs_a_request(self) -> None:
+        result = self._run({"command": "ls"}, request_id=None)
+
+        self.assertTrue(result.is_error)
+        self.assertEqual(self.requests, [])
+
+    def test_rejects_dangerous_commands_and_bad_timeouts_locally(self) -> None:
+        for args in (
+            {"command": "sudo ls"},
+            {"command": ""},
+            {"command": "ls", "timeout": 0},
+            {"command": "ls", "timeout": "soon"},
         ):
-            env = build_bash_env(None, "/tmp")
-            tool = BashTool(working_dir=tempfile.gettempdir())
-            try:
-                result = asyncio.run(tool.execute({"command": "env"}))
-            finally:
-                tool.shutdown()
-
-        self.assertEqual(set(env), {"HOME", "PATH", "LANG", "PWD"})
-        self.assertNotIn("secret", result.content)
-        self.assertNotIn("MASH_DATABASE_URL", result.content)
-
-    def test_explicit_working_dir_wins(self) -> None:
-        self.assertEqual(resolve_bash_working_dir("/srv/repo"), "/srv/repo")
-
-    def test_working_dir_defaults_to_agent_workspace_when_present(self) -> None:
-        with patch("mash.tools.bash.os.path.isdir", return_value=True):
-            self.assertEqual(resolve_bash_working_dir(None), "/home/agent/workspace")
-        with patch("mash.tools.bash.os.path.isdir", return_value=False):
-            self.assertIsNone(resolve_bash_working_dir(None))
+            with self.subTest(args=args):
+                self.assertTrue(self._run(args).is_error)
+        self.assertEqual(self.requests, [])
 
 
 if __name__ == "__main__":

@@ -4,8 +4,9 @@
 agent from it behind an ``AgentServer``, and reaches the host for everything
 else: subagent calls go to the host's H2A relay (``{host}/h2a``) with the
 agent's token, and the host checks them against the request's host snapshot.
-Every agent served here gets a ``bash`` tool unless its spec registers its own,
-and, when the pool enables Cortex, read access to the request user's Cortex.
+When the host has sandboxes, every agent served here gets a ``bash`` tool that
+runs in the request user's sandbox through the host's ``/sandbox`` relay. When
+the pool enables Cortex, it also gets read access to the request user's Cortex.
 The pool itself is never started on a computer; it only supplies the agent's
 spec and the metadata of the agents it may call.
 """
@@ -23,6 +24,8 @@ from .server import AgentServer
 
 MASH_AGENT_TOKEN_ENV = "MASH_AGENT_TOKEN"
 MASH_HOST_API_URL_ENV = "MASH_HOST_API_URL"
+# Set to "1" by the host when it has sandboxes, so agents get bash.
+MASH_SANDBOX_ENABLED_ENV = "MASH_SANDBOX_ENABLED"
 
 
 class HostRelay:
@@ -52,6 +55,7 @@ def build_agent_server(
     token: str,
     host_api_url: str,
     runtime_database_url: str | None = None,
+    sandbox_bash: bool = False,
 ) -> AgentServer:
     """Build the ``AgentServer`` for one agent of ``pool``.
 
@@ -77,7 +81,8 @@ def build_agent_server(
     server.runtime.attach_subagent_access(
         HostRelay(pool, host_api_url=host_api_url, token=token)
     )
-    server.runtime.enable_computer_bash()
+    if sandbox_bash:
+        server.runtime.enable_sandbox_bash(host_api_url=host_api_url, token=token)
     if pool.cortex is not None:
         from mash.agents.cortex import CortexReader, CortexStore
         from mash.core.database import resolve_database_url
@@ -97,11 +102,17 @@ def resolve_host_api_url(explicit_value: str | None = None) -> str | None:
     return value or None
 
 
+def resolve_sandbox_enabled() -> bool:
+    return os.environ.get(MASH_SANDBOX_ENABLED_ENV, "").strip() == "1"
+
+
 __all__ = [
     "MASH_AGENT_TOKEN_ENV",
     "MASH_HOST_API_URL_ENV",
+    "MASH_SANDBOX_ENABLED_ENV",
     "HostRelay",
     "build_agent_server",
     "resolve_agent_token",
     "resolve_host_api_url",
+    "resolve_sandbox_enabled",
 ]

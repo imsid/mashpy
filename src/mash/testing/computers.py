@@ -1,9 +1,9 @@
 """Agent computers on localhost ports, for tests and Docker-free runs.
 
 ``LocalComputerProvider`` runs each agent's ``AgentServer`` in this process on
-its own ``127.0.0.1`` port, and a host relay (``/h2a``) on another, so every
-request, subagent call and workflow step takes the same H2A HTTP path as on
-Docker computers. The servers share the pool's stores, standing in for the
+its own ``127.0.0.1`` port, and a host relay (``/h2a`` and ``/sandbox``) on
+another, so every request, subagent call, workflow step and bash call takes the
+same HTTP path as on Docker computers. The servers share the pool's stores, standing in for the
 shared Postgres.
 """
 
@@ -19,6 +19,7 @@ from fastapi import FastAPI
 
 from mash.api.routes.common import AppRuntimeState
 from mash.api.routes.h2a import build_h2a_router
+from mash.api.routes.sandbox import build_sandbox_router
 from mash.runtime.computer import HostRelay
 from mash.runtime.host.computers import ComputerEndpoint
 from mash.runtime.host.tokens import derive_agent_token
@@ -77,6 +78,8 @@ class LocalComputerProvider:
         runtime.attach_subagent_access(
             HostRelay(self._pool, host_api_url=relay_url, token=token)
         )
+        if self._pool.get_sandboxes() is not None:
+            runtime.enable_sandbox_bash(host_api_url=relay_url, token=token)
         server = AgentServer(runtime, token=token)
         self.agent_servers[agent_id] = server
         port = await self._serve(server.app)
@@ -97,6 +100,7 @@ class LocalComputerProvider:
             if self._relay_url is None:
                 relay = FastAPI()
                 relay.include_router(build_h2a_router())
+                relay.include_router(build_sandbox_router())
                 relay.state.runtime_state = AppRuntimeState(
                     pool=self._pool,
                     api_event_store=None,

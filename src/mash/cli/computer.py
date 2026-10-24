@@ -24,7 +24,7 @@ from mash.runtime.host.computers import (
     resolve_namespace,
     workspace_volume,
 )
-from mash.runtime.host.docker_engine import DockerEngine, DockerEngineError
+from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 
 from .render import RichRenderer
 
@@ -80,7 +80,7 @@ async def _list_rows(namespace: str | None) -> list[list[str]]:
     try:
         rows: list[list[str]] = []
         label = f"{NAMESPACE_LABEL}={namespace}" if namespace else AGENT_LABEL
-        containers = await engine.list_containers(label=label)
+        containers = await engine.list_containers(labels=[label])
         for summary in sorted(
             containers,
             key=lambda c: (c["Labels"].get(NAMESPACE_LABEL, ""), c["Labels"].get(AGENT_LABEL, "")),

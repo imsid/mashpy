@@ -22,7 +22,6 @@ from mash import AgentSpec, AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.skills.registry import SkillRegistry
-from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 
 from .._base import REPO_ROOT, build_default_llm
@@ -123,7 +122,8 @@ Your job:
 
 Scanning the code:
 - The changelog entries are terse. When one is too vague to explain (e.g. a rename
-  or a removed flag), use bash to look it up: a single targeted `rg` in `src/mash`,
+  or a removed flag), use bash to look it up in the repository at {repo_root}:
+  `cd {repo_root} && ` then a single targeted `rg` in `src/mash`,
   then `sed` on the specific file/lines only if you still need to confirm.
 - Do not explore broadly. One or two lookups per unclear entry, then write. If the
   excerpt is already clear, do not run bash at all.
@@ -141,9 +141,8 @@ class ChangelogSummarizerSpec(AgentSpec):
         return CHANGELOG_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        tools = ToolRegistry()
-        tools.register(BashTool(working_dir=str(self.repo_root)))
-        return tools
+        # bash comes from the run user's sandbox.
+        return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
         return SkillRegistry()
@@ -158,7 +157,7 @@ class ChangelogSummarizerSpec(AgentSpec):
             system_prompt=[
                 {
                     "type": "text",
-                    "text": _PROMPT,
+                    "text": _PROMPT.format(repo_root=self.repo_root),
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
