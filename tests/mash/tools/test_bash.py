@@ -95,6 +95,19 @@ class BashToolTests(unittest.TestCase):
                 self.assertTrue(self._run(args).is_error)
         self.assertEqual(self.requests, [])
 
+    def test_rejects_full_disk_finds(self) -> None:
+        for command in ("find / -name x", "cd src && find /", "ls; find  / -type f"):
+            with self.subTest(command=command):
+                result = self._run({"command": command})
+                self.assertTrue(result.is_error)
+                self.assertIn("full-disk scans", result.content)
+        self.assertEqual(self.requests, [])
+
+    def test_allows_scoped_finds(self) -> None:
+        for command in ("find /home/agent/mashpy -name '*.py'", "find . -name x", "refind /"):
+            with self.subTest(command=command):
+                self.assertFalse(self._run({"command": command}).is_error)
+
 
 if __name__ == "__main__":
     unittest.main()

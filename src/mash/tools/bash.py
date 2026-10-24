@@ -18,7 +18,7 @@ from mash.sandbox.daemon import BASH_DEFAULT_TIMEOUT
 
 from .base import ToolResult
 
-_ROOT_FIND_RE = re.compile(r"(^|[;&|()]\\s*)find\\s+/($|\\s)")
+_ROOT_FIND_RE = re.compile(r"(^|[;&|()]\s*)find\s+/($|\s)")
 # Room on top of the command's own timeout: a first call starts the sandbox.
 _RELAY_OVERHEAD_SECONDS = 180.0
 
