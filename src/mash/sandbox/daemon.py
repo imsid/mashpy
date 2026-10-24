@@ -166,8 +166,23 @@ class ExecResult:
     timed_out: bool = False
 
 
-def _agent_argv(script: str, user: Optional[str], *args: str) -> list[str]:
-    argv = ["/bin/bash", "-c", script, "mash-exec", *args]
+# sudo drops the caller's environment, so the variables travel as arguments
+# after the script's two and are exported before it runs.
+_EXPORT_ENV = 'for kv in "${@:3}"; do export "$kv"; done\n'
+
+
+def _agent_argv(
+    script: str, user: Optional[str], folder: str, arg: str, env: Mapping[str, str]
+) -> list[str]:
+    argv = [
+        "/bin/bash",
+        "-c",
+        _EXPORT_ENV + script,
+        "mash-exec",
+        folder,
+        arg,
+        *(f"{name}={value}" for name, value in env.items()),
+    ]
     if user is not None:
         argv = ["sudo", "-n", "-u", user, *argv]
     return argv
@@ -188,7 +203,8 @@ async def run_command(
     process the command leaves running in the background does not hold the
     call open. ``stdin`` is fed to the command; without it, stdin is empty.
     """
-    argv = _agent_argv(_WRAPPER, user, folder, command)
+    bash_env = build_bash_env(user, folder, env)
+    argv = _agent_argv(_WRAPPER, user, folder, command, bash_env)
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as given:
         if stdin is not None:
             given.write(stdin.encode("utf-8"))
@@ -198,7 +214,7 @@ async def run_command(
             stdin=given if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=out,
             stderr=asyncio.subprocess.STDOUT,
-            env=build_bash_env(user, folder, env),
+            env=bash_env,
             start_new_session=True,
         )
         timed_out = False
@@ -232,12 +248,13 @@ def resolve_workspace_path(path: str) -> Optional[str]:
 
 async def read_file(path: str, *, folder: str, user: Optional[str] = None) -> bytes:
     """Read ``path`` in ``folder`` as ``user``; raise ``FileNotFound`` when absent."""
+    bash_env = build_bash_env(user, folder)
     proc = await asyncio.create_subprocess_exec(
-        *_agent_argv(_READ_FILE, user, folder, path),
+        *_agent_argv(_READ_FILE, user, folder, path, bash_env),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=build_bash_env(user, folder),
+        env=bash_env,
     )
     data, err = await asyncio.wait_for(proc.communicate(), _FILE_TIMEOUT)
     if proc.returncode == _NOT_A_FILE:
@@ -251,12 +268,13 @@ async def write_file(
     path: str, data: bytes, *, folder: str, user: Optional[str] = None
 ) -> None:
     """Write ``data`` to ``path`` in ``folder`` as ``user``, creating parent folders."""
+    bash_env = build_bash_env(user, folder)
     proc = await asyncio.create_subprocess_exec(
-        *_agent_argv(_WRITE_FILE, user, folder, path),
+        *_agent_argv(_WRITE_FILE, user, folder, path, bash_env),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
-        env=build_bash_env(user, folder),
+        env=bash_env,
     )
     _, err = await asyncio.wait_for(proc.communicate(data), _FILE_TIMEOUT)
     if proc.returncode != 0:

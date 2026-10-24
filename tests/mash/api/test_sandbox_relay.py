@@ -331,6 +331,19 @@ class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, f"it's 3 {os.path.realpath(folder)}")
         self.assertEqual(sorted(files), ["data.db"])
 
+    async def test_run_code_gives_the_code_an_empty_terminal_stdin(self) -> None:
+        # Tools such as rg search stdin instead of the folder when stdin is a
+        # file or pipe, so the code must not inherit the stdin it arrived on.
+        text, _, _ = await self._run_one_call(
+            "run_code",
+            {
+                "language": "python",
+                "code": "import os, stat\nprint(stat.S_ISCHR(os.fstat(0).st_mode))\n",
+            },
+        )
+
+        self.assertEqual(text, "True")
+
     async def test_run_code_prints_the_users_file_link(self) -> None:
         text, _, _ = await self._run_one_call(
             "run_code", {"language": "shell", "code": 'echo "$MASH_FILES_URL/report.html"'}

@@ -151,11 +151,12 @@ class RunCodeTool:
 
         extension, interpreter = _LANGUAGES[language]
         # The code arrives on stdin and is written to a file as the agent user,
-        # so it needs no quoting and errors name a real file and line.
+        # so it needs no quoting and errors name a real file and line. The code
+        # itself gets /dev/null as stdin, as a command would.
         script = f".mash/runs/{uuid.uuid4().hex}.{extension}"
         command = (
             f'mkdir -p .mash/runs && cat > {script} && '
-            f'{{ {interpreter} {script}; rc=$?; rm -f {script}; exit $rc; }}'
+            f'{{ {interpreter} {script} </dev/null; rc=$?; rm -f {script}; exit $rc; }}'
         )
         try:
             async with httpx.AsyncClient(

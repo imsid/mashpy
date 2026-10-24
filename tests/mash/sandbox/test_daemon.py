@@ -259,7 +259,10 @@ class BashUserTests(unittest.TestCase):
 
         [(args, kwargs)] = calls
         self.assertEqual(args[:5], ("sudo", "-n", "-u", "agent", "/bin/bash"))
-        self.assertEqual(args[-2:], ("/w/research", "ls"))
+        self.assertEqual(args[8:10], ("/w/research", "ls"))
+        # sudo drops the environment, so it also travels as arguments.
+        self.assertIn("PYTHONUSERBASE=/w/research/.local", args[10:])
+        self.assertIn("HOME=/home/agent", args[10:])
         self.assertEqual(
             set(kwargs["env"]), {"HOME", "PATH", "LANG", "PWD", "PYTHONUSERBASE"}
         )
