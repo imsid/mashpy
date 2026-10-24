@@ -33,4 +33,5 @@ USER mash
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "mash host serve --host-app \"${MASH_HOST_APP}\" --host \"${MASH_API_HOST}\" --port \"${MASH_API_PORT}\" ${MASH_API_KEY:+--api-key \"$MASH_API_KEY\"} ${MASH_RUNTIME_BIND_HOST:+--runtime-bind-host \"$MASH_RUNTIME_BIND_HOST\"} ${MASH_MEMORY_DB:+--memory-db \"$MASH_MEMORY_DB\"}"]
+# serve reads MASH_HOST_APP, MASH_API_HOST, MASH_API_PORT and MASH_API_KEY.
+CMD ["mash", "host", "serve"]
