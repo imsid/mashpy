@@ -10,6 +10,8 @@ from fastapi.responses import StreamingResponse
 from mash.runtime import AgentClientError
 from mash.runtime.client import AgentUnavailableError
 from mash.runtime.errors import RequestStaleError
+from mash.runtime.host.host import AgentInUseError
+from mash.runtime.host.processes import AgentStartError
 from mash.runtime.events import build_reasoning_trace
 from mash.memory.signals import build_default_signal_collector
 from mash.runtime import sessions
@@ -78,21 +80,62 @@ def build_agent_router() -> APIRouter:
             }
         )
 
+    def _described_agent(request: Request, agent_id: str) -> dict[str, Any]:
+        state = state_from_request(request)
+        try:
+            state.pool.require_agent(agent_id)
+        except ValueError as exc:
+            raise APIError(code="AGENT_NOT_FOUND", message=str(exc), status_code=404) from exc
+        described = {item["agent_id"]: item for item in state.pool.describe_agents()}
+        # Workflow-only agents are not listed; describe them by id and status.
+        return described.get(
+            agent_id,
+            {
+                "agent_id": agent_id,
+                "enabled": state.pool.is_agent_enabled(agent_id),
+                "status": state.pool.agent_status(agent_id),
+            },
+        )
+
+    @router.post("/agent/{agent_id}/enable")
+    async def enable_agent(request: Request, agent_id: str) -> dict[str, Any]:
+        state = state_from_request(request)
+        _described_agent(request, agent_id)
+        try:
+            await state.pool.enable_agent(agent_id)
+        except AgentStartError as exc:
+            raise APIError(
+                code="AGENT_UNAVAILABLE", message=str(exc), status_code=503
+            ) from exc
+        return success({"agent": _described_agent(request, agent_id)})
+
+    @router.post("/agent/{agent_id}/disable")
+    async def disable_agent(request: Request, agent_id: str) -> dict[str, Any]:
+        state = state_from_request(request)
+        _described_agent(request, agent_id)
+        try:
+            await state.pool.disable_agent(agent_id)
+        except AgentInUseError as exc:
+            raise APIError(
+                code="AGENT_IN_USE",
+                message=str(exc),
+                status_code=409,
+                details={"references": exc.references},
+            ) from exc
+        return success({"agent": _described_agent(request, agent_id)})
+
     @router.get("/agent/{agent_id}")
     async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
         state = state_from_request(request)
+        described = _described_agent(request, agent_id)
+        if not state.pool.is_agent_enabled(agent_id):
+            return success({"agent": described, "session": None})
         client = get_client(request, agent_id)
-        described = {item["agent_id"]: item for item in state.pool.describe_agents()}
         health_payload = await client.health()
         session_payload = (
             health_payload.get("session") if isinstance(health_payload, dict) else {}
         )
-        return success(
-            {
-                "agent": described.get(agent_id, {"agent_id": agent_id}),
-                "session": session_payload,
-            }
-        )
+        return success({"agent": described, "session": session_payload})
 
     @router.post("/agent/{agent_id}/request")
     async def submit_request(

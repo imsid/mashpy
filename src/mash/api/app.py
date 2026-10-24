@@ -35,6 +35,7 @@ from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
+from mash.runtime.host.host import AgentDisabledError
 from mash.runtime.host.processes import AgentProcessProvider
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.manager import (
@@ -207,6 +208,13 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         return JSONResponse(
             status_code=502,
             content=error_payload("RUNTIME_CLIENT_ERROR", str(exc)),
+        )
+
+    @app.exception_handler(AgentDisabledError)
+    async def _agent_disabled_handler(_: Request, exc: AgentDisabledError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=error_payload("AGENT_DISABLED", str(exc), {"agent_id": exc.agent_id}),
         )
 
     @app.exception_handler(WorkflowNotFoundError)

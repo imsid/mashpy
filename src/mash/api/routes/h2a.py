@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from mash.runtime.client import AgentClientError, AgentUnavailableError
 from mash.runtime.events import RuntimeEventType
+from mash.runtime.host.host import AgentDisabledError
 from mash.runtime.host.tokens import agent_for_token
 from mash.runtime.requests import parent_request_metadata, validate_request_id
 
@@ -112,6 +113,8 @@ def build_h2a_router() -> APIRouter:
 
         try:
             client = state.pool.get_client(agent_id)
+        except AgentDisabledError as exc:
+            return h2a_error(409, "AGENT_DISABLED", str(exc))
         except ValueError as exc:
             return h2a_error(404, "AGENT_NOT_FOUND", str(exc))
         try:

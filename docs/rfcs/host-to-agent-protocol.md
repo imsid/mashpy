@@ -590,7 +590,7 @@ H2A is per-agent at the HTTP transport boundary.
 - A host with multiple agents MUST maintain one client per agent server.
 - Separate processes or containers are not required by the protocol.
 
-A Mash pool runs each agent's server on its own computer, a container with the agent's workspace volume, and keeps one client per computer.
+A Mash host runs each agent's server as a subprocess on a localhost port and keeps one client per agent.
 
 When an agent runtime starts its HTTP server, it MUST bind a host and port, associate the server with exactly one `agent_id`, and provide a base URL that clients use for `post_request`, `stream_response`, and `post_interaction`.
 
@@ -626,7 +626,7 @@ A body that fails schema validation, including an empty `message` or `session_id
 
 ### 10.2 Agent Requests
 
-- `POST /agent/{agent_id}/request`: body `{message, session_id, user_id, structured_output?, metadata?}`. Returns `200` with `{"data": {"request_id": ...}}`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`.
+- `POST /agent/{agent_id}/request`: body `{message, session_id, user_id, structured_output?, metadata?}`. Returns `200` with `{"data": {"request_id": ...}}`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`. A request to a disabled agent returns `409 AGENT_DISABLED`.
 - `GET /agent/{agent_id}/request/{request_id}/events`: the SSE stream for the request (section 6.2). The host closes the stream after writing `request.completed`, `request.error`, or `request.cancelled`.
 - `POST /agent/{agent_id}/request/{request_id}/interaction`: body `{interaction_id, response}`. Returns `200` with `{"data": {"ok": true, "interaction_id": ...}}`.
 
@@ -651,7 +651,7 @@ Unknown request ids return `404 REQUEST_NOT_FOUND` on all four routes.
 
 ### 10.5 Agent Relay
 
-A host whose agents run on separate computers MAY expose a relay that agents use to call their subagents. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
+A host whose agents run in separate processes MAY expose a relay that agents use to call their subagents. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
 
 - Each agent authenticates with its own bearer token. The relay returns `401 UNAUTHORIZED` for a token that matches no agent.
 - `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller, and a `host` snapshot whose `subagents` contain `subagent_id`. Otherwise the relay returns `403 FORBIDDEN`.
@@ -687,7 +687,7 @@ HTTP status codes used by the bindings:
 - `401 Unauthorized` for a missing or invalid bearer token
 - `403 Forbidden` for an agent relay call the caller's token or the parent request does not permit (section 10.5)
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
-- `409 Conflict` for resuming a stale request, or a `request_id` that belongs to another agent
+- `409 Conflict` for resuming a stale request, a `request_id` that belongs to another agent, or a request to a disabled agent
 - `422 Unprocessable Entity` for host request bodies that fail schema validation
 - `500 Internal Server Error` for unexpected failures
 

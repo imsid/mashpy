@@ -103,3 +103,52 @@ class AgentProcessProviderTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnableDisableTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_request_in_flight_finishes_after_the_agent_is_enabled_again(self) -> None:
+        from unittest.mock import patch
+
+        from mash.runtime.host.host import AgentDisabledError
+        from tests.mash.runtime.process_pool import build_pool
+
+        agent_id = f"proc-{uuid.uuid4().hex[:8]}"
+        environ = {
+            **os.environ,
+            "MASH_DATABASE_URL": _database_url(),
+            "TEST_PROCESS_AGENT_ID": agent_id,
+            "TEST_PROCESS_DELAY": "3",
+        }
+        with patch.dict(os.environ, {"TEST_PROCESS_AGENT_ID": agent_id}):
+            pool = build_pool()
+        pool.configure_runtime_database_url("postgresql://test/runtime")
+        pool.configure_agent_provider(
+            AgentProcessProvider(
+                host_app=HOST_APP,
+                host_secret="secret",
+                host_api_url="http://127.0.0.1:1",
+                environ=environ,
+                health_timeout=90,
+                stop_timeout=3,
+            )
+        )
+        await pool.start()
+        try:
+            request_id = await pool.get_client(agent_id).post_request(
+                "hello", session_id="s-1", user_id="u-1"
+            )
+            await asyncio.sleep(1.0)  # the model call is in flight
+
+            await pool.disable_agent(agent_id)
+            self.assertEqual(pool.agent_status(agent_id), "disabled")
+            with self.assertRaises(AgentDisabledError):
+                pool.get_client(agent_id)
+
+            await pool.enable_agent(agent_id)
+            client = pool.get_client(agent_id)
+            events = [event async for event in client.stream_response(request_id, timeout=60)]
+        finally:
+            await pool.close()
+
+        self.assertEqual(events[-1]["event"], "request.completed")
+        self.assertEqual(events[-1]["data"]["response"]["text"], "process-ok")

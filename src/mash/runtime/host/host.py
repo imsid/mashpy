@@ -18,12 +18,35 @@ from mash.workflows.store import WorkflowStore
 from ..client import AgentClient, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
 from ..spec import AgentSpec
-from .processes import AgentProvider
+from .processes import STATUS_UNAVAILABLE, AgentProvider
 from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
 
 if TYPE_CHECKING:
     from mash.sandbox.manager import SandboxManager
+
+
+STATUS_DISABLED = "disabled"
+
+
+class AgentDisabledError(RuntimeError):
+    """A request named an agent that is disabled."""
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+        super().__init__(f"agent '{agent_id}' is disabled")
+
+
+class AgentInUseError(RuntimeError):
+    """An agent cannot be disabled while a host or workflow names it."""
+
+    def __init__(self, agent_id: str, references: list[str]) -> None:
+        self.agent_id = agent_id
+        self.references = references
+        super().__init__(
+            f"agent '{agent_id}' is in use by {', '.join(references)}; "
+            "remove it from them before disabling it"
+        )
 
 
 class Pool:
@@ -53,6 +76,8 @@ class Pool:
         self._agent_provider: AgentProvider | None = None
         self._sandboxes: SandboxManager | None = None
         self._clients: Dict[str, AgentClientLike] = {}
+        # Every registered agent starts enabled; the set resets on restart.
+        self._disabled: set[str] = set()
         self._model_settings: Dict[str, dict[str, Any]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
@@ -155,6 +180,10 @@ class Pool:
             if registered is None or registered.is_workflow_agent:
                 raise ValueError(
                     f"host '{host.host_id}' references unknown agent '{agent_id}'"
+                )
+            if agent_id in self._disabled:
+                raise ValueError(
+                    f"host '{host.host_id}' references disabled agent '{agent_id}'"
                 )
         for workflow_id in host.workflows:
             try:
@@ -358,10 +387,81 @@ class Pool:
             raise
 
     def get_client(self, agent_id: str) -> AgentClientLike:
+        if agent_id in self._disabled:
+            raise AgentDisabledError(agent_id)
         client = self._clients.get(agent_id)
         if client is None:
             raise ValueError(f"agent client '{agent_id}' is not registered")
         return client
+
+    def is_agent_enabled(self, agent_id: str) -> bool:
+        return self.require_agent(agent_id) not in self._disabled
+
+    def agent_status(self, agent_id: str) -> str:
+        """``running``, ``starting``, ``unavailable`` or ``disabled``."""
+        resolved_agent_id = self.require_agent(agent_id)
+        if resolved_agent_id in self._disabled:
+            return STATUS_DISABLED
+        status = (
+            self._agent_provider.status(resolved_agent_id)
+            if self._agent_provider is not None
+            else None
+        )
+        return status or STATUS_UNAVAILABLE
+
+    def agent_references(self, agent_id: str) -> list[str]:
+        """The hosts and workflows that name ``agent_id``."""
+        references = [
+            f"host '{host.host_id}'"
+            for host in self._hosts.values()
+            if agent_id == host.primary or agent_id in host.subagents
+        ]
+        for workflow in self._workflow_registry.list():
+            for step in workflow.steps:
+                named = (
+                    step.agent_id == agent_id
+                    if isinstance(step, AgentStep)
+                    else agent_id in getattr(step, "agent_ids", ())
+                )
+                if named:
+                    references.append(f"workflow '{workflow.workflow_id}'")
+                    break
+        return references
+
+    async def enable_agent(self, agent_id: str) -> None:
+        """Start the agent's process and accept requests for it again.
+
+        Requests left pending when it was disabled continue once it is up.
+        """
+        resolved_agent_id = self.require_agent(agent_id)
+        if resolved_agent_id not in self._disabled:
+            return
+        if self._agent_provider is None:
+            raise RuntimeError("the pool is not started")
+        endpoint = await self._agent_provider.ensure(resolved_agent_id)
+        self._clients[resolved_agent_id] = AgentClient(
+            endpoint.base_url, resolved_agent_id, token=endpoint.token
+        )
+        self._disabled.discard(resolved_agent_id)
+
+    async def disable_agent(self, agent_id: str) -> None:
+        """Stop accepting requests for the agent and stop its process.
+
+        Refused while a host or workflow names the agent. Requests in flight
+        are not cancelled; they stay pending until the agent is enabled again.
+        """
+        resolved_agent_id = self.require_agent(agent_id)
+        if resolved_agent_id in self._disabled:
+            return
+        references = self.agent_references(resolved_agent_id)
+        if references:
+            raise AgentInUseError(resolved_agent_id, references)
+        self._disabled.add(resolved_agent_id)
+        client = self._clients.pop(resolved_agent_id, None)
+        if client is not None:
+            await client.close()
+        if self._agent_provider is not None:
+            await self._agent_provider.stop(resolved_agent_id)
 
     def get_runtime_store(self) -> RuntimeStore | None:
         """Shared runtime event store, or None before the pool is started."""
@@ -412,6 +512,8 @@ class Pool:
                         if registered.metadata is not None
                         else None
                     ),
+                    "enabled": registered.agent_id not in self._disabled,
+                    "status": self.agent_status(registered.agent_id),
                 }
             )
         return described
@@ -431,6 +533,7 @@ class Pool:
         return {
             agent_id: await self.get_client(agent_id).describe()
             for agent_id in self.list_agents()
+            if agent_id not in self._disabled
         }
 
     async def describe_tools(self) -> list[dict[str, Any]]:
@@ -570,4 +673,4 @@ def _uses_default_memory_store(spec: AgentSpec) -> bool:
     return type(spec).build_memory_store is AgentSpec.build_memory_store
 
 
-__all__ = ["Pool"]
+__all__ = ["AgentDisabledError", "AgentInUseError", "Pool"]
