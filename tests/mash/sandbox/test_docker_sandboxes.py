@@ -33,6 +33,8 @@ class _FakeDaemon:
         self.volumes: dict[str, dict] = {}
         self.networks: dict[str, set[str]] = {}
         self.containers: dict[str, dict[str, Any]] = {}
+        self.images: set[str] = {"mash-app:dev"}
+        self.pulls: list[dict[str, str]] = []
         self.calls: list[tuple[str, str]] = []
 
     def add_container(self, name: str, *, running: bool, config: dict) -> None:
@@ -53,6 +55,14 @@ class _FakeDaemon:
         parts = path.strip("/").split("/")
         if parts[0] == "_ping":
             return httpx.Response(200, text="OK")
+        if parts[0] == "images":
+            if parts[1] == "create":
+                params = dict(request.url.params)
+                self.pulls.append(params)
+                self.images.add(f"{params['fromImage']}:{params.get('tag', 'latest')}")
+                return httpx.Response(200, text='{"status":"Pulling"}\n{"status":"Done"}\n')
+            image = "/".join(parts[1:-1])
+            return httpx.Response(200 if image in self.images else 404, json={})
         if parts[0] == "volumes":
             if method == "GET":
                 return httpx.Response(200 if parts[1] in self.volumes else 404, json={})
@@ -184,19 +194,36 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
             "host-ctr", running=True, config={"Image": "sha256:abc", "Labels": {}}
         )
         with patch("mash.sandbox.provider.socket.gethostname", return_value="host-ctr"):
-            provider = self._provider(in_container=True, image=None, namespace="acme")
+            provider = self._provider(in_container=True, namespace="acme")
             endpoint = await provider.ensure("u-1")
 
         name = f"acme-sandbox-{sandbox_key('u-1')}"
         self.assertEqual(endpoint.base_url, f"http://{name}:9000")
         self.assertEqual(self.daemon.networks["acme-sandboxes"], {"id-host-ctr"})
         create = self.daemon.containers[name]["_create"]
-        self.assertEqual(create["Image"], "sha256:abc")
+        self.assertEqual(create["Image"], "mash-app:dev")
         self.assertNotIn("PortBindings", create["HostConfig"])
 
-    async def test_outside_a_container_an_image_is_required(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "MASH_SANDBOX_IMAGE"):
-            await self._provider(image=None).ensure("u-1")
+    async def test_sandboxes_run_mashs_image_for_this_version_and_pull_it(self) -> None:
+        with patch("mash.sandbox.provider.version", return_value="9.8.7"):
+            provider = self._provider(image=None)
+        self.assertEqual(provider.image, "ghcr.io/imsid/mash-sandbox:9.8.7")
+
+        await provider.ensure("u-1")
+
+        self.assertEqual(
+            self.daemon.pulls, [{"fromImage": "ghcr.io/imsid/mash-sandbox", "tag": "9.8.7"}]
+        )
+        [container] = self.daemon.containers.values()
+        self.assertEqual(container["_create"]["Image"], "ghcr.io/imsid/mash-sandbox:9.8.7")
+
+    async def test_mash_sandbox_image_overrides_the_default(self) -> None:
+        provider = self._provider(image=None, environ={"MASH_SANDBOX_IMAGE": "mash-app:dev"})
+        await provider.ensure("u-1")
+
+        self.assertEqual(self.daemon.pulls, [])
+        [container] = self.daemon.containers.values()
+        self.assertEqual(container["_create"]["Image"], "mash-app:dev")
 
     async def test_mounts_follow_the_workspace_volume(self) -> None:
         provider = self._provider(

@@ -922,7 +922,7 @@
           },
           {
             "name": "stop",
-            "help": "Stop a user's sandbox; its next bash call starts it again",
+            "help": "Stop a user's sandbox; its next use starts it again",
             "args": [
               {
                 "flags": [

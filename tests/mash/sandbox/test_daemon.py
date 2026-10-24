@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import pwd
+import socket
 import tempfile
 import time
 import unittest
@@ -20,6 +21,7 @@ from mash.sandbox.daemon import (
     SandboxDaemon,
     build_bash_env,
     resolve_bash_user,
+    resolve_workspace_path,
     run_command,
 )
 from mash.sandbox.tokens import derive_sandbox_token
@@ -125,6 +127,86 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("MASH_SANDBOX_TOKEN", names)
         self.assertNotIn("MASH_HOST_SECRET", names)
 
+    async def test_stdin_reaches_the_command(self) -> None:
+        code = "import sys\nprint('it\\'s ' + \"$HOME\" + str(len(sys.argv)))\n"
+        result = await self._exec("cat > run.py && python3 run.py", stdin=code)
+        self.assertEqual(result["output"], "it's $HOME1")
+
+    async def test_extra_env_reaches_the_command(self) -> None:
+        result = await self._exec(
+            'echo "$MASH_FILES_URL"', env={"MASH_FILES_URL": "http://h/s/t/files/research"}
+        )
+        self.assertEqual(result["output"], "http://h/s/t/files/research")
+
+        for env in ({"PATH": "/evil"}, {"MASH_X": 1}, ["MASH_X"]):
+            with self.subTest(env=env):
+                response = await self.client.post(
+                    "/exec", json={"agent_id": "research", "command": "ls", "env": env}
+                )
+                self.assertEqual(response.status_code, 400)
+
+    async def test_pip_user_installs_land_in_the_agents_folder(self) -> None:
+        result = await self._exec("python3 -c 'import site; print(site.USER_BASE)'")
+        self.assertEqual(result["output"], os.path.join(self.root, "research", ".local"))
+
+    async def test_files_round_trip_bytes_in_the_agents_folder(self) -> None:
+        data = bytes(range(256)) * 4
+        put = await self.client.put("/files/research/data/raw.bin", content=data)
+        self.assertEqual(put.status_code, 200, put.text)
+        self.assertEqual(put.json(), {"path": "data/raw.bin", "bytes": len(data)})
+        with open(os.path.join(self.root, "research", "data", "raw.bin"), "rb") as fh:
+            self.assertEqual(fh.read(), data)
+
+        got = await self.client.get("/files/research/data/raw.bin")
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.content, data)
+
+        other = await self.client.get("/files/writer/data/raw.bin")
+        self.assertEqual(other.status_code, 404)
+        self.assertEqual(other.json()["error"]["code"], "FILE_NOT_FOUND")
+        folder = await self.client.get("/files/research/data")
+        self.assertEqual(folder.status_code, 404)
+
+    async def test_files_stay_in_the_agents_folder(self) -> None:
+        for path in ("%2E%2E/writer/x", "a/%2E%2E/%2E%2E/x", "%2Fetc%2Fpasswd"):
+            with self.subTest(path=path):
+                response = await self.client.get(f"/files/research/{path}")
+                self.assertEqual(response.status_code, 400)
+        response = await self.client.put("/files/..evil/x", content=b"x")
+        self.assertEqual(response.status_code, 400)
+
+    def test_workspace_paths_resolve_inside_the_folder(self) -> None:
+        self.assertEqual(resolve_workspace_path("a/./b/../c.txt"), "a/c.txt")
+        for path in ("", "/etc/passwd", "..", "../x", "a/../../x", ".", "a\x00b"):
+            with self.subTest(path=path):
+                self.assertIsNone(resolve_workspace_path(path))
+
+    async def test_ports_proxy_to_a_server_in_the_sandbox(self) -> None:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        await self._exec(
+            "mkdir -p site && echo '<h1>hi</h1>' > site/index.html && "
+            f"nohup python3 -m http.server {port} --bind 127.0.0.1 -d site "
+            ">server.log 2>&1 &"
+        )
+        for _ in range(100):
+            response = await self.client.get(f"/ports/{port}/")
+            if response.status_code == 200:
+                break
+            await asyncio.sleep(0.1)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "<h1>hi</h1>\n")
+        await self._exec(f"pkill -f 'http.server {port}' || true")
+
+    async def test_ports_report_nothing_listening(self) -> None:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        response = await self.client.get(f"/ports/{port}/")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"]["code"], "PORT_UNREACHABLE")
+
     async def test_rejects_unsafe_agent_ids_and_bad_bodies(self) -> None:
         for body in (
             {"agent_id": "../escape", "command": "ls"},
@@ -178,14 +260,20 @@ class BashUserTests(unittest.TestCase):
         [(args, kwargs)] = calls
         self.assertEqual(args[:5], ("sudo", "-n", "-u", "agent", "/bin/bash"))
         self.assertEqual(args[-2:], ("/w/research", "ls"))
-        self.assertEqual(set(kwargs["env"]), {"HOME", "PATH", "LANG", "PWD"})
+        self.assertEqual(
+            set(kwargs["env"]), {"HOME", "PATH", "LANG", "PWD", "PYTHONUSERBASE"}
+        )
         self.assertEqual(kwargs["env"]["HOME"], "/home/agent")
         self.assertEqual(kwargs["env"]["PWD"], "/w/research")
+        self.assertEqual(kwargs["env"]["PYTHONUSERBASE"], "/w/research/.local")
+        self.assertTrue(kwargs["env"]["PATH"].startswith("/w/research/.local/bin:"))
 
     def test_env_for_the_current_user_keeps_only_home_path_and_locale(self) -> None:
         with patch.dict(os.environ, {"MASH_DATABASE_URL": "postgresql://secret"}):
-            env = build_bash_env(None, "/tmp")
-        self.assertEqual(set(env), {"HOME", "PATH", "LANG", "PWD"})
+            env = build_bash_env(None, "/tmp", {"MASH_FILES_URL": "http://h/s/t/files/a"})
+        self.assertEqual(
+            set(env), {"HOME", "PATH", "LANG", "PWD", "PYTHONUSERBASE", "MASH_FILES_URL"}
+        )
 
 
 if __name__ == "__main__":

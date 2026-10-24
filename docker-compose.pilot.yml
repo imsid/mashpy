@@ -10,12 +10,15 @@
 #   db    — Postgres 17, published on 127.0.0.1:5433
 #   pilot — the Mash host running pilot.spec:build_pool, on 127.0.0.1:8000. Its
 #           agents run as processes inside it. Through the Docker socket it
-#           starts one sandbox per user (mash-sandbox-<key>) for their bash
-#           commands; see `mash sandbox ls`.
+#           starts one sandbox per user (mash-sandbox-<key>), where the
+#           agents' code runs; see `mash sandbox ls`. Links to files and
+#           servers in a sandbox are served under 127.0.0.1:8000/s/.
+#   sandbox-image — builds mash-sandbox:pilot from Dockerfile.sandbox, the
+#           image every sandbox runs, then exits.
 #
 # This checkout is mounted read-only at /home/agent/mashpy in the host and in
 # every sandbox, so the agents see your edits as you make them. Pilot's own
-# code is baked into the image: after changing src/pilot or src/mash, run
+# code is baked into the images: after changing src/pilot or src/mash, run
 # `up -d --build`. Sandboxes keep the image they were created from; remove them
 # with `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)` to pick
 # up a new one (their volumes are kept).
@@ -43,6 +46,14 @@ services:
       retries: 15
     restart: unless-stopped
 
+  sandbox-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: mash-sandbox:pilot
+    command: ["true"]
+    restart: "no"
+
   pilot:
     build:
       context: .
@@ -52,6 +63,9 @@ services:
       # Override the host-machine DB URL from .env with the internal network address.
       MASH_DATABASE_URL: postgresql://mash:mash@db:5432/mash_pilot
       MASH_HOST_SECRET: ${MASH_HOST_SECRET:?set MASH_HOST_SECRET in .env}
+      MASH_SANDBOX_IMAGE: mash-sandbox:pilot
+      # Where your browser reaches this host, for the links agents hand out.
+      MASH_PUBLIC_URL: http://127.0.0.1:8000
       # A Docker-host path, since the daemon resolves it for each sandbox.
       MASH_SANDBOX_MOUNTS: ${PWD}:/home/agent/mashpy:ro
     volumes:
@@ -68,6 +82,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 networks:

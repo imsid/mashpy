@@ -1,6 +1,6 @@
 """CortexStore: the ``cortex_user`` and ``cortex_entry`` tables.
 
-Agents read Cortex through this store in their own processes. Bash runs in
+Agents read Cortex through this store in their own processes. Agents' code runs in
 the user's sandbox, which has no route to the database.
 """
 

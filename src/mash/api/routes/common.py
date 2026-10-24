@@ -51,6 +51,8 @@ class AppRuntimeState:
     default_events_limit: int
     default_search_limit: int
     host_secret: Optional[str] = None
+    # Where users reach the host; the base of sandbox links.
+    public_url: str = ""
 
 
 class SubmitRequest(BaseModel):

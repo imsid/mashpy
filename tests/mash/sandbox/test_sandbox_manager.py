@@ -54,6 +54,33 @@ class SandboxManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._exec("u-1", "cat notes.txt"))["output"], "kept")
         self.assertEqual(self.provider.ensure_calls, ["u-1", "u-1"])
 
+    async def test_file_reads_and_writes_start_the_sandbox_and_count_as_use(self) -> None:
+        written = await self.manager.write_file(
+            "u-1", agent_id="research", path="in/data.csv", data=b"a,b\n1,2\n"
+        )
+        self.assertEqual(written.status_code, 200)
+        self.assertEqual(self.provider.ensure_calls, ["u-1"])
+
+        self.clock.now += 600
+        read = await self.manager.read_file("u-1", agent_id="research", path="in/data.csv")
+        self.assertEqual(read.content, b"a,b\n1,2\n")
+        self.clock.now += 600
+        self.assertEqual(await self.manager.reap_idle(), [])
+
+        missing = await self.manager.read_file("u-1", agent_id="research", path="nope")
+        self.assertEqual(missing.status_code, 404)
+
+    async def test_stdin_and_env_reach_the_command(self) -> None:
+        result = await self.manager.exec(
+            "u-1",
+            agent_id="research",
+            command='cat; echo " $MASH_FILES_URL"',
+            timeout=10,
+            stdin="from stdin",
+            env={"MASH_FILES_URL": "http://h/s/t/files/research"},
+        )
+        self.assertEqual(result["output"], "from stdin http://h/s/t/files/research")
+
     async def test_a_sandbox_with_an_exec_in_flight_is_not_stopped(self) -> None:
         running = asyncio.create_task(self._exec("u-1", "sleep 1; echo done"))
         while not self.provider.ensure_calls:

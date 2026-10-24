@@ -242,14 +242,12 @@ MASH_HOST_SECRET=...   # openssl rand -hex 32
 
 **Start the host:**
 
-The host runs each agent as its own subprocess. For agents to get `bash`, it
-also needs a Docker daemon and an image to start each user's sandbox from,
-built from the Dockerfile in [the deploy guide](posts/how-to-deploy.md#the-image).
-Without Docker the host still runs, and its agents get no `bash`.
+The host runs each agent as its own subprocess. For agents to get the sandbox
+tools, it also needs a Docker daemon; it pulls Mash's sandbox image,
+`ghcr.io/imsid/mash-sandbox`, on first start. Without Docker the host still
+runs, and its agents get no sandbox tools.
 
 ```bash
-docker build -t my-app:dev .
-export MASH_SANDBOX_IMAGE=my-app:dev
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 

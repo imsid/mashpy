@@ -60,7 +60,7 @@ flowchart LR
     M -- "HTTP / SSE" --> S2["MCP server: …"]
 ```
 
-The manager runs in the agent's process, a subprocess of the host, so the URL has to be reachable from where the host runs: a service name on the `mash` Docker network, as above, for a host in a container, or `localhost` for a host on your machine. Header tokens stay in that process's environment. Bash runs in the user's sandbox, which never sees them.
+The manager runs in the agent's process, a subprocess of the host, so the URL has to be reachable from where the host runs: a service name on the `mash` Docker network, as above, for a host in a container, or `localhost` for a host on your machine. Header tokens stay in that process's environment. Agents' code runs in the user's sandbox, which never sees them.
 
 To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
 

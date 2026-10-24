@@ -22,7 +22,8 @@ This README lists the exposed routes, the common request/response conventions, a
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
 - `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
-- `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and bash. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
+- `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
+- `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.
 
 ## H2A Relay
 
@@ -38,11 +39,26 @@ Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `Agent
 
 ## Sandbox Relay
 
+Every relay call names the request it serves. The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`. It acts in the sandbox of the request's user, in the caller's folder, starting the sandbox if needed. `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy. No `{data}` envelope.
+
 `POST /sandbox/exec`
-- Body: `{request_id, command, timeout}`; `timeout` defaults to 30 seconds. Sent by the `bash` tool with the agent's token.
-- The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`.
-- Runs the command in the sandbox of the request's user, in the caller's folder, starting the sandbox if needed, and returns `{output, exit_code, timed_out}` (no `{data}` envelope).
-- `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy.
+- Body: `{request_id, command, timeout, stdin?}`; `timeout` defaults to 30 seconds. Sent by `run_code` with the agent's token.
+- Runs the command with `stdin` as its input and returns `{output, exit_code, timed_out}`. The command sees `MASH_FILES_URL` (the user's link to the caller's folder) and `MASH_PORTS_URL`.
+
+`PUT /sandbox/files?request_id=&path=` and `GET /sandbox/files?request_id=&path=`
+- Write the body to, or read, one file at `path` in the caller's folder; sent by `sandbox_put` and `sandbox_get`. `path` must stay in the folder (`400` otherwise); a missing file is `404 FILE_NOT_FOUND`; files are limited to 100 MB (`413`).
+
+## Sandbox Links
+
+Links open in a browser with no API key. `<link token>` is `<base64url(user_id)>.<hmac>`, derived from `MASH_HOST_SECRET`; a token the host did not make is `404`. A link starts a stopped sandbox. Responses carry `Content-Security-Policy: sandbox allow-scripts ...`, so a page the model wrote runs scripts but cannot use the host's origin.
+
+`GET /s/<link token>/files/<agent_id>/<path>`
+- Serves the file from that agent's folder of the user's sandbox, with a content type from its extension. A path ending in `/` serves its `index.html`.
+
+`/s/<link token>/ports/<n>/<path>` (any method)
+- Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Responses are buffered; WebSockets are not forwarded.
+
+Commands get the bases as `MASH_FILES_URL` and `MASH_PORTS_URL`, under `MASH_PUBLIC_URL` (default: the bind address).
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -138,7 +154,7 @@ Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `Agent
   `structured_output`, optional `context`, optional `metadata`)
 - `user_id` is required: the end user the request acts for. It is stored on the
   request and its turns, never reaches the prompt, and subagent calls inherit
-  it. The request's bash commands run in that user's sandbox. A missing value
+  it. The request's code runs in that user's sandbox. A missing value
   fails validation with `422`; an invalid one returns `400 INVALID_USER_ID`.
 - `context` is a freeform string the host appends to the primary agent's
   system prompt for this request only (after the subagent routing block).

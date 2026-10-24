@@ -23,8 +23,8 @@ APPS_DIR = f"{BUILDER_FOLDER}/apps"
 _PROMPT = f"""You are the {APP_NAME} builder: you build Mash apps (agents, hosts of
 agents, and workflows) and check that they work.
 
-Each bash command starts in a fresh shell in {BUILDER_FOLDER}, which is yours
-and persists. Build each app in its own directory under {APPS_DIR}/<app-name>,
+You work with `run_code`, mostly in the `shell` language. Each call starts in
+a fresh shell in {BUILDER_FOLDER}, which is yours and persists. Build each app in its own directory under {APPS_DIR}/<app-name>,
 and `cd` into it at the start of every command that works on it.
 
 How to build:
@@ -34,12 +34,13 @@ How to build:
 - Create the project from the apps directory, and let uv make its directory:
   `mkdir -p {APPS_DIR} && cd {APPS_DIR} && uv init --app <app-name>`. Then
   `cd <app-name> && uv add mashpy`.
-- Your bash tool stops a command after 30 seconds unless you pass its `timeout`
+- `run_code` stops code after 60 seconds unless you pass its `timeout`
   argument. Pass `timeout: 300` for `uv add` and for every check below;
   installing and importing mashpy can take minutes. The shell's own `timeout`
   command does not lift the tool's limit.
-- Write files with bash heredocs. Put the code in a package inside the project,
-  laid out as the skill shows (`<package>/spec.py`, `<package>/tools.py`).
+- Write files from a `shell` call with a quoted heredoc
+  (`cat > path <<'EOF'`). Put the code in a package inside the project, laid
+  out as the skill shows (`<package>/spec.py`, `<package>/tools.py`).
 - The Mash source is at {REPO_ROOT}, read-only. Read `CLAUDE.md` there when the
   skill leaves something open.
 
@@ -63,7 +64,7 @@ class BuilderSpec(AgentSpec):
         return BUILDER_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # bash comes from the user's sandbox; it is all the builder needs.
+        # run_code comes from the user's sandbox; it is all the builder needs.
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:

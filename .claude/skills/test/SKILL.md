@@ -27,10 +27,13 @@ Read the change before designing anything around it.
   actually deployed; the changelog workflow's id is `pilot-changelog`.
 - Every agent runs as a subprocess of the host (`mash agent serve`) inside the
   host container, so its tools, MCP connections and logs live there; the host
-  log prefixes each agent's lines with `[agent_id]`. Bash is different: every
-  `bash` call runs in the sandbox of the user the request acts for, a
-  `mash-sandbox-<key>` container the host starts through the Docker socket on
-  first use, in `/home/agent/workspaces/<agent_id>`.
+  log prefixes each agent's lines with `[agent_id]`. The sandbox tools are
+  different: every `run_code`, `sandbox_put` and `sandbox_get` call acts in the
+  sandbox of the user the request acts for, a `mash-sandbox-<key>` container
+  the host starts through the Docker socket on first use, in
+  `/home/agent/workspaces/<agent_id>`. Sandboxes run `mash-sandbox:pilot`,
+  which compose builds from `Dockerfile.sandbox`. Users open what the code made
+  at `http://127.0.0.1:8000/s/<link token>/...`.
 - Every request and every workflow run that reaches an agent carries a
   `user_id`. Pick distinct users per case when isolation matters.
 - Every pilot agent is named by the `guide` host or a workflow, so disabling
@@ -82,13 +85,19 @@ the secret. If `.env` lacks it, export one in the shell for the run
 docker compose -f docker-compose.pilot.yml up -d --build
 ```
 
-Mash and pilot code is baked into the image, so a source change needs a
+Building the images is heavy (two images, Node and mashpy's dependencies), and
+on a laptop it competes with everything else Docker runs. Ask the user before
+the first build of a session, and mention other running stacks
+(`docker ps`) they may want to stop.
+
+Mash and pilot code is baked into both images, so a source change needs a
 rebuild. The agent processes restart with the host, but sandboxes keep the
 image they were created from, so remove them too when the change reaches the
-sandbox daemon or the image (their volumes, the users' files, are kept):
+sandbox daemon, `Dockerfile.sandbox` or `run_code`'s promises about the image
+(their volumes, the users' files, are kept):
 
 ```bash
-docker compose -f docker-compose.pilot.yml up -d --build pilot
+docker compose -f docker-compose.pilot.yml up -d --build sandbox-image pilot
 docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)
 ```
 
@@ -129,9 +138,10 @@ curl -s http://127.0.0.1:8000/api/v1/agent/<agent>/request/<request_id>/status
 # `mash` user cannot write in /opt/mash.
 printf '/status\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T -w /tmp -e HOME=/tmp pilot pilot repl --host guide
 
-# Sandboxes — list them, then inspect a user's files the way bash sees them.
-# docker exec copies the container's env (the sandbox token included), so check
-# what bash's environment holds through an agent's bash call, not docker exec.
+# Sandboxes — list them, then inspect a user's files the way the agent's code
+# sees them. docker exec copies the container's env (the sandbox token
+# included), so check what the code's environment holds through a run_code
+# call, not docker exec.
 docker compose -f docker-compose.pilot.yml exec -T pilot mash sandbox ls
 docker exec -u agent -w /home/agent/workspaces/<agent_id> \
   $(docker ps -q --filter label=mash.sandbox.user=<user_id>) ls -la
@@ -154,6 +164,54 @@ them is itself a finding.**
 
 Write the shared helpers (submit, poll, psql) into your scratchpad and `source`
 them per Bash call, since shell state does not persist between calls.
+
+### Case: sandbox code execution
+
+Use this when a change touches the sandbox tools, the daemon, the relay, the
+links or the sandbox image. It drives the path a user cares about: data the
+agent has goes into the sandbox, code the model writes analyses it, and the
+user opens the result at a link. Use the `pilot` guide (Gemini): it drives
+multi-call tool loops reliably.
+
+1. Put a CSV on the agent's machine (the host container) and compute the
+   ground truth yourself:
+
+   ```bash
+   docker compose -f docker-compose.pilot.yml exec -T pilot sh -c 'cat > /tmp/sales.csv' <<'EOF'
+   region,product,units,price
+   west,widget,12,2.50
+   east,widget,7,2.50
+   west,gadget,3,10.00
+   north,gadget,5,10.00
+   east,gizmo,9,4.00
+   EOF
+   # revenue by region: west 60.00, east 53.50, north 50.00
+   ```
+
+2. Ask for the analysis and a page, for a fresh user:
+
+   ```bash
+   curl -s -X POST http://127.0.0.1:8000/api/v1/hosts/guide/request \
+     -H 'Content-Type: application/json' -d '{"session_id":"s-code-1","user_id":"u-code-1",
+     "message":"Copy /tmp/sales.csv into your sandbox, load it into a SQLite database there, compute revenue (units*price) by region, and build an HTML page with a table and a bar chart of it. Give me the link."}'
+   ```
+
+3. Verify, with criteria fixed before running:
+   - **Tools** (event log): a `sandbox_put` call, then `run_code` calls; no
+     `bash`; the last lifecycle event is `runtime.request.completed`.
+   - **Files** (sandbox): `sales.csv`, a `.db` file and an `.html` file in
+     `/home/agent/workspaces/pilot` of `u-code-1`'s sandbox; `sqlite3` on the
+     db returns the three totals.
+   - **Link** (HTTP): the response text holds a
+     `http://127.0.0.1:8000/s/<token>/files/pilot/<name>.html` URL. `curl -i`
+     on it returns `200`, `text/html`, the `Content-Security-Policy: sandbox`
+     header, and a body with 60, 53.5 and 50. The same path under a forged
+     token, or under another user's token, returns `404`.
+   - **Server** (HTTP): a follow-up in the same session, "Serve that page from
+     a web server on port 8050 and give me its link", yields a
+     `.../s/<token>/ports/8050/` URL that returns `200` with the page.
+   - **Isolation**: `u-code-2` asking "list the files in your sandbox folder"
+     sees none of `u-code-1`'s files.
 
 ---
 

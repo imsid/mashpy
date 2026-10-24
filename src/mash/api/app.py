@@ -21,7 +21,7 @@ from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
-from mash.api.routes.sandbox import build_sandbox_router
+from mash.api.routes.sandbox import build_link_router, build_sandbox_router
 from mash.api.routes.common import (
     APIError,
     AppRuntimeState,
@@ -65,11 +65,13 @@ logger = logging.getLogger("uvicorn.error")
 async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:
     """Docker sandboxes when a Docker daemon answers, otherwise none.
 
-    Without sandboxes the host runs and its agents get no ``bash`` tool.
+    Without sandboxes the host runs and its agents get no sandbox tools.
     """
     host_secret = config.resolved_host_secret()
     if not host_secret:
-        logger.warning("no MASH_HOST_SECRET: running without sandboxes; agents get no bash")
+        logger.warning(
+            "no MASH_HOST_SECRET: running without sandboxes; agents get no sandbox tools"
+        )
         return None
     engine = DockerEngine()
     provider = DockerSandboxProvider(host_secret=host_secret, engine=engine)
@@ -78,9 +80,11 @@ async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:
         await provider.prepare()
     except (DockerEngineError, RuntimeError) as exc:
         await engine.close()
-        logger.warning("running without sandboxes, agents get no bash: %s", exc)
+        logger.warning("running without sandboxes, agents get no sandbox tools: %s", exc)
         return None
-    logger.info("sandboxes: Docker, namespace '%s'", provider.namespace)
+    logger.info(
+        "sandboxes: Docker, namespace '%s', image %s", provider.namespace, provider.image
+    )
     return SandboxManager(
         provider,
         idle_seconds=float(
@@ -144,6 +148,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             eval_service=eval_service,
             api_key=resolved_config.resolved_api_key(),
             host_secret=resolved_config.resolved_host_secret(),
+            public_url=resolved_config.resolved_public_url(),
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
             default_search_limit=max(1, int(resolved_config.default_search_limit)),
         )
@@ -307,6 +312,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     app.include_router(api)
     app.include_router(build_h2a_router())
     app.include_router(build_sandbox_router())
+    app.include_router(build_link_router())
 
     @app.get("/")
     async def root() -> dict[str, object]:

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.text import Text
 
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
@@ -15,6 +16,7 @@ from mash.runtime.events.trace import (
     _dict_value,
     _tool_call_names,
     _tool_calls_detail,
+    run_code_preview,
 )
 
 
@@ -355,13 +357,10 @@ class ChainOfThoughtRenderer:
                 tool_name = tool_call.get("name", "unknown")
                 tool_args = tool_call.get("arguments", {})
 
-                # Special handling for bash tool to show the command
-                if tool_name == "bash" and "command" in tool_args:
-                    command = tool_args["command"]
-                    # Truncate long commands
-                    if len(command) > 80:
-                        command = command[:77] + "..."
-                    self._console.print(f"    [dim]$ {command}[/dim]")
+                # Special handling for run_code to show the code
+                if tool_name == "run_code" and "code" in tool_args:
+                    preview = escape(run_code_preview(tool_args))
+                    self._console.print(f"    [dim]{preview}[/dim]")
                 # For other tools, show arguments more generically
                 elif tool_args:
                     # Show first few keys/values
@@ -466,11 +465,9 @@ class ChainOfThoughtRenderer:
             for tool_call in tool_calls_detail:
                 tool_name = tool_call.get("name", "unknown")
                 tool_args = tool_call.get("arguments", {})
-                if tool_name == "bash" and "command" in tool_args:
-                    command = tool_args["command"]
-                    if len(command) > 80:
-                        command = command[:77] + "..."
-                    self._console.print(f"    [magenta]│[/magenta]   [dim]$ {command}[/dim]")
+                if tool_name == "run_code" and "code" in tool_args:
+                    preview = escape(run_code_preview(tool_args))
+                    self._console.print(f"    [magenta]│[/magenta]   [dim]{preview}[/dim]")
                 elif tool_args:
                     args_preview = []
                     for key, value in list(tool_args.items())[:2]:

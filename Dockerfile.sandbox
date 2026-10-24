@@ -1,0 +1,60 @@
+# Mash's sandbox image: the computer each user's agents run code on.
+#
+# Published as ghcr.io/imsid/mash-sandbox:<mashpy version>; hosts use it unless
+# MASH_SANDBOX_IMAGE names another. Build on it to add packages:
+#
+#   FROM ghcr.io/imsid/mash-sandbox:<version>
+#   USER root
+#   RUN pip install <package>
+#   USER mash
+#
+# What run_code's description promises lives here: change both together
+# (src/mash/tools/sandbox.py).
+
+FROM node:22-slim AS node
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git jq ripgrep sqlite3 sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npm --version
+
+# Data libraries are not preinstalled: the model installs what it needs with
+# `pip install --user`, into the agent's folder on the user's volume.
+RUN pip install uv
+
+WORKDIR /opt/mash
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN pip install .
+
+# Two users. `mash` runs the sandbox daemon and holds the sandbox token;
+# `agent` runs the model's code and can write only under /home/agent. `mash`
+# may start bash as `agent` and nothing else. Each user's volume is created
+# from /home/agent/workspaces.
+RUN useradd --create-home --shell /bin/bash mash \
+    && useradd --create-home --shell /bin/bash agent \
+    && chmod 0700 /home/mash \
+    && mkdir -p /home/agent/workspaces \
+    && chown -R agent:agent /home/agent \
+    && chmod 0755 /home/agent /home/agent/workspaces \
+    && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
+    && chmod 0440 /etc/sudoers.d/mash-agent \
+    # Mounted checkouts belong to other uids; let git read them anyway.
+    && git config --system --add safe.directory '*'
+
+USER mash
+WORKDIR /home/mash
+
+EXPOSE 9000
+
+CMD ["mash", "sandbox", "serve"]

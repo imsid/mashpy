@@ -72,7 +72,7 @@ workflow step ──► │      │ ▲                      output    │
                   │      │                                  │
                   │      │  resumable · replayable          │
                   └──────┼──────────────────────────────────┘
-                         │ bash
+                         │ run_code
                          ▼
                   ┌─────────────────────────────────────────┐
                   │  Sandbox: one container per user        │
@@ -82,27 +82,29 @@ workflow step ──► │      │ ▲                      output    │
 ```
 
 A request from a user and a step in a workflow ride the same durable loop, and
-the bash commands either one runs land in the sandbox of the user it acts for.
+the code either one runs lands in the sandbox of the user it acts for.
 
 ## Sandboxes
 
-With a shell, an agent can install a package, write a script to parse a file,
-run the tests of the code it produced, and keep the results for a later
-request. Mash runs those commands in a sandbox, a container for the user the
-request acts for.
+With a computer of its own, an agent can analyse a file, build a chart or a
+page, keep a SQLite database, run the tests of the code it produced, and keep
+the results for a later request. Mash runs that code in a sandbox, a container
+for the user the request acts for.
 
 Every request names its user with a `user_id`, which the application sends and
 the host trusts. The host starts a user's sandbox on their first command and
-stops it after 15 idle minutes. With Docker on the host, every agent gets a
-`bash` tool that runs in the request user's sandbox, in a folder of its own
-(`/home/agent/workspaces/<agent_id>`), and its files persist across requests
-and restarts. Bash runs as an unprivileged `agent` user with a clean
-environment. A sandbox holds only that user's files: the agents' secrets and
-the database stay with the host.
+stops it after 15 idle minutes. With Docker on the host, every agent gets
+`run_code`, which runs Python, JavaScript or shell in the request user's
+sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`), and
+`sandbox_put` and `sandbox_get` to copy files in and out. Its files persist
+across requests and restarts, and the user opens the pages and files it makes
+at links the host serves. Code runs as an unprivileged `agent` user with a
+clean environment. A sandbox holds only that user's files: the agents' secrets
+and the database stay with the host.
 
 Each agent runs as a process of the host, with its credentials, its model
 connection, and the tools you registered. Those tools run in that process,
-and the commands the model writes go to the sandbox.
+and the code the model writes goes to the sandbox.
 
 ## The pool and hosts
 
@@ -126,8 +128,8 @@ flowchart TD
     P --> A1["Agent: concierge"]
     P --> A2["Agent: research"]
     P --> W1["Workflow: research-brief"]
-    A1 -- "bash" --> S["Sandboxes<br/>one per user"]
-    A2 -- "bash" --> S
+    A1 -- "run_code" --> S["Sandboxes<br/>one per user"]
+    A2 -- "run_code" --> S
 ```
 
 ## The execution surface

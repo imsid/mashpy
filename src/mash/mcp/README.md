@@ -24,7 +24,7 @@
 
 ## Where Connections Run
 - `build_mcp_servers()` runs in the agent's process, inside `mash agent serve`, a child of the host. Every MCP connection and tool call goes from there to the MCP server; the host process opens none.
-- Header tokens stay in the agent process's environment. Bash runs in the user's sandbox, which never sees them.
+- Header tokens stay in the agent process's environment. Agents' code runs in the user's sandbox, which never sees them.
 - URLs resolve where the host runs: `localhost` in a server URL is the host's machine or container. A deployment that restricts outbound traffic allows the MCP server hosts on the platform.
 - MCP session ids (`MCP-Session-ID`) live in the agent process, so a restarted agent opens new sessions.
 - Approval-gated MCP tools pause the request through H2A interactions, as any other tool does. `web_search` and `web_fetch` take the same path.

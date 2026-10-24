@@ -71,8 +71,8 @@ Every request executes inside a durable request: a think → act → observe loo
 with context loaded from memory and tools and skills available to it, accepting
 input from the CLI, the API, or a scheduled workflow, and producing signals and
 optional structured output when it completes. The whole thing is resumable and
-replayable across restarts. The bash commands the model writes leave the
-request for the sandbox of the user it acts for. The diagram below maps that
+replayable across restarts. The code the model writes leaves the request for
+the sandbox of the user it acts for. The diagram below maps that
 shape, and the rest of this section walks through its parts.
 
 ```
@@ -91,7 +91,7 @@ workflow ───────► │      │ ▲                      output  
                   │      │                                  │
                   │      │  resumable · replayable          │
                   └──────┼──────────────────────────────────┘
-                         │ bash
+                         │ run_code
                          ▼
                   ┌─────────────────────────────────────────┐
                   │  Sandbox: one container per user        │
@@ -143,7 +143,7 @@ agent via `compaction_token_threshold` and `compaction_turn_limit` in
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
-- **bash**: run shell commands in the sandbox of the user the request acts for, when the host has sandboxes
+- **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for, and copy files in and out, when the host has sandboxes
 - **AskUserTool**: pause execution to ask the user a question
 - **InvokeSubagent**: delegate work to a registered subagent and stream its response back
 - **search_conversations**: search stored conversation turns and return ranked previews
@@ -188,27 +188,31 @@ backend API request log. The main tables:
 
 Every request acts for a user: submit bodies carry a required `user_id`, which
 the application asserts and the host trusts. Each user gets a sandbox, a
-container the host starts through the Docker socket on that user's first bash
-command. When the host has sandboxes, every agent gets a `bash` tool. The tool
-posts each command to the host's `/sandbox/exec` relay with the agent's token
-and the request id, and the host picks the user from the request, so an agent
-cannot choose whose sandbox it runs in.
+container the host starts through the Docker socket the first time an agent
+runs code for that user. It is the user's computer: Mash's sandbox image with
+Python, Node, SQLite and git. When the host has sandboxes, every agent gets
+`run_code`, `sandbox_put` and `sandbox_get`. They post to the host's `/sandbox`
+relay with the agent's token and the request id, and the host picks the user
+from the request, so an agent cannot choose whose sandbox it runs in.
 
 ```text
 agent process ──► host /sandbox/exec ──► mash-sandbox-<key> (one per user)
-  bash tool         request → user          /home/agent/workspaces/<agent_id>
+  run_code          request → user          /home/agent/workspaces/<agent_id>
 ```
 
-Inside, a small daemon runs each command as the unprivileged `agent` user with
-a clean environment, in the agent's folder at
-`/home/agent/workspaces/<agent_id>`. Each call is a fresh shell, and files
-persist on the sandbox's volume across requests and restarts. The sandbox holds
+Inside, a small daemon runs each piece of code as the unprivileged `agent` user
+with a clean environment, in the agent's folder at
+`/home/agent/workspaces/<agent_id>`. Each call is a new process, and files,
+SQLite databases and `pip install --user` packages persist on the sandbox's
+volume across requests and restarts. The model hands the user what its code
+made through links the host serves: a file opens at `$MASH_FILES_URL/<path>`
+and a server the code started at `$MASH_PORTS_URL/<port>/`. The sandbox holds
 only that user's files; credentials, MCP connections and the database stay in
 the agent processes on the host. A sandbox stops after
-`MASH_SANDBOX_IDLE_SECONDS` (default 900) without a command, at most
+`MASH_SANDBOX_IDLE_SECONDS` (default 900) without use, at most
 `MASH_SANDBOX_MAX_RUNNING` (default 20) run at once, and `mash sandbox ls`,
 `shell` and `stop` manage them from the Docker host. Without a Docker daemon the
-host still runs, and its agents get no `bash`.
+host still runs, and its agents get no sandbox tools.
 
 ### Human-in-the-Loop Interactions (HITL)
 

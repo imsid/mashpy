@@ -88,7 +88,7 @@ def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
             asyncio.run(pool.close())
 
 
-def test_agents_get_sandbox_bash() -> None:
+def test_agents_get_sandbox_tools() -> None:
     with _keyless_models():
 
         async def _run() -> None:
@@ -98,8 +98,10 @@ def test_agents_get_sandbox_bash() -> None:
             await pool.start()
             try:
                 guide = _agent_runtime(pool, PILOT_AGENT_ID)
-                # bash comes from the sandbox, not from the specs.
-                assert {"AskUser", "bash"} <= set(guide.agent.tools.list_tools())
+                # The sandbox tools come from the host, not from the specs.
+                assert {"AskUser", "run_code", "sandbox_put", "sandbox_get"} <= set(
+                    guide.agent.tools.list_tools()
+                )
                 turn_agent = guide.build_turn_agent(
                     session_id="s-1",
                     trace_id="trace-1",
@@ -119,7 +121,7 @@ def test_agents_get_sandbox_bash() -> None:
                 ]
 
                 summarizer = _agent_runtime(pool, CHANGELOG_AGENT_ID)
-                assert "bash" in summarizer.agent.tools
+                assert "run_code" in summarizer.agent.tools
                 assert str(REPO_ROOT) in str(summarizer.agent.config.system_prompt)
             finally:
                 await pool.close()

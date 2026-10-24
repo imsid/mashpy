@@ -19,14 +19,16 @@ server. The steps apply to any Mash application; the examples use
 A Mash host is the unit of deploy: one container or one local process. It
 runs the API, host compositions and workflows, and starts one child process
 per agent. Each child serves its agent's runtime behind an H2A HTTP server on
-a localhost port. The bash commands an agent's model writes run in a sandbox
-that belongs to the user the request acts for.
+a localhost port. The code an agent's model writes runs in a sandbox that
+belongs to the user the request acts for, and the user opens what it made at
+links the host serves.
 
 ```
  user app ──HTTP──► Mash host (API, hosts, workflows)
                      │  one child per agent, on 127.0.0.1:
                      │    mash agent serve --agent research
-                     │  /h2a relay (subagent calls), /sandbox relay (bash)
+                     │  /h2a relay (subagent calls), /sandbox relay (run_code,
+                     │  sandbox_put, sandbox_get), /s/ links (users)
                      │
                      ▼ Docker socket
    ┌──────────────────────────────────────┐
@@ -47,19 +49,23 @@ that belongs to the user the request acts for.
   `503 AGENT_UNAVAILABLE`. Children live and die with the host.
 - A primary calls its subagents through the host's `/h2a` relay, which checks
   the call against the request's host composition.
-- Every request carries a `user_id`. A bash call goes from the agent process to
-  the host's `/sandbox` relay with only the request id; the host looks up the
-  request's user and runs the command in that user's sandbox, in the agent's
-  folder `/home/agent/workspaces/<agent_id>`.
+- Every request carries a `user_id`. A `run_code`, `sandbox_put` or
+  `sandbox_get` call goes from the agent process to the host's `/sandbox`
+  relay with only the request id; the host looks up the request's user and acts
+  in that user's sandbox, in the agent's folder
+  `/home/agent/workspaces/<agent_id>`.
 - A sandbox holds one user's workspaces and nothing else. It gets no
-  environment from the host and has no database credentials. Bash runs as an
+  environment from the host and has no database credentials. Code runs as an
   `agent` user with a clean environment. The sandbox's daemon accepts only that
   user's sandbox token, which only the host can derive.
+- Files in a workspace and servers the code started open at
+  `/s/<link token>/files/<agent_id>/<path>` and `/s/<link token>/ports/<n>/`
+  on the host. The link token names the user, so links need no API key.
 - Sandboxes start on first use and stop after `MASH_SANDBOX_IDLE_SECONDS`
-  (default 900) without a command. At most `MASH_SANDBOX_MAX_RUNNING` (default
+  (default 900) without a call or a link request. At most `MASH_SANDBOX_MAX_RUNNING` (default
   20) run at once.
 - A host that cannot reach a Docker daemon runs without sandboxes, and its
-  agents get no `bash` tool. This is how a host runs on a platform with no
+  agents get no sandbox tools. This is how a host runs on a platform with no
   Docker socket (Render, Cloud Run, Fargate). The host logs which mode it chose.
 - All durable state (events, sessions, DBOS workflows, workflow runs) lives in
   Postgres. Workspace files live on the sandbox volumes.
@@ -78,15 +84,11 @@ A deployment runs one host replica.
 export MASH_HOST_SECRET=$(openssl rand -hex 32)
 ```
 
-- For `bash`: Docker Engine on the machine that runs the host.
+- For sandboxes: Docker Engine on the machine that runs the host.
 
-## The image
+## The images
 
-The host runs from an image that contains your app. Sandboxes run the same
-image, so it also has the two users a sandbox needs: `mash` runs the sandbox
-daemon, and `agent` runs bash. `mash` may start bash as `agent` and nothing
-else. `/home/agent/workspaces` belongs to `agent`, and each user's volume is
-created from it.
+The host runs from an image that contains your app:
 
 ```dockerfile
 FROM python:3.12-slim
@@ -94,16 +96,7 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MASH_DATA_DIR=/var/lib/mash \
     MASH_API_HOST=0.0.0.0 MASH_API_PORT=8000
 
-RUN apt-get update && apt-get install -y --no-install-recommends sudo \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash mash \
-    && useradd --create-home --shell /bin/bash agent \
-    && chmod 0700 /home/mash \
-    && mkdir -p /home/agent/workspaces \
-    && chown -R agent:agent /home/agent \
-    && chmod 0755 /home/agent /home/agent/workspaces \
-    && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
-    && chmod 0440 /etc/sudoers.d/mash-agent \
+RUN useradd --create-home --shell /bin/bash mash \
     && mkdir -p /var/lib/mash && chown mash:mash /var/lib/mash
 
 WORKDIR /opt/app
@@ -116,14 +109,29 @@ CMD ["sh", "-c", "mash host serve --host-app \"$MASH_HOST_APP\" --host \"$MASH_A
 ```
 
 The repository's own [`Dockerfile`](https://github.com/imsid/mashpy/blob/main/Dockerfile)
-has the same layout. Install anything the model's commands need (`git`, `rg`,
-`uv`) in this image too.
+has the same layout.
+
+Sandboxes run Mash's sandbox image, `ghcr.io/imsid/mash-sandbox:<mashpy
+version>`, built from [`Dockerfile.sandbox`](https://github.com/imsid/mashpy/blob/main/Dockerfile.sandbox).
+It holds Python 3.12 with pip and uv, Node 22 with npm, SQLite, git, curl, jq
+and rg, and the two users a sandbox needs: `mash` runs the sandbox daemon, and
+`agent` runs the model's code. The host pulls it on first start. Data libraries
+are not preinstalled; the model installs what it needs with
+`pip install --user`, which lands in the agent's folder and persists. To
+preinstall more, build on it and name your image in `MASH_SANDBOX_IMAGE`:
+
+```dockerfile
+FROM ghcr.io/imsid/mash-sandbox:<version>
+USER root
+RUN pip install pandas matplotlib
+USER mash
+```
 
 ## Run the host in Docker
 
 This is the production layout, and it works the same on a laptop. The host
-container creates the network `mash-sandboxes`, joins it, reaches each sandbox
-by container name, and starts sandboxes with its own image id.
+container creates the network `mash-sandboxes`, joins it, and reaches each
+sandbox by container name.
 
 ```yaml
 # docker-compose.yml
@@ -149,6 +157,8 @@ services:
       MASH_DATABASE_URL: postgresql://mash:mash@postgres:5432/mash
       MASH_HOST_SECRET: ${MASH_HOST_SECRET}
       MASH_API_KEY: ${MASH_API_KEY:-dev-key}
+      # Where users' browsers reach the host, for sandbox links.
+      MASH_PUBLIC_URL: http://127.0.0.1:8000
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -198,16 +208,12 @@ For a faster loop you can run `mash host serve` directly. Its agents run as
 its children on your machine, so `localhost` addresses work as they are in
 `MASH_DATABASE_URL` and MCP server URLs.
 
-Sandboxes can't run the host's image, because there is none. Build an image
-of your app and name it in `MASH_SANDBOX_IMAGE`; each sandbox's daemon port is
-published on `127.0.0.1`. Rebuild it when the tools the model needs change,
-then remove the sandboxes (see Operating sandboxes). Without
-`MASH_SANDBOX_IMAGE`, or without Docker, the host runs and its agents get no
-`bash`.
+Sandboxes still run in Docker, from the same sandbox image; each sandbox's
+daemon port is published on `127.0.0.1`. Links use the bind address, so they
+open in your browser as they are. Without Docker, the host runs and its agents
+get no sandbox tools.
 
 ```bash
-docker build -t my-agent:dev .
-export MASH_SANDBOX_IMAGE=my-agent:dev
 export MASH_DATABASE_URL=postgresql://mash:mash@localhost:5432/mash
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
@@ -217,13 +223,14 @@ mash host serve --host-app my_agent.spec:build_pool --port 8000
 Run the same compose layout on a VM with Docker (EC2, Compute Engine, a
 Hetzner box) and point `MASH_DATABASE_URL` at managed Postgres if you like. On
 a platform without Docker, run the host container alone; it serves every agent
-without `bash`.
+without sandbox tools.
 
 1. Provision Postgres 14+ and note the connection string. Only the host's
    container connects to it.
 2. Build the image on the VM, or build it elsewhere and pull it.
-3. Set `MASH_HOST_APP`, `MASH_DATABASE_URL`, `MASH_HOST_SECRET`, `MASH_API_KEY`
-   and your provider keys in the host's environment.
+3. Set `MASH_HOST_APP`, `MASH_DATABASE_URL`, `MASH_HOST_SECRET`, `MASH_API_KEY`,
+   `MASH_PUBLIC_URL` (the HTTPS address users reach the host at) and your
+   provider keys in the host's environment.
 4. Start the host with the socket mounted and `group_add` set, as in the
    compose file above.
 5. Put TLS in front of port 8000. For SSE, disable response buffering and set
@@ -263,7 +270,7 @@ set `MASH_SANDBOX_NAMESPACE`.
 
 ```bash
 mash sandbox ls                               # user, status, uptime, container
-mash sandbox shell u-42 --agent research      # bash as `agent` in research's folder
+mash sandbox shell u-42 --agent research      # a shell as `agent` in research's folder
 mash sandbox shell u-42 --root
 mash sandbox stop u-42                        # stop now; the volume is kept
 ```
@@ -271,13 +278,14 @@ mash sandbox stop u-42                        # stop now; the volume is kept
 - `shell` starts a stopped sandbox. Commands run from it are not in the event
   log; their history is appended to `/home/agent/workspaces/.admin_history`.
 - Anything outside `/home/agent/workspaces` is on the container layer and is
-  lost when the container is replaced. An agent that needs packages keeps a
-  venv or an install script in its folder.
-- Background processes the model left running stop with the sandbox.
+  lost when the container is replaced. `pip install --user` and `npm install`
+  install into the agent's folder, so packages persist.
+- Background processes the model left running stop with the sandbox, so a port
+  link fails until the code starts its server again. File links keep working.
 - A sandbox keeps the image it was created from. To pick up a new image,
   remove the containers with
   `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)`; each user's
-  next bash call creates a new one on the same volume.
+  next call creates a new one on the same volume.
 
 ## Durability
 
@@ -287,7 +295,7 @@ mash sandbox stop u-42                        # stop now; the volume is kept
   workflow runs.
 - Subagent calls and workflow agent steps submit with fixed request ids, so a
   replayed call reattaches to the request it already started.
-- A bash call is a tool step. After a crash DBOS replays it, and the command
+- A `run_code` call is a tool step. After a crash DBOS replays it, and the code
   runs again in the same sandbox.
 - A host restart restarts every agent process, and each recovers its pending
   requests. Running sandboxes count as active from the restart.
@@ -308,7 +316,9 @@ X-API-Key: <api-key>          # alternative header
 
 The `/h2a` and `/sandbox` relays are for the host's own agent processes and
 authenticate with agent tokens, not the API key. They share the host's port;
-a proxy in front of the host can block both paths from outside.
+a proxy in front of the host can block both paths from outside. The `/s/`
+links are for users and must stay reachable; the token in each link is its
+only credential.
 
 ### Core API endpoints
 
@@ -389,7 +399,7 @@ CLI flag (repeatable) or configure `cors_allow_origins` in `MashHostConfig`.
   sandboxes.
 - **Stop everything:** stop the host, then
   `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)`. Postgres
-  and the sandbox volumes keep all state; each user's next bash call recreates
+  and the sandbox volumes keep all state; each user's next call recreates
   their sandbox on the same volume.
 - **Remove a user's workspaces:** delete their volume, which has the
   container's name from `mash sandbox ls`, after removing the container.
@@ -421,7 +431,8 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_API_KEY` | host | none | API key for `/api/v1` |
 | `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |
 | `MASH_API_PORT` | host | `8000` | Bind port |
-| `MASH_SANDBOX_IMAGE` | host | the host's own image | Sandbox image; required for sandboxes when the host runs outside a container |
+| `MASH_PUBLIC_URL` | host | the bind address | Where users reach the host; the base of sandbox links |
+| `MASH_SANDBOX_IMAGE` | host | `ghcr.io/imsid/mash-sandbox:<mashpy version>` | Sandbox image, pulled when missing |
 | `MASH_SANDBOX_MOUNTS` | host | none | Comma-separated `source:target[:ro]` bind mounts added to every sandbox; sources are Docker-host paths |
 | `MASH_SANDBOX_IDLE_SECONDS` | host | `900` | Idle time before a sandbox stops |
 | `MASH_SANDBOX_MAX_RUNNING` | host | `20` | Most sandboxes running at once |
@@ -429,8 +440,8 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | agent process | set by the host | The agent's token |
-| `MASH_HOST_API_URL` | agent process | set by the host | The host address for subagent calls and bash |
-| `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `bash` |
+| `MASH_HOST_API_URL` | agent process | set by the host | The host address for subagent calls and the sandbox tools |
+| `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, `sandbox_put` and `sandbox_get` |
 | `MASH_PARENT_PID` | agent process | set by the host | The agent process stops when this process exits |
 | `MASH_SANDBOX_TOKEN` | sandbox | set by the host | The user's sandbox token; the sandbox's only variable |
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; agent processes inherit it |

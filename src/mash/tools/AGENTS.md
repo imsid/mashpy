@@ -3,7 +3,7 @@
 ## What Must Stay True
 - Tool definitions exposed to the model keep the expected schema contract.
 - `ToolRegistry` remains the registration surface for agent tools.
-- Built-in tools such as bash, MCP, and subagent invocation stay isolated in this package.
+- Built-in tools such as the sandbox tools, MCP, and subagent invocation stay isolated in this package.
 - `requires_approval` is an attribute on the `Tool` protocol (defaults to `False`).
 - Tools with `requires_approval = True` trigger a durable approval interaction before execution in the hosted runtime.
 - `AskUserTool` is intercepted at the workflow level (not executed directly) and triggers a durable info/choice interaction.

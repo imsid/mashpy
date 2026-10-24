@@ -27,7 +27,7 @@ From the user's prompt, determine:
 
 1. **Agent purpose** — what the agent does (e.g., "customer support bot",
    "code reviewer", "data pipeline orchestrator")
-2. **Tools needed** — what actions the agent can take (bash, web search,
+2. **Tools needed** — what actions the agent can take (run code, web search,
    database queries, API calls, file operations, etc.)
 3. **LLM provider** — a frontier model (Anthropic default, OpenAI, Gemini) or an
    open-source model (Gemma, Qwen, DeepSeek, Llama) served over a Chat
@@ -166,10 +166,12 @@ tools = ToolRegistry()
 tools.register(AskUserTool())  # durable user questions (hosted runtime only)
 ```
 
-Do not register a `bash` tool. When the host has sandboxes (a reachable Docker
-daemon), every agent gets `bash`, which runs each command in the request
-user's sandbox in `/home/agent/workspaces/<agent_id>`. A spec with its own
-`bash` tool fails to start on such a host.
+Do not register tools named `run_code`, `sandbox_put` or `sandbox_get`. When
+the host has sandboxes (a reachable Docker daemon), every agent gets them:
+`run_code` runs Python, JavaScript or shell in the request user's sandbox in
+`/home/agent/workspaces/<agent_id>`, and the other two copy files between the
+agent's machine and that folder. A spec that registers one of these names
+fails to start on such a host.
 
 ### Web Search
 
@@ -410,7 +412,8 @@ response = await runtime.submit_request(
 | `PARALLEL_OAUTH_TOKEN` | Parallel AI OAuth token for web search (optional) |
 | `MASH_DATABASE_URL` | Postgres URL for memory/runtime stores |
 | `MASH_HOST_SECRET` | Derives agent and sandbox tokens; required to serve agents |
-| `MASH_SANDBOX_IMAGE` | Sandbox image for `bash` when the host runs outside a container |
+| `MASH_SANDBOX_IMAGE` | Sandbox image (default `ghcr.io/imsid/mash-sandbox:<mashpy version>`) |
+| `MASH_PUBLIC_URL` | Where users reach the host, for sandbox links (default: the bind address) |
 | `MASH_DATA_DIR` | Persistent data directory (default: `/var/lib/mash`) |
 | `MASH_API_KEY` | API key for the hosted server |
 

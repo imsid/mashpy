@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 from mash.core.database import resolve_database_url
 from mash.runtime.host.tokens import resolve_host_secret
+
+MASH_PUBLIC_URL_ENV = "MASH_PUBLIC_URL"
 
 _DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
@@ -29,6 +32,9 @@ class MashHostConfig:
     host_secret: Optional[str] = None
     # The ``module:attribute`` each agent process imports to serve its agent.
     host_app: Optional[str] = None
+    # Where users reach the host, for sandbox links; falls back to MASH_PUBLIC_URL,
+    # then to the bind address.
+    public_url: Optional[str] = None
     cors_allow_origins: Sequence[str] = field(default_factory=lambda: _DEFAULT_CORS_ORIGINS)
     default_events_limit: int = 2000
     default_search_limit: int = 10
@@ -51,6 +57,13 @@ class MashHostConfig:
 
     def resolved_host_secret(self) -> Optional[str]:
         return resolve_host_secret(self.host_secret)
+
+    def resolved_public_url(self) -> str:
+        value = str(self.public_url or os.environ.get(MASH_PUBLIC_URL_ENV) or "").strip()
+        if value:
+            return value.rstrip("/")
+        bind = self.bind_host if self.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+        return f"http://{bind}:{self.bind_port}"
 
     def resolved_runtime_database_url(self) -> Optional[str]:
         return resolve_database_url(self.runtime_database_url)

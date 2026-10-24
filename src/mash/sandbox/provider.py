@@ -3,7 +3,9 @@
 ``SandboxProvider.ensure(user_id)`` makes sure the user's sandbox exists and is
 running and returns how the host reaches its daemon. ``DockerSandboxProvider``
 runs each sandbox as a container with a named volume for the user's
-workspaces, on its own network.
+workspaces, on its own network. Sandboxes run Mash's sandbox image,
+``ghcr.io/imsid/mash-sandbox:<mashpy version>``, unless ``MASH_SANDBOX_IMAGE``
+names another.
 
 Two networking modes, picked by whether the host itself runs in a container:
 
@@ -22,6 +24,7 @@ import re
 import socket
 import time
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Mapping, Protocol, Sequence
 
 import httpx
@@ -36,7 +39,17 @@ DEFAULT_NAMESPACE = "mash"
 MASH_SANDBOX_IMAGE_ENV = "MASH_SANDBOX_IMAGE"
 MASH_SANDBOX_MOUNTS_ENV = "MASH_SANDBOX_MOUNTS"
 MASH_SANDBOX_NAMESPACE_ENV = "MASH_SANDBOX_NAMESPACE"
+SANDBOX_IMAGE_REPOSITORY = "ghcr.io/imsid/mash-sandbox"
 _NAMESPACE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+
+
+def default_sandbox_image() -> str:
+    """Mash's sandbox image for the installed mashpy version."""
+    try:
+        tag = version("mashpy")
+    except PackageNotFoundError:
+        tag = "latest"
+    return f"{SANDBOX_IMAGE_REPOSITORY}:{tag}"
 
 
 @dataclass(frozen=True)
@@ -179,7 +192,7 @@ class DockerSandboxProvider:
             raise ValueError("a host secret is required to start sandboxes")
         self._host_secret = host_secret
         env = dict(os.environ if environ is None else environ)
-        self._image = image or env.get(MASH_SANDBOX_IMAGE_ENV) or None
+        self._image = image or env.get(MASH_SANDBOX_IMAGE_ENV) or default_sandbox_image()
         if mounts is None:
             mounts = env.get(MASH_SANDBOX_MOUNTS_ENV, "").split(",")
         self._mounts = parse_mounts(mounts)
@@ -198,14 +211,19 @@ class DockerSandboxProvider:
     async def close(self) -> None:
         await self._engine.close()
 
+    @property
+    def image(self) -> str:
+        return self._image
+
     async def prepare(self) -> None:
-        """Resolve the image and create the sandbox network, once.
+        """Pull the image when missing and create the sandbox network, once.
 
         A host in a container also joins the network, to reach the daemons.
         """
         async with self._prepare_lock:
             if self._prepared:
                 return
+            await self._engine.ensure_image(self._image)
             await self._engine.ensure_network(
                 self._network, labels={NAMESPACE_LABEL: self.namespace}
             )
@@ -213,14 +231,7 @@ class DockerSandboxProvider:
                 own = await self._engine.inspect_container(socket.gethostname())
                 if own is None:
                     raise RuntimeError("cannot inspect the host's own container")
-                if self._image is None:
-                    # The image id, not the tag, so sandboxes run exactly this image.
-                    self._image = str(own["Image"])
                 await self._engine.connect_network(self._network, str(own["Id"]))
-            elif self._image is None:
-                raise RuntimeError(
-                    f"{MASH_SANDBOX_IMAGE_ENV} is required when the host runs outside a container"
-                )
             self._prepared = True
 
     async def ensure(self, user_id: str) -> SandboxEndpoint:
@@ -308,11 +319,13 @@ __all__ = [
     "MASH_SANDBOX_MOUNTS_ENV",
     "MASH_SANDBOX_NAMESPACE_ENV",
     "NAMESPACE_LABEL",
+    "SANDBOX_IMAGE_REPOSITORY",
     "SandboxEndpoint",
     "SandboxInfo",
     "SandboxProvider",
     "SandboxUnavailableError",
     "USER_LABEL",
+    "default_sandbox_image",
     "network_name",
     "parse_mounts",
     "resolve_namespace",

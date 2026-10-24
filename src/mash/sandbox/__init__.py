@@ -1,4 +1,4 @@
-"""Per-user sandboxes: where the bash commands an agent's model writes run.
+"""Per-user sandboxes: where the code an agent's model writes runs.
 
 A sandbox holds one user's workspaces, ``/home/agent/workspaces/<agent_id>``,
 and nothing else: no secrets, no database access, no route to the host. The

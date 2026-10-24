@@ -23,8 +23,8 @@ observable in one running system.
 
 A Pilot deployment is Postgres and a Mash host, run with Docker Compose from a
 checkout of the repo. The host runs each agent as a process inside its
-container. Through the Docker socket it starts a sandbox per user for the bash
-commands the agents run, and mounts the checkout read-only into each one at
+container. Through the Docker socket it starts a sandbox per user, where the
+agents' code runs, and mounts the checkout read-only into each one at
 `/home/agent/mashpy`. Put `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and
 `MASH_HOST_SECRET` (`openssl rand -hex 32`) in `.env`, then:
 
@@ -41,8 +41,8 @@ pilot browse
 masher's eval agents, each listed through the `AgentMetadata` it registered
 with. The same metadata becomes the delegation directory when an agent serves
 as a subagent, as [the composition post](composing-agents.md) covered.
-Every request acts for the user `mash connect` saved, and that user's bash
-commands run in their own sandbox. `mash sandbox ls` lists the sandboxes.
+Every request acts for the user `mash connect` saved, and the code the agents
+run for that user runs in their own sandbox. `mash sandbox ls` lists the sandboxes.
 
 ## Compose a team
 
@@ -83,7 +83,8 @@ defined in code and is also the default entry in the host config file:
 > Build me an agent with a knowledge base search tool and human approval for refunds.
 ```
 
-The guide answers from the repository with `rg` and `sed` in its bash tool,
+The guide answers from the repository with `rg` and `sed`, run as shell code
+through `run_code`,
 and its prompt carries a map of where each module and post is documented. When
 you ask for an app, it delegates to the builder. The builder follows the
 `build-mash-agent`, `build-mash-workflow`, or `build-mash-host` skill, writes the
@@ -98,7 +99,7 @@ so you watch the delegation happen.
 shows the `CodeStep` → `AgentStep` shape end to end. The first step is
 deterministic Python: it reads `CHANGELOG.md` and slices out the most recent
 release section(s). The second is one agent run that turns that excerpt into a
-plain-language summary, reaching into the source with bash only when an entry is
+plain-language summary, reaching into the source with `run_code` only when an entry is
 too terse to explain on its own. `guide` attaches it by default, so
 `/workflow run pilot-changelog` runs it and streams the steps; add it to your
 own host with `--workflows pilot-changelog`.

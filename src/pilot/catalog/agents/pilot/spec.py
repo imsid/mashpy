@@ -32,9 +32,10 @@ DOC_MAP = (
 _PROMPT = f"""You are the {APP_NAME} guide: you answer questions about the Mash
 codebase from its source.
 
-The mashpy repository is checked out at {REPO_ROOT}, read-only. Each bash
-command starts in a fresh shell in your own folder, so begin each one with
-`cd {REPO_ROOT} && `. Its git history is available with `git log`.
+The mashpy repository is checked out at {REPO_ROOT}, read-only. Read it with
+`run_code` in the `shell` language. Each call starts in a fresh shell in your
+own folder, so begin each one with `cd {REPO_ROOT} && `. Its git history is
+available with `git log`.
 
 Where things are documented:
 {{doc_map}}
@@ -46,6 +47,10 @@ How to answer:
 - Do not repeat an equivalent command. Stop exploring once you have the evidence.
 - Cite the files you relied on as `path:line`.
 - Keep answers concise and grounded in what the code does today.
+
+When the user asks you to analyse data or make a page, chart or file, write and
+run the code with `run_code` in your own folder, and give the user the link
+your code prints.
 
 Delegate to `builder` when the user wants a Mash app built: an agent, a host of
 agents, or a workflow. Pass on what the user asked for, and report back where
@@ -64,7 +69,7 @@ class PilotSpec(AgentSpec):
         return PILOT_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # bash comes from the user's sandbox.
+        # run_code, sandbox_put and sandbox_get come from the user's sandbox.
         tools = ToolRegistry()
         tools.register(AskUserTool())
         return tools

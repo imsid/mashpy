@@ -304,12 +304,21 @@ def _tool_call_entry(tool_call: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_code_preview(tool_args: Mapping[str, Any]) -> str:
+    """One line for a ``run_code`` call: ``$ <first line>`` for shell, else ``<language>: ...``."""
+    lines = [line for line in str(tool_args.get("code") or "").splitlines() if line.strip()]
+    first = lines[0].strip() if lines else ""
+    if len(lines) > 1:
+        first += " ..."
+    if len(first) > 80:
+        first = first[:77] + "..."
+    language = str(tool_args.get("language") or "")
+    return f"$ {first}" if language == "shell" else f"{language}: {first}"
+
+
 def _tool_call_preview(tool_name: str, tool_args: Mapping[str, Any]) -> str:
-    if tool_name == "bash" and "command" in tool_args:
-        command = str(tool_args.get("command") or "")
-        if len(command) > 80:
-            command = command[:77] + "..."
-        return f"$ {command}"
+    if tool_name == "run_code" and "code" in tool_args:
+        return run_code_preview(tool_args)
     if not tool_args:
         return tool_name
     args_preview: list[str] = []
