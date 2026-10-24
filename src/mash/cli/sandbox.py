@@ -161,25 +161,29 @@ def _run_shell(args) -> int:
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1
-    folder = f"{WORKSPACES_ROOT}/{args.agent}" if args.agent else WORKSPACES_ROOT
     # Pre-create the history file as `agent`, so a root session cannot leave it
     # root-owned and unwritable for the next agent session.
     subprocess.run(
         ["docker", "exec", "-u", "agent", name, "touch", ADMIN_HISTORY],
         check=False,
     )
-    os.execvp(
-        "docker",
-        [
-            "docker", "exec", "-it",
-            "-u", "root" if args.root else "agent",
-            "-w", folder,
-            "-e", f"HISTFILE={ADMIN_HISTORY}",
-            "-e", "PROMPT_COMMAND=history -a",
-            name, "/bin/bash",
-        ],
-    )
+    os.execvp("docker", _shell_argv(name, args.agent, args.root))
     return 0  # pragma: no cover - execvp does not return
+
+
+def _shell_argv(name: str, agent_id: str | None, root: bool) -> list[str]:
+    folder = f"{WORKSPACES_ROOT}/{agent_id}" if agent_id else WORKSPACES_ROOT
+    # docker exec copies the container's environment, token included. Drop it,
+    # or bash commands running as `agent` could read it from this shell's
+    # /proc/<pid>/environ while the session is open.
+    return [
+        "docker", "exec", "-it",
+        "-u", "root" if root else "agent",
+        "-w", folder,
+        "-e", f"HISTFILE={ADMIN_HISTORY}",
+        "-e", "PROMPT_COMMAND=history -a",
+        name, "env", "-u", MASH_SANDBOX_TOKEN_ENV, "/bin/bash",
+    ]
 
 
 def _run_stop(args) -> int:
