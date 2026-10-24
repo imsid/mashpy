@@ -44,6 +44,9 @@ agent's and each sandbox's token.
   one agent's runtime behind an H2A HTTP server on a localhost port. It is the
   app's own code, so it inherits the host's environment. The host restarts one
   that exits, and agents can be enabled and disabled on a running host.
+- **User** — the end user a request acts for, named by the `user_id` every
+  submit body carries. The app asserts it and the host trusts it; it scopes the
+  request's conversation search, its Cortex memory, and its sandbox.
 - **Sandbox** — a container per user, started on first use, where the `bash`
   commands an agent's model writes run. It holds that user's workspaces, one
   folder per agent at `/home/agent/workspaces/<agent_id>`, and nothing else:

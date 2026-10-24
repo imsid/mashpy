@@ -19,6 +19,7 @@ harness and observability underneath.
 - [One Host, Composable Agents](#one-host-composable-agents)
 - [Durable Harness](#durable-harness)
     - [Core Agent Loop](#core-agent-loop)
+    - [Sandboxes](#sandboxes)
     - [Human-in-the-Loop Interactions (HITL)](#human-in-the-loop-interactions-hitl)
     - [Workflows](#workflows)
 - [Evals](#evals)
@@ -52,6 +53,11 @@ pool = (
 )
 ```
 
+When the host starts, it runs each agent in the pool as its own subprocess
+(`mash agent serve`) on a localhost port and keeps an HTTP client for it. The
+host restarts a process that exits, and `POST /api/v1/agent/{agent_id}/disable`
+and `.../enable` stop and start one on a running host.
+
 ## Durable Harness
 
 Mash provides the harness that durably executes a request: it is accepted,
@@ -65,24 +71,32 @@ Every request executes inside a durable request: a think → act → observe loo
 with context loaded from memory and tools and skills available to it, accepting
 input from the CLI, the API, or a scheduled workflow, and producing signals and
 optional structured output when it completes. The whole thing is resumable and
-replayable across restarts. The diagram below maps that shape, and the rest of
-this section walks through its parts.
+replayable across restarts. The bash commands the model writes leave the
+request for the sandbox of the user it acts for. The diagram below maps that
+shape, and the rest of this section walks through its parts.
 
 ```
                   ┌─────────────────────────────────────────┐
                   │          Durable Request                │  ◄── one request,
                   │                                         │      resumable and
                   │   ┌─ context ─── memory ──┐             │      replayable
-request ────────► │   │                       │             │
-(cli/api)         │   │     Agent Loop        │ ──► signals │
-                  │   │ think → act → observe │      │      │
+                  │   │                       │             │
+request ────────► │   │     Agent Loop        │ ──► signals │
+(cli/api)         │   │ think → act → observe │      │      │
                   │   │                       │      ▼      │
                   │   └─ tools ───── skills ──┘  structured │
-workflow ───────► │        ▲                      output    │
-(schedule/trigger)│        │ user interaction               │
-                  │        ▼ (approval / ask-user)          │
-                  │                                         │
-                  │       resumable · replayable            │
+workflow ───────► │      │ ▲                      output    │
+(schedule/trigger)│      │ │ user interaction               │
+                  │      │ ▼ (approval / ask-user)          │
+                  │      │                                  │
+                  │      │  resumable · replayable          │
+                  └──────┼──────────────────────────────────┘
+                         │ bash
+                         ▼
+                  ┌─────────────────────────────────────────┐
+                  │  Sandbox: one container per user        │
+                  │  /home/agent/workspaces/<agent_id>      │
+                  │  files persist · no secrets · no db     │
                   └─────────────────────────────────────────┘
 ```
 
@@ -169,6 +183,32 @@ backend API request log. The main tables:
 | `memory_signals` | memory | Named signals emitted on a turn, stored as values keyed to that turn. |
 | `workflow_runs`, `workflow_steps`, `workflow_step_events` | workflow | One row per workflow run, per-step input/output snapshots, and the append-only step lifecycle audit behind durable resume and the step audit trail. |
 | `api_event_log` | api | HTTP request and response log for the backend API: method, path, status, duration, and bodies. |
+
+### Sandboxes
+
+Every request acts for a user: submit bodies carry a required `user_id`, which
+the application asserts and the host trusts. Each user gets a sandbox, a
+container the host starts through the Docker socket on that user's first bash
+command. When the host has sandboxes, every agent gets a `bash` tool. The tool
+posts each command to the host's `/sandbox/exec` relay with the agent's token
+and the request id, and the host picks the user from the request, so an agent
+cannot choose whose sandbox it runs in.
+
+```text
+agent process ──► host /sandbox/exec ──► mash-sandbox-<key> (one per user)
+  bash tool         request → user          /home/agent/workspaces/<agent_id>
+```
+
+Inside, a small daemon runs each command as the unprivileged `agent` user with
+a clean environment, in the agent's folder at
+`/home/agent/workspaces/<agent_id>`. Each call is a fresh shell, and files
+persist on the sandbox's volume across requests and restarts. The sandbox holds
+only that user's files; credentials, MCP connections and the database stay in
+the agent processes on the host. A sandbox stops after
+`MASH_SANDBOX_IDLE_SECONDS` (default 900) without a command, at most
+`MASH_SANDBOX_MAX_RUNNING` (default 20) run at once, and `mash sandbox ls`,
+`shell` and `stop` manage them from the Docker host. Without a Docker daemon the
+host still runs, and its agents get no `bash`.
 
 ### Human-in-the-Loop Interactions (HITL)
 

@@ -31,7 +31,7 @@ pool = (
 )
 ```
 
-Each spec becomes a full `AgentRuntime` with its own model, tools, config, and memory scope, everything this series has covered, multiplied inside one process. Note what's missing: roles. No agent is registered as a primary or a subagent. The pool is the unit of deploy; a `Host` is the unit of composition, and roles only exist inside one.
+Each spec becomes a full `AgentRuntime` with its own model, tools, config, and memory scope, everything this series has covered. When the host starts, each one runs in its own process, a subprocess of the host. Note what's missing: roles. No agent is registered as a primary or a subagent. The pool is the unit of deploy; a `Host` is the unit of composition, and roles only exist inside one.
 
 ## Hosts are data
 

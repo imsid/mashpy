@@ -27,6 +27,11 @@ standardizes interactions between user applications and agents.
   tools, skills, memory, and structured output. Requests are recorded as
   replayable runtime events; retries, restarts, and long-running work just
   work.
+- **Sandboxes**: every request acts for a user, and each user gets a sandbox,
+  a container where the `bash` commands the model writes run as an unprivileged
+  user. It holds a folder per agent, whose files persist across requests, and
+  only that user's files: the agents' secrets and the database stay with the
+  host.
 - **Frontier and open-source models**: built-in adapters for Anthropic, OpenAI,
   and Gemini, and any open-source model served over a Chat Completions endpoint,
   self-hosted with vLLM or Ollama or hosted on OpenRouter. Each agent picks its
@@ -56,15 +61,23 @@ request ────────► │   │     Agent Loop        │ ──�
 (cli/api)         │   │ think → act → observe │      │      │
                   │   │                       │      ▼      │
                   │   └─ tools ───── skills ──┘  structured │
-workflow step ──► │        ▲                      output    │
-(api/cli)         │        │ user interaction               │
-                  │        ▼ (approval / ask-user)          │
-                  │                                         │
-                  │       resumable · replayable            │
+workflow step ──► │      │ ▲                      output    │
+(api/cli)         │      │ │ user interaction               │
+                  │      │ ▼ (approval / ask-user)          │
+                  │      │                                  │
+                  │      │  resumable · replayable          │
+                  └──────┼──────────────────────────────────┘
+                         │ bash
+                         ▼
+                  ┌─────────────────────────────────────────┐
+                  │  Sandbox: one container per user        │
+                  │  /home/agent/workspaces/<agent_id>      │
+                  │  files persist · no secrets · no db     │
                   └─────────────────────────────────────────┘
 ```
 
-A request from a user and a step in a workflow ride the same durable loop.
+A request from a user and a step in a workflow ride the same durable loop, and
+the bash commands either one runs land in the sandbox of the user it acts for.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
 at each capability, and the [product brief](docs/posts/product-brief.md) for
@@ -304,6 +317,7 @@ mash repl --host assistant
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
 | **Pool** | The deployed pool of role-less agents the API server runs; each agent runs as a subprocess of the host |
+| **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory and sandbox |
 | **Sandbox** | A container per user where agents' `bash` commands run, holding that user's workspaces and nothing else |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
 | **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `bash` when it has sandboxes |

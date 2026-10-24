@@ -17,9 +17,9 @@ Python or one run of a harnessed agent. Control flow stays in code.
 standardizes interactions between user applications and agents.
 
 Workflows run durably with a per-step audit trail. The agent harness includes
-web search, local and remote (MCP) tools, skills, context and memory
-management, human-in-the-loop (HITL), synthetic evals, an API/CLI for access,
-and observability. It runs on both frontier and open source models.
+web search, local and remote (MCP) tools, a per-user sandbox for the code
+agents write, skills, context and memory management, human-in-the-loop (HITL),
+synthetic evals, an API/CLI for access, and observability. It runs on both frontier and open source models.
 
 **Try it now with Pilot:**
 
@@ -36,8 +36,9 @@ git clone https://github.com/imsid/mashpy.git && cd mashpy
 # 2. Start Postgres and the host
 docker compose -f docker-compose.pilot.yml up -d --build
 
-# 3. Install the CLI and start asking
+# 3. Install the CLI, save who you are, and start asking
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot repl --host guide
 ```
 
@@ -228,23 +229,34 @@ def build_pool():
 
 **Configure the environment:**
 
-The host needs an LLM key and a Postgres URL for its durable runtime. Put
-them in a `.env` file the host loads on start:
+The host needs an LLM key, a Postgres URL for its durable runtime, and a
+secret it derives agent and sandbox tokens from. Put them in a `.env` file the
+host loads on start:
 
 ```bash
 # .env
 ANTHROPIC_API_KEY=sk-ant-...
 MASH_DATABASE_URL=postgresql://user:pass@localhost:5432/mash
+MASH_HOST_SECRET=...   # openssl rand -hex 32
 ```
 
 **Start the host:**
 
+The host runs each agent as its own subprocess. For agents to get `bash`, it
+also needs a Docker daemon and an image to start each user's sandbox from,
+built from the Dockerfile in [the deploy guide](posts/how-to-deploy.md#the-image).
+Without Docker the host still runs, and its agents get no `bash`.
+
 ```bash
+docker build -t my-app:dev .
+export MASH_SANDBOX_IMAGE=my-app:dev
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
-**Browse available agents:**
+**Connect as a user and browse available agents.** Every request acts for a
+user, so the connection saves one:
 ```bash
+mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
 mash browse
 ```
 
