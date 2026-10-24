@@ -16,19 +16,17 @@ The initial set of instructions loaded into the context window. It describes the
 
 ### Tool
 
-An executable piece of code the model can call. Tools are registered at the start of the agent run and the model decides which ones to invoke based on the task. Tools can be local, code that runs inside the agent itself (asking the user a question, looking up an order), or remote, communicating with an external service like a CRM or data warehouse. Remote tools are packaged inside an MCP (Model Context Protocol) server and typically require authorization. Mash ships a set of built-in local tools and an interface for registering custom local and remote MCP server tools.
+An executable piece of code the model can call. Tools are registered at the start of the agent run and the model decides which ones to invoke based on the task. Tools can be local, operating within the same environment (reading or writing to the filesystem, for example), or remote, communicating with an external service like a CRM or data warehouse. Remote tools are packaged inside an MCP (Model Context Protocol) server and typically require authorization. Mash ships a set of built-in local tools and an interface for registering custom local and remote MCP server tools.
 
-Mash also gives agents `bash`, a shell where the model writes its own code and runs it. With it the model can install packages, write scripts, and keep files between steps. Those commands run in a sandbox.
+A shell is a local tool with a wider reach than the rest. The model writes each command itself, so it can install packages, write and run scripts, and keep files between steps. Because that code comes from the model, it usually runs in a sandbox.
 
 ### Sandbox
 
-An isolated computer where the code a model writes runs, apart from the agent's credentials, the database, and other users' files.
-
-In Mash, a sandbox is a container per user. On a host that can reach a Docker daemon, every agent gets a `bash` tool, and each command it runs lands in the sandbox of the user the request acts for, in that agent's own folder (`/home/agent/workspaces/<agent_id>`). Files persist across requests, so an agent can build on what it wrote last time. Commands run as an unprivileged user with a clean environment, and the sandbox holds only that user's files. The host starts a user's sandbox on their first command and stops it after 15 idle minutes, and the files are kept for the next start.
+An isolated environment where the code a model writes runs, typically a container or virtual machine with its own filesystem. It is kept apart from the agent's credentials, the application's data, and other users' work, and commands in it run as an unprivileged user. Files the model writes persist in the sandbox, so later steps and later sessions can build on them. A platform can give each user their own sandbox, start a fresh one per session, or share one across an agent's users. In Mash, each user gets their own sandbox, with a folder per agent.
 
 ### User
 
-The person a request acts for. Every request to a Mash agent names one with a `user_id`, which the application asserts and the host trusts. The user scopes what the agent can reach: that user's past conversations, their memory, and their sandbox. A subagent called during the request works for the same user as the agent that called it.
+The person an agent works for in a given request. The application identifies the user, and that identity decides what the request can reach: the user's past conversations, their memory, and their sandbox. When one agent delegates to another, the delegate works for the same user. In Mash, every request carries a `user_id`.
 
 ### Skill
 
@@ -50,7 +48,7 @@ An inference provider that hosts and serves a model. Each provider exposes its o
 
 A specification that combines a prompt, tools, skills, memory, and a provider. Together they give the model what it needs to work through a large, multi-step task. Each step in the process is a turn; the full sequence is the agent loop. Individual turns can run autonomously or pause for human input. Because the loop can be long-running and run in the background, durability matters: retries, resumability, replays, and observability.
 
-Every agent framework offers its own way to define an agent spec and execute the loop. Mash provides a Python SDK for authoring agents and uses `dbos-transact` for durable execution. Each agent runs as its own process, started by the host, and the code its model writes runs in the user's sandbox.
+Every agent framework offers its own way to define an agent spec and execute the loop. Mash provides a Python SDK for authoring agents and uses `dbos-transact` for durable execution.
 
 To make the spec concrete, here is what a Morning Brief agent looks like, one that assembles a personalized daily digest:
 
@@ -69,7 +67,7 @@ Events let you observe the agent loop while it is running. Each event has a defi
 
 A host is a pool of agents composed together. It is the bridge between a user application and one or more agents. Within a host, agents are assigned roles: **primary**, **subagent**, and **workflow**. The primary agent handles free-form user requests and can delegate to subagents. Workflow agents run a deterministic sequence of tasks and return structured output.
 
-Host is a Mash-only concept for structuring how applications interface with agents. The interaction model between user application, host, and agents is governed by the [H2A Protocol](../rfcs/host-to-agent-protocol.md). Composing agents through a host means you can add or remove agents without changing the application. Hosts are self-hosted services, accessible over HTTP or via the CLI. The host is also the trust boundary: the application tells it which user each request acts for, and the host runs each agent's process and each user's sandbox.
+Host is a Mash-only concept for structuring how applications interface with agents. The interaction model between user application, host, and agents is governed by the [H2A Protocol](../rfcs/host-to-agent-protocol.md). Composing agents through a host means you can add or remove agents without changing the application. Hosts are self-hosted services, accessible over HTTP or via the CLI. The host is also the trust boundary: the application tells it which user each request acts for.
 
 ### Eval
 
