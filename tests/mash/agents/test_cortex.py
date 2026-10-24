@@ -1,4 +1,4 @@
-"""Cortex reads: settings, the profile block, ``search_cortex``, and wiring on a computer."""
+"""Cortex reads: settings, the profile block, ``search_cortex``, and wiring in an agent process."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from mash.agents.cortex import (
     profile_block,
 )
 from mash.runtime import HostBuilder
-from mash.runtime.computer import build_agent_server
+from mash.runtime.agent_process import build_agent_server
 from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.factory import build_agent_instance
 from mash.testing.runtime_fixtures import build_spec, metadata
@@ -112,7 +112,7 @@ class SearchCortexToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await reader.profile_block("u-unknown"), "")
 
 
-class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
+class AgentProcessWiringTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
         state.start()

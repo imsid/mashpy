@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 # DBOS recovers pending workflows only for its own executor id, so each
 # process gets a distinct one: ``host`` for the host, ``agent:<agent_id>`` for
-# an agent computer.
+# an agent process.
 HOST_EXECUTOR_ID = "host"
 
 
@@ -89,9 +89,9 @@ def get_executor_id() -> str:
 
 
 def configure_agent_process(agent_id: str) -> None:
-    """Configure DBOS for an agent computer. Must run before DBOS launches.
+    """Configure DBOS for an agent process. Must run before DBOS launches.
 
-    The computer runs as ``agent:<agent_id>``, so it recovers only that agent's
+    The process runs as ``agent:<agent_id>``, so it recovers only that agent's
     requests, and listens to no queues, so it never dequeues the host's
     workflow runs.
     """

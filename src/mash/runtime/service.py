@@ -128,7 +128,7 @@ class AgentRuntime:
         return self._mcp_servers
 
     def attach_subagent_access(self, access: SubagentAccess) -> None:
-        """Give the runtime its route to subagents (the host relay on a computer)."""
+        """Give the runtime its route to subagents (the host relay in an agent process)."""
         self._subagent_access = access
 
     def get_subagent_access(self) -> SubagentAccess | None:

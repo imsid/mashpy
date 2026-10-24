@@ -1,7 +1,7 @@
 """CortexStore: the ``cortex_user`` and ``cortex_entry`` tables.
 
-Agents read Cortex on their computers through this store, in the runtime's
-``mash`` process. Bash runs as ``agent`` and cannot reach the tables.
+Agents read Cortex through this store in their own processes. Bash runs in
+the user's sandbox, which has no route to the database.
 """
 
 from __future__ import annotations

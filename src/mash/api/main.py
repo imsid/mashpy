@@ -10,11 +10,12 @@ import uvicorn
 
 from mash.core.database import resolve_database_url
 from mash.runtime import Pool, HostBuilder
-from mash.runtime.computer import (
+from mash.runtime.agent_process import (
     build_agent_server,
     resolve_agent_token,
     resolve_host_api_url,
     resolve_sandbox_enabled,
+    stop_with_parent,
 )
 
 from .app import run_host
@@ -111,7 +112,7 @@ def _run_serve_command(args) -> int:
 
 def add_agent_serve_parser(subparsers) -> None:
     parser = subparsers.add_parser(
-        "serve", help="Serve one agent of a pool on its own computer"
+        "serve", help="Serve one agent of a pool (the host runs one per agent)"
     )
     parser.set_defaults(handler=_run_agent_serve_command)
     parser.add_argument(
@@ -161,6 +162,7 @@ def _run_agent_serve_command(args) -> int:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    stop_with_parent()
     uvicorn.run(server.app, host=args.host, port=args.port)
     return 0
 

@@ -1,4 +1,4 @@
-"""Deployed pool: agent registrations, their computers' clients, hosts, and workflows."""
+"""Deployed pool: agent registrations, their processes' clients, hosts, and workflows."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from mash.workflows.store import WorkflowStore
 from ..client import AgentClient, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
 from ..spec import AgentSpec
-from .computers import ComputerProvider
+from .processes import AgentProvider
 from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
 
@@ -35,9 +35,9 @@ class Pool:
     Workflows are registered on the pool directly and served pool-wide; a
     pool with no user agents is a valid, workflow-only deploy.
 
-    Every agent runs on its own computer. ``start()`` asks the computer
-    provider to ensure each agent's computer and registers an ``AgentClient``
-    for it; the pool itself runs no agent runtimes.
+    Every agent runs in its own process. ``start()`` asks the agent provider
+    to start each agent and registers an ``AgentClient`` for it; the pool
+    itself runs no agent runtimes.
     """
 
     def __init__(
@@ -50,7 +50,7 @@ class Pool:
         self.runtime_database_url = str(runtime_database_url or "").strip() or None
         self._registered: Dict[str, AgentRegistration] = {}
         self._hosts: Dict[str, Host] = {}
-        self._computer_provider: ComputerProvider | None = None
+        self._agent_provider: AgentProvider | None = None
         self._sandboxes: SandboxManager | None = None
         self._clients: Dict[str, AgentClientLike] = {}
         self._model_settings: Dict[str, dict[str, Any]] = {}
@@ -60,7 +60,7 @@ class Pool:
         self._workflow_registry = WorkflowRegistry()
         self._default_workflow_ids: list[str] = []
         # CortexSettings when HostBuilder.enable_cortex() was called. Each
-        # computer imports the same pool and reads it in build_agent_server.
+        # agent process imports the same pool and reads it in build_agent_server.
         self.cortex: Any = None
         self._workflow_service = WorkflowService(
             self._workflow_registry,
@@ -72,17 +72,17 @@ class Pool:
         value = str(database_url or "").strip()
         self.runtime_database_url = value or None
 
-    def configure_computer_provider(self, provider: ComputerProvider) -> None:
-        """Set the provider that runs this pool's agent computers.
+    def configure_agent_provider(self, provider: AgentProvider) -> None:
+        """Set the provider that runs this pool's agents.
 
         The pool owns it from here and closes it in ``close()``.
         """
         if self._clients:
-            raise RuntimeError("computer provider must be configured before start()")
-        self._computer_provider = provider
+            raise RuntimeError("agent provider must be configured before start()")
+        self._agent_provider = provider
 
-    def has_computer_provider(self) -> bool:
-        return self._computer_provider is not None
+    def has_agent_provider(self) -> bool:
+        return self._agent_provider is not None
 
     def configure_sandboxes(self, sandboxes: "SandboxManager") -> None:
         """Set where agents' bash commands run: each request user's sandbox.
@@ -342,12 +342,12 @@ class Pool:
                 await self._sandboxes.start()
 
             if self._registered:
-                if self._computer_provider is None:
+                if self._agent_provider is None:
                     raise RuntimeError(
-                        "a computer provider is required to start a pool with agents"
+                        "an agent provider is required to start a pool with agents"
                     )
                 endpoints = await asyncio.gather(
-                    *(self._computer_provider.ensure(agent_id) for agent_id in self._registered)
+                    *(self._agent_provider.ensure(agent_id) for agent_id in self._registered)
                 )
                 for endpoint in endpoints:
                     self._clients[endpoint.agent_id] = AgentClient(
@@ -506,9 +506,9 @@ class Pool:
         for client in self._clients.values():
             await client.close()
         self._clients.clear()
-        if self._computer_provider is not None:
-            # Closes the provider's handle only; computers keep running.
-            await self._computer_provider.close()
+        if self._agent_provider is not None:
+            # Stops every agent process.
+            await self._agent_provider.close()
         if self._sandboxes is not None:
             await self._sandboxes.close()
 

@@ -35,7 +35,7 @@ from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
-from mash.runtime.host.computers import DockerComputerProvider
+from mash.runtime.host.processes import AgentProcessProvider
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.manager import (
     DEFAULT_IDLE_SECONDS,
@@ -88,18 +88,20 @@ async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:
     )
 
 
-def default_computer_provider(pool: Pool, config: MashHostConfig) -> DockerComputerProvider:
-    """Docker computers for a pool served without a configured provider."""
+def default_agent_provider(pool: Pool, config: MashHostConfig) -> AgentProcessProvider:
+    """One child process per agent, for a pool served without a configured provider."""
     host_secret = config.resolved_host_secret()
     if not config.host_app or not host_secret:
         raise RuntimeError(
-            "agent computers need the host app and a host secret: pass --host-app "
+            "agents need the host app and a host secret: pass --host-app "
             "(or MASH_HOST_APP) and set MASH_HOST_SECRET"
         )
-    return DockerComputerProvider(
+    # Children reach the host on loopback unless it is bound to one address.
+    bind = config.bind_host if config.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    return AgentProcessProvider(
         host_app=config.host_app,
         host_secret=host_secret,
-        host_api_port=config.bind_port,
+        host_api_url=f"http://{bind}:{config.bind_port}",
         sandboxes=pool.get_sandboxes() is not None,
     )
 
@@ -118,9 +120,9 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             sandboxes = await default_sandboxes(resolved_config)
             if sandboxes is not None:
                 pool.configure_sandboxes(sandboxes)
-        if pool.list_registered_agents() and not pool.has_computer_provider():
-            pool.configure_computer_provider(
-                default_computer_provider(pool, resolved_config)
+        if pool.list_registered_agents() and not pool.has_agent_provider():
+            pool.configure_agent_provider(
+                default_agent_provider(pool, resolved_config)
             )
         await pool.start()
         database_url = resolved_config.resolved_runtime_database_url() or ""

@@ -8,7 +8,6 @@ from typing import Callable, Sequence
 
 from mash import __version__, get_docs_url
 from mash.api.main import add_agent_serve_parser, add_serve_parser
-from mash.cli.computer import add_computer_parser
 from mash.cli.sandbox import add_sandbox_parser
 
 from .client import MashHostClient
@@ -315,12 +314,11 @@ def build_parser() -> argparse.ArgumentParser:
     host_subparsers = host.add_subparsers(dest="host_command")
     add_serve_parser(host_subparsers)
 
-    agent = subparsers.add_parser("agent", help="Agent computer commands")
+    agent = subparsers.add_parser("agent", help="Agent process commands")
     agent.set_defaults(handler=lambda _: _print_help(agent))
     agent_subparsers = agent.add_subparsers(dest="agent_command")
     add_agent_serve_parser(agent_subparsers)
 
-    add_computer_parser(subparsers)
     add_sandbox_parser(subparsers)
     return parser
 

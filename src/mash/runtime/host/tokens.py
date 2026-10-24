@@ -1,9 +1,8 @@
 """Per-agent tokens derived from the host secret.
 
-Each agent computer gets a token the host derives from ``MASH_HOST_SECRET`` and
-the agent id. The host checks a token by deriving it again, so it stores none:
-a host restart, or a computer that outlives the host, keeps working as long as
-the secret is unchanged. The same token authenticates host-to-agent calls and
+Each agent process gets a token the host derives from ``MASH_HOST_SECRET`` and
+the agent id. The host checks a token by deriving it again, so it stores none,
+and a restarted agent keeps working as long as the secret is unchanged. The same token authenticates host-to-agent calls and
 agent-to-host calls.
 """
 

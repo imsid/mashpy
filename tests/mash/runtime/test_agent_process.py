@@ -1,9 +1,9 @@
-"""Agent computers: ``build_agent_server`` and the host's H2A relay.
+"""Agent processes: ``build_agent_server`` and the host's H2A relay.
 
 The end-to-end test runs the host app and two agent servers as ASGI apps on
-one in-memory "network": the host reaches each computer through its
-``AgentClient``, and a primary on its own computer calls its subagent through
-the host relay, which forwards to the subagent's computer. Each hop is a real
+one in-memory "network": the host reaches each agent through its
+``AgentClient``, and a primary in its own process calls its subagent through
+the host relay, which forwards to the subagent's server. Each hop is a real
 H2A HTTP call with the agent's token.
 """
 
@@ -25,10 +25,10 @@ from mash.api import create_app
 from mash.api.config import MashHostConfig
 from mash.api.routes.h2a import build_h2a_router
 from mash.runtime import Host, HostBuilder
-from mash.runtime.computer import HostRelay, build_agent_server
+from mash.runtime.agent_process import HostRelay, build_agent_server
 from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
-from mash.runtime.host.computers import ComputerEndpoint
+from mash.runtime.host.processes import AgentEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
 from mash.runtime.factory import build_agent_instance
 from mash.tools.bash import BashTool
@@ -66,15 +66,22 @@ class _Network(httpx.AsyncBaseTransport):
         return await self._transports[request.url.host].handle_async_request(request)
 
 
-class _FixedComputers:
-    """Computers already running, each addressed by its agent id as host name."""
+class _FixedAgents:
+    """Agent servers already running, each addressed by its agent id as host name."""
 
-    async def ensure(self, agent_id: str) -> ComputerEndpoint:
-        return ComputerEndpoint(
+    async def ensure(self, agent_id: str) -> AgentEndpoint:
+        return AgentEndpoint(
             agent_id=agent_id,
             base_url=f"http://{agent_id}",
             token=derive_agent_token(SECRET, agent_id),
         )
+
+    async def stop(self, agent_id: str) -> None:
+        del agent_id
+
+    def status(self, agent_id: str) -> str | None:
+        del agent_id
+        return "running"
 
     async def close(self) -> None:
         return None
@@ -339,16 +346,11 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 404)
 
 
-class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
+class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def test_primary_calls_subagent_through_the_host_relay(self) -> None:
         state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
         state.start()
         self.addCleanup(state.stop)
-        # The host app still builds masher's eval agents in-process, and their
-        # LLM providers need a key.
-        env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
-        env.start()
-        self.addCleanup(env.stop)
         # One shared Postgres: every process's stores see the same rows.
         runtime_store, memory_store = build_test_stores()
         for target, store in (
@@ -363,7 +365,7 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         primary_token = derive_agent_token(SECRET, "primary-app")
         research_token = derive_agent_token(SECRET, "research")
-        # Each computer imports the pool itself and serves one agent from it.
+        # Each agent process imports the pool itself and serves one agent from it.
         primary_server = build_agent_server(
             _build_pool(), "primary-app", token=primary_token, host_api_url="http://host"
         )
@@ -371,8 +373,8 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
             _build_pool(), "research", token=research_token, host_api_url="http://host"
         )
         host_pool = _build_pool()
-        host_pool.configure_computer_provider(
-            _FixedComputers()
+        host_pool.configure_agent_provider(
+            _FixedAgents()
         )
         host_app = create_app(
             host_pool,
@@ -405,7 +407,7 @@ class AgentComputerEndToEndTests(unittest.IsolatedAsyncioTestCase):
                         accepted["request_id"], timeout=10
                     )
                 ]
-                # The subagent ran on its own computer, under the parent session.
+                # The subagent ran in its own process, under the parent session.
                 turns = await memory_store.get_turns(session_id="s-1", app_id="research")
                 turn_users = {(t["app_id"], t["user_id"]) for t in memory_store._turns}
         finally:

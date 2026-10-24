@@ -1,8 +1,8 @@
-"""H2A relay for calls agent computers make to the host.
+"""H2A relay for calls agent processes make to the host.
 
-A primary agent on its computer calls its subagents through these routes,
+A primary agent in its process calls its subagents through these routes,
 never directly. They speak H2A as ``AgentServer`` does (no ``{data}``
-envelope), so the computer uses a plain ``AgentClient`` pointed at
+envelope), so the agent uses a plain ``AgentClient`` pointed at
 ``{host}/h2a``. Each call authenticates with the caller's agent token; the
 host checks it against the request's ``parent`` and host snapshot, then
 forwards to the subagent's client. The subagent request acts for the parent

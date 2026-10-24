@@ -17,7 +17,7 @@ class AgentClientError(RuntimeError):
 
 
 class AgentUnavailableError(AgentClientError):
-    """The agent's server could not be reached (for example, its computer is down)."""
+    """The agent's server could not be reached (for example, its process is restarting)."""
 
 
 class AgentClientLike(Protocol):
