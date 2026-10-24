@@ -361,6 +361,7 @@ def register_default_commands(shell) -> None:
                 workflow_id,
                 dedup_key=dedup_key,
                 workflow_input=workflow_input,
+                user_id=ctx.user_id,
             )
             ctx.renderer.info(f"Workflow: {run.get('workflow_id') or workflow_id}")
             run_id = str(run.get("run_id") or "")

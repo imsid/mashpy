@@ -23,6 +23,7 @@ from mash.workflows import (
     WorkflowRegistry,
     WorkflowService,
     WorkflowSpec,
+    WorkflowUserRequiredError,
 )
 from mash.workflows import dbos as workflow_dbos
 
@@ -45,6 +46,10 @@ class StepOutput(BaseModel):
 
 def _double(inp: TriggerInput, _ctx: StepContext) -> StepOutput:
     return StepOutput(doubled=inp.count * 2)
+
+
+async def _async_none() -> None:
+    return None
 
 
 @dataclass
@@ -165,7 +170,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
             workflow_dbos, "get_workflow_status", get_workflow_status
         ):
-            run = await service.run_workflow("wf", dedup_key="manual")
+            run = await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
         self.assertEqual(run.run_id, "mw:host-1:wf:abc")
         self.assertEqual(run.status, "queued")
 
@@ -183,8 +188,37 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
             workflow_dbos, "get_workflow_status", get_workflow_status
         ):
-            await service.run_workflow("wf", workflow_input={"n": 1})
+            await service.run_workflow("wf", workflow_input={"n": 1}, user_id="u-1")
         self.assertEqual(seen["workflow_input"], {"n": 1})
+        self.assertEqual(seen["user_id"], "u-1")
+
+    async def test_run_of_a_workflow_with_agents_requires_a_user(self) -> None:
+        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
+        with patch.object(workflow_dbos, "start_workflow_run") as start:
+            with self.assertRaises(WorkflowUserRequiredError):
+                await service.run_workflow("wf")
+            with self.assertRaises(ValueError):
+                await service.run_workflow("wf", user_id="has space")
+        start.assert_not_called()
+
+    async def test_code_only_workflow_runs_without_a_user(self) -> None:
+        service = self._service(
+            WorkflowSpec(
+                workflow_id="wf",
+                steps=[CodeStep(step_id="double", run=_double, input=TriggerInput, output=StepOutput)],
+            )
+        )
+        seen: dict[str, Any] = {}
+
+        async def start_workflow_run(**kwargs):
+            seen.update(kwargs)
+            return "mw:host-1:wf:abc"
+
+        with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
+            workflow_dbos, "get_workflow_status", lambda _run_id: _async_none()
+        ):
+            await service.run_workflow("wf", workflow_input={"count": 1})
+        self.assertIsNone(seen["user_id"])
 
     async def test_run_workflow_rejects_non_object_input(self) -> None:
         service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
@@ -221,7 +255,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
             with self.assertRaises(DuplicateWorkflowRunError):
-                await service.run_workflow("wf", dedup_key="manual")
+                await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
 
     async def test_get_run_falls_back_to_dbos_status(self) -> None:
         # No store record yet (queued run): the run projects from DBOS status.

@@ -38,6 +38,7 @@ from mash.workflows import (
     WorkflowInputValidationError,
     WorkflowNotFoundError,
     WorkflowResumeNotSupportedError,
+    WorkflowUserRequiredError,
 )
 
 from .config import MashHostConfig
@@ -191,6 +192,17 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
                 "WORKFLOW_INPUT_INVALID",
                 str(exc),
                 {"workflow_id": exc.workflow_id, "errors": exc.errors},
+            ),
+        )
+
+    @app.exception_handler(WorkflowUserRequiredError)
+    async def _workflow_user_required_handler(
+        _: Request, exc: WorkflowUserRequiredError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content=error_payload(
+                "USER_ID_REQUIRED", str(exc), {"workflow_id": exc.workflow_id}
             ),
         )
 

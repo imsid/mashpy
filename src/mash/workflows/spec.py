@@ -17,12 +17,15 @@ class StepContext:
     Every field is stable across retries of the same logical step, so a step
     with external effects can build its own idempotency key (e.g.
     ``f"{ctx.run_id}:{ctx.step_id}"``). The framework never invents one.
+    ``user_id`` is the user the run acts for; a step that submits agent
+    requests submits them for this user.
     """
 
     run_id: str
     step_id: str
     workflow_input: dict[str, Any]
     attempt: int = 1
+    user_id: str | None = None
 
 
 @dataclass(frozen=True, init=False)
@@ -169,6 +172,14 @@ class WorkflowSpec:
 
     def __post_init__(self) -> None:
         validate_step_pipeline(self.workflow_id, self.steps, self.input_model)
+
+    @property
+    def uses_agents(self) -> bool:
+        """Whether a run submits agent requests, and so needs a ``user_id``."""
+        return any(
+            isinstance(step, AgentStep) or (isinstance(step, CodeStep) and step.agent_ids)
+            for step in self.steps
+        )
 
 
 def _require_step_id(step_id: str) -> str:

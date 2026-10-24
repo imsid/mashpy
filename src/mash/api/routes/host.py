@@ -13,7 +13,7 @@ from .common import (
     APIError,
     DefineHostRequest,
     HostSubmitRequest,
-    optional_user_id,
+    require_user_id,
     require_message,
     require_session_id,
     state_from_request,
@@ -115,7 +115,7 @@ def build_host_router() -> APIRouter:
                 structured_output=structured_output,
                 context=body.context,
                 metadata=body.metadata,
-                user_id=optional_user_id(body.user_id),
+                user_id=require_user_id(body.user_id),
             )
         except ValueError as exc:
             raise APIError(

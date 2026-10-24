@@ -233,10 +233,10 @@ class Pool:
         *,
         message: str,
         session_id: str,
+        user_id: str,
         structured_output: Any = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
-        user_id: str | None = None,
     ) -> dict[str, Any]:
         host = self.get_host(host_id)
         request_id = await self.get_client(host.primary).post_request(

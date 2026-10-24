@@ -134,7 +134,7 @@ class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("search_cortex", tools(enabled, None))
         self.assertNotIn("search_cortex", tools(disabled, "u-1"))
 
-    async def test_request_with_a_user_sees_the_profile(self) -> None:
+    async def test_request_sees_its_users_profile(self) -> None:
         runtime_store, memory_store = build_test_stores()
         p = patch("mash.runtime.spec.PostgresStore", lambda _url: memory_store)
         p.start()
@@ -147,7 +147,7 @@ class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
         await runtime.open()
         try:
             systems = {}
-            for user_id in ("u-1", None):
+            for user_id in ("u-1", "u-2"):
                 accepted = await runtime.submit_request(
                     message="hi", session_id=f"s-{uuid.uuid4()}", user_id=user_id
                 )
@@ -160,7 +160,7 @@ class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
             await runtime.shutdown()
 
         self.assertIn("Prefers metric units.", systems["u-1"])
-        self.assertNotIn("ABOUT THIS USER", systems[None])
+        self.assertNotIn("ABOUT THIS USER", systems["u-2"])
 
 
 class PostgresCortexStoreTests(unittest.IsolatedAsyncioTestCase):

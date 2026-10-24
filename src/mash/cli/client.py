@@ -175,11 +175,13 @@ class MashHostClient:
         *,
         message: str,
         session_id: str,
+        user_id: str,
         structured_output: Any = None,
     ) -> dict[str, Any]:
         json_body: dict[str, Any] = {
             "message": message,
             "session_id": session_id,
+            "user_id": user_id,
         }
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
@@ -197,11 +199,13 @@ class MashHostClient:
         *,
         message: str,
         session_id: str,
+        user_id: str,
         structured_output: Any = None,
     ) -> str:
         json_body: dict[str, Any] = {
             "message": message,
             "session_id": session_id,
+            "user_id": user_id,
         }
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
@@ -404,6 +408,7 @@ class MashHostClient:
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {}
         if dedup_key is not None:
@@ -412,6 +417,8 @@ class MashHostClient:
             body["input"] = workflow_input
         if session_id is not None:
             body["session_id"] = session_id
+        if user_id is not None:
+            body["user_id"] = user_id
         response = self._request(
             "POST",
             f"/api/v1/workflow/{quote(workflow_id, safe='')}/run",

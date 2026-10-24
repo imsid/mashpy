@@ -23,6 +23,7 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
   const [hostId, setHostId] = useState('');
   const [guidance, setGuidance] = useState('');
   const [rowCount, setRowCount] = useState('20');
+  const [userId, setUserId] = useState('');
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
 
@@ -50,6 +51,10 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
       setError('Rows must be a whole number between 1 and 100.');
       return;
     }
+    if (!userId.trim()) {
+      setError('User ID is required.');
+      return;
+    }
     setJob(null);
     try {
       const run = await api.runWorkflow('gen-synthetic-evals', {
@@ -58,6 +63,7 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
           user_guidance: guidance.trim(),
           row_count: parsedRowCount,
         },
+        user_id: userId.trim(),
       });
       setJob({ runId: run.run_id, status: run.status });
     } catch (err) {
@@ -110,6 +116,9 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
                 </option>
               ))}
             </Select>
+          </Field>
+          <Field label="User ID" hint="The user the generation run acts for.">
+            <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
           </Field>
           <Field label="Rows" hint="Number of dataset rows to generate (1–100).">
             <TextInput

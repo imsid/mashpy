@@ -182,6 +182,7 @@ function TestRequestDrawer({ open, host, onClose }) {
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [sessionId, setSessionId] = useState(randomSession());
+  const [userId, setUserId] = useState('');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -194,6 +195,7 @@ function TestRequestDrawer({ open, host, onClose }) {
       const res = await api.submitHostRequest(host.host_id, {
         message: message.trim(),
         session_id: sessionId.trim(),
+        user_id: userId.trim(),
       });
       setResult(res);
     } catch (err) {
@@ -215,7 +217,7 @@ function TestRequestDrawer({ open, host, onClose }) {
           <Button
             variant="primary"
             onClick={send}
-            disabled={sending || !message.trim() || !sessionId.trim()}
+            disabled={sending || !message.trim() || !sessionId.trim() || !userId.trim()}
           >
             {sending ? 'Sending…' : 'Send request'}
           </Button>
@@ -225,6 +227,9 @@ function TestRequestDrawer({ open, host, onClose }) {
       <div className="space-y-4">
         <Field label="Session ID">
           <TextInput value={sessionId} onChange={(e) => setSessionId(e.target.value)} />
+        </Field>
+        <Field label="User ID" hint="The user the request acts for.">
+          <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
         </Field>
         <Field label="Message">
           <TextArea

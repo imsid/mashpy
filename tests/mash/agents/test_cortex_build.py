@@ -117,13 +117,19 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def _run(self, run_id: str = "run-1", **workflow_input: Any) -> dict[str, Any]:
-        workflow_input = {"user_id": "u-1", **workflow_input}
+    async def _run(
+        self, run_id: str = "run-1", user_id: str = "u-1", **workflow_input: Any
+    ) -> dict[str, Any]:
         prev: dict[str, Any] = {}
         self.outputs: dict[str, dict[str, Any]] = {}
         for step in self.workflow.steps:
             inp = step.input.model_validate({**workflow_input, **prev})
-            ctx = StepContext(run_id=run_id, step_id=step.step_id, workflow_input=workflow_input)
+            ctx = StepContext(
+                run_id=run_id,
+                step_id=step.step_id,
+                workflow_input=workflow_input,
+                user_id=user_id,
+            )
             result = step.run(inp, ctx)
             if inspect.isawaitable(result):
                 result = await result
@@ -315,7 +321,7 @@ class CortexBuildEngineTests(_CortexBuildFixture):
             "mash.workflows.engine.load_dbos_api", return_value=fake
         ):
             output = await self.workflow_dbos.execute_registered_workflow(
-                self.RUNNER, CORTEX_BUILD_WORKFLOW_ID, run_id, workflow_input={"user_id": "u-1"}
+                self.RUNNER, CORTEX_BUILD_WORKFLOW_ID, run_id, workflow_input={}, user_id="u-1"
             )
 
         self.assertEqual(output["result"]["entries_written"], 1)

@@ -5,7 +5,7 @@ import { Async, Empty } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
 import { Markdown } from '../components/Markdown.jsx';
-import { Button, Field, TextArea } from '../components/Form.jsx';
+import { Button, Field, TextArea, TextInput } from '../components/Form.jsx';
 import { Table } from '../components/Table.jsx';
 import { Tabs } from '../components/Tabs.jsx';
 import { api } from '../lib/api.js';
@@ -272,6 +272,7 @@ function RubricTab({ evalId, rubric, locked, onUpdated }) {
 function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, onDone }) {
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
+  const [userId, setUserId] = useState('');
 
   // Live host state — exactly what the experiment will snapshot at run start.
   const snapshotState = useApi(
@@ -301,9 +302,14 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
   async function handleRun() {
     setError(null);
     setJob(null);
+    if (!userId.trim()) {
+      setError('User ID is required.');
+      return;
+    }
     try {
       const run = await api.runWorkflow('run-experiment', {
         input: { eval_id: evalId, host_id: hostId },
+        user_id: userId.trim(),
       });
       setJob({ runId: run.run_id, status: run.status });
     } catch (err) {
@@ -352,6 +358,10 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
             Runs every dataset row through the host, judges each output against the rubric, and
             saves the results as a new experiment.
           </p>
+
+          <Field label="User ID" hint="The user the experiment's requests act for.">
+            <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
+          </Field>
 
           <div>
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">

@@ -23,15 +23,16 @@ def _print_help(parser: argparse.ArgumentParser) -> int:
 
 def _resolve_connection(
     args: argparse.Namespace,
-) -> tuple[str, str | None, str | None, str | None]:
+) -> tuple[str, str | None, str | None, str | None, str | None]:
     saved = load_config()
     base_url = (getattr(args, "api_base_url", None) or os.environ.get("MASH_API_BASE_URL") or (saved.api_base_url if saved else "")).strip()
     api_key = getattr(args, "api_key", None) or os.environ.get("MASH_API_KEY") or (saved.api_key if saved else None)
     agent_id = getattr(args, "agent", None)
     host_id = getattr(args, "host_id", None) or (saved.host_id if saved else None)
+    user_id = getattr(args, "user_id", None) or (saved.user_id if saved else None)
     if not base_url:
         raise ValueError("API base URL is required. Use --api-base-url or `mash connect`.")
-    return base_url, api_key, agent_id, host_id
+    return base_url, api_key, agent_id, host_id, user_id
 
 
 def _resolve_target(
@@ -189,7 +190,9 @@ def _run_connect(args: argparse.Namespace) -> int:
     finally:
         client.close()
 
-    path = save_config(CLIConfig(api_base_url=base_url, api_key=api_key))
+    saved = load_config()
+    user_id = args.user_id or (saved.user_id if saved else None)
+    path = save_config(CLIConfig(api_base_url=base_url, api_key=api_key, user_id=user_id))
     print(f"Saved connection to {path}")
     return 0
 
@@ -217,11 +220,13 @@ def _run_compose(args: argparse.Namespace) -> int:
     _render_host_view(renderer, described)
 
     # Pin the composition as the current target.
+    saved = load_config()
     path = save_config(
         CLIConfig(
             api_base_url=base_url,
             api_key=api_key,
             host_id=args.host_id,
+            user_id=saved.user_id if saved else None,
         )
     )
     print(f"Saved connection to {path}")
@@ -247,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mash host base URL, e.g. http://127.0.0.1:8000 (falls back to saved config)",
     )
     connect.add_argument("--api-key", default=None, help="Optional bearer API key")
+    connect.add_argument(
+        "--user-id",
+        default=None,
+        help="User that requests and workflow runs act for (falls back to saved config)",
+    )
 
     compose = subparsers.add_parser(
         "compose",
@@ -276,6 +286,9 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--api-key", default=None, help="Bearer API key")
     common.add_argument("--agent", default=None, help="Target agent id (bare-agent targeting)")
     common.add_argument("--host", dest="host_id", default=None, help="Target host id")
+    common.add_argument(
+        "--user-id", default=None, help="User to act for (overrides the saved connection's)"
+    )
 
     subparsers.add_parser("status", parents=[common], help="Show deployment status")
     subparsers.add_parser(
@@ -335,7 +348,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     renderer = RichRenderer()
     try:
-        base_url, api_key, configured_agent, configured_host = _resolve_connection(args)
+        base_url, api_key, configured_agent, configured_host, user_id = _resolve_connection(
+            args
+        )
     except ValueError as exc:
         renderer.error(str(exc))
         return 1
@@ -443,10 +458,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "repl":
+            if not user_id:
+                raise ValueError(
+                    "a user id is required. Use --user-id or `mash connect --user-id`."
+                )
             target = ShellTarget(
                 api_base_url=base_url,
                 agent_id=agent_id,
                 session_id=args.session_id or MashRemoteShell.new_session_id(),
+                user_id=user_id,
                 host_id=target_host_id,
             )
             MashRemoteShell(client, target).run()

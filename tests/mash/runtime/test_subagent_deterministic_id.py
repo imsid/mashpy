@@ -76,12 +76,12 @@ class DeterministicIdSubmitTests(unittest.IsolatedAsyncioTestCase):
         # submit path itself never reads it.
         runtime = await self._runtime()
         with bound_subagent_request_id("req-1-sub-0-0"):
-            accepted = await runtime.submit_request(message="hi", session_id="s-1")
+            accepted = await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
         self.assertNotEqual(accepted["request_id"], "req-1-sub-0-0")
 
     async def test_submit_without_bound_id_mints_uuid(self) -> None:
         runtime = await self._runtime()
-        accepted = await runtime.submit_request(message="hi", session_id="s-1")
+        accepted = await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
         request_id = str(accepted["request_id"])
         self.assertNotIn("-sub-", request_id)
         # A uuid4, not our deterministic shape.

@@ -849,6 +849,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             message=message,
             session_id=target_session_id,
             structured_output=structured_output,
+            user_id="u-1",
         )
         events = await self._collect_request_events(
             runtime, str(accepted["request_id"])
@@ -1256,6 +1257,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     accepted = await runtime.submit_request(
                         message="hi",
                         session_id=runtime.session_id,
+                        user_id="u-1",
                     )
                     events = await self._collect_request_events(
                         runtime, str(accepted["request_id"])
@@ -1302,6 +1304,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         message="map everything",
                         session_id=runtime.session_id,
                         structured_output=schema,
+                        user_id="u-1",
                     )
                     events = await self._collect_request_events(
                         runtime, str(accepted["request_id"])
@@ -1546,7 +1549,8 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await runtime.open()
                     accepted = await runtime.submit_request(
-                        message="hi", session_id="s1"
+                        message="hi", session_id="s1",
+                        user_id="u-1",
                     )
                     request_id = str(accepted["request_id"])
                     events = await self._collect_request_events(runtime, request_id)
@@ -1582,7 +1586,8 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await runtime.open()
                     accepted = await runtime.submit_request(
-                        message="boom", session_id="s1"
+                        message="boom", session_id="s1",
+                        user_id="u-1",
                     )
                     request_id = str(accepted["request_id"])
                     events = await self._collect_request_events(runtime, request_id)
@@ -1607,7 +1612,8 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await runtime.open()
                     accepted = await runtime.submit_request(
-                        message="boom", session_id="s1"
+                        message="boom", session_id="s1",
+                        user_id="u-1",
                     )
                     request_id = str(accepted["request_id"])
                     events = await self._collect_request_events(runtime, request_id)
@@ -1639,10 +1645,12 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await runtime.open()
                     first = await runtime.submit_request(
-                        message="first", session_id="s1"
+                        message="first", session_id="s1",
+                        user_id="u-1",
                     )
                     second = await runtime.submit_request(
-                        message="second", session_id="s1"
+                        message="second", session_id="s1",
+                        user_id="u-1",
                     )
                     second_id = str(second["request_id"])
                     first_id = str(first["request_id"])
@@ -1686,10 +1694,12 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await runtime.open()
                     first = await runtime.submit_request(
-                        message="first", session_id="s1"
+                        message="first", session_id="s1",
+                        user_id="u-1",
                     )
                     second = await runtime.submit_request(
-                        message="second", session_id="s2"
+                        message="second", session_id="s2",
+                        user_id="u-1",
                     )
                     first_events = await self._collect_request_events(
                         runtime, str(first["request_id"])

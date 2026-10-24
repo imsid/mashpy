@@ -12,6 +12,7 @@ from mash.workflows import (
     WorkflowInputValidationError,
     WorkflowNotFoundError,
     WorkflowResumeNotSupportedError,
+    WorkflowUserRequiredError,
 )
 
 from .common import (
@@ -21,6 +22,7 @@ from .common import (
     get_workflow_service,
     normalize_optional_text,
     parse_limit,
+    require_user_id,
     state_from_request,
     success,
 )
@@ -70,16 +72,19 @@ def build_workflow_router() -> APIRouter:
         body: RunWorkflowRequest,
     ) -> dict[str, Any]:
         workflow_service = get_workflow_service(request)
+        user_id = require_user_id(body.user_id) if body.user_id is not None else None
         try:
             run = await workflow_service.run_workflow(
                 workflow_id.strip(),
                 dedup_key=normalize_optional_text(body.dedup_key),
                 workflow_input=body.input,
                 session_id=normalize_optional_text(body.session_id),
+                user_id=user_id,
             )
         except (
             WorkflowNotFoundError,
             WorkflowInputValidationError,
+            WorkflowUserRequiredError,
             DuplicateWorkflowRunError,
         ):
             raise
@@ -164,6 +169,7 @@ def build_workflow_router() -> APIRouter:
                 "error": run.error,
                 "workflow_input": run.workflow_input,
                 "session_id": run.session_id,
+                "user_id": run.user_id,
                 "result": run.result,
                 "steps": run.steps,
             }

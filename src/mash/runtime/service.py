@@ -199,25 +199,25 @@ class AgentRuntime:
         *,
         message: str,
         session_id: str,
+        user_id: str,
         structured_output: Any = None,
         host_snapshot: dict[str, Any] | None = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
-        user_id: str | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
             message=message,
             session_id=session_id,
+            user_id=user_id,
             structured_output=structured_output,
             host_snapshot=host_snapshot,
             context=context,
             metadata=metadata,
             request_id=request_id,
             parent=parent,
-            user_id=user_id,
         )
 
     def describe(self) -> dict[str, Any]:

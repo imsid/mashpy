@@ -32,7 +32,7 @@ def test_agent_spec_captures_summary_by_default_without_a_second_provider():
         )
         try:
             await runtime.open()
-            accepted = await runtime.submit_request(message="Hello", session_id="session")
+            accepted = await runtime.submit_request(message="Hello", session_id="session", user_id="u-1")
             cursor = 0
             for _ in range(100):
                 _, cursor, done = await runtime.stream_response_events(

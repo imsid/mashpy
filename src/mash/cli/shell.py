@@ -31,6 +31,7 @@ class ShellTarget:
     api_base_url: str
     agent_id: str
     session_id: str
+    user_id: str
     host_id: str | None = None
 
 
@@ -55,6 +56,7 @@ class MashRemoteShell:
             api_base_url=self.target.api_base_url,
             agent_id=self.target.agent_id,
             session_id=self.target.session_id,
+            user_id=self.target.user_id,
             client=self.client,
             renderer=self.renderer,
             session_ids={self.target.agent_id: self.target.session_id},
@@ -319,6 +321,7 @@ class MashRemoteShell:
                 ctx.host_id,
                 message=message,
                 session_id=ctx.session_id,
+                user_id=ctx.user_id,
             )
             request_id = str(accepted.get("request_id") or "")
             accepted_agent_id = str(accepted.get("agent_id") or "").strip()
@@ -329,6 +332,7 @@ class MashRemoteShell:
                 ctx.agent_id,
                 message=message,
                 session_id=ctx.session_id,
+                user_id=ctx.user_id,
             )
         ctx.last_request_id = request_id or None
         final_payload: dict[str, Any] | None = None

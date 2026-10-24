@@ -21,7 +21,7 @@ from .common import (
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
-    optional_user_id,
+    require_user_id,
     require_agent_id,
     require_message,
     require_session_id,
@@ -112,7 +112,7 @@ def build_agent_router() -> APIRouter:
             session_id=require_session_id(body.session_id),
             structured_output=structured_output,
             metadata=body.metadata,
-            user_id=optional_user_id(body.user_id),
+            user_id=require_user_id(body.user_id),
         )
         return success({"request_id": request_id})
 
