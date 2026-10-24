@@ -10,7 +10,7 @@ Global
 
 Connection bootstrap
 
-- `connect --api-base-url URL [--api-key KEY]`: validate and persist the deployment connection used by the other commands. `connect` checks `GET /health` before saving, so a wrong URL or key fails here. It saves the connection only; targeting lives in per-command `--agent`/`--host` flags and `mash compose`.
+- `connect --api-base-url URL [--api-key KEY] [--user-id ID]`: validate and persist the deployment connection used by the other commands. `connect` checks `GET /health` before saving, so a wrong URL or key fails here. `--user-id` saves the user that REPL requests and `/workflow run` act for; every request needs one. It saves the connection only; targeting lives in per-command `--agent`/`--host` flags and `mash compose`, which keeps the saved user.
 - `compose --host ID --primary AGENT [--subagents a,b] [--workflows w1,w2]`: define (or replace) the host composition on the deployment, then pin it as the target. The `PUT` is idempotent; re-run `compose` to recompose. `--api-base-url` falls back to env or the saved config.
 
 Common options shared by most host-facing commands
@@ -18,6 +18,7 @@ Common options shared by most host-facing commands
 - `--api-base-url URL`
 - `--api-key KEY`
 - `--agent ID` (bare-agent targeting) or `--host ID` (host targeting)
+- `--user-id ID`: the user to act for, over the saved connection's
 - If these are omitted, the CLI resolves them from env (`MASH_API_BASE_URL`, `MASH_API_KEY`) or saved config from `mash connect`.
 
 Host-facing commands
@@ -29,7 +30,7 @@ Host-facing commands
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the resolved target. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
+- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the resolved target and user. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
 
 Host management
 
@@ -40,23 +41,30 @@ Host management
 - `--api-key`: optional bearer API key, or `MASH_API_KEY`.
 - `--cors-origin`: repeatable allowed CORS origin.
 - `--disable-observability`: disable telemetry endpoints.
-- `MASH_HOST_SECRET`: derives each agent computer's token and enables the `/h2a` relay.
+- `MASH_HOST_SECRET`: derives each agent's and each sandbox's token and enables the `/h2a` and `/sandbox` relays.
+- The host runs `agent serve` once per agent as a child process. With a reachable Docker daemon it starts sandboxes for bash; it logs which it chose.
 
-Agent computers
+Agent processes
 
-- `agent serve --agent ID [options]`: serve one agent of the pool behind its own `AgentServer`. The pool is imported but not started; subagent calls go to the host's `/h2a` relay.
+- `agent serve --agent ID [options]`: serve one agent of the pool behind its own `AgentServer`. The host runs this for every agent; you rarely run it by hand. The pool is imported but not started; subagent calls go to the host's `/h2a` relay.
 - `--host-app module:attribute` or `MASH_HOST_APP`: the same host target the host runs.
 - `--host`: bind host. Defaults to `127.0.0.1` or `MASH_AGENT_BIND_HOST`.
 - `--port`: bind port. Defaults to `9000` or `MASH_AGENT_PORT`.
 - `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
-- `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls.
+- `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and bash.
+- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets the `bash` tool.
+- `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
 - DBOS runs as executor `agent:<agent_id>` and listens to no queues, so the process recovers only this agent's requests and never runs the host's workflow runs.
 
-Computer administration (run on the Docker host; computers are found by the `mash.agent` label; `--namespace` defaults to `MASH_COMPUTER_NAMESPACE`)
+Sandboxes
 
-- `computer ls [--namespace NS]`: list computers with namespace, status, uptime, restart count, and workspace volume; only namespace `NS` when given.
-- `computer shell <agent_id> [--root] [--namespace NS]`: `docker exec -it` a bash shell as `agent` in `/home/agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspace/.admin_history`; admin commands are not in the event log.
-- `computer restart <agent_id> [--namespace NS]`: replace the container with a fresh one of the same configuration. The workspace volume is kept; anything else on the container layer is gone.
+- `sandbox serve [--host H] [--port 9000] [--workspaces DIR]`: the sandbox daemon, run inside each sandbox container. Requires `MASH_SANDBOX_TOKEN`.
+
+Sandbox administration (run on the Docker host; sandboxes are found by the `mash.sandbox.user` label; `--namespace` defaults to `MASH_SANDBOX_NAMESPACE`, then `mash`)
+
+- `sandbox ls [--namespace NS]`: list sandboxes with user, status, uptime, and container name (the volume has the same name).
+- `sandbox shell <user_id> [--agent ID] [--root] [--namespace NS]`: start the sandbox if it is stopped, then `docker exec -it` a bash shell as `agent` in `/home/agent/workspaces`, or in that agent's folder with `--agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspaces/.admin_history`; admin commands are not in the event log.
+- `sandbox stop <user_id> [--namespace NS]`: stop the sandbox now. Its volume is kept, and the user's next bash call starts it again.
 
 Notes
 
@@ -77,7 +85,7 @@ Notes
 - `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
 - `/feedback <message>`: record a free-form note or bug report about the current session. The message is stored with the host, agent, session, and last request id so app developers can read it back later through the feedback API.
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
-- `/workflow run <workflow_id> [dedup_key]`: start a workflow run.
+- `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the shell's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
 
 Each `/command` invocation is wrapped in `command.start` and

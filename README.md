@@ -44,6 +44,7 @@ standardizes interactions between user applications and agents.
   host's declared capabilities, run experiments that snapshot the live host,
   and compare quality and cost across runs before the first user message.
   Datasets, rubrics, and experiment results live in the built-in dashboard.
+  Turn them on with `HostBuilder.enable_evals()`.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -254,13 +255,15 @@ def build_pool():
 
 **Configure the environment:**
 
-The host needs an LLM key and a Postgres URL for its durable runtime. Put
-them in a `.env` file the host loads on start:
+The host needs an LLM key, a Postgres URL for its durable runtime, and a
+secret it derives agent and sandbox tokens from. Put them in a `.env` file the
+host loads on start:
 
 ```bash
 # .env
 ANTHROPIC_API_KEY=sk-ant-...
 MASH_DATABASE_URL=postgresql://user:pass@localhost:5432/mash
+MASH_HOST_SECRET=...   # openssl rand -hex 32
 ```
 
 **Start the host:**
@@ -269,8 +272,9 @@ MASH_DATABASE_URL=postgresql://user:pass@localhost:5432/mash
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
-**Browse available agents:**
+**Connect as a user and browse available agents:**
 ```bash
+mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
 mash browse
 ```
 
@@ -291,7 +295,8 @@ mash repl --host assistant
 |---|---|
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
-| **Pool** | The deployed pool of role-less agents the API server runs; each agent runs on its own computer (a container) |
+| **Pool** | The deployed pool of role-less agents the API server runs; each agent runs as a subprocess of the host |
+| **Sandbox** | A container per user where agents' `bash` commands run, holding that user's workspaces and nothing else |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
 | **ToolRegistry** | Register callable tools; built-ins include Bash, AskUser, InvokeSubagent |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
@@ -299,7 +304,7 @@ mash repl --host assistant
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
 | **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
-| **Cortex** | Opt-in per-user memory kept by the host and shared by every agent; requests with a `user_id` read it, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
+| **Cortex** | Opt-in per-user memory kept by the host and shared by every agent; each request reads its user's, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
 
 ## Mushy / Thoughts
 
@@ -318,8 +323,8 @@ generation API, or public sharing surface. See
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
 shipped in this repo at [`src/pilot/`](src/pilot/). Its `pilot` agent answers
-questions from the source, and its `builder` agent builds Mash apps on its own
-computer. It also ships the `pilot-changelog` workflow. Run it from a checkout,
+questions from the source, and its `builder` agent builds Mash apps in the
+user's sandbox. It also ships the `pilot-changelog` workflow. Run it from a checkout,
 with `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `MASH_HOST_SECRET` in `.env`:
 
 ```bash
@@ -346,7 +351,7 @@ scaffolding from the REPL.
 - [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
 - [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
 - [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem
-- [Deployment guide](docs/posts/how-to-deploy.md): agent computers, Docker, the host on a server
+- [Deployment guide](docs/posts/how-to-deploy.md): agent processes, sandboxes, Docker, the host on a server
 - [Building agent CLIs](docs/posts/building-agent-clis.md) — custom CLI development
 - [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
 - [Package overview](src/mash/README.md) — subsystem boundaries and module guides

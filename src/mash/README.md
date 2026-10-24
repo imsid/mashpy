@@ -10,6 +10,7 @@
 - `api`: FastAPI app wiring, host serving helpers, and admin dashboard UI serving.
 - `cli`: the `mash` command-line, remote shell flow, and terminal rendering.
 - `tools`: built-in tools such as bash access, MCP-backed tools, and subagent invocation.
+- `sandbox`: per-user sandboxes where bash runs: the daemon inside each one, the Docker provider, and the host's `SandboxManager`.
 - `skills`: optional skill abstractions and registration.
 - `memory`: persistent storage, retrieval, and compaction support.
 - `logging`: structured JSONL events and trace correlation helpers.
@@ -18,12 +19,13 @@
 
 ## How The Pieces Fit Together
 1. A user implements `mash.runtime.AgentSpec` to define one agent.
-2. `mash.runtime.HostBuilder` registers role-less agents and code-defined workflows into a `Pool`, with optional `Host` compositions; every pool also includes Masher and its workflows. A pool with no user agents is a valid, workflow-only deploy.
+2. `mash.runtime.HostBuilder` registers role-less agents and code-defined workflows into a `Pool`, with optional `Host` compositions. `enable_evals()` adds Masher and its workflows. A pool with no user agents is a valid, workflow-only deploy.
 3. `mash.workflows.WorkflowService` runs workflows as ordered step pipelines; agent steps send normal Mash requests to registered or internal workflow agents.
-4. Each agent runs on its own computer, a container that serves its runtime with `mash.runtime.AgentServer` over HTTP + SSE. The pool starts the computers through a `ComputerProvider` (Docker) and keeps one `AgentClient` per agent.
-5. `mash.api` exposes that host over HTTP, including workflow routes, and `mash.cli` talks to it as a remote client.
-6. Primary agents delegate focused work with `InvokeSubagent`, which calls the subagent through the host's `/h2a` relay.
-7. A pool that calls `HostBuilder.enable_cortex()` keeps per-user memory: requests with a `user_id` read the user's Cortex, and the `cortex-build` workflow builds it on demand.
+4. Each agent runs as a subprocess of the host that serves its runtime with `mash.runtime.AgentServer` over HTTP + SSE on a localhost port. The pool starts them through an `AgentProvider` (`AgentProcessProvider`) and keeps one `AgentClient` per agent. Agents can be enabled and disabled on a running host.
+5. Every request acts for a user. The `bash` commands an agent's model writes run in that user's sandbox, reached through the host's `/sandbox` relay; a host without a Docker daemon runs and its agents get no `bash`.
+6. `mash.api` exposes that host over HTTP, including workflow routes, and `mash.cli` talks to it as a remote client.
+7. Primary agents delegate focused work with `InvokeSubagent`, which calls the subagent through the host's `/h2a` relay.
+8. A pool that calls `HostBuilder.enable_cortex()` keeps per-user memory: each request reads its user's Cortex, and the `cortex-build` workflow builds it on demand.
 
 ## Public Entry Points
 - `mash`: top-level authoring exports (`AgentSpec`, `AgentMetadata`, `Host`, `HostBuilder`, `Pool`, `WorkflowSpec`, `CodeStep`, `AgentStep`, `StepContext`).

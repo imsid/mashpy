@@ -29,6 +29,8 @@ narrative.
 
 ## Lifecycle
 
+Evals are on only in a pool built with `HostBuilder.enable_evals()`.
+
 1. **Generate** — the `gen-synthetic-evals` masher workflow takes a host id,
    optional user guidance, and a row count; it derives a dataset and rubric
    from the host's composition and persists them via

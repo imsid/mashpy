@@ -78,9 +78,20 @@ always names a primary agent.
 
 Step execution is at-least-once (DBOS recovery re-runs an interrupted step).
 Pure transforms replay safely. A step with external effects must dedupe on a
-stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`, and
-`attempt`, all stable across retries. The framework never invents a key or
-classifies steps.
+stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`,
+`attempt`, and `user_id`, all stable across retries. The framework never
+invents a key or classifies steps.
+
+## The run's user
+
+A run acts for one user: `run_workflow(workflow_id, user_id=...)`, or
+`user_id` next to `input` on `POST /workflow/{id}/run`. It is required when the
+workflow submits agent requests, that is when it has an `AgentStep` or a
+`CodeStep` that declares `agent_ids` (`WorkflowSpec.uses_agents`); otherwise
+it is optional. The run stores it in `workflow_runs.user_id`, every agent step
+submits for it, and a code step that submits its own agent requests passes
+`ctx.user_id` to `post_inline_agent_request`. Those requests' bash runs in that
+user's sandbox. A resumed run keeps its user.
 
 An orchestration CodeStep is replayed as part of the parent workflow and is not
 memoized as one opaque DBOS step. Use it only for dynamic orchestration, keep
@@ -115,10 +126,11 @@ DBOS recovery attempts are exhausted the run is `failed`.
 
 ## Storage
 
-Three tables (in the shared schema baseline `001_baseline.sql`), owned by the
+Three tables (in the shared schema baseline `001_baseline.sql`, with
+`workflow_runs.user_id` from `007_workflow_run_user.sql`), owned by the
 workflow layer:
 
-- `workflow_runs` — one row per run (status, `workflow_input`, `result`, timing).
+- `workflow_runs` — one row per run (status, `workflow_input`, `user_id`, `result`, timing).
 - `workflow_steps` — one row per step (status, input/output snapshots, attempt,
   `agent_request_id`).
 - `workflow_step_events` — append-only lifecycle audit keyed by

@@ -19,12 +19,14 @@ uv tool install mashpy
 
 **Configure the environment:**
 
-Requires Python >= 3.10 and Docker: every agent runs in its own container.
+Requires Python >= 3.10. The host runs every agent as its own subprocess. With
+a Docker daemon it can reach, it also starts a sandbox container per user for
+the `bash` commands agents run; without one, agents get no `bash` tool.
 Set environment variables for the LLM provider you plan to use:
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`, a Postgres URL for
 the durable runtime in `MASH_DATABASE_URL`, and a host secret in
 `MASH_HOST_SECRET` (`openssl rand -hex 32`), from which the host derives each
-agent's token.
+agent's and each sandbox's token.
 
 ## Core Concepts
 
@@ -37,14 +39,17 @@ agent's token.
 - **Pool** — the deployed pool of role-less agents and workflows that the API
   server runs. The pool is the unit of deploy; a pool with no user agents is a
   valid, workflow-only deploy. The pool runs no agents itself: when the host
-  starts, each agent gets a computer and the pool keeps an HTTP client for it.
-- **Agent computer** — a container (`mash-agent-<agent_id>`) that serves one
-  agent's runtime behind an H2A HTTP server, built from the host's own image.
-  The agent's workspace (`/home/agent/workspace`) is a named volume, so the
-  container can be replaced without losing it. Every agent on a computer has a `bash` tool, so it can
-  write and run code and keep files without registering anything. Its bash
-  sessions run as an `agent` user with a clean environment and no access to
-  the runtime's secrets.
+  starts, it runs each agent as a subprocess and keeps an HTTP client for it.
+- **Agent process** — a subprocess of the host (`mash agent serve`) that serves
+  one agent's runtime behind an H2A HTTP server on a localhost port. It is the
+  app's own code, so it inherits the host's environment. The host restarts one
+  that exits, and agents can be enabled and disabled on a running host.
+- **Sandbox** — a container per user, started on first use, where the `bash`
+  commands an agent's model writes run. It holds that user's workspaces, one
+  folder per agent at `/home/agent/workspaces/<agent_id>`, and nothing else:
+  no secrets, no database access. Every agent gets a `bash` tool when the host
+  has sandboxes, so it can write and run code and keep files without
+  registering anything. Bash runs as an `agent` user with a clean environment.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -64,8 +69,8 @@ agent's token.
   pipelines. Code owns the control flow; nondeterminism is contained inside
   typed steps with schema-checked boundaries.
 - **Cortex** — opt-in per-user memory managed by the host and shared by every
-  agent in the pool. Requests carrying a `user_id` see that user's profile and
-  can call `search_cortex`; the on-demand `cortex-build` workflow builds it
+  agent in the pool. Requests see their user's profile and can call
+  `search_cortex`; the on-demand `cortex-build` workflow builds it
   from the user's conversations, and apps inspect and edit it over the API.
 
 The authoring surface imports from the package root:
@@ -126,22 +131,23 @@ def build_pool():
     )
 ```
 
-Run it. The host starts one container per agent from an image that contains
-your app (see [The image](https://github.com/imsid/mashpy/blob/main/docs/posts/how-to-deploy.md#the-image)
-for the Dockerfile). With the host on your machine, name that image in
-`MASH_COMPUTER_IMAGE`, and write container-reachable addresses
-(`host.docker.internal`, not `localhost`) in env such as `MASH_DATABASE_URL`:
+Run it. The host starts one subprocess per agent. For agents to get `bash`,
+it also needs a Docker daemon and an image for sandboxes, built from the
+Dockerfile in [The image](https://github.com/imsid/mashpy/blob/main/docs/posts/how-to-deploy.md#the-image).
+A host in a container uses its own image; a host on your machine takes the
+image from `MASH_SANDBOX_IMAGE`:
 
 ```bash
 docker build -t my-agent:dev .
-export MASH_COMPUTER_IMAGE=my-agent:dev
+export MASH_SANDBOX_IMAGE=my-agent:dev
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
-Connect and talk to it:
+Connect and talk to it. Every request acts for a user, so the connection
+saves one:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
 mash repl --agent assistant
 ```
 
@@ -205,12 +211,12 @@ Optional overrides:
 | `build_mcp_servers()` | `[]` | MCP server connections |
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |
-| `on_startup(runtime)` | No-op | Hook after runtime init, on the agent's computer |
-| `on_shutdown(runtime)` | No-op | Hook before cleanup, on the agent's computer |
+| `on_startup(runtime)` | No-op | Hook after runtime init, in the agent's process |
+| `on_shutdown(runtime)` | No-op | Hook before cleanup, in the agent's process |
 
 The host imports your specs too (for metadata, workflows and eval snapshots),
-but runtimes, tools, MCP connections and these hooks exist only on the agent's
-computer.
+but runtimes, tools, MCP connections and these hooks exist only in the agent's
+process.
 
 ## AgentConfig Fields
 
@@ -338,16 +344,19 @@ class WriteLedger:
 ### Built-in Tools
 
 ```python
-from mash.tools.bash import BashTool
 from mash.tools.ask_user import AskUserTool
 
 tools = ToolRegistry()
-tools.register(BashTool(working_dir="/path/to/workspace"))
 tools.register(AskUserTool())  # only works in hosted runtime
 ```
 
-On an agent computer the runtime registers `BashTool()` for you. Register your
-own `bash` tool only to change it, for example to start in another directory.
+`bash` comes from the host, not from your spec. When the host has sandboxes,
+every agent gets a `bash` tool that runs each command in the sandbox of the
+user the request acts for, in `/home/agent/workspaces/<agent_id>`. Each call is
+a fresh shell there; files persist between calls and across requests for that
+user. The tool posts the command to the host's `/sandbox/exec` relay with the
+agent's token and the request id, and the host picks the user. A spec that
+registers its own tool named `bash` fails at startup on a host with sandboxes.
 
 ### Web Search
 
@@ -407,10 +416,8 @@ class MyAgent(AgentSpec):
         ]
 ```
 
-MCP connections open from the agent's computer, so the URL must be reachable
-from inside its container: a service name on the `mash` Docker network, or
-`host.docker.internal` for a server running on the Docker host. `localhost` is
-the computer itself.
+MCP connections open from the agent's process, so the URL resolves where the
+host runs: `localhost` is the host's machine or container.
 
 ## Multi-Agent Composition
 
@@ -448,9 +455,9 @@ pool = (
 Submitting a request to a host wires the primary with an `InvokeSubagent`
 tool and a prompt block describing that host's subagents — for that request
 only. The same agent can be primary in one host and a subagent in another.
-The primary's computer calls a subagent through the host's `/h2a` relay, which
+The primary's process calls a subagent through the host's `/h2a` relay, which
 checks the call against the request's composition and forwards it to the
-subagent's computer.
+subagent's process.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
@@ -466,7 +473,7 @@ curl -X PUT http://127.0.0.1:8000/api/v1/hosts/research-only \
 
 curl -X POST http://127.0.0.1:8000/api/v1/hosts/research-only/request \
   -H "Content-Type: application/json" \
-  -d '{"message": "find recent papers", "session_id": "s-1"}'
+  -d '{"message": "find recent papers", "session_id": "s-1", "user_id": "u-42"}'
 ```
 
 The submit response includes the primary `agent_id` and `request_id`; stream
@@ -480,20 +487,21 @@ prompt text). It is stored on the request, so a crash-replayed request reruns
 with the same metadata; tools read it during execution via
 `mash.logging.get_request_metadata()`, and subagent requests inherit it.
 
-Submit bodies also take an optional `user_id`: the end user the request acts
-for (1 to 255 letters, digits, `.`, `_`, `:`, `@` or `-`). The host is the
-trust boundary: the app asserts the user, and the host passes it to the
-primary. It is stored on the request and its turns and never shown to the
-model. Subagent calls carry the parent request's user, set by the host's
-`/h2a` relay, so an agent cannot act for another user. `search_conversations`
-offers scope `user` (the user's conversations with that agent) only on
-requests with a `user_id`; without one it searches the current session only.
+Every submit body carries a `user_id`: the end user the request acts for (1 to
+255 letters, digits, `.`, `_`, `:`, `@` or `-`). A body without one fails
+validation with `422`. The host is the trust boundary: the app asserts the
+user, and the host passes it to the primary. It is stored on the request and
+its turns and never shown to the model, and the request's bash commands run in
+that user's sandbox. Subagent calls carry the parent request's user, set by
+the host's `/h2a` relay, so an agent cannot act for another user.
+`search_conversations` offers scope `user`: the user's conversations with that
+agent.
 
 From the CLI, `mash compose` defines the host on the deployment (idempotent
 PUT) and pins later commands to it:
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000   # save the connection
+mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1   # save the connection
 mash agents                                         # see what's in the pool
 mash compose --host assistant --primary concierge --subagents email,calendar
 mash repl                                           # pinned to 'assistant'
@@ -502,11 +510,21 @@ mash repl                                           # pinned to 'assistant'
 The REPL target is fixed for its lifetime; to change composition, exit and
 `mash compose` again (or `mash repl --agent <id>` for a bare agent).
 
-**Database connections:** each agent computer holds its own Postgres
+**Database connections:** each agent process holds its own Postgres
 connections; the host holds one set for its reads (traces, telemetry, sessions,
 workflow runs). Session reads on the host cover agents that use the default
-`build_memory_store()`; an agent that overrides it keeps its store on its
-computer.
+`build_memory_store()`; an agent that overrides it keeps its store in its own
+process. Sandboxes have no database access.
+
+**Enabling and disabling agents:** every agent `build_pool()` registers starts
+enabled. `POST /api/v1/agent/{agent_id}/disable` stops its process and
+`.../enable` starts it again; `GET /api/v1/agent` reports each agent's `enabled`
+flag and `status` (`running`, `starting`, `unavailable`, `disabled`). Disable
+returns `409 AGENT_IN_USE` while a host or workflow names the agent. A request
+to a disabled agent returns `409 AGENT_DISABLED`; requests in flight stay
+pending and continue when the agent is enabled. The enabled set is in memory
+and resets on restart. Adding an agent that is not in `build_pool()` takes a
+deploy.
 
 ## Workflows
 
@@ -561,9 +579,14 @@ pool = (
 - Dynamic control flow (fan-out over rows, branching) lives inside a `CodeStep`
   body, deduped on stable keys from `StepContext`; there is no other execution
   shape.
+- A run acts for a user: `POST /workflow/{id}/run` takes `user_id` next to
+  `input`, required when the workflow has an `AgentStep` or a `CodeStep` that
+  declares `agent_ids`. The run stores it, `StepContext.user_id` exposes it to
+  code steps, and every agent step submits for it, so its bash runs in that
+  user's sandbox. A resumed run keeps its user.
 - Run, resume, inspect, and stream over the API (`POST /workflow/{id}/run`,
   `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
-  the REPL (`/workflow run|status|resume`).
+  the REPL (`/workflow run|status|resume`, which runs for the connection's user).
 
 ## Cortex (User Memory)
 
@@ -579,14 +602,13 @@ pool = (
 )
 ```
 
-- **Reads.** A request with a `user_id` (see Multi-Agent Composition) gets the
-  user's profile as an `ABOUT THIS USER` block in its system prompt and a
-  read-only `search_cortex` tool over the user's entries. Both are scoped to
-  the request's user; requests without one get neither.
+- **Reads.** Every request (see Multi-Agent Composition) gets its user's
+  profile as an `ABOUT THIS USER` block in its system prompt and a read-only
+  `search_cortex` tool over the user's entries, both scoped to that user.
 - **Building.** Nothing writes Cortex after a request. Run the `cortex-build`
-  workflow on demand for one user:
+  workflow on demand for one user; the run's user is the one it builds:
   `POST /api/v1/workflow/cortex-build/run` with
-  `{"input": {"user_id": "u-42", "limit": 200}}`. It reads the user's turns
+  `{"user_id": "u-42", "input": {"limit": 200}}`. It reads the user's turns
   since the last build (workflow and subagent turns excluded) with the tools
   each turn ran, has the built-in `cortex-agent` curate them into a profile
   and entries, and writes the result in one transaction. Rerun while the
@@ -601,6 +623,18 @@ pool = (
 - `cortex-agent` picks its provider like masher's agents;
   `CORTEX_AGENT_<PROVIDER>_MODEL` overrides the model.
 
+## Evals
+
+Masher's evals are opt-in per pool:
+
+```python
+pool = HostBuilder().agent(...).enable_evals().build()
+```
+
+`enable_evals()` registers `eval-agent`, `eval-judge-agent`, and the
+`gen-synthetic-evals` and `run-experiment` workflows, which attach to every
+host. Without it the pool has none of them.
+
 ## Structured Output
 
 ```python
@@ -613,6 +647,7 @@ class AnalysisResult(BaseModel):
 response = await runtime.submit_request(
     message="Analyze this data",
     session_id="s1",
+    user_id="u-1",
     structured_output=AnalysisResult,
 )
 # response.structured_output -> {"summary": "...", "score": 0.95}
@@ -640,13 +675,14 @@ endpoint depends on observability being enabled.
 ## Serving and Deployment
 
 ```bash
-# Host on your machine, computers in Docker
-export MASH_HOST_SECRET=... MASH_COMPUTER_IMAGE=my-agent:dev
+# Host on your machine, sandboxes in Docker
+export MASH_HOST_SECRET=... MASH_SANDBOX_IMAGE=my-agent:dev
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 
 # Host in a container: mount the Docker socket and add its group;
-# computers then run the host's own image on the `mash` network.
+# sandboxes then run the host's own image on the `mash-sandboxes` network.
 # Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET.
+# Without a Docker socket the host runs and its agents get no bash.
 
 # Programmatic
 from mash.api import run_host, MashHostConfig
@@ -658,13 +694,16 @@ run_host(
 )
 ```
 
-A deployment runs one host replica. Computers outlive the host and restart on
-crash with the same workspace volume. Manage them on the Docker host:
+A deployment runs one host replica, and its agent processes live and die with
+it. A user's sandbox stops after `MASH_SANDBOX_IDLE_SECONDS` (default 900)
+without a command and starts again on the next one, with the same volume. At
+most `MASH_SANDBOX_MAX_RUNNING` (default 20) run at once. Manage them on the
+Docker host:
 
 ```bash
-mash computer ls                  # status, uptime, restarts, volume
-mash computer shell <agent_id>    # bash as `agent` (--root for root)
-mash computer restart <agent_id>  # replace the container, keep the workspace
+mash sandbox ls                             # user, status, uptime, container
+mash sandbox shell <user_id> --agent <id>   # bash as `agent` in that agent's folder (--root for root)
+mash sandbox stop <user_id>                 # stop it now; the volume is kept
 ```
 
 For full deployment instructions (compose file, server deployment, the

@@ -58,7 +58,8 @@ from .config import MashHostConfig
 from .admin_ui import mount_admin_ui
 
 
-logger = logging.getLogger(__name__)
+# uvicorn configures this logger, so the host's startup choices show in its log.
+logger = logging.getLogger("uvicorn.error")
 
 
 async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:

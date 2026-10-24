@@ -22,11 +22,11 @@ This README lists the exposed routes, the common request/response conventions, a
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
 - `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
-- `/h2a/*` is the relay agent computers use for subagent calls. It does not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret the relay returns `503 H2A_UNAVAILABLE`.
+- `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and bash. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 
 ## H2A Relay
 
-Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient` at `{host}/h2a`.
+Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `AgentClient` at `{host}/h2a`.
 
 `POST /h2a/agent/{subagent_id}/request`
 - Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot.
@@ -35,6 +35,14 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 
 `GET /h2a/agent/{subagent_id}/request/{request_id}`
 - Streams the subagent request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
+
+## Sandbox Relay
+
+`POST /sandbox/exec`
+- Body: `{request_id, command, timeout}`; `timeout` defaults to 30 seconds. Sent by the `bash` tool with the agent's token.
+- The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`.
+- Runs the command in the sandbox of the request's user, in the caller's folder, starting the sandbox if needed, and returns `{output, exit_code, timed_out}` (no `{data}` envelope).
+- `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -60,6 +68,7 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 {
   "message": "required non-empty string",
   "session_id": "required non-empty string",
+  "user_id": "required: the end user the request acts for",
   "structured_output": "optional JSON-schema object"
 }
 ```
@@ -96,8 +105,17 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
   - `observability.memory.default_limit`
 
 `GET /api/v1/agent`
-- Lists pooled agents.
+- Lists pooled agents, each with `enabled` and `status` (`running`, `starting`, `unavailable`, `disabled`).
 - Returns `agents` and `hosts`.
+
+`POST /api/v1/agent/{agent_id}/enable`
+- Starts the agent's process, waits for its health check, and accepts requests for it again. Requests left pending when it was disabled continue.
+- Returns `agent`. `503 AGENT_UNAVAILABLE` when the process does not start.
+
+`POST /api/v1/agent/{agent_id}/disable`
+- Stops accepting requests for the agent and stops its process. Requests in flight are not cancelled; they stay pending until the agent is enabled.
+- `409 AGENT_IN_USE`, with `details.references`, while a host or workflow names the agent.
+- Returns `agent`. The enabled set is in memory and resets on restart.
 
 ### Hosts
 
@@ -116,11 +134,12 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 `POST /api/v1/hosts/{host_id}/request`
 - Submits a request to the host: it routes to the host's primary agent with
   the host's composition snapshotted onto the request.
-- Body: `HostSubmitRequest` (`message`, `session_id`, optional `user_id`,
-  optional `structured_output`, optional `context`, optional `metadata`)
-- `user_id` is the end user the request acts for. It is stored on the request
-  and its turns, never reaches the prompt, and subagent calls inherit it. An
-  invalid value returns `400 INVALID_USER_ID`.
+- Body: `HostSubmitRequest` (`message`, `session_id`, `user_id`, optional
+  `structured_output`, optional `context`, optional `metadata`)
+- `user_id` is required: the end user the request acts for. It is stored on the
+  request and its turns, never reaches the prompt, and subagent calls inherit
+  it. The request's bash commands run in that user's sandbox. A missing value
+  fails validation with `422`; an invalid one returns `400 INVALID_USER_ID`.
 - `context` is a freeform string the host appends to the primary agent's
   system prompt for this request only (after the subagent routing block).
   Use it to pass per-request/session facts like user profile, workspace
@@ -135,7 +154,7 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
 `GET /api/v1/agent/{agent_id}`
-- Returns agent metadata plus current session info.
+- Returns agent metadata plus current session info; `session` is null for a disabled agent.
 - Path params:
   - `agent_id`
 - Returns:
@@ -156,7 +175,8 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 - Optionally accepts a `metadata` JSON object — opaque caller context that
   never reaches the model. Readable during execution via
   `mash.logging.get_request_metadata()` and inherited by subagent requests.
-- Optionally accepts a `user_id`, as on the host route.
+- Requires a `user_id`, as on the host route.
+- A disabled agent returns `409 AGENT_DISABLED` here and on its other request routes.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
 - Server-Sent Events stream for async request progress.
@@ -333,6 +353,10 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
   - `input` optional JSON object
   - `session_id` optional; the run executes under this session (e.g. the REPL
     session) so it is a trace within it. Absent → a fresh per-run session.
+  - `user_id`: the user the run acts for. Required when the workflow has an
+    `AgentStep` or a `CodeStep` that declares `agent_ids`
+    (`400 USER_ID_REQUIRED` otherwise); `400 INVALID_USER_ID` when malformed.
+    Every agent step submits for this user, and a resumed run keeps it.
 - Returns:
   - `run_id`
   - `workflow_id`
@@ -352,7 +376,7 @@ Raw H2A (no `{data}` envelope), so a computer calls it with a plain `AgentClient
 - Does not include the run result; call the run detail endpoint for it.
 
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
-- Returns one workflow run with immutable `workflow_input`, `session_id`, final
+- Returns one workflow run with immutable `workflow_input`, `session_id`, `user_id`, final
   `result`, and ordered step snapshots.
 - Path params:
   - `workflow_id`
@@ -649,7 +673,9 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
 ## Error Cases Worth Remembering
 - `401 UNAUTHORIZED`: missing or wrong API key
 - `404 AGENT_NOT_FOUND`: unknown `agent_id`
-- `503 AGENT_UNAVAILABLE`: the agent's server could not be reached, for example because its computer is down
+- `503 AGENT_UNAVAILABLE`: the agent's server could not be reached, for example because its process is restarting
+- `409 AGENT_DISABLED`: the agent is disabled
+- `409 AGENT_IN_USE`: disabling an agent a host or workflow names
 - `503 SESSIONS_UNAVAILABLE`: session reads for an agent that overrides `build_memory_store()`; the host reads sessions from the pool's shared memory store only
 - `400 INVALID_REQUEST`: blank required path/body values after trimming
 - `503 MEMORY_SEARCH_UNAVAILABLE`: memory search unavailable for the target agent
