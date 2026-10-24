@@ -1,33 +1,26 @@
-"""Bash tool for executing shell commands."""
+"""Bash tool: runs the model's commands in the request user's sandbox.
+
+The tool runs in the agent's runtime and starts no shell itself. Each call
+posts the command to the host's sandbox relay (``{host}/sandbox/exec``) with
+the agent's token and the current request id; the host runs it in the sandbox
+of the user the request acts for, in this agent's folder there.
+"""
 
 from __future__ import annotations
 
-import os
-import pwd
-import queue
 import re
-import subprocess
-import threading
-import time
-import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
+import httpx
+
+from mash.logging.trace_context import get_request_id
+from mash.sandbox.daemon import BASH_DEFAULT_TIMEOUT
 
 from .base import ToolResult
 
-BASH_DEFAULT_TIMEOUT = 30
-BASH_MAX_OUTPUT_LINES = 50  # Reduced from 100 to prevent token explosion
-BASH_MAX_OUTPUT_CHARS = 4000
-
-_BASH_SENTINEL_PREFIX = "__mash_bash_done__"
-_BASH_EXIT_PREFIX = "__mash_bash_exit__"
-_ROOT_FIND_RE = re.compile(r"(^|[;&|()]\\s*)find\\s+/($|\\s)")
-
-# On an agent computer, bash runs as this user, which holds none of the
-# runtime's secrets and can only read its own home.
-AGENT_USER = "agent"
-AGENT_HOME = "/home/agent"
-AGENT_WORKSPACE = f"{AGENT_HOME}/workspace"
-_AGENT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+_ROOT_FIND_RE = re.compile(r"(^|[;&|()]\s*)find\s+/($|\s)")
+# Room on top of the command's own timeout: a first call starts the sandbox.
+_RELAY_OVERHEAD_SECONDS = 180.0
 
 
 def _matches_root_find(command: str) -> bool:
@@ -35,244 +28,27 @@ def _matches_root_find(command: str) -> bool:
     return bool(_ROOT_FIND_RE.search(command))
 
 
-def resolve_bash_user() -> Optional[str]:
-    """Return the user bash should run as, or None to run as the current user.
-
-    Bash switches to ``agent`` when that user exists and is not the current
-    user, which is the case on an agent computer.
-    """
-    try:
-        entry = pwd.getpwnam(AGENT_USER)
-    except KeyError:
-        return None
-    if entry.pw_uid == os.geteuid():
-        return None
-    return AGENT_USER
-
-
-def resolve_bash_working_dir(working_dir: Optional[str]) -> Optional[str]:
-    """Use the explicit working dir, else the agent workspace when it exists."""
-    if working_dir:
-        return working_dir
-    if os.path.isdir(AGENT_WORKSPACE):
-        return AGENT_WORKSPACE
-    return None
-
-
-def build_bash_env(user: Optional[str], working_dir: Optional[str]) -> Dict[str, str]:
-    """Build the clean environment bash starts with.
-
-    Nothing from the runtime's environment reaches bash except locale and,
-    when bash runs as the current user, its HOME and PATH.
-    """
-    if user is not None:
-        home = pwd.getpwnam(user).pw_dir
-        path = _AGENT_PATH
-    else:
-        home = os.environ.get("HOME", "/")
-        path = os.environ.get("PATH", _AGENT_PATH)
-    return {
-        "HOME": home,
-        "PATH": path,
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-        "PWD": working_dir or os.getcwd(),
-    }
-
-
-class BashSession:
-    """Persistent bash session for executing commands."""
-
-    def __init__(
-        self,
-        working_dir: Optional[str] = None,
-        *,
-        user: Optional[str] = None,
-    ) -> None:
-        """Initialize bash session.
-
-        Args:
-            working_dir: Working directory for the session.
-            user: User to run bash as through ``sudo``; None runs it as the
-                current user.
-        """
-        self.working_dir = working_dir
-        self.user = user
-        self._process: Optional[subprocess.Popen[str]] = None
-        self._stdout_queue: queue.Queue[str] = queue.Queue()
-        self._reader_thread: Optional[threading.Thread] = None
-
-    def _start_process(self) -> None:
-        """Start the bash process."""
-        argv = ["/bin/bash"]
-        if self.user is not None:
-            argv = ["sudo", "-n", "-u", self.user, "/bin/bash"]
-        self._process = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            cwd=self.working_dir,
-            env=build_bash_env(self.user, self.working_dir),
-        )
-        self._stdout_queue = queue.Queue()
-        self._reader_thread = threading.Thread(
-            target=self._read_stdout,
-            name="bash-session-reader",
-            daemon=True,
-        )
-        self._reader_thread.start()
-
-    def _ensure_process(self) -> None:
-        """Start the bash process on first use."""
-        if self._process is not None:
-            return
-        self._start_process()
-
-    def _read_stdout(self) -> None:
-        """Read stdout in a separate thread."""
-        assert self._process is not None
-        if self._process.stdout is None:
-            return
-        for line in self._process.stdout:
-            self._stdout_queue.put(line)
-
-    def restart(self, working_dir: Optional[str] = None) -> None:
-        """Restart the session with a new working directory."""
-        self.shutdown()
-        self.working_dir = working_dir
-        self._start_process()
-
-    def shutdown(self) -> None:
-        """Shut down the bash session."""
-        if self._process is None:
-            return
-        try:
-            self._process.terminate()
-            self._process.wait(timeout=2)
-        except Exception:
-            try:
-                self._process.kill()
-            except Exception:
-                pass
-        self._process = None
-
-    def execute_command(
-        self, command: str, timeout: int = BASH_DEFAULT_TIMEOUT
-    ) -> tuple[str, int]:
-        """Execute a command in the bash session.
-
-        Args:
-            command: Command to execute.
-            timeout: Timeout in seconds.
-
-        Returns:
-            Tuple of (output, exit_code).
-
-        Raises:
-            RuntimeError: If the session is not running.
-            TimeoutError: If the command times out.
-        """
-        self._ensure_process()
-        if self._process is None or self._process.stdin is None:
-            raise RuntimeError("Bash session failed to start.")
-
-        token = uuid.uuid4().hex
-        sentinel = f"{_BASH_SENTINEL_PREFIX}{token}"
-        exit_marker = f"{_BASH_EXIT_PREFIX}{token}"
-
-        payload = f"{command}\n" f'echo "{exit_marker}$?"\n' f'echo "{sentinel}"\n'
-
-        self._process.stdin.write(payload)
-        self._process.stdin.flush()
-
-        try:
-            output_lines, exit_code, total_lines = self._read_until_sentinel(
-                sentinel, exit_marker, timeout
-            )
-        except TimeoutError:
-            # Reset the session to avoid lingering long-running commands.
-            self.restart(self.working_dir)
-            raise
-        output_text = self._truncate_output(output_lines, total_lines)
-
-        return output_text, exit_code
-
-    def _read_until_sentinel(
-        self,
-        sentinel: str,
-        exit_marker: str,
-        timeout: int,
-    ) -> tuple[List[str], int, int]:
-        """Read output until the sentinel is found."""
-        lines: List[str] = []
-        exit_code = 0
-        start = time.time()
-        total_lines = 0
-
-        while True:
-            remaining = timeout - int(time.time() - start)
-            if remaining <= 0:
-                raise TimeoutError("Command timed out")
-
-            try:
-                line = self._stdout_queue.get(timeout=remaining)
-            except queue.Empty as exc:
-                raise TimeoutError("Command timed out") from exc
-
-            stripped = line.rstrip("\n")
-
-            if stripped.startswith(exit_marker):
-                raw = stripped[len(exit_marker) :].strip()
-                try:
-                    exit_code = int(raw)
-                except ValueError:
-                    exit_code = 0
-                continue
-
-            if stripped == sentinel:
-                return lines, exit_code, total_lines
-
-            total_lines += 1
-            if total_lines <= BASH_MAX_OUTPUT_LINES:
-                lines.append(line.rstrip("\n"))
-
-    def _truncate_output(self, lines: List[str], total_lines: int) -> str:
-        """Truncate output if too many lines or characters."""
-        if not lines:
-            return ""
-
-        truncated = "\n".join(lines)
-        suffix_parts: List[str] = []
-
-        if total_lines > BASH_MAX_OUTPUT_LINES:
-            suffix_parts.append(f"{total_lines} total lines")
-
-        if len(truncated) > BASH_MAX_OUTPUT_CHARS:
-            truncated = truncated[:BASH_MAX_OUTPUT_CHARS].rstrip()
-            suffix_parts.append(f"max {BASH_MAX_OUTPUT_CHARS} chars")
-
-        if suffix_parts:
-            suffix = ", ".join(suffix_parts)
-            return f"{truncated}\n\n... Output truncated ({suffix}) ..."
-
-        return truncated
-
-
 class BashTool:
-    """Bash tool for executing shell commands."""
+    """Bash in the request user's sandbox, reached through the host."""
 
-    def __init__(self, working_dir: Optional[str] = None) -> None:
+    def __init__(self, *, host_api_url: str, token: str) -> None:
         """Initialize bash tool.
 
         Args:
-            working_dir: Working directory for bash commands. Defaults to the
-                agent workspace when it exists.
+            host_api_url: The host's base URL, as the agent reaches it.
+            token: The agent's token.
         """
+        if not str(host_api_url or "").strip():
+            raise ValueError("host API URL is required")
+        if not str(token or "").strip():
+            raise ValueError("agent token is required")
+        self._exec_url = f"{host_api_url.rstrip('/')}/sandbox/exec"
+        self._token = token
         self.name = "bash"
         self.description = (
-            "Execute bash commands in a persistent session.\n"
+            "Execute a bash command in your workspace.\n"
+            "Each call starts a fresh shell in your workspace folder; files you "
+            "write there persist between calls, shell state (cd, variables) does not.\n"
             "Rules:\n"
             "- Prefer ripgrep (rg) for search.\n"
             "- Keep outputs small using head, tail, or context flags (-A / -C).\n"
@@ -304,13 +80,9 @@ class BashTool:
         }
         self.requires_approval = False
         self.parallel_safe = False
-        self._session = BashSession(
-            working_dir=resolve_bash_working_dir(working_dir),
-            user=resolve_bash_user(),
-        )
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
-        """Execute the bash command.
+        """Run the command in the sandbox.
 
         Args:
             args: Tool arguments containing 'command' and optional 'timeout'.
@@ -322,28 +94,43 @@ class BashTool:
         if not command:
             return ToolResult.error("No command provided")
 
-        # Validate command
         is_valid, error_msg = self._validate_command(command)
         if not is_valid:
             return ToolResult.error(f"Invalid command: {error_msg}")
 
-        # Execute command
+        request_id = get_request_id()
+        if not request_id:
+            return ToolResult.error("bash runs only within a request")
+
         timeout = args.get("timeout", BASH_DEFAULT_TIMEOUT)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            return ToolResult.error("timeout must be a positive number of seconds")
         try:
-            output, exit_code = self._session.execute_command(command, timeout)
-            if exit_code != 0:
-                return ToolResult(
-                    content=output,
-                    is_error=False,  # Non-zero exit is not necessarily an error
-                    metadata={"exit_code": exit_code},
+            async with httpx.AsyncClient(
+                timeout=float(timeout) + _RELAY_OVERHEAD_SECONDS
+            ) as client:
+                response = await client.post(
+                    self._exec_url,
+                    json={"request_id": request_id, "command": command, "timeout": timeout},
+                    headers={"Authorization": f"Bearer {self._token}"},
                 )
-            return ToolResult.success(output, exit_code=exit_code)
-        except TimeoutError as e:
-            return ToolResult.error(
-                f"Command timed out after {timeout} seconds: {str(e)}"
+        except httpx.HTTPError as exc:
+            return ToolResult.error(f"Error reaching the sandbox: {exc}")
+
+        if response.status_code != 200:
+            return ToolResult.error(f"Sandbox error: {_error_message(response)}")
+        result = response.json()
+        if result.get("timed_out"):
+            return ToolResult.error(f"Command timed out after {timeout} seconds")
+        output = str(result.get("output") or "")
+        exit_code = result.get("exit_code")
+        if exit_code != 0:
+            return ToolResult(
+                content=output,
+                is_error=False,  # Non-zero exit is not necessarily an error
+                metadata={"exit_code": exit_code},
             )
-        except Exception as e:
-            return ToolResult.error(f"Error executing command: {str(e)}")
+        return ToolResult.success(output, exit_code=exit_code)
 
     def _validate_command(self, command: str) -> tuple[bool, Optional[str]]:
         """Validate that the command is safe to execute.
@@ -372,18 +159,6 @@ class BashTool:
 
         return True, None
 
-    def restart(self, working_dir: Optional[str] = None) -> None:
-        """Restart the bash session with a new working directory.
-
-        Args:
-            working_dir: New working directory.
-        """
-        self._session.restart(working_dir)
-
-    def shutdown(self) -> None:
-        """Shut down the bash session."""
-        self._session.shutdown()
-
     def to_llm_format(self) -> Dict[str, Any]:
         """Convert tool definition to LLM API format."""
         return {
@@ -391,3 +166,14 @@ class BashTool:
             "description": self.description,
             "input_schema": self.parameters,
         }
+
+
+def _error_message(response: httpx.Response) -> str:
+    try:
+        error = response.json().get("error") or {}
+        return str(error.get("message") or response.text)
+    except ValueError:
+        return response.text or f"status {response.status_code}"
+
+
+__all__ = ["BashTool"]

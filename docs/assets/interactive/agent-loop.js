@@ -40,7 +40,7 @@
       records: "Nothing yet. DBOS writes the workflow_status row as it starts the workflow.",
       body:
         "<p>The API route resolves the agent's " + code("AgentClient") +
-        " from the pool, which POSTs to the agent's computer, and its " +
+        " from the pool, which POSTs to the agent's process, and its " +
         code("AgentServer") + " calls " + code("AgentRuntime.submit_request") +
         ". The runtime mints " + code("request_id") + ", appends " +
         code("runtime.request.accepted") + " (which also creates the " +
@@ -51,7 +51,7 @@
         code('SetWorkflowID("' + WFID + '")') + ". DBOS inserts a " +
         code("workflow_status") + " row in state " + code("PENDING") +
         " with the workflow inputs and starts " + F_WORKFLOW +
-        " as a task on the computer's event loop. The caller gets " +
+        " as a task on the agent process's event loop. The caller gets " +
         code("request_id") + " back without waiting for the agent.</p>",
       facts: [
         ["Workflow", code("mash.runtime.execute_request")],
@@ -376,7 +376,7 @@
         "<p>The reply comes in as " +
         code("POST /api/v1/agent/" + AGENT + "/request/" + RID + "/interaction") +
         " with " + code("{interaction_id, response}") + ". " +
-        code("AgentClient.post_interaction") + " forwards it to the computer, whose " +
+        code("AgentClient.post_interaction") + " forwards it to the agent's process, whose " +
         code("AgentServer") + " calls " +
         code('DBOS.send("' + WFID + '", response, topic=interaction_id)') +
         ". DBOS stores the message in " + code("notifications") +
@@ -468,7 +468,7 @@
         "<p>The tool POSTs that id to the host's " + code("/h2a") + " relay with " +
         "a " + code("parent") + " naming this request and the request's host " +
         "snapshot. The host checks that " + code("research") + " is in the " +
-        "snapshot and forwards the call to research's computer, which starts its " +
+        "snapshot and forwards the call to research's process, which starts its " +
         "own workflow " + code("research:" + RID + "-sub-0-0") +
         " with its own steps:</p>" +
         '<ol class="mv-nested">' +
@@ -480,7 +480,7 @@
         "tool result. The parent appends " + code("runtime.subagent.call.completed") +
         " in place of " + code("runtime.tool.call.completed") + ".</p>" +
         "<p>If this step runs again, it resubmits the same request id. Research's " +
-        "computer returns the request it already started instead of starting a " +
+        "process returns the request it already started instead of starting a " +
         "second, and the stream replays from the first event.</p>",
       events: [
         ev("runtime.tool.call.started", "tool.call.started.0.call_s1"),
@@ -652,7 +652,7 @@
     subagent: {
       label: "Subagent",
       blurb:
-        "The primary delegates to a subagent, which runs as its own DBOS workflow on the subagent's computer.",
+        "The primary delegates to a subagent, which runs as its own DBOS workflow in the subagent's process.",
       build: function () {
         return [
           submitFrame(),
@@ -694,18 +694,18 @@
     var crashEvents = [];
     if (f.kind === "recv") {
       crashBody =
-        "<p>The computer's process dies while the workflow is parked on " +
+        "<p>The agent's process dies while the workflow is parked on " +
         code("recv") + ". The interaction prompt is already in " +
         code("runtime_event_log") + " and the " + code("workflow_status") +
         " row stays " + code("PENDING") + ".</p>";
     } else if (f.crashBeforeWrites) {
       crashBody =
-        "<p>The computer's process dies while this step is running, before its " +
+        "<p>The agent's process dies while this step is running, before its " +
         "writes commit. DBOS has no recorded output for it, and the " +
         code("workflow_status") + " row stays " + code("PENDING") + ".</p>";
     } else {
       crashBody =
-        "<p>The computer's process dies while this step is running. Its events " +
+        "<p>The agent's process dies while this step is running. Its events " +
         "already reached " + code("runtime_event_log") + ", but DBOS never " +
         "recorded the step's output in " + code("operation_outputs") +
         ". The " + code("workflow_status") + " row stays " + code("PENDING") + ".</p>";
@@ -741,7 +741,7 @@
       retry: "none",
       records: "Nothing new",
       body:
-        "<p>Docker restarts the computer with the same volumes. Opening the " +
+        "<p>The host restarts the agent's process on the same port. Opening the " +
         "runtime calls " + code("DBOSRequestEngine.open()") + ", which calls " +
         code("ensure_dbos_ready()") + ". That constructs DBOS with " +
         code('{"name": "mash", "system_database_url": MASH_DATABASE_URL, "executor_id": "agent:' + AGENT + '"}') +
@@ -750,7 +750,7 @@
         "recovery can resolve the workflow function.</p>" +
         "<p>On launch DBOS finds the " + code("PENDING") + " rows in " +
         code("workflow_status") + " and calls each workflow function again with " +
-        "its recorded inputs, only for rows under this computer's executor id. " +
+        "its recorded inputs, only for rows under this agent's executor id. " +
         "Here that is " +
         code('execute_request_workflow("' + AGENT + '", "' + RID + '", ...)') + ".</p>",
       events: [],
@@ -804,7 +804,7 @@
     } else if (f.reattaches) {
       note =
         "No recorded output, so the step runs again and resubmits " +
-        code(RID + "-sub-0-0") + ". Research's computer already has that " +
+        code(RID + "-sub-0-0") + ". Research's process already has that " +
         "request, so it returns it instead of starting a second; the subagent " +
         "continues from its own checkpoints and the stream replays from its " +
         "first event. The repeated " + code("tool.call.started") +
@@ -866,7 +866,7 @@
       node("api", "API routes", code("/api/v1")) + arrow +
       node("pool", "Pool", code("AgentClient")) +
       "</div></div>" +
-      '<div class="mv-zone"><div class="mv-zone-title">Agent computer ' +
+      '<div class="mv-zone"><div class="mv-zone-title">Agent process ' +
       code("mash agent serve") + "</div>" +
       '<div class="mv-row">' +
       node("runtime", "AgentServer + AgentRuntime", code("DBOSRequestEngine")) +

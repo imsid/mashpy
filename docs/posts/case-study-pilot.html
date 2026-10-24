@@ -319,8 +319,8 @@
   </div>
 
   <h2>What Pilot does</h2>
-  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a guide to the Mash codebase with two agents. The <code>pilot</code> agent answers questions from the source. The <code>builder</code> agent builds Mash apps on its own computer and checks that they work. The user composes which agents work together, then enters the REPL.</p>
-  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent computers, delegation through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
+  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a guide to the Mash codebase with two agents. The <code>pilot</code> agent answers questions from the source. The <code>builder</code> agent builds Mash apps in the user's sandbox and checks that they work. The user composes which agents work together, then enters the REPL.</p>
+  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent processes, per-user sandboxes, delegation through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
 
   <h2>The catalog</h2>
   <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs a spec class with a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
@@ -357,8 +357,8 @@ CATALOG: tuple[CatalogEntry, ...] = (
 
   <p>Further hosts belong to the CLI's config file (<code>~/.pilot/hosts.json</code>) and are published to the deployment as idempotent PUTs when the CLI connects.</p>
 
-  <h2>Agents on computers</h2>
-  <p>Every agent runs on its own computer: a <code>mash-agent-&lt;agent_id&gt;</code> container the host starts through the Docker socket, with a named workspace volume and a bash tool that runs as an unprivileged <code>agent</code> user. Pilot's deployment sets <code>MASH_COMPUTER_MOUNTS</code> so each computer also gets the mashpy checkout, read-only, at <code>/home/agent/workspace/mashpy</code>. The agents read the repository as it is on disk, and an edit shows up without a restart.</p>
+  <h2>Agent processes and sandboxes</h2>
+  <p>Every agent runs as a process of the host, inside its container. The bash commands an agent's model writes run somewhere else: in the sandbox of the user the request acts for, a <code>mash-sandbox-&lt;key&gt;</code> container the host starts through the Docker socket on that user's first command. A sandbox holds a named volume with one folder per agent, and bash there runs as an unprivileged <code>agent</code> user with a clean environment. Pilot's deployment sets <code>MASH_SANDBOX_MOUNTS</code> so each sandbox also gets the mashpy checkout, read-only, at <code>/home/agent/mashpy</code>. The agents read the repository as it is on disk, and an edit shows up without a restart.</p>
 
   <div class="arch">
     <div class="arch-layer arch-layer-blue">
@@ -371,19 +371,19 @@ CATALOG: tuple[CatalogEntry, ...] = (
     </div>
     <div class="arch-layer arch-layer-green">
       <div class="arch-layer-label">builder (subagent)</div>
-      <div class="arch-layer-title">Tools: bash in its workspace · Skill</div>
+      <div class="arch-layer-title">Tools: bash in its folder of the user's sandbox · Skill</div>
       <div class="arch-layer-sub">Skills: build-mash-agent · build-mash-workflow · build-mash-host</div>
     </div>
   </div>
 
   <h2>The pilot agent</h2>
-  <p>The <code>pilot</code> agent registers a <code>BashTool</code> that starts in the mounted repo and an <code>AskUserTool</code>. Its prompt carries a map of where things are documented (<code>CLAUDE.md</code>, each module's <code>README.md</code> and <code>AGENTS.md</code>, the posts, the H2A RFC) rather than the documents themselves. It finds the answer with <code>rg</code>, reads the lines it needs with <code>sed</code>, and cites them as <code>path:line</code>. When the user asks for an app, it delegates to the builder.</p>
+  <p>The <code>pilot</code> agent registers an <code>AskUserTool</code> and gets <code>bash</code> from the host, like every agent on a host with sandboxes. Its prompt carries a map of where things are documented (<code>CLAUDE.md</code>, each module's <code>README.md</code> and <code>AGENTS.md</code>, the posts, the H2A RFC) rather than the documents themselves. It finds the answer with <code>rg</code>, reads the lines it needs with <code>sed</code>, and cites them as <code>path:line</code>. When the user asks for an app, it delegates to the builder.</p>
 
   <h2>The builder agent</h2>
-  <p>The <code>builder</code> builds each app in its own directory under <code>/home/agent/workspace/apps</code>. It loads the matching skill, creates the project with <code>uv init</code>, installs mashpy with <code>uv add</code>, and writes the files. It checks the result by importing the pool and running the app's tests, and replies with the directory, the files, and the check output. The workspace is a volume, so the apps survive a container replacement. The builder cannot serve what it builds, because a computer has no Docker; the user copies the app out with <code>docker cp</code>.</p>
+  <p>The <code>builder</code> builds each app in its own directory under <code>/home/agent/workspaces/builder/apps</code> in the user's sandbox. It loads the matching skill, creates the project with <code>uv init</code>, installs mashpy with <code>uv add</code>, and writes the files. It checks the result by importing the pool and running the app's tests, and replies with the directory, the files, and the check output. The sandbox's volume outlives the container, so the apps survive a sandbox being stopped or replaced. The builder cannot serve what it builds, because a sandbox has no Docker; the user copies the app out with <code>docker cp</code>.</p>
 
   <h2>Workflows</h2>
-  <p><code>pilot-changelog</code> shows the mixed-step shape. A <code>CodeStep</code> reads <code>CHANGELOG.md</code> and slices out the most recent release section(s) in deterministic Python, then an <code>AgentStep</code> summarizes that excerpt, reaching into the source with bash only when an entry is too terse to explain. The code step runs on the host, which mounts the checkout at the same path. Its <code>ChangelogSummarizerSpec</code> rides the <code>agent_spec</code> path, so registering the workflow registers the summarizer as a workflow-only agent with its own computer. <code>/workflow run pilot-changelog</code> runs it from the REPL.</p>
+  <p><code>pilot-changelog</code> shows the mixed-step shape. A <code>CodeStep</code> reads <code>CHANGELOG.md</code> and slices out the most recent release section(s) in deterministic Python, then an <code>AgentStep</code> summarizes that excerpt, reaching into the source with bash only when an entry is too terse to explain. The code step runs on the host, which mounts the checkout at the same path. Its <code>ChangelogSummarizerSpec</code> rides the <code>agent_spec</code> path, so registering the workflow registers the summarizer as a workflow-only agent with its own process. <code>/workflow run pilot-changelog</code> runs it from the REPL.</p>
 
   <pre><code><span class="cm"># pilot/catalog/workflows/changelog.py</span>
 <span class="kw">def</span> <span class="fn">build_changelog_workflow_spec</span>(repo_root: Path = REPO_ROOT) -> WorkflowSpec:
@@ -417,8 +417,8 @@ CATALOG: tuple[CatalogEntry, ...] = (
     </thead>
     <tbody>
       <tr>
-        <td>One container per agent (<code>mash computer ls</code>)</td>
-        <td>Agent computers with workspace volumes and bind mounts</td>
+        <td>One sandbox per user (<code>mash sandbox ls</code>)</td>
+        <td>Per-user sandboxes with workspace volumes and bind mounts</td>
       </tr>
       <tr>
         <td><code>pilot browse</code>: catalog listings</td>
@@ -448,7 +448,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
   </table>
 
   <h2>Deployment</h2>
-  <p>Pilot runs from a checkout with Docker Compose: Postgres and the host, on a network named <code>mash</code>. The host container mounts the Docker socket so it can start the computers, and reads <code>GEMINI_API_KEY</code>, <code>OPENROUTER_API_KEY</code> and <code>MASH_HOST_SECRET</code> from <code>.env</code>.</p>
+  <p>Pilot runs from a checkout with Docker Compose: Postgres and the host, on a network named <code>mash</code>. The host container mounts the Docker socket so it can start the sandboxes, and reads <code>GEMINI_API_KEY</code>, <code>OPENROUTER_API_KEY</code> and <code>MASH_HOST_SECRET</code> from <code>.env</code>.</p>
 
   <pre><code>git clone https://github.com/imsid/mashpy.git &amp;&amp; cd mashpy
 docker compose -f docker-compose.pilot.yml up -d --build</code></pre>
@@ -456,13 +456,14 @@ docker compose -f docker-compose.pilot.yml up -d --build</code></pre>
   <p>The CLI installs separately and points at any running store by URL.</p>
 
   <pre><code>curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot browse                  <span class="cm"># see the catalog</span>
 pilot repl --host guide       <span class="cm"># enter the default composition</span></code></pre>
 
   <p>The admin dashboard is available at <code>/admin</code> on the running host. It shows the pool, active host compositions, and agent traces with a span tree drawer.</p>
 
   <h2>Adding an agent to the catalog</h2>
-  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. The host handles pool registration, the agent's computer, the store listing, delegation, sessions and streaming.</p>
+  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. The host handles pool registration, the agent's process, the store listing, delegation, sessions and streaming.</p>
 
   <div class="steps">
     <div class="step">
@@ -475,7 +476,7 @@ pilot repl --host guide       <span class="cm"># enter the default composition</
     </div>
     <div class="step">
       <div class="step-num">3</div>
-      <div class="step-text">Rebuild with <code>docker compose -f docker-compose.pilot.yml up -d --build</code>. The host creates the new agent's computer on start, and the agent appears in <code>pilot browse</code>.</div>
+      <div class="step-text">Rebuild with <code>docker compose -f docker-compose.pilot.yml up -d --build</code>. The host starts the new agent's process, and the agent appears in <code>pilot browse</code>.</div>
     </div>
     <div class="step">
       <div class="step-num">4</div>

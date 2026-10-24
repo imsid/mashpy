@@ -1,10 +1,10 @@
-"""Agent computers on localhost ports, for tests and Docker-free runs.
+"""Agents on localhost ports in this process, for tests.
 
-``LocalComputerProvider`` runs each agent's ``AgentServer`` in this process on
-its own ``127.0.0.1`` port, and a host relay (``/h2a``) on another, so every
-request, subagent call and workflow step takes the same H2A HTTP path as on
-Docker computers. The servers share the pool's stores, standing in for the
-shared Postgres.
+``LocalAgentProvider`` runs each agent's ``AgentServer`` in this process on
+its own ``127.0.0.1`` port, and a host relay (``/h2a`` and ``/sandbox``) on
+another, so every request, subagent call, workflow step and bash call takes the
+same HTTP path as with agent processes. The servers share the pool's stores,
+standing in for the shared Postgres.
 """
 
 from __future__ import annotations
@@ -19,13 +19,14 @@ from fastapi import FastAPI
 
 from mash.api.routes.common import AppRuntimeState
 from mash.api.routes.h2a import build_h2a_router
-from mash.runtime.computer import HostRelay
-from mash.runtime.host.computers import ComputerEndpoint
+from mash.api.routes.sandbox import build_sandbox_router
+from mash.runtime.agent_process import HostRelay
+from mash.runtime.host.processes import STATUS_RUNNING, AgentEndpoint
 from mash.runtime.host.tokens import derive_agent_token
 from mash.runtime.server import AgentServer
 from mash.runtime.service import AgentRuntime
 
-DEFAULT_LOCAL_SECRET = "local-computers"
+DEFAULT_LOCAL_SECRET = "local-agents"
 
 
 class _Unowned:
@@ -47,18 +48,25 @@ class _Server(uvicorn.Server):
         return contextlib.nullcontext()
 
 
-class LocalComputerProvider:
+class LocalAgentProvider:
     """Each agent's ``AgentServer`` on a localhost port in this process."""
 
     def __init__(self, pool: Any, *, host_secret: str = DEFAULT_LOCAL_SECRET) -> None:
         self._pool = pool
         self._host_secret = host_secret
-        self._servers: list[tuple[_Server, asyncio.Task[None]]] = []
+        self._running: dict[str, tuple[_Server, asyncio.Task[None], AgentEndpoint]] = {}
+        self._relay: tuple[_Server, asyncio.Task[None]] | None = None
         self._relay_url: str | None = None
         self._relay_lock = asyncio.Lock()
         self.agent_servers: dict[str, AgentServer] = {}
 
-    async def ensure(self, agent_id: str) -> ComputerEndpoint:
+    def status(self, agent_id: str) -> str | None:
+        return STATUS_RUNNING if agent_id in self._running else None
+
+    async def ensure(self, agent_id: str) -> AgentEndpoint:
+        running = self._running.get(agent_id)
+        if running is not None:
+            return running[2]
         relay_url = await self._ensure_relay()
         token = derive_agent_token(self._host_secret, agent_id)
         spec = self._pool.get_registered_agent_spec(agent_id)
@@ -77,18 +85,30 @@ class LocalComputerProvider:
         runtime.attach_subagent_access(
             HostRelay(self._pool, host_api_url=relay_url, token=token)
         )
+        if self._pool.get_sandboxes() is not None:
+            runtime.enable_sandbox_bash(host_api_url=relay_url, token=token)
         server = AgentServer(runtime, token=token)
         self.agent_servers[agent_id] = server
-        port = await self._serve(server.app)
-        return ComputerEndpoint(
+        uvicorn_server, task, port = await self._serve(server.app)
+        endpoint = AgentEndpoint(
             agent_id=agent_id, base_url=f"http://127.0.0.1:{port}", token=token
         )
+        self._running[agent_id] = (uvicorn_server, task, endpoint)
+        return endpoint
+
+    async def stop(self, agent_id: str) -> None:
+        running = self._running.pop(agent_id, None)
+        self.agent_servers.pop(agent_id, None)
+        if running is not None:
+            await _shutdown([running[:2]])
 
     async def close(self) -> None:
-        servers, self._servers = self._servers, []
-        for server, _ in servers:
-            server.should_exit = True
-        await asyncio.gather(*(task for _, task in servers), return_exceptions=True)
+        servers = [running[:2] for running in self._running.values()]
+        if self._relay is not None:
+            servers.append(self._relay)
+        self._running.clear()
+        self._relay = None
+        await _shutdown(servers)
         self.agent_servers.clear()
         self._relay_url = None
 
@@ -97,6 +117,7 @@ class LocalComputerProvider:
             if self._relay_url is None:
                 relay = FastAPI()
                 relay.include_router(build_h2a_router())
+                relay.include_router(build_sandbox_router())
                 relay.state.runtime_state = AppRuntimeState(
                     pool=self._pool,
                     api_event_store=None,
@@ -106,11 +127,12 @@ class LocalComputerProvider:
                     default_search_limit=10,
                     host_secret=self._host_secret,
                 )
-                port = await self._serve(relay)
+                server, task, port = await self._serve(relay)
+                self._relay = (server, task)
                 self._relay_url = f"http://127.0.0.1:{port}"
             return self._relay_url
 
-    async def _serve(self, app: Any) -> int:
+    async def _serve(self, app: Any) -> tuple[_Server, asyncio.Task[None], int]:
         server = _Server(
             uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", ws="none")
         )
@@ -118,10 +140,15 @@ class LocalComputerProvider:
         while not server.started:
             if task.done():
                 task.result()  # raises the startup error
-                raise RuntimeError("local computer server exited during startup")
+                raise RuntimeError("local agent server exited during startup")
             await asyncio.sleep(0.01)
-        self._servers.append((server, task))
-        return int(server.servers[0].sockets[0].getsockname()[1])
+        return server, task, int(server.servers[0].sockets[0].getsockname()[1])
 
 
-__all__ = ["LocalComputerProvider"]
+async def _shutdown(servers: list[tuple[_Server, asyncio.Task[None]]]) -> None:
+    for server, _ in servers:
+        server.should_exit = True
+    await asyncio.gather(*(task for _, task in servers), return_exceptions=True)
+
+
+__all__ = ["LocalAgentProvider"]

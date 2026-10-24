@@ -4,7 +4,8 @@
 collect (code) -> curate (code, orchestrates cortex-agent) -> write (code)
 ```
 
-``collect`` reads the user's Cortex and their new non-workflow, non-subagent
+A run builds the Cortex of the user it acts for (``POST /workflow/cortex-build/run``
+with ``user_id``). ``collect`` reads the user's Cortex and their new non-workflow, non-subagent
 turns with the tools each turn ran. ``curate`` sends them to ``cortex-agent``,
 or skips the model when there are no new turns. ``write`` applies the result
 in one transaction, as a compare-and-set on the version ``collect`` read.
@@ -18,7 +19,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from mash.runtime.events import RuntimeEventType
-from mash.runtime.requests import validate_user_id
 from mash.runtime.structured_output import serialize_structured_output
 from mash.workflows import CodeStep, StepContext, WorkflowSpec
 from mash.workflows.dbos import collect_terminal_payload, post_inline_agent_request
@@ -44,7 +44,6 @@ _TOOL_RESULT_EVENTS = {
 
 
 class CortexBuildInput(BaseModel):
-    user_id: str
     limit: int = Field(default=200, ge=1, le=1000)
 
 
@@ -157,8 +156,10 @@ async def _tool_calls(runtime_store: Any, turn: dict[str, Any]) -> list[BundleTo
 
 
 def _build_collect(context: CortexRuntimeContext):
-    async def collect(inp: CortexBuildInput, _ctx: StepContext) -> CortexBundle:
-        user_id = validate_user_id(inp.user_id)
+    async def collect(inp: CortexBuildInput, ctx: StepContext) -> CortexBundle:
+        user_id = ctx.user_id
+        if user_id is None:
+            raise RuntimeError("cortex-build builds the run's user; the run has none")
         pool = context.require_pool()
         snapshot = await context.require_store().load(user_id)
         # cortex-agent keeps the default store, so this is the pool's shared
@@ -245,6 +246,7 @@ def _build_curate(context: CortexRuntimeContext):
             workflow_run_id=ctx.run_id,
             task_id="curate",
             session_id=f"cortex:{ctx.run_id}",
+            user_id=inp.user_id,
         )
         payload = await collect_terminal_payload(pool.runner_id, CORTEX_AGENT_ID, request_id)
         structured = (payload.get("response") or {}).get("structured_output")

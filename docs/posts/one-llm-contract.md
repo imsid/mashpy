@@ -10,7 +10,7 @@ tags:
 
 # One LLM Contract
 
-Each agent in a Mash host picks its own model in `build_llm()`, so a cheap model can handle triage while the primary runs on a capable one, even across vendors in the same process. The runtime supports this by keeping provider SDKs behind the adapter layer: everything above it speaks exactly two types, `LLMRequest` in and `LLMResponse` out.
+Each agent in a Mash host picks its own model in `build_llm()`, so a cheap model can handle triage while the primary runs on a capable one, even across vendors in the same deployment. The runtime supports this by keeping provider SDKs behind the adapter layer: everything above it speaks exactly two types, `LLMRequest` in and `LLMResponse` out.
 
 ```python
 # src/mash/core/llm/types.py: what the runtime sends

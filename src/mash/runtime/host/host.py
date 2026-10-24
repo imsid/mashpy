@@ -1,11 +1,11 @@
-"""Deployed pool: agent registrations, their computers' clients, hosts, and workflows."""
+"""Deployed pool: agent registrations, their processes' clients, hosts, and workflows."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 from dataclasses import asdict
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
@@ -18,9 +18,35 @@ from mash.workflows.store import WorkflowStore
 from ..client import AgentClient, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
 from ..spec import AgentSpec
-from .computers import ComputerProvider
+from .processes import STATUS_UNAVAILABLE, AgentProvider
 from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
+
+if TYPE_CHECKING:
+    from mash.sandbox.manager import SandboxManager
+
+
+STATUS_DISABLED = "disabled"
+
+
+class AgentDisabledError(RuntimeError):
+    """A request named an agent that is disabled."""
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+        super().__init__(f"agent '{agent_id}' is disabled")
+
+
+class AgentInUseError(RuntimeError):
+    """An agent cannot be disabled while a host or workflow names it."""
+
+    def __init__(self, agent_id: str, references: list[str]) -> None:
+        self.agent_id = agent_id
+        self.references = references
+        super().__init__(
+            f"agent '{agent_id}' is in use by {', '.join(references)}; "
+            "remove it from them before disabling it"
+        )
 
 
 class Pool:
@@ -32,9 +58,9 @@ class Pool:
     Workflows are registered on the pool directly and served pool-wide; a
     pool with no user agents is a valid, workflow-only deploy.
 
-    Every agent runs on its own computer. ``start()`` asks the computer
-    provider to ensure each agent's computer and registers an ``AgentClient``
-    for it; the pool itself runs no agent runtimes.
+    Every agent runs in its own process. ``start()`` asks the agent provider
+    to start each agent and registers an ``AgentClient`` for it; the pool
+    itself runs no agent runtimes.
     """
 
     def __init__(
@@ -47,8 +73,11 @@ class Pool:
         self.runtime_database_url = str(runtime_database_url or "").strip() or None
         self._registered: Dict[str, AgentRegistration] = {}
         self._hosts: Dict[str, Host] = {}
-        self._computer_provider: ComputerProvider | None = None
+        self._agent_provider: AgentProvider | None = None
+        self._sandboxes: SandboxManager | None = None
         self._clients: Dict[str, AgentClientLike] = {}
+        # Every registered agent starts enabled; the set resets on restart.
+        self._disabled: set[str] = set()
         self._model_settings: Dict[str, dict[str, Any]] = {}
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
@@ -56,7 +85,7 @@ class Pool:
         self._workflow_registry = WorkflowRegistry()
         self._default_workflow_ids: list[str] = []
         # CortexSettings when HostBuilder.enable_cortex() was called. Each
-        # computer imports the same pool and reads it in build_agent_server.
+        # agent process imports the same pool and reads it in build_agent_server.
         self.cortex: Any = None
         self._workflow_service = WorkflowService(
             self._workflow_registry,
@@ -68,17 +97,30 @@ class Pool:
         value = str(database_url or "").strip()
         self.runtime_database_url = value or None
 
-    def configure_computer_provider(self, provider: ComputerProvider) -> None:
-        """Set the provider that runs this pool's agent computers.
+    def configure_agent_provider(self, provider: AgentProvider) -> None:
+        """Set the provider that runs this pool's agents.
 
         The pool owns it from here and closes it in ``close()``.
         """
         if self._clients:
-            raise RuntimeError("computer provider must be configured before start()")
-        self._computer_provider = provider
+            raise RuntimeError("agent provider must be configured before start()")
+        self._agent_provider = provider
 
-    def has_computer_provider(self) -> bool:
-        return self._computer_provider is not None
+    def has_agent_provider(self) -> bool:
+        return self._agent_provider is not None
+
+    def configure_sandboxes(self, sandboxes: "SandboxManager") -> None:
+        """Set where agents' bash commands run: each request user's sandbox.
+
+        Without sandboxes, agents get no ``bash`` tool. The pool owns the
+        manager from here and closes it in ``close()``.
+        """
+        if self._clients:
+            raise RuntimeError("sandboxes must be configured before start()")
+        self._sandboxes = sandboxes
+
+    def get_sandboxes(self) -> "SandboxManager | None":
+        return self._sandboxes
 
     def register_agent(
         self,
@@ -138,6 +180,10 @@ class Pool:
             if registered is None or registered.is_workflow_agent:
                 raise ValueError(
                     f"host '{host.host_id}' references unknown agent '{agent_id}'"
+                )
+            if agent_id in self._disabled:
+                raise ValueError(
+                    f"host '{host.host_id}' references disabled agent '{agent_id}'"
                 )
         for workflow_id in host.workflows:
             try:
@@ -233,10 +279,10 @@ class Pool:
         *,
         message: str,
         session_id: str,
+        user_id: str,
         structured_output: Any = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
-        user_id: str | None = None,
     ) -> dict[str, Any]:
         host = self.get_host(host_id)
         request_id = await self.get_client(host.primary).post_request(
@@ -321,14 +367,16 @@ class Pool:
             await shared_runtime_store.open()
             await shared_memory_store.open()
             await shared_workflow_store.open()
+            if self._sandboxes is not None:
+                await self._sandboxes.start()
 
             if self._registered:
-                if self._computer_provider is None:
+                if self._agent_provider is None:
                     raise RuntimeError(
-                        "a computer provider is required to start a pool with agents"
+                        "an agent provider is required to start a pool with agents"
                     )
                 endpoints = await asyncio.gather(
-                    *(self._computer_provider.ensure(agent_id) for agent_id in self._registered)
+                    *(self._agent_provider.ensure(agent_id) for agent_id in self._registered)
                 )
                 for endpoint in endpoints:
                     self._clients[endpoint.agent_id] = AgentClient(
@@ -339,10 +387,81 @@ class Pool:
             raise
 
     def get_client(self, agent_id: str) -> AgentClientLike:
+        if agent_id in self._disabled:
+            raise AgentDisabledError(agent_id)
         client = self._clients.get(agent_id)
         if client is None:
             raise ValueError(f"agent client '{agent_id}' is not registered")
         return client
+
+    def is_agent_enabled(self, agent_id: str) -> bool:
+        return self.require_agent(agent_id) not in self._disabled
+
+    def agent_status(self, agent_id: str) -> str:
+        """``running``, ``starting``, ``unavailable`` or ``disabled``."""
+        resolved_agent_id = self.require_agent(agent_id)
+        if resolved_agent_id in self._disabled:
+            return STATUS_DISABLED
+        status = (
+            self._agent_provider.status(resolved_agent_id)
+            if self._agent_provider is not None
+            else None
+        )
+        return status or STATUS_UNAVAILABLE
+
+    def agent_references(self, agent_id: str) -> list[str]:
+        """The hosts and workflows that name ``agent_id``."""
+        references = [
+            f"host '{host.host_id}'"
+            for host in self._hosts.values()
+            if agent_id == host.primary or agent_id in host.subagents
+        ]
+        for workflow in self._workflow_registry.list():
+            for step in workflow.steps:
+                named = (
+                    step.agent_id == agent_id
+                    if isinstance(step, AgentStep)
+                    else agent_id in getattr(step, "agent_ids", ())
+                )
+                if named:
+                    references.append(f"workflow '{workflow.workflow_id}'")
+                    break
+        return references
+
+    async def enable_agent(self, agent_id: str) -> None:
+        """Start the agent's process and accept requests for it again.
+
+        Requests left pending when it was disabled continue once it is up.
+        """
+        resolved_agent_id = self.require_agent(agent_id)
+        if resolved_agent_id not in self._disabled:
+            return
+        if self._agent_provider is None:
+            raise RuntimeError("the pool is not started")
+        endpoint = await self._agent_provider.ensure(resolved_agent_id)
+        self._clients[resolved_agent_id] = AgentClient(
+            endpoint.base_url, resolved_agent_id, token=endpoint.token
+        )
+        self._disabled.discard(resolved_agent_id)
+
+    async def disable_agent(self, agent_id: str) -> None:
+        """Stop accepting requests for the agent and stop its process.
+
+        Refused while a host or workflow names the agent. Requests in flight
+        are not cancelled; they stay pending until the agent is enabled again.
+        """
+        resolved_agent_id = self.require_agent(agent_id)
+        if resolved_agent_id in self._disabled:
+            return
+        references = self.agent_references(resolved_agent_id)
+        if references:
+            raise AgentInUseError(resolved_agent_id, references)
+        self._disabled.add(resolved_agent_id)
+        client = self._clients.pop(resolved_agent_id, None)
+        if client is not None:
+            await client.close()
+        if self._agent_provider is not None:
+            await self._agent_provider.stop(resolved_agent_id)
 
     def get_runtime_store(self) -> RuntimeStore | None:
         """Shared runtime event store, or None before the pool is started."""
@@ -393,6 +512,8 @@ class Pool:
                         if registered.metadata is not None
                         else None
                     ),
+                    "enabled": registered.agent_id not in self._disabled,
+                    "status": self.agent_status(registered.agent_id),
                 }
             )
         return described
@@ -412,6 +533,7 @@ class Pool:
         return {
             agent_id: await self.get_client(agent_id).describe()
             for agent_id in self.list_agents()
+            if agent_id not in self._disabled
         }
 
     async def describe_tools(self) -> list[dict[str, Any]]:
@@ -487,9 +609,11 @@ class Pool:
         for client in self._clients.values():
             await client.close()
         self._clients.clear()
-        if self._computer_provider is not None:
-            # Closes the provider's handle only; computers keep running.
-            await self._computer_provider.close()
+        if self._agent_provider is not None:
+            # Stops every agent process.
+            await self._agent_provider.close()
+        if self._sandboxes is not None:
+            await self._sandboxes.close()
 
         if self._shared_runtime_store is not None:
             await self._shared_runtime_store.close()
@@ -549,4 +673,4 @@ def _uses_default_memory_store(spec: AgentSpec) -> bool:
     return type(spec).build_memory_store is AgentSpec.build_memory_store
 
 
-__all__ = ["Pool"]
+__all__ = ["AgentDisabledError", "AgentInUseError", "Pool"]

@@ -61,7 +61,8 @@ class RerunRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_rerun_completed_request_new_id_same_message(self) -> None:
         runtime = await self._runtime()
         original = await runtime.submit_request(
-            message="analyze this", session_id="s-1", metadata={"caller": "x"}
+            message="analyze this", session_id="s-1", metadata={"caller": "x"},
+            user_id="u-1",
         )
         original_id = str(original["request_id"])
         await self._drain(runtime, original_id)
@@ -88,7 +89,8 @@ class RerunRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = await self._runtime()
         host = {"host_id": "h1", "primary": "rerun-app", "subagents": []}
         original = await runtime.submit_request(
-            message="with host", session_id="s-1", host_snapshot=host
+            message="with host", session_id="s-1", host_snapshot=host,
+            user_id="u-1",
         )
         original_id = str(original["request_id"])
         await self._drain(runtime, original_id)
@@ -103,7 +105,7 @@ class RerunRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rerun_leaves_original_untouched(self) -> None:
         runtime = await self._runtime()
-        original = await runtime.submit_request(message="hi", session_id="s-1")
+        original = await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
         original_id = str(original["request_id"])
         await self._drain(runtime, original_id)
         before = await runtime.runtime_store.list_request_events(original_id)

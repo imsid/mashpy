@@ -18,8 +18,9 @@ Postgres.
 
 You author two things. A workflow is the pipeline itself, the shape of the
 automation as code. An agent is an LLM loop running inside a harness that gives
-it tools, skills, memory, and a durable request lifecycle. An agent serves user
-requests directly, runs as a step inside a workflow, or both.
+it tools, skills, memory, a sandbox for the code it writes, and a durable
+request lifecycle. An agent serves user requests directly, runs as a step
+inside a workflow, or both. Either way, it works for a user.
 
 ## Workflows
 
@@ -41,8 +42,9 @@ step's status, inputs, outputs, and attempts.
 
 Each agent is an `AgentSpec`: a Python contract that names the agent, picks its
 LLM, and declares its system prompt, tools, and skills. The loop runs inside a
-durable request: think, act, observe, with tools executing in the runtime,
-skills loaded on demand, memory management, and structured output. Every
+durable request: think, act, observe, with tools executing in the agent's
+process, the code the model writes running in the user's sandbox, skills loaded
+on demand, memory management, and structured output. Every
 request is recorded as replayable runtime events, so retries, restarts, and
 long-running work recover mid-loop instead of starting over. An agent can pause
 mid-request for a human approval or a question, and the pause survives a host
@@ -64,15 +66,43 @@ request ────────► │   │     Agent Loop        │ ──�
 (cli/api)         │   │ think → act → observe │      │      │
                   │   │                       │      ▼      │
                   │   └─ tools ───── skills ──┘  structured │
-workflow step ──► │        ▲                      output    │
-(api/cli)         │        │ user interaction               │
-                  │        ▼ (approval / ask-user)          │
-                  │                                         │
-                  │       resumable · replayable            │
+workflow step ──► │      │ ▲                      output    │
+(api/cli)         │      │ │ user interaction               │
+                  │      │ ▼ (approval / ask-user)          │
+                  │      │                                  │
+                  │      │  resumable · replayable          │
+                  └──────┼──────────────────────────────────┘
+                         │ bash
+                         ▼
+                  ┌─────────────────────────────────────────┐
+                  │  Sandbox: one container per user        │
+                  │  /home/agent/workspaces/<agent_id>      │
+                  │  files persist · no secrets · no db     │
                   └─────────────────────────────────────────┘
 ```
 
-A request from a user and a step in a workflow ride the same durable loop.
+A request from a user and a step in a workflow ride the same durable loop, and
+the bash commands either one runs land in the sandbox of the user it acts for.
+
+## Sandboxes
+
+With a shell, an agent can install a package, write a script to parse a file,
+run the tests of the code it produced, and keep the results for a later
+request. Mash runs those commands in a sandbox, a container for the user the
+request acts for.
+
+Every request names its user with a `user_id`, which the application sends and
+the host trusts. The host starts a user's sandbox on their first command and
+stops it after 15 idle minutes. With Docker on the host, every agent gets a
+`bash` tool that runs in the request user's sandbox, in a folder of its own
+(`/home/agent/workspaces/<agent_id>`), and its files persist across requests
+and restarts. Bash runs as an unprivileged `agent` user with a clean
+environment. A sandbox holds only that user's files: the agents' secrets and
+the database stay with the host.
+
+Each agent runs as a process of the host, with its credentials, its model
+connection, and the tools you registered. Those tools run in that process,
+and the commands the model writes go to the sandbox.
 
 ## The pool and hosts
 
@@ -96,6 +126,8 @@ flowchart TD
     P --> A1["Agent: concierge"]
     P --> A2["Agent: research"]
     P --> W1["Workflow: research-brief"]
+    A1 -- "bash" --> S["Sandboxes<br/>one per user"]
+    A2 -- "bash" --> S
 ```
 
 ## The execution surface
@@ -123,7 +155,7 @@ the same across every model.
 Because each agent picks its own model, one deployment can mix them. A
 high-volume triage or extraction agent runs on a local open-source model while
 the agent that handles the hard reasoning runs on a frontier model, in the same
-process, behind the same API. You match the model to the task and the budget,
+deployment, behind the same API. You match the model to the task and the budget,
 and the harness underneath is identical.
 
 ## Evals
@@ -134,7 +166,8 @@ subagents behind it. Mash evals run against the host rather than any single
 agent, so what gets measured is the path the application actually takes and
 the response the user actually receives.
 
-Synthetic evals ship in the SDK and runtime. A built-in workflow reads the
+Synthetic evals ship in the SDK and runtime, turned on per pool with
+`HostBuilder.enable_evals()`. A built-in workflow reads the
 host's declared capabilities and the developer's guidance, then generates a
 dataset of test scenarios and a weighted scoring rubric before the first user
 ever sends a message. Each scoring run is an experiment: it snapshots the live

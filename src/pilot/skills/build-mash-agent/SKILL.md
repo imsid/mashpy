@@ -157,16 +157,19 @@ serialized.
 
 ### Built-in Tools
 
-Mash ships these tools — register them directly:
+Register `AskUser` directly:
 
 ```python
-from mash.tools.bash import BashTool
 from mash.tools.ask_user import AskUserTool
 
 tools = ToolRegistry()
-tools.register(BashTool(working_dir="/path/to/workspace"))
 tools.register(AskUserTool())  # durable user questions (hosted runtime only)
 ```
+
+Do not register a `bash` tool. When the host has sandboxes (a reachable Docker
+daemon), every agent gets `bash`, which runs each command in the request
+user's sandbox in `/home/agent/workspaces/<agent_id>`. A spec with its own
+`bash` tool fails to start on such a host.
 
 ### Web Search
 
@@ -324,8 +327,9 @@ class MyAgent(AgentSpec):
 # Start the host server
 mash host serve --host-app {project_name}.spec:build_pool --port 8000
 
-# Save the connection (validates the URL and key against /health)
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret
+# Save the connection and the user requests act for
+# (validates the URL and key against /health)
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
 
 # Talk to the agent directly (bare mode, no delegation)
 mash repl --agent assistant
@@ -387,6 +391,7 @@ class AnalysisResult(BaseModel):
 response = await runtime.submit_request(
     message="Analyze this data",
     session_id="s1",
+    user_id="u-1",
     structured_output=AnalysisResult,
 )
 ```
@@ -404,6 +409,8 @@ response = await runtime.submit_request(
 | `PARALLEL_API_KEY` | Parallel AI key for web search (optional; free tier needs none) |
 | `PARALLEL_OAUTH_TOKEN` | Parallel AI OAuth token for web search (optional) |
 | `MASH_DATABASE_URL` | Postgres URL for memory/runtime stores |
+| `MASH_HOST_SECRET` | Derives agent and sandbox tokens; required to serve agents |
+| `MASH_SANDBOX_IMAGE` | Sandbox image for `bash` when the host runs outside a container |
 | `MASH_DATA_DIR` | Persistent data directory (default: `/var/lib/mash`) |
 | `MASH_API_KEY` | API key for the hosted server |
 

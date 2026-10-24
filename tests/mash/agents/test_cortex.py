@@ -1,4 +1,4 @@
-"""Cortex reads: settings, the profile block, ``search_cortex``, and wiring on a computer."""
+"""Cortex reads: settings, the profile block, ``search_cortex``, and wiring in an agent process."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from mash.agents.cortex import (
     profile_block,
 )
 from mash.runtime import HostBuilder
-from mash.runtime.computer import build_agent_server
+from mash.runtime.agent_process import build_agent_server
 from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.factory import build_agent_instance
 from mash.testing.runtime_fixtures import build_spec, metadata
@@ -112,7 +112,7 @@ class SearchCortexToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await reader.profile_block("u-unknown"), "")
 
 
-class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
+class AgentProcessWiringTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
         state.start()
@@ -134,7 +134,7 @@ class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("search_cortex", tools(enabled, None))
         self.assertNotIn("search_cortex", tools(disabled, "u-1"))
 
-    async def test_request_with_a_user_sees_the_profile(self) -> None:
+    async def test_request_sees_its_users_profile(self) -> None:
         runtime_store, memory_store = build_test_stores()
         p = patch("mash.runtime.spec.PostgresStore", lambda _url: memory_store)
         p.start()
@@ -147,7 +147,7 @@ class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
         await runtime.open()
         try:
             systems = {}
-            for user_id in ("u-1", None):
+            for user_id in ("u-1", "u-2"):
                 accepted = await runtime.submit_request(
                     message="hi", session_id=f"s-{uuid.uuid4()}", user_id=user_id
                 )
@@ -160,7 +160,7 @@ class ComputerWiringTests(unittest.IsolatedAsyncioTestCase):
             await runtime.shutdown()
 
         self.assertIn("Prefers metric units.", systems["u-1"])
-        self.assertNotIn("ABOUT THIS USER", systems[None])
+        self.assertNotIn("ABOUT THIS USER", systems["u-2"])
 
 
 class PostgresCortexStoreTests(unittest.IsolatedAsyncioTestCase):

@@ -2,7 +2,7 @@
 
 Talks to the daemon over its Unix socket (``/var/run/docker.sock`` or the
 ``unix://`` path in ``DOCKER_HOST``) or a ``tcp://`` address, using httpx. Only
-the calls agent computers need are here.
+the calls sandboxes need are here.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def _transport_for(docker_host: str | None) -> tuple[httpx.AsyncBaseTransport, s
 
 
 class DockerEngine:
-    """The Docker Engine API calls agent computers use."""
+    """The Docker Engine API calls sandboxes use."""
 
     def __init__(
         self,
@@ -81,15 +81,20 @@ class DockerEngine:
             raise DockerEngineError(response.status_code, message)
         return response
 
+    async def ping(self) -> None:
+        """Raise ``DockerEngineError`` unless the daemon answers."""
+        await self._call("GET", "/_ping")
+
     async def inspect_container(self, name: str) -> dict[str, Any] | None:
         response = await self._call("GET", f"/containers/{name}/json", allow=(404,))
         return None if response.status_code == 404 else response.json()
 
-    async def list_containers(self, *, label: str) -> list[dict[str, Any]]:
+    async def list_containers(self, *, labels: list[str]) -> list[dict[str, Any]]:
+        """Containers, running or not, that carry every one of ``labels``."""
         response = await self._call(
             "GET",
             "/containers/json",
-            params={"all": "1", "filters": json.dumps({"label": [label]})},
+            params={"all": "1", "filters": json.dumps({"label": list(labels)})},
         )
         return list(response.json())
 
@@ -102,6 +107,10 @@ class DockerEngine:
     async def start_container(self, name: str) -> None:
         # 304: already running.
         await self._call("POST", f"/containers/{name}/start", allow=(304,))
+
+    async def stop_container(self, name: str) -> None:
+        # 304: already stopped; 404: gone.
+        await self._call("POST", f"/containers/{name}/stop", allow=(304, 404))
 
     async def remove_container(self, name: str) -> None:
         await self._call(

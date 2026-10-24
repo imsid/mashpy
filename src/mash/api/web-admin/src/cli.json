@@ -40,6 +40,17 @@
             "required": false,
             "default": null,
             "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User that requests and workflow runs act for (falls back to saved config)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
           }
         ],
         "subcommands": []
@@ -164,6 +175,17 @@
             "required": false,
             "default": null,
             "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
           }
         ],
         "subcommands": []
@@ -211,6 +233,17 @@
             ],
             "name": "host_id",
             "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -266,6 +299,17 @@
             "required": false,
             "default": null,
             "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
           }
         ],
         "subcommands": []
@@ -313,6 +357,17 @@
             ],
             "name": "host_id",
             "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -368,6 +423,17 @@
             "required": false,
             "default": null,
             "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
           }
         ],
         "subcommands": []
@@ -419,6 +485,17 @@
             "required": false,
             "default": null,
             "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
           }
         ],
         "subcommands": []
@@ -466,6 +543,17 @@
             ],
             "name": "host_id",
             "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -539,6 +627,17 @@
             ],
             "name": "host_id",
             "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -628,6 +727,220 @@
                 ],
                 "name": "cors_origin",
                 "help": "Allowed CORS origin; repeat for multiple values.",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "name": "agent",
+        "help": "Agent process commands",
+        "args": [],
+        "subcommands": [
+          {
+            "name": "serve",
+            "help": "Serve one agent of a pool (the host runs one per agent)",
+            "args": [
+              {
+                "flags": [
+                  "--host-app"
+                ],
+                "name": "host_app",
+                "help": "Host application reference in module:attribute format.",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--agent"
+                ],
+                "name": "agent",
+                "help": "Agent id to serve",
+                "positional": false,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--host"
+                ],
+                "name": "host",
+                "help": "Agent server bind host",
+                "positional": false,
+                "required": false,
+                "default": "127.0.0.1",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--port"
+                ],
+                "name": "port",
+                "help": "Agent server bind port",
+                "positional": false,
+                "required": false,
+                "default": 9000,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--database-url"
+                ],
+                "name": "runtime_database_url",
+                "help": "Shared Postgres database URL.",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "name": "sandbox",
+        "help": "Serve and manage per-user sandboxes",
+        "args": [],
+        "subcommands": [
+          {
+            "name": "serve",
+            "help": "Run the sandbox daemon (inside a sandbox)",
+            "args": [
+              {
+                "flags": [
+                  "--host"
+                ],
+                "name": "host",
+                "help": "Bind host",
+                "positional": false,
+                "required": false,
+                "default": "0.0.0.0",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--port"
+                ],
+                "name": "port",
+                "help": "Bind port",
+                "positional": false,
+                "required": false,
+                "default": 9000,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--workspaces"
+                ],
+                "name": "workspaces",
+                "help": "Directory holding one folder per agent",
+                "positional": false,
+                "required": false,
+                "default": "/home/agent/workspaces",
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "ls",
+            "help": "List sandboxes",
+            "args": [
+              {
+                "flags": [
+                  "--namespace"
+                ],
+                "name": "namespace",
+                "help": "Deployment sandbox namespace (or set MASH_SANDBOX_NAMESPACE; default mash)",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "shell",
+            "help": "Open a shell in a user's sandbox, starting it if stopped",
+            "args": [
+              {
+                "flags": [
+                  "user_id"
+                ],
+                "name": "user_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--agent"
+                ],
+                "name": "agent",
+                "help": "Start in this agent's folder",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--root"
+                ],
+                "name": "root",
+                "help": "Open a root shell",
+                "positional": false,
+                "required": false,
+                "default": false,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--namespace"
+                ],
+                "name": "namespace",
+                "help": "Deployment sandbox namespace (or set MASH_SANDBOX_NAMESPACE; default mash)",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "stop",
+            "help": "Stop a user's sandbox; its next bash call starts it again",
+            "args": [
+              {
+                "flags": [
+                  "user_id"
+                ],
+                "name": "user_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--namespace"
+                ],
+                "name": "namespace",
+                "help": "Deployment sandbox namespace (or set MASH_SANDBOX_NAMESPACE; default mash)",
                 "positional": false,
                 "required": false,
                 "default": null,

@@ -242,15 +242,12 @@ class AgentServer:
                 return _json_error(400, "INVALID_PARENT", str(exc))
 
         user_id = payload.get("user_id")
-        if user_id is not None:
-            try:
-                validate_user_id(user_id)
-            except ValueError as exc:
-                return _json_error(400, "INVALID_REQUEST", str(exc))
-            if parent is not None and parent.get("kind") == "workflow":
-                return _json_error(
-                    400, "INVALID_REQUEST", "a workflow step request cannot carry a user_id"
-                )
+        if user_id is None:
+            return _json_error(400, "INVALID_REQUEST", "user_id is required")
+        try:
+            validate_user_id(user_id)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_REQUEST", str(exc))
 
         request_id = payload.get("request_id")
         if request_id is not None:

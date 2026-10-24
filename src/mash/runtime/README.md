@@ -268,15 +268,15 @@ This is intentionally append-only and request-scoped.
 `AgentRuntime` does not create or close its stores; callers own that
 lifecycle.
 
-- **`AgentServer`** (on each agent computer) creates its stores in
+- **`AgentServer`** (in each agent process) creates its stores in
   `from_spec()` and closes them in its lifespan shutdown, after the runtime
-  shuts down. Each computer holds its own Postgres connections.
+  shuts down. Each agent process holds its own Postgres connections.
 
 - **`Pool`** (on the host) opens one shared `PostgresRuntimeStore`, one shared
   `PostgresStore` and one `WorkflowStore` for the host's own reads: traces,
   telemetry, sessions, feedback, and workflow runs. It runs no agent runtimes.
   Session reads cover agents that use the default `build_memory_store()`; an
-  agent that overrides it keeps its store on its computer only.
+  agent that overrides it keeps its store in its own process only.
 
 ## File and Module Guide
 
@@ -318,9 +318,10 @@ lifecycle.
 - [`client.py`](./client.py)
   - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached
 
-- [`computer.py`](./computer.py)
-  - `build_agent_server(pool, agent_id, token=, host_api_url=)`: the `AgentServer` behind `mash agent serve`; registers `bash` on the agent unless its spec has its own, and gives the runtime a `CortexReader` when the pool enables Cortex (`runtime.enable_cortex`): requests with a `user_id` get the profile block in `context.load` and `search_cortex`
-  - `HostRelay`: the runtime's pool access on a computer; subagent clients point at the host's `/h2a` relay
+- [`agent_process.py`](./agent_process.py)
+  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_bash=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_bash` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets the sandbox `BashTool`, and a spec with its own `bash` tool fails to start. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
+  - `HostRelay`: the runtime's pool access in an agent process; subagent clients point at the host's `/h2a` relay
+  - `stop_with_parent()`: an agent process shuts down when the host whose pid is in `MASH_PARENT_PID` exits
 
 - [`sessions.py`](./sessions.py)
   - session reads over the memory store and event log, shared by the runtime and the host
@@ -377,7 +378,8 @@ lifecycle.
 
 - `host/host.py`
   - `Pool`
-  - agent registrations, one `AgentClient` per agent computer (from the configured `ComputerProvider` at `start()`), and the host (composition) registry. The pool runs no agent runtimes
+  - agent registrations, one `AgentClient` per enabled agent (from the configured `AgentProvider` at `start()`), the host (composition) registry, and the `SandboxManager` when the host has sandboxes. The pool runs no agent runtimes
+  - `enable_agent` / `disable_agent`: start or stop one agent's process on a running pool. Disable raises `AgentInUseError` while a host or workflow names the agent; `get_client` raises `AgentDisabledError` for a disabled one. The enabled set is in memory
 
 - `host/builder.py`
   - `HostBuilder`
@@ -392,17 +394,11 @@ lifecycle.
 - `host/tokens.py`
   - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
 
-- `host/computers.py`
-  - `DockerComputerProvider.ensure(agent_id)`: volume `<agent_id>-workspace`, container `mash-agent-<agent_id>` on the private network (`MASH_COMPUTER_NETWORK`, default `mash`) with restart policy `always`, then a `/health` wait of up to five minutes, since computers starting together on a laptop can take minutes to import the app
-  - the host's environment passes through, minus process variables (`PATH`, `HOME`, ...) and the host's own secrets (`MASH_HOST_SECRET`, `MASH_API_KEY`)
-  - host in a container: computers run the host's own image id and are reached by name; the host joins the network itself. The host container needs the Docker socket mounted and its group added (`group_add`), since the image runs as `mash`
-  - host on the Docker host (local development): `MASH_COMPUTER_IMAGE` is required and must contain the app; each computer's port is published on `127.0.0.1` at a port fixed at create time, and computers reach the host at `host.docker.internal`. Env values pass through unchanged, so a `localhost` database URL must be written as `host.docker.internal`
-  - `MASH_COMPUTER_MOUNTS`: comma-separated `source:target[:ro]` bind mounts (Docker-host sources) added to every computer after the workspace volume
-  - `MASH_COMPUTER_NAMESPACE`: container and volume names are global on a Docker daemon, so a deployment that shares one sets a namespace: container `<namespace>-agent-<agent_id>`, volume `<namespace>-<agent_id>-workspace`, label `mash.namespace`. Without it the names above are unchanged
-  - `replace_computer(engine, agent_id, namespace=None)`: recreate a container from its own configuration, keeping volumes
-
-- `host/docker_engine.py`
-  - minimal async Docker Engine API client over the Unix socket (`DOCKER_HOST`, `/var/run/docker.sock`, or Docker Desktop's `~/.docker/run/docker.sock`)
+- `host/processes.py`
+  - `AgentProcessProvider.ensure(agent_id)`: spawns `mash agent serve --host-app <app> --agent <id> --host 127.0.0.1 --port <free port>` with the host's environment plus `MASH_AGENT_TOKEN`, `MASH_HOST_API_URL`, `MASH_SANDBOX_ENABLED` and `MASH_PARENT_PID`, then waits for `/health`
+  - the child's output goes to the host's stderr, one line at a time, prefixed `[<agent_id>]`
+  - a child that exits restarts on the same port, with backoff from 1 to 30 seconds; while it is down its routes return `503 AGENT_UNAVAILABLE`
+  - `stop(agent_id)` and `close()` send SIGTERM, then SIGKILL after `stop_timeout`; `status(agent_id)` is `starting`, `running` or `unavailable`
 
 ## Request Lifecycle
 
@@ -615,7 +611,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 **Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
-**Process crash recovery** covers the case where an agent computer's process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the DBOS workflow is left in PENDING state in the database. Docker restarts the container, and on startup `DBOS.launch()` scans for PENDING workflows under the computer's executor id (`agent:<agent_id>`) and replays them from the last completed step. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
+**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the DBOS workflow is left in PENDING state in the database. The host restarts the process, and on startup `DBOS.launch()` scans for PENDING workflows under the agent's executor id (`agent:<agent_id>`) and replays them from the last completed step. A host restart restarts every agent the same way, and a disabled agent's pending requests continue when it is enabled. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
 
 ### Request Status, Cancel, Resume, and Rerun APIs
 

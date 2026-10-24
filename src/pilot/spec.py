@@ -21,8 +21,8 @@ GUIDE_HOST_ID = "guide"
 
 
 def build_pool() -> Pool:
-    """Build the Pilot pool: the guide, the builder, and the changelog workflow."""
-    builder = HostBuilder()
+    """Build the Pilot pool: the guide, the builder, the changelog workflow, and evals."""
+    builder = HostBuilder().enable_evals()
     for entry in CATALOG:
         builder.agent(entry.create_spec(), metadata=entry.build_metadata())
     builder.workflow(build_changelog_workflow_spec())

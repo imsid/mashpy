@@ -1,8 +1,8 @@
-"""H2A relay for calls agent computers make to the host.
+"""H2A relay for calls agent processes make to the host.
 
-A primary agent on its computer calls its subagents through these routes,
+A primary agent in its process calls its subagents through these routes,
 never directly. They speak H2A as ``AgentServer`` does (no ``{data}``
-envelope), so the computer uses a plain ``AgentClient`` pointed at
+envelope), so the agent uses a plain ``AgentClient`` pointed at
 ``{host}/h2a``. Each call authenticates with the caller's agent token; the
 host checks it against the request's ``parent`` and host snapshot, then
 forwards to the subagent's client. The subagent request acts for the parent
@@ -19,20 +19,21 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from mash.runtime.client import AgentClientError, AgentUnavailableError
 from mash.runtime.events import RuntimeEventType
+from mash.runtime.host.host import AgentDisabledError
 from mash.runtime.host.tokens import agent_for_token
 from mash.runtime.requests import parent_request_metadata, validate_request_id
 
 from .common import build_runtime_event_sse_payload, state_from_request
 
 
-def _h2a_error(status_code: int, code: str, message: str) -> JSONResponse:
+def h2a_error(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         {"error": {"code": code, "message": message}},
         status_code=status_code,
     )
 
 
-def _bearer_token(request: Request) -> str:
+def bearer_token(request: Request) -> str:
     header = request.headers.get("authorization") or ""
     if not header.lower().startswith("bearer "):
         return ""
@@ -45,12 +46,12 @@ def build_h2a_router() -> APIRouter:
     def _caller(request: Request) -> str | JSONResponse:
         state = state_from_request(request)
         if not state.host_secret:
-            return _h2a_error(503, "H2A_UNAVAILABLE", "host secret is not configured")
+            return h2a_error(503, "H2A_UNAVAILABLE", "host secret is not configured")
         caller = agent_for_token(
-            state.host_secret, _bearer_token(request), state.pool.list_agents()
+            state.host_secret, bearer_token(request), state.pool.list_agents()
         )
         if caller is None:
-            return _h2a_error(401, "UNAUTHORIZED", "Missing or invalid agent token")
+            return h2a_error(401, "UNAUTHORIZED", "Missing or invalid agent token")
         return caller
 
     @router.post("/agent/{agent_id}/request")
@@ -61,59 +62,61 @@ def build_h2a_router() -> APIRouter:
         try:
             body = await request.json()
         except ValueError:
-            return _h2a_error(400, "INVALID_JSON", "Request body must be valid JSON")
+            return h2a_error(400, "INVALID_JSON", "Request body must be valid JSON")
         if not isinstance(body, dict):
-            return _h2a_error(400, "INVALID_REQUEST", "Request body must be an object")
+            return h2a_error(400, "INVALID_REQUEST", "Request body must be an object")
 
         parent = body.get("parent")
         try:
             parent_request_metadata(parent, agent_id=agent_id)
         except ValueError as exc:
-            return _h2a_error(400, "INVALID_PARENT", str(exc))
+            return h2a_error(400, "INVALID_PARENT", str(exc))
         if parent.get("kind") != "subagent" or parent.get("agent_id") != caller:
-            return _h2a_error(
+            return h2a_error(
                 403, "FORBIDDEN", f"agent '{caller}' may only submit its own subagent calls"
             )
         host = body.get("host")
         subagents = host.get("subagents") if isinstance(host, dict) else None
         if not isinstance(subagents, list) or agent_id not in subagents:
-            return _h2a_error(
+            return h2a_error(
                 403, "FORBIDDEN", f"subagent '{agent_id}' is not in the request's host"
             )
 
         state = state_from_request(request)
         store = state.pool.get_runtime_store()
         if store is None:
-            return _h2a_error(503, "H2A_UNAVAILABLE", "runtime store is not available")
+            return h2a_error(503, "H2A_UNAVAILABLE", "runtime store is not available")
         identity = await store.get_request_identity(str(parent.get("request_id")))
         if identity is None:
-            return _h2a_error(400, "INVALID_PARENT", "parent request not found")
+            return h2a_error(400, "INVALID_PARENT", "parent request not found")
         if identity.agent_id != caller:
-            return _h2a_error(
+            return h2a_error(
                 403, "FORBIDDEN", f"parent request does not belong to agent '{caller}'"
             )
         if "user_id" in body and body.get("user_id") != identity.user_id:
-            return _h2a_error(
+            return h2a_error(
                 403, "FORBIDDEN", "user_id must match the parent request's user"
             )
 
         message = body.get("message")
         session_id = body.get("session_id")
         if not isinstance(message, str) or not message.strip():
-            return _h2a_error(400, "INVALID_REQUEST", "message is required")
+            return h2a_error(400, "INVALID_REQUEST", "message is required")
         if not isinstance(session_id, str) or not session_id.strip():
-            return _h2a_error(400, "INVALID_REQUEST", "session_id is required")
+            return h2a_error(400, "INVALID_REQUEST", "session_id is required")
         request_id = body.get("request_id")
         if request_id is not None:
             try:
                 validate_request_id(request_id)
             except ValueError as exc:
-                return _h2a_error(400, "INVALID_REQUEST", str(exc))
+                return h2a_error(400, "INVALID_REQUEST", str(exc))
 
         try:
             client = state.pool.get_client(agent_id)
+        except AgentDisabledError as exc:
+            return h2a_error(409, "AGENT_DISABLED", str(exc))
         except ValueError as exc:
-            return _h2a_error(404, "AGENT_NOT_FOUND", str(exc))
+            return h2a_error(404, "AGENT_NOT_FOUND", str(exc))
         try:
             submitted_id = await client.post_request(
                 message,
@@ -127,9 +130,9 @@ def build_h2a_router() -> APIRouter:
                 user_id=identity.user_id,
             )
         except AgentUnavailableError as exc:
-            return _h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
+            return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
         except AgentClientError as exc:
-            return _h2a_error(502, "AGENT_ERROR", str(exc))
+            return h2a_error(502, "AGENT_ERROR", str(exc))
         return JSONResponse(
             {
                 "request_id": submitted_id,
@@ -155,10 +158,10 @@ def build_h2a_router() -> APIRouter:
             None,
         )
         if accepted is None or accepted.agent_id != agent_id:
-            return _h2a_error(404, "REQUEST_NOT_FOUND", "Request not found")
+            return h2a_error(404, "REQUEST_NOT_FOUND", "Request not found")
         parent = dict((accepted.payload or {}).get("request_metadata") or {}).get("parent")
         if not isinstance(parent, dict) or parent.get("agent_id") != caller:
-            return _h2a_error(
+            return h2a_error(
                 403, "FORBIDDEN", f"agent '{caller}' did not submit request '{request_id}'"
             )
 
@@ -179,4 +182,4 @@ def build_h2a_router() -> APIRouter:
     return router
 
 
-__all__ = ["build_h2a_router"]
+__all__ = ["bearer_token", "build_h2a_router", "h2a_error"]

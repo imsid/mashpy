@@ -12,13 +12,22 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .builder import HostBuilder
-    from .host import Pool
+    from .host import AgentDisabledError, AgentInUseError, Pool
     from .subagents import AgentMetadata
     from .types import Host
 
-__all__ = ["AgentMetadata", "Pool", "Host", "HostBuilder"]
+__all__ = [
+    "AgentDisabledError",
+    "AgentInUseError",
+    "AgentMetadata",
+    "Pool",
+    "Host",
+    "HostBuilder",
+]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
+    "AgentDisabledError": (".host", "AgentDisabledError"),
+    "AgentInUseError": (".host", "AgentInUseError"),
     "AgentMetadata": (".subagents", "AgentMetadata"),
     "Pool": (".host", "Pool"),
     "Host": (".types", "Host"),

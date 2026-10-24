@@ -75,8 +75,8 @@ tool — the agent answers alone.
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
   -H "Content-Type: application/json" \
-  -d '{"message": "find recent papers", "session_id": "s-1"}'
-# -> {"request_id": "...", "agent_id": "assistant", "session_id": "s-1"}
+  -d '{"message": "find recent papers", "session_id": "s-1", "user_id": "u-1"}'
+# -> {"request_id": "...", "agent_id": "assistant", "session_id": "s-1", "user_id": "u-1"}
 ```
 
 The response names the primary `agent_id`; stream results from the existing
@@ -112,7 +112,7 @@ requests through it, and forget it.
 ## Composing from the CLI
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
 mash agents                                          # what's in the pool
 mash compose --host assistant --primary assistant --subagents research
 mash repl                                            # routed through 'assistant'

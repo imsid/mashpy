@@ -57,10 +57,15 @@ class MasherSpecTests(unittest.TestCase):
     def _primary_spec(self) -> AgentSpec:
         return build_spec(agent_id="primary", response_text="primary-ok")
 
-    def test_builder_always_registers_masher_and_its_workflows(self) -> None:
+    def test_builder_registers_masher_only_with_enable_evals(self) -> None:
+        plain = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
+        self.assertEqual(plain.list_agents(), ["primary"])
+        self.assertEqual(plain.get_workflow_registry().list(), [])
+
         host = (
             HostBuilder()
             .agent(self._primary_spec(), metadata=metadata())
+            .enable_evals()
             .build()
         )
         try:
@@ -383,6 +388,7 @@ class MasherBuilderTests(unittest.TestCase):
             ):
                 host = (
                     HostBuilder()
+                    .enable_evals()
                     .agent(self._primary_spec(), metadata=metadata())
                     .build()
                 )
@@ -419,6 +425,7 @@ class MasherBuilderTests(unittest.TestCase):
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
                 host = (
                     HostBuilder()
+                    .enable_evals()
                     .agent(self._primary_spec(), metadata=metadata())
                     .build()
                 )
@@ -460,6 +467,7 @@ class MasherBuilderTests(unittest.TestCase):
                 )
                 pool = (
                     HostBuilder()
+                    .enable_evals()
                     .agent(self._primary_spec(), metadata=metadata())
                     .workflow(explicit)
                     .host(
@@ -489,6 +497,7 @@ class MasherBuilderTests(unittest.TestCase):
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}, clear=True):
                 pool = (
                     HostBuilder()
+                    .enable_evals()
                     .agent(self._primary_spec(), metadata=metadata())
                     .host(Host(host_id="main", primary="primary"))
                     .build()

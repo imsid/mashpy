@@ -152,12 +152,12 @@ def build_pool():
 
 ```bash
 mash host serve --host-app my_app.host:build_pool --port 8000
-mash connect --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
 mash workflows
 ```
 
-`POST /api/v1/workflow/research-brief/run` starts a run and returns a
-`run_id`. Every step executes durably: step bodies and store writes are
+`POST /api/v1/workflow/research-brief/run` with a `user_id` and the `input`
+starts a run for that user and returns a `run_id`. Every step executes durably: step bodies and store writes are
 memoized, a failed run resumes from the failed step under the same `run_id`,
 and completed steps replay from their stored outputs instead of running again.
 Both step kinds write to the same store: the run, each step's input and output

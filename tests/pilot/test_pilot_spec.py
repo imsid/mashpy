@@ -12,6 +12,8 @@ from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
 from mash.agents.masher import EVAL_AGENT_ID, EVAL_JUDGE_AGENT_ID
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
+from mash.sandbox.manager import SandboxManager
+from mash.testing.sandboxes import LocalSandboxProvider
 from mash.workflows import StepContext
 from pilot.catalog._base import APP_NAME, REPO_ROOT
 from pilot.catalog.agents.builder import BUILDER_AGENT_ID
@@ -61,9 +63,9 @@ def _keyless_models() -> Iterator[None]:
         yield
 
 
-def _computer_runtime(pool, agent_id: str):
-    """The runtime serving ``agent_id`` on its local computer."""
-    return pool._computer_provider.agent_servers[agent_id].runtime
+def _agent_runtime(pool, agent_id: str):
+    """The runtime serving ``agent_id`` in-process."""
+    return pool._agent_provider.agent_servers[agent_id].runtime
 
 
 def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
@@ -86,17 +88,18 @@ def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
             asyncio.run(pool.close())
 
 
-def test_agents_on_their_computers() -> None:
+def test_agents_get_sandbox_bash() -> None:
     with _keyless_models():
 
         async def _run() -> None:
             pool = build_pool()
             pool.configure_runtime_database_url("postgresql://test/runtime")
+            pool.configure_sandboxes(SandboxManager(LocalSandboxProvider()))
             await pool.start()
             try:
-                guide = _computer_runtime(pool, PILOT_AGENT_ID)
+                guide = _agent_runtime(pool, PILOT_AGENT_ID)
+                # bash comes from the sandbox, not from the specs.
                 assert {"AskUser", "bash"} <= set(guide.agent.tools.list_tools())
-                assert guide.agent.tools.get("bash")._session.working_dir == str(REPO_ROOT)
                 turn_agent = guide.build_turn_agent(
                     session_id="s-1",
                     trace_id="trace-1",
@@ -107,7 +110,7 @@ def test_agents_on_their_computers() -> None:
                 finally:
                     await turn_agent.tools.shutdown()
 
-                builder = _computer_runtime(pool, BUILDER_AGENT_ID)
+                builder = _agent_runtime(pool, BUILDER_AGENT_ID)
                 assert "Skill" in builder.agent.tools
                 assert sorted(s.name for s in builder.agent.skills.list_skills()) == [
                     "build-mash-agent",
@@ -115,8 +118,9 @@ def test_agents_on_their_computers() -> None:
                     "build-mash-workflow",
                 ]
 
-                summarizer = _computer_runtime(pool, CHANGELOG_AGENT_ID)
-                assert summarizer.agent.tools.get("bash")._session.working_dir == str(REPO_ROOT)
+                summarizer = _agent_runtime(pool, CHANGELOG_AGENT_ID)
+                assert "bash" in summarizer.agent.tools
+                assert str(REPO_ROOT) in str(summarizer.agent.config.system_prompt)
             finally:
                 await pool.close()
 

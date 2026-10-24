@@ -34,6 +34,7 @@ export function RunWorkflowDrawer({ definition, open, initialInput, onClose, onS
   const [raw, setRaw] = useState('{}');
   const [drafts, setDrafts] = useState({});
   const [dedupKey, setDedupKey] = useState('');
+  const [userId, setUserId] = useState('');
   const [errors, setErrors] = useState({});
   const [submitError, setSubmitError] = useState(null);
   const [duplicateRunId, setDuplicateRunId] = useState(null);
@@ -113,6 +114,7 @@ export function RunWorkflowDrawer({ definition, open, initialInput, onClose, onS
     try {
       const run = await api.runWorkflow(definition.workflow_id, {
         input: workflowInput,
+        ...(userId.trim() ? { user_id: userId.trim() } : {}),
         ...(dedupKey.trim() ? { dedup_key: dedupKey.trim() } : {}),
       });
       onStarted(run);
@@ -197,6 +199,13 @@ export function RunWorkflowDrawer({ definition, open, initialInput, onClose, onS
         ) : (
           <p className="text-sm text-slate-500">This workflow takes no declared input fields.</p>
         )}
+
+        <Field
+          label="User ID"
+          hint="The user the run acts for. Required when the workflow uses agents."
+        >
+          <TextInput value={userId} onChange={(event) => setUserId(event.target.value)} />
+        </Field>
 
         <details className="rounded-md border border-slate-200 p-3">
           <summary className="cursor-pointer text-sm font-medium text-slate-700">Advanced</summary>

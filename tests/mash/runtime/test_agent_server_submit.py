@@ -72,7 +72,7 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.client.__exit__(None, None, None)
 
     def _post(self, body: dict):
-        return self.client.post("/agent/agent-a/request", json=body)
+        return self.client.post("/agent/agent-a/request", json={"user_id": "u-1", **body})
 
     def test_forwards_structured_output_and_metadata(self) -> None:
         resp = self._post(
@@ -108,7 +108,6 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.assertIsNone(submission["context"])
         self.assertIsNone(submission["host_snapshot"])
         self.assertIsNone(submission["parent"])
-        self.assertIsNone(submission["user_id"])
 
     def test_forwards_user_id(self) -> None:
         resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": "u@acme.io"})
@@ -122,14 +121,23 @@ class AgentServerSubmitTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 400, user_id)
         self.assertEqual(self.runtime.submissions, [])
 
-    def test_workflow_parent_with_user_id_returns_400(self) -> None:
-        parent = {"kind": "workflow", "workflow_id": "wf", "run_id": "r", "task_id": "t"}
-        resp = self._post(
-            {"message": "step", "session_id": "s-1", "user_id": "u-1", "parent": parent}
+    def test_missing_user_id_returns_400(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/request", json={"message": "plan it", "session_id": "s-1"}
         )
 
         self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")
         self.assertEqual(self.runtime.submissions, [])
+
+    def test_workflow_parent_carries_the_run_user(self) -> None:
+        parent = {"kind": "workflow", "workflow_id": "wf", "run_id": "r", "task_id": "t"}
+        resp = self._post(
+            {"message": "step", "session_id": "s-1", "user_id": "u-7", "parent": parent}
+        )
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(self.runtime.submissions[0]["user_id"], "u-7")
 
     def test_forwards_request_id_context_host_and_parent(self) -> None:
         host = {"host_id": "assistant", "primary": "concierge", "subagents": ["agent-a"]}
@@ -260,7 +268,7 @@ class AgentServerAuthTests(unittest.TestCase):
     def test_valid_token_is_accepted(self) -> None:
         resp = self.client.post(
             "/agent/agent-a/request",
-            json={"message": "plan it", "session_id": "s-1"},
+            json={"message": "plan it", "session_id": "s-1", "user_id": "u-1"},
             headers={"Authorization": "Bearer tok-1"},
         )
 

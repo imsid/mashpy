@@ -13,16 +13,17 @@ COPY src ./src
 
 RUN pip install .
 
-# Two users: `mash` runs the runtime and holds its env; `agent` runs every bash
-# session the agent opens and can read only /home/agent. `mash` may start bash
-# as `agent` and nothing else.
+# Two users. In the host container `mash` runs the host and the agent
+# processes. The same image is the sandbox image: there `mash` runs the sandbox
+# daemon, and `agent` runs every bash command and can read only /home/agent.
+# `mash` may start bash as `agent` and nothing else.
 RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash mash \
     && useradd --create-home --shell /bin/bash agent \
     && chmod 0700 /home/mash \
-    && mkdir -p /home/agent/workspace \
+    && mkdir -p /home/agent/workspaces \
     && chown -R agent:agent /home/agent \
-    && chmod 0755 /home/agent /home/agent/workspace \
+    && chmod 0755 /home/agent /home/agent/workspaces \
     && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
     && chmod 0440 /etc/sudoers.d/mash-agent \
     && mkdir -p /var/lib/mash \
@@ -32,4 +33,5 @@ USER mash
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "mash host serve --host-app \"${MASH_HOST_APP}\" --host \"${MASH_API_HOST}\" --port \"${MASH_API_PORT}\" ${MASH_API_KEY:+--api-key \"$MASH_API_KEY\"} ${MASH_RUNTIME_BIND_HOST:+--runtime-bind-host \"$MASH_RUNTIME_BIND_HOST\"} ${MASH_MEMORY_DB:+--memory-db \"$MASH_MEMORY_DB\"}"]
+# serve reads MASH_HOST_APP, MASH_API_HOST, MASH_API_PORT and MASH_API_KEY.
+CMD ["mash", "host", "serve"]

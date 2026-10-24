@@ -89,8 +89,9 @@ slate; there is no cross-run state.
 
 Step execution is at-least-once: DBOS recovery re-runs an interrupted step.
 Pure transforms replay safely. A step with external effects must dedupe on a
-stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`, and
-`attempt`, all stable across retries (e.g. `f"{ctx.run_id}:{ctx.step_id}"`).
+stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`,
+`attempt`, and the run's `user_id`, all stable across retries (e.g.
+`f"{ctx.run_id}:{ctx.step_id}"`).
 The framework never invents a key.
 
 A step may declare `timeout_s`; exceeding it fails the step, and the run stays
@@ -120,10 +121,11 @@ supported deploy that serves only workflow runs.
 Over the API:
 
 ```bash
-# start a run (dedup_key optional: a second trigger while a run is active is rejected)
+# start a run (dedup_key optional: a second trigger while a run is active is rejected;
+# user_id is required when a step uses an agent, and agent steps act for that user)
 curl -X POST http://127.0.0.1:8000/api/v1/workflow/changelog/run \
   -H "Content-Type: application/json" \
-  -d '{"input": {"repo_url": "https://github.com/acme/app"}}'
+  -d '{"input": {"repo_url": "https://github.com/acme/app"}, "user_id": "u-1"}'
 # -> {"run_id": "..."}
 
 # inspect and resume

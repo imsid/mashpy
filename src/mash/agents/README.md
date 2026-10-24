@@ -9,7 +9,7 @@
 
 ## Current Built-In Agents
 - `masher`: bundled workflow module containing `EvalAgentSpec` and two Masher
-  eval workflows. The eval agent is registered visibly in every pool. See
+  eval workflows, registered by `HostBuilder.enable_evals()`. See
   [`masher/README.md`](masher/README.md).
 
 ## Package Boundary

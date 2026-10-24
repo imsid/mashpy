@@ -46,6 +46,20 @@ _IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+class _ForUser:
+    """An agent client whose requests act for one user, as the relay's do."""
+
+    def __init__(self, client: Any, user_id: str) -> None:
+        self._client = client
+        self._user_id = user_id
+
+    async def post_request(self, *args: Any, **kwargs: Any) -> str:
+        return await self._client.post_request(*args, user_id=self._user_id, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
 class _CodeInput(BaseModel):
     value: str
 
@@ -326,7 +340,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
                     sorted(described.keys()),
-                    ["eval-agent", "eval-judge-agent", "primary", "research"],
+                    ["primary", "research"],
                 )
                 for item in described.values():
                     self.assertNotIn("role", item)
@@ -381,22 +395,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 workflow_ids = {
                     item.workflow_id for item in pool.get_workflow_registry().list()
                 }
-                self.assertEqual(
-                    workflow_ids,
-                    {
-                        "changelog",
-                        "gen-synthetic-evals",
-                        "run-experiment",
-                    },
-                )
-                self.assertEqual(
-                    pool.get_host("changelog-host").workflows,
-                    (
-                        "changelog",
-                        "gen-synthetic-evals",
-                        "run-experiment",
-                    ),
-                )
+                self.assertEqual(workflow_ids, {"changelog"})
+                self.assertEqual(pool.get_host("changelog-host").workflows, ("changelog",))
 
     def test_code_step_declared_agents_must_be_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -484,19 +484,12 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
                     sorted(described.keys()),
-                    ["eval-agent", "eval-judge-agent", "primary"],
+                    ["primary"],
                 )
-                self.assertEqual(
-                    pool.list_agents(), ["primary", "eval-agent", "eval-judge-agent"]
-                )
+                self.assertEqual(pool.list_agents(), ["primary"])
                 self.assertEqual(
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
-                    [
-                        "gen-synthetic-evals",
-                        "run-experiment",
-                        "wf-a",
-                        "wf-b",
-                    ],
+                    ["wf-a", "wf-b"],
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
@@ -517,11 +510,11 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await pool.start()
                 try:
                     client = pool.get_client("primary")
-                    request_id = await client.post_request("hello", session_id="s-1")
+                    request_id = await client.post_request("hello", session_id="s-1", user_id="u-1")
                     result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "primary-ok")
 
-                    primary = _computer_runtime(pool, "primary")
+                    primary = _agent_runtime(pool, "primary")
                     sessions = await primary.list_sessions()
                     self.assertEqual(len(sessions), 1)
                     self.assertEqual(sessions[0]["session_id"], "s-1")
@@ -554,7 +547,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await pool.start()
                 try:
                     client = pool.get_client("primary")
-                    request_id = await client.post_request("hello", session_id="s-1")
+                    request_id = await client.post_request("hello", session_id="s-1", user_id="u-1")
                     result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "primary-ok")
                 finally:
@@ -590,7 +583,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     workflow_service = pool.get_workflow_service()
                     self.assertIsNotNone(workflow_service)
                     listed = await workflow_service.list_workflows()
-                    self.assertEqual(len(listed), 3)
+                    self.assertEqual(len(listed), 1)
                     self.assertIn("changelog", {item["workflow_id"] for item in listed})
 
                     async def start_workflow_run(**_kwargs):
@@ -608,7 +601,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "get_workflow_status",
                         get_workflow_status,
                     ):
-                        run = await workflow_service.run_workflow("changelog")
+                        run = await workflow_service.run_workflow("changelog", user_id="u-1")
                     self.assertEqual(run.status, "queued")
                 finally:
                     await pool.close()
@@ -661,11 +654,12 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                 f"mw:{pool.runner_id}:wf:test",
                                 workflow_input={"target_agent_id": "primary"},
                                 session_id="repl-session-1",
+                                user_id="u-7",
                             )
 
                         self.assertEqual(output["result"], {"ok": True})
                         run_id = f"mw:{pool.runner_id}:wf:test"
-                        worker = _computer_runtime(pool, "worker")
+                        worker = _agent_runtime(pool, "worker")
                         sessions = await worker.list_sessions()
                         # The run executes under the threaded caller session (no
                         # synthetic workflow:...:run: scheme), tagged by run id.
@@ -691,6 +685,11 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(
                             {e.request_id for e in events}, {f"{run_id}-task"}
                         )
+                        # ... and for the run's user.
+                        identity = await worker.runtime_store.get_request_identity(
+                            f"{run_id}-task"
+                        )
+                        self.assertEqual(identity.user_id, "u-7")
                     finally:
                         await pool.close()
 
@@ -733,7 +732,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await pool.start()
                     try:
                         client = pool.get_client("primary")
-                        request_id = await client.post_request("hi", session_id="s-1")
+                        request_id = await client.post_request("hi", session_id="s-1", user_id="u-1")
                         events = await _collect_events(client, request_id, timeout=5)
 
                         self.assertEqual(events[-1]["event"], "request.error")
@@ -782,7 +781,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await pool.start()
                 try:
                     accepted = await pool.submit_host_request(
-                        "assistant", message="delegate", session_id="s-1"
+                        "assistant", message="delegate", session_id="s-1",
+                        user_id="u-1",
                     )
                     self.assertEqual(accepted["agent_id"], "primary-app")
                     client = pool.get_client("primary-app")
@@ -798,7 +798,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     # Every event of a host-routed request is stamped with the
                     # composition's host_id, and the store can filter on it.
-                    primary = _computer_runtime(pool, "primary-app")
+                    primary = _agent_runtime(pool, "primary-app")
                     request_events = await primary.runtime_store.list_request_events(
                         accepted["request_id"]
                     )
@@ -816,7 +816,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         [],
                     )
 
-                    research = _computer_runtime(pool, "research")
+                    research = _agent_runtime(pool, "research")
                     expected_subagent_session = "s-1"
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
@@ -849,6 +849,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         message="hello",
                         session_id="s-ctx",
                         context="User timezone: PST. Workspace: mashpy.",
+                        user_id="u-1",
                     )
                     client = pool.get_client("primary-app")
                     result = await _collect_terminal_payload(
@@ -885,6 +886,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         message="hello",
                         session_id="s-meta",
                         metadata={"tenant": "acme", "user_id": "u-1"},
+                        user_id="u-1",
                     )
                     client = pool.get_client("primary-app")
                     result = await _collect_terminal_payload(
@@ -935,6 +937,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         message="delegate",
                         session_id="s-1",
                         metadata={"tenant": "acme"},
+                        user_id="u-1",
                     )
                     client = pool.get_client("primary-app")
                     result = await _collect_terminal_payload(
@@ -943,7 +946,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
                     # The subagent request ran with the parent's caller metadata.
-                    research = _computer_runtime(pool, "research")
+                    research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-1",
                         app_id=research.app_id,
@@ -988,7 +991,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         )
                     )
                     accepted = await pool.submit_host_request(
-                        "h-dyn", message="delegate", session_id="s-1"
+                        "h-dyn", message="delegate", session_id="s-1",
+                        user_id="u-1",
                     )
                     client = pool.get_client("primary-app")
                     result = await _collect_terminal_payload(
@@ -996,7 +1000,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                    research = _computer_runtime(pool, "research")
+                    research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-1",
                         app_id=research.app_id,
@@ -1039,10 +1043,10 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     # Bare submit: same agent, no host snapshot, so the
                     # InvokeSubagent call must fail as an unknown tool.
                     client = pool.get_client("primary-app")
-                    request_id = await client.post_request("delegate", session_id="s-2")
+                    request_id = await client.post_request("delegate", session_id="s-2", user_id="u-1")
                     await _collect_events(client, request_id, timeout=5)
 
-                    primary = _computer_runtime(pool, "primary-app")
+                    primary = _agent_runtime(pool, "primary-app")
                     request_events = await primary.runtime_store.list_request_events(
                         request_id
                     )
@@ -1058,7 +1062,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     for event in request_events:
                         self.assertIsNone(event.host_id)
 
-                    research = _computer_runtime(pool, "research")
+                    research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-2",
                         app_id=research.app_id,
@@ -1082,10 +1086,10 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     # A subagent request carries the primary's host snapshot.
                     host = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
-                    primary_agent = _computer_runtime(pool, "primary-app").build_turn_agent(
+                    primary_agent = _agent_runtime(pool, "primary-app").build_turn_agent(
                         session_id="s-1", trace_id="t-1", host=host
                     )
-                    research_agent = _computer_runtime(pool, "research").build_turn_agent(
+                    research_agent = _agent_runtime(pool, "research").build_turn_agent(
                         session_id="s-1", trace_id="t-2", host=host
                     )
                     try:
@@ -1134,13 +1138,14 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await pool.start()
                 try:
                     accepted = await pool.submit_host_request(
-                        "narrow", message="delegate", session_id="s-1"
+                        "narrow", message="delegate", session_id="s-1",
+                        user_id="u-1",
                     )
                     client = pool.get_client("primary-app")
                     await _collect_events(
                         client, accepted["request_id"], timeout=5
                     )
-                    research = _computer_runtime(pool, "research")
+                    research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id="s-1",
                         app_id=research.app_id,
@@ -1188,7 +1193,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await pool.start()
                     try:
                         accepted = await pool.submit_host_request(
-                            "assistant", message="delegate", session_id="s-1"
+                            "assistant", message="delegate", session_id="s-1",
+                            user_id="u-1",
                         )
                         request_id = accepted["request_id"]
                         self.assertTrue(request_id)
@@ -1197,7 +1203,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         result = await _collect_terminal_payload(client, request_id, timeout=5)
                         self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                        primary = _computer_runtime(pool, "primary-app")
+                        primary = _agent_runtime(pool, "primary-app")
                         request_events = await primary.runtime_store.list_request_events(request_id)
                         subagent_events = [
                             event
@@ -1211,7 +1217,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             .get("request_id")
                         )
 
-                        research = _computer_runtime(pool, "research")
+                        research = _agent_runtime(pool, "research")
                         expected_subagent_session = "s-1"
                         turns = await research.store.get_turns(
                             session_id=expected_subagent_session,
@@ -1234,8 +1240,12 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
+                    # Called directly rather than through the host relay, which
+                    # would set the parent request's user.
                     tool = InvokeSubagentTool(
-                        client_resolver=pool.get_client,
+                        client_resolver=lambda agent_id: _ForUser(
+                            pool.get_client(agent_id), "u-1"
+                        ),
                         primary_app_id="primary-app",
                         primary_session_id="s-1",
                     )
@@ -1257,7 +1267,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(first["request_id"], "req-1-sub-0-0")
                     self.assertEqual(second["request_id"], "req-1-sub-0-0")
                     self.assertEqual(second["text"], "research-ok")
-                    research = _computer_runtime(pool, "research")
+                    research = _agent_runtime(pool, "research")
                     accepted = [
                         e
                         for e in await research.runtime_store.list_request_events("req-1-sub-0-0")
@@ -1289,16 +1299,16 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await pool.start()
                 try:
                     client = pool.get_client("primary")
-                    request_id = await client.post_request("boom", session_id="s-1")
+                    request_id = await client.post_request("boom", session_id="s-1", user_id="u-1")
                     events = await _collect_events(client, request_id, timeout=5)
                     self.assertEqual(events[-1]["event"], "request.error")
                     self.assertIn("boom", str(events[-1]["data"]["error"]))
                 finally:
                     await pool.close()
 
-def _computer_runtime(pool, agent_id: str):
-    """The runtime serving ``agent_id`` on its local computer."""
-    return pool._computer_provider.agent_servers[agent_id].runtime
+def _agent_runtime(pool, agent_id: str):
+    """The runtime serving ``agent_id`` in-process."""
+    return pool._agent_provider.agent_servers[agent_id].runtime
 
 
 async def _collect_events(client, request_id: str, *, timeout: float) -> list[dict[str, Any]]:

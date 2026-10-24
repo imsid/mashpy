@@ -224,6 +224,7 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
     existing = CLIConfig(
         api_base_url="http://127.0.0.1:8000",
         api_key="k",
+        user_id="u-42",
     )
     with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
         cli_main, "save_config", fake_save_config
@@ -236,9 +237,54 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
     assert saved["config"].host_id == "assistant"
     assert saved["config"].api_base_url == "http://127.0.0.1:8000"
     assert saved["config"].api_key == "k"
+    assert saved["config"].user_id == "u-42"
 
 
 def test_compose_requires_primary() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["compose", "--host", "assistant"])
+
+
+def test_connect_saves_the_user_id(tmp_path) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import main as cli_main
+
+    fake_client = MagicMock()
+    fake_client.health.return_value = {"status": "ok"}
+    saved = {}
+
+    def fake_save_config(config):
+        saved["config"] = config
+        return tmp_path / "cli.json"
+
+    with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
+        cli_main, "save_config", fake_save_config
+    ), patch.object(cli_main, "load_config", return_value=None):
+        code = cli_main.main(
+            ["connect", "--api-base-url", "http://127.0.0.1:8000", "--user-id", "u-42"]
+        )
+
+    assert code == 0
+    assert saved["config"].user_id == "u-42"
+
+
+def test_repl_requires_a_user_id(capsys) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import main as cli_main
+    from mash.cli.config import CLIConfig
+
+    fake_client = MagicMock()
+    shell = MagicMock()
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000")
+    with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
+        cli_main, "load_config", return_value=existing
+    ), patch.object(cli_main, "MashRemoteShell", shell):
+        assert cli_main.main(["repl", "--agent", "primary"]) == 1
+        shell.assert_not_called()
+        assert cli_main.main(["repl", "--agent", "primary", "--user-id", "u-42"]) == 0
+
+    target = shell.call_args.args[1]
+    assert target.user_id == "u-42"

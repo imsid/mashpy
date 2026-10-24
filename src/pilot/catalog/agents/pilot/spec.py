@@ -1,6 +1,6 @@
 """Pilot — the Mash codebase guide.
 
-It answers from the mashpy checkout mounted read-only in its workspace, and
+It answers from the mashpy checkout mounted read-only in every sandbox, and
 hands work that builds a Mash app to the builder subagent.
 """
 
@@ -11,7 +11,6 @@ from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
 from mash.skills.registry import SkillRegistry
 from mash.tools.ask_user import AskUserTool
-from mash.tools.bash import BashTool
 from mash.tools.registry import ToolRegistry
 
 from ..._base import APP_NAME, REPO_ROOT, build_primary_llm
@@ -26,15 +25,16 @@ DOC_MAP = (
     ("src/mash/<module>/README.md", "each module: core, tools, skills, runtime, workflows, api, cli, mcp, memory, evals, agents"),
     ("src/mash/<module>/AGENTS.md", "rules that must stay true in that module"),
     ("docs/posts/*.md", "the internals series and guides (request-lifecycle, composing-agents, how-to-deploy, ...)"),
-    ("docs/rfcs/host-to-agent-protocol.md", "the H2A protocol between host and agent computers"),
+    ("docs/rfcs/host-to-agent-protocol.md", "the H2A protocol between the host and its agents"),
     ("CHANGELOG.md", "what changed in each release"),
 )
 
 _PROMPT = f"""You are the {APP_NAME} guide: you answer questions about the Mash
 codebase from its source.
 
-The mashpy repository is checked out at {REPO_ROOT}, read-only. Your bash
-session starts there. Its git history is available with `git log`.
+The mashpy repository is checked out at {REPO_ROOT}, read-only. Each bash
+command starts in a fresh shell in your own folder, so begin each one with
+`cd {REPO_ROOT} && `. Its git history is available with `git log`.
 
 Where things are documented:
 {{doc_map}}
@@ -64,8 +64,8 @@ class PilotSpec(AgentSpec):
         return PILOT_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
+        # bash comes from the user's sandbox.
         tools = ToolRegistry()
-        tools.register(BashTool(working_dir=str(REPO_ROOT)))
         tools.register(AskUserTool())
         return tools
 

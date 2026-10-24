@@ -16,16 +16,13 @@ Submitting a message to a hosted agent returns a request id:
 curl -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request \
   -H "Authorization: Bearer $MASH_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message": "What changed in the last five commits?", "session_id": "s1"}'
+  -d '{"message": "What changed in the last five commits?", "session_id": "s1", "user_id": "u-1"}'
 ```
 
 ```json
 {
   "data": {
-    "request_id": "7c9e1f0a-…",
-    "agent_id": "pilot",
-    "session_id": "s1",
-    "status": "accepted"
+    "request_id": "7c9e1f0a-…"
   }
 }
 ```
@@ -36,7 +33,7 @@ The example above targets one agent directly. Requests routed through a
 [host composition](composing-agents.md) enter at
 `POST /api/v1/hosts/{host_id}/request` instead; the server resolves the
 host's primary, snapshots the composition onto the request, and replies with
-`{"request_id", "agent_id", "session_id"}` so you know which agent to stream
+`{"request_id", "agent_id", "session_id", "user_id"}` so you know which agent to stream
 from. Everything after submission, the stream, the events, the terminal
 frames, is identical for both paths.
 

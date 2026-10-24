@@ -149,6 +149,7 @@ def register_workflow(dbos_class: Any) -> None:
         run_id: str,
         workflow_input: dict[str, Any] | None = None,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         return await execute_registered_workflow(
             runner_id,
@@ -156,6 +157,7 @@ def register_workflow(dbos_class: Any) -> None:
             run_id,
             workflow_input=workflow_input,
             session_id=session_id,
+            user_id=user_id,
         )
 
     _STATE.registered_workflow = dbos_class.workflow(name=_WORKFLOW_NAME)(_workflow)
@@ -184,6 +186,7 @@ async def start_workflow_run(
     dedup_key: str | None,
     workflow_input: dict[str, Any] | None = None,
     session_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     # Deferred: mash.runtime.engine.dbos imports this module back.
     from mash.runtime.engine.dbos import ensure_dbos_ready  # pylint: disable=import-outside-toplevel
@@ -208,6 +211,7 @@ async def start_workflow_run(
                     run_id,
                     normalized_workflow_input,
                     normalized_session_id,
+                    user_id,
                 )
             else:
                 with set_enqueue_options(
@@ -220,6 +224,7 @@ async def start_workflow_run(
                         run_id,
                         normalized_workflow_input,
                         normalized_session_id,
+                        user_id,
                     )
     except dedup_error as exc:
         existing_run_id = str(getattr(exc, "workflow_id", "") or "")
@@ -263,6 +268,7 @@ async def execute_registered_workflow(
     *,
     workflow_input: dict[str, Any] | None = None,
     session_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     pool = require_runner(runner_id)
     workflow = pool.get_workflow_registry().get(workflow_id)
@@ -278,6 +284,7 @@ async def execute_registered_workflow(
         run_id=run_id,
         workflow_input=_normalize_workflow_input(workflow_input),
         session_id=session_id,
+        user_id=user_id,
     )
     return await FORWARD_PIPELINE_STRATEGY.run(ctx)
 
@@ -297,13 +304,15 @@ async def post_inline_agent_request(
     workflow_run_id: str,
     task_id: str,
     session_id: str,
+    user_id: str,
     host_snapshot: dict[str, Any] | None = None,
 ) -> str:
     """Submit one agent request on behalf of a workflow step and return its id.
 
     The request id is fixed by run and task, so a replayed or retried submit
-    reattaches to the request it already started. Pair with
-    ``collect_terminal_payload`` to await the result.
+    reattaches to the request it already started. The request acts for the
+    run's ``user_id``. Pair with ``collect_terminal_payload`` to await the
+    result.
     """
     pool = require_runner(runner_id)
     normalized = (
@@ -314,6 +323,7 @@ async def post_inline_agent_request(
     return await pool.get_client(agent_id).post_request(
         message,
         session_id=session_id,
+        user_id=user_id,
         structured_output=normalized,
         request_id=agent_step_request_id(workflow_run_id, task_id),
         host=host_snapshot,

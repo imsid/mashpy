@@ -56,7 +56,7 @@ class AppRuntimeState:
 class SubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
-    user_id: Optional[str] = None
+    user_id: str
     structured_output: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
 
@@ -70,7 +70,7 @@ class DefineHostRequest(BaseModel):
 class HostSubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
-    user_id: Optional[str] = None
+    user_id: str
     structured_output: Optional[dict[str, Any]] = None
     context: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
@@ -85,6 +85,7 @@ class RunWorkflowRequest(BaseModel):
     dedup_key: Optional[str] = None
     input: dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class CommandEventIngest(BaseModel):
@@ -159,9 +160,7 @@ def require_session_id(value: str) -> str:
     return text
 
 
-def optional_user_id(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
+def require_user_id(value: str) -> str:
     try:
         return validate_user_id(value)
     except ValueError as exc:

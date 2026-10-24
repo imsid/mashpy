@@ -17,7 +17,7 @@ Synthetic evals are also useful beyond cold start. As a host evolves, there will
 
 This is not a substitute for evaluating against live traces, which carry their own value: real distribution, real user intent, real failure modes. Synthetic and live evals are complementary; this post covers the synthetic side.
 
-The system lives entirely inside Mash. Generation runs as a masher workflow; scoring runs as a durable workflow that uses masher only as an LLM judge. Evals persist to a dedicated Postgres store that ships with Mash. No external eval infrastructure is required.
+The system lives entirely inside Mash, opt-in per pool with `HostBuilder.enable_evals()`. Generation runs as a masher workflow; scoring runs as a durable workflow that uses masher only as an LLM judge. Evals persist to a dedicated Postgres store that ships with Mash. No external eval infrastructure is required.
 
 ---
 
@@ -107,7 +107,7 @@ the latter two drive durable host and judge requests with async Python fan-out.
 
 ### Generation: `gen-synthetic-evals`
 
-Triggered from the admin UI Evals tab with a target host, optional user guidance, and a row count (default 20, max 100). This is a single eval-agent task backed by the `gen-synthetic-evals` SKILL. The agent reads the host's declared capabilities and generates the dataset and rubric before a code step persists them.
+Triggered from the admin UI Evals tab with a target host, the user to run as, optional user guidance, and a row count (default 20, max 100). This is a single eval-agent task backed by the `gen-synthetic-evals` SKILL. The agent reads the host's declared capabilities and generates the dataset and rubric before a code step persists them.
 
 | Step | What It Does |
 |---|---|
@@ -118,7 +118,8 @@ The persistence tool does no LLM work and takes no snapshots. It validates the g
 
 ### Running an experiment: `run-experiment`
 
-Triggered from the admin UI with an `eval_id` and `host_id`, each invocation is
+Triggered from the admin UI with an `eval_id`, a `host_id` and the user the
+host's requests act for, each invocation is
 a normal three-CodeStep workflow. The experiment tables are the durable handoff
 between preparation, host execution, and judging.
 

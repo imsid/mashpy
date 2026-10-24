@@ -36,6 +36,7 @@ class AgentClientSubmitTests(unittest.IsolatedAsyncioTestCase):
             context="release notes",
             host={"host_id": "assistant", "primary": "agent-a", "subagents": []},
             parent=parent,
+            user_id="u-1",
         )
 
         self.assertEqual(request_id, "req-1")
@@ -48,7 +49,7 @@ class AgentClientSubmitTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.known["req-a"] = {"request_id": "req-a", "agent_id": "agent-a", "session_id": "s-1", "status": "accepted"}
         client = AgentClient("http://agent", "agent-a", token="tok-1")
 
-        request_id = await client.post_request("again", session_id="s-1", request_id="req-a")
+        request_id = await client.post_request("again", session_id="s-1", request_id="req-a", user_id="u-1")
 
         self.assertEqual(request_id, "req-a")
         self.assertEqual(self.runtime.submissions, [])

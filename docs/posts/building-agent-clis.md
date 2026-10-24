@@ -52,7 +52,6 @@ from mash.core.llm import AnthropicProvider
 from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
 from mash.skills import SkillRegistry
 from mash.tools.registry import ToolRegistry
-from mash.tools.bash import BashTool
 
 
 class MyAgentSpec(AgentSpec):
@@ -60,9 +59,8 @@ class MyAgentSpec(AgentSpec):
         return "my-agent"
 
     def build_tools(self) -> ToolRegistry:
-        tools = ToolRegistry()
-        tools.register(BashTool(working_dir="/path/to/workspace"))
-        return tools
+        # bash comes from the host when it has sandboxes.
+        return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
         return SkillRegistry()
@@ -137,6 +135,7 @@ def main():
     parser = argparse.ArgumentParser(prog="my-cli")
     parser.add_argument("--api-base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--api-key", default=os.environ.get("MASH_API_KEY"))
+    parser.add_argument("--user-id", required=True, help="the user requests act for")
     args = parser.parse_args()
 
     client = MashHostClient(args.api_base_url, api_key=args.api_key)
@@ -146,6 +145,7 @@ def main():
             api_base_url=args.api_base_url,
             agent_id=agents[0]["agent_id"],
             session_id=MashRemoteShell.new_session_id(),
+            user_id=args.user_id,
         )
         MashRemoteShell(client, target).run()
     finally:
@@ -159,11 +159,12 @@ if __name__ == "__main__":
 Run it:
 
 ```bash
-python -m my_agent.cli
+python -m my_agent.cli --user-id u-1
 ```
 
 This already gives you a working terminal client against the first agent in
-the pool: messages go to the agent, responses stream back with live
+the pool: messages go to the agent for the user you passed (every request acts
+for one, and its bash runs in that user's sandbox), responses stream back with live
 chain-of-thought rendering, and the shell ships these built-in commands:
 
 | Command | What it does |
@@ -187,7 +188,7 @@ The imports this guide builds on, all from `mash.cli`:
 |---|---|
 | `MashHostClient` | HTTP client that talks to the host API |
 | `MashRemoteShell` | Interactive shell with REPL, rendering, and command dispatch |
-| `ShellTarget` | Connection target (URL, agent id, session id, optional host id) |
+| `ShellTarget` | Connection target (URL, agent id, session id, user id, optional host id) |
 | `Command` | Defines a slash command (name, help text, handler) |
 | `CLIContext` | Passed to every command handler (client, renderer, session state) |
 
@@ -214,6 +215,7 @@ def main():
     parser = argparse.ArgumentParser(prog="my-cli")
     parser.add_argument("--api-base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--api-key", default=os.environ.get("MASH_API_KEY"))
+    parser.add_argument("--user-id", required=True, help="the user requests act for")
     parser.add_argument("--agent", default=None, help="bare-agent mode, skips the host")
     args = parser.parse_args()
 
@@ -238,6 +240,7 @@ def main():
             api_base_url=args.api_base_url,
             agent_id=agent_id,
             session_id=MashRemoteShell.new_session_id(),
+            user_id=args.user_id,
             host_id=host_id,
         )
         shell = MashRemoteShell(client, target)
@@ -296,12 +299,14 @@ def submit_through_target(ctx, message):
             ctx.host_id,
             message=message,
             session_id=ctx.session_id,
+            user_id=ctx.user_id,
         )
         return accepted["request_id"], accepted["agent_id"]
     request_id = ctx.client.submit_request(
         ctx.agent_id,
         message=message,
         session_id=ctx.session_id,
+        user_id=ctx.user_id,
     )
     return request_id, ctx.agent_id
 
@@ -376,10 +381,11 @@ client.define_host("assistant",                      # PUT  /v1/hosts/assistant
                    workflows=[])
 client.submit_host_request("assistant",              # POST /v1/hosts/assistant/request
                            message="...",
-                           session_id="s-1")
+                           session_id="s-1",
+                           user_id="u-1")
 ```
 
-`submit_host_request` returns `{"request_id", "agent_id", "session_id"}`.
+`submit_host_request` returns `{"request_id", "agent_id", "session_id", "user_id"}`.
 Stream from the returned `agent_id` with the same `stream_request` used for
 bare submissions.
 

@@ -96,6 +96,7 @@ def _build_test_client(
     *,
     api_key: str | None = None,
     workflow_enabled: bool = False,
+    evals: bool = False,
     workflow_response_text: str = '{"last_run_ts":"2026-05-14T00:00:00Z"}',
 ):
     with patch.dict(
@@ -146,6 +147,8 @@ def _build_test_client(
                     )
                 )
             )
+        if evals:
+            builder = builder.enable_evals()
         host = builder.build()
         app = create_app(
             host,
@@ -199,7 +202,7 @@ def _save_workflow_turn(
 def test_health_and_agent_contract() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with _build_test_client(root) as client:
+        with _build_test_client(root, evals=True) as client:
             admin = client.get("/admin")
             assert admin.status_code == 200
             assert "text/html" in admin.headers["content-type"]
@@ -303,7 +306,7 @@ def test_host_snapshot_route_returns_live_composition_and_specs() -> None:
 def test_workflow_list_host_filter() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with _build_test_client(root, workflow_enabled=True) as client:
+        with _build_test_client(root, workflow_enabled=True, evals=True) as client:
             unfiltered = client.get("/api/v1/workflow")
             assert unfiltered.status_code == 200
             assert [
@@ -346,7 +349,7 @@ def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/hosts/assistant/request",
-                json={"message": "hello", "session_id": "s-host-1"},
+                json={"message": "hello", "session_id": "s-host-1", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             accepted = submitted.json()["data"]
@@ -360,13 +363,13 @@ def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
 
             missing = client.post(
                 "/api/v1/hosts/unknown/request",
-                json={"message": "hello", "session_id": "s-host-2"},
+                json={"message": "hello", "session_id": "s-host-2", "user_id": "u-1"},
             )
             assert missing.status_code == 404
             assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
 
-def test_host_and_agent_requests_take_a_user_id() -> None:
+def test_host_and_agent_requests_require_a_user_id() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
@@ -390,6 +393,9 @@ def test_host_and_agent_requests_take_a_user_id() -> None:
                 )
                 assert invalid.status_code == 400
                 assert invalid.json()["error"]["code"] == "INVALID_USER_ID"
+                missing = client.post(route, json={"message": "hello", "session_id": "s-user-4"})
+                assert missing.status_code == 422
+                assert missing.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_agent_scoped_request_and_session_routes() -> None:
@@ -398,7 +404,7 @@ def test_agent_scoped_request_and_session_routes() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s1"},
+                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -440,6 +446,7 @@ def test_agent_request_accepts_structured_output_schema_payload() -> None:
                     json={
                         "message": "hello",
                         "session_id": "s1",
+                        "user_id": "u-1",
                         "structured_output": {
                             "title": "Result",
                             "type": "object",
@@ -464,6 +471,7 @@ def test_agent_request_rejects_invalid_structured_output_schema_payload() -> Non
                 json={
                     "message": "hello",
                     "session_id": "s1",
+                    "user_id": "u-1",
                     "structured_output": ["not-a-schema"],
                 },
             )
@@ -477,7 +485,7 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
         with _build_test_client(root) as client:
             first = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s1"},
+                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
             )
             assert first.status_code == 200
             first_request_id = first.json()["data"]["request_id"]
@@ -485,7 +493,7 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
 
             second = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello again", "session_id": "s1"},
+                json={"message": "hello again", "session_id": "s1", "user_id": "u-1"},
             )
             assert second.status_code == 200
             second_request_id = second.json()["data"]["request_id"]
@@ -554,7 +562,7 @@ def test_invoke_route_is_removed() -> None:
         with _build_test_client(root) as client:
             response = client.post(
                 "/api/v1/agent/primary/invoke",
-                json={"message": "hello", "session_id": "s1"},
+                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
             )
             assert response.status_code == 404
 
@@ -605,7 +613,7 @@ def test_async_request_stream_and_auth() -> None:
             headers = {"Authorization": "Bearer secret"}
             submitted = client.post(
                 "/api/v1/agent/research/request",
-                json={"message": "hello", "session_id": "s1"},
+                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
                 headers=headers,
             )
             assert submitted.status_code == 200
@@ -662,12 +670,12 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
             with TestClient(app) as client:
                 first = client.post(
                     "/api/v1/agent/primary/request",
-                    json={"message": "first", "session_id": "shared"},
+                    json={"message": "first", "session_id": "shared", "user_id": "u-1"},
                 )
                 assert first.status_code == 200
                 second = client.post(
                     "/api/v1/agent/primary/request",
-                    json={"message": "second", "session_id": "shared"},
+                    json={"message": "second", "session_id": "shared", "user_id": "u-1"},
                 )
                 assert second.status_code == 200
                 request_id = second.json()["data"]["request_id"]
@@ -716,7 +724,7 @@ def test_telemetry_events_filter_by_agent() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1"},
+                json={"message": "hello", "session_id": "s-1", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -735,7 +743,7 @@ def test_telemetry_sessions_rollup_from_events() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-roll"},
+                json={"message": "hello", "session_id": "s-roll", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -796,7 +804,7 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
             # Primary owns the session; research participates as a subagent.
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-multi"},
+                json={"message": "hello", "session_id": "s-multi", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -949,7 +957,7 @@ def test_api_event_logging_captures_api_request_metadata_and_body() -> None:
             headers = {"X-API-Key": "secret"}
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1"},
+                json={"message": "hello", "session_id": "s-1", "user_id": "u-1"},
                 headers=headers,
             )
             assert submitted.status_code == 200
@@ -971,7 +979,7 @@ def test_api_event_logging_captures_api_request_metadata_and_body() -> None:
             assert logged["status_code"] == 200
             assert logged["request_headers"]["x-api-key"] == "[REDACTED]"
             assert logged["request_body"]["capture_status"] == "captured"
-            assert logged["request_body"]["json"] == {"message": "hello", "session_id": "s-1"}
+            assert logged["request_body"]["json"] == {"message": "hello", "session_id": "s-1", "user_id": "u-1"}
             assert "request_id" not in logged
             assert "trace_id" not in logged
             assert "x-mash-request-id" not in logged["request_headers"]
@@ -1021,7 +1029,7 @@ def test_api_logging_skips_configured_paths_and_truncates_body() -> None:
                 assert health.status_code == 200
                 submitted = client.post(
                     "/api/v1/agent/primary/request",
-                    json={"message": "this body should be truncated", "session_id": "s-1"},
+                    json={"message": "this body should be truncated", "session_id": "s-1", "user_id": "u-1"},
                 )
                 assert submitted.status_code == 200
 
@@ -1047,7 +1055,7 @@ def test_reasoning_trace_route_returns_compact_trace() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1"},
+                json={"message": "hello", "session_id": "s-1", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -1088,7 +1096,7 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello world", "session_id": "s-1"},
+                json={"message": "hello world", "session_id": "s-1", "user_id": "u-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -1114,7 +1122,7 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
 def test_workflow_routes_include_default_workflows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        with _build_test_client(root) as client:
+        with _build_test_client(root, evals=True) as client:
             listed = client.get("/api/v1/workflow")
             assert listed.status_code == 200
             assert [
@@ -1192,7 +1200,9 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
                 "start_workflow_run",
                 start_workflow_run,
             ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-                submitted = client.post("/api/v1/workflow/changelog/run", json={})
+                submitted = client.post(
+                    "/api/v1/workflow/changelog/run", json={"user_id": "u-1"}
+                )
             assert submitted.status_code == 200
             payload = submitted.json()["data"]
             assert payload["workflow_id"] == "changelog"
@@ -1233,14 +1243,9 @@ def test_workflow_only_pool_serves_and_completes_runs() -> None:
                 ),
             )
             with TestClient(app) as client:
-                # Only the always-registered masher eval agents are in the pool.
                 listed_agents = client.get("/api/v1/agent")
                 assert listed_agents.status_code == 200
-                agent_ids = {
-                    agent["agent_id"]
-                    for agent in listed_agents.json()["data"]["agents"]
-                }
-                assert agent_ids == {"eval-agent", "eval-judge-agent"}
+                assert listed_agents.json()["data"]["agents"] == []
 
                 listed = client.get("/api/v1/workflow")
                 assert listed.status_code == 200
@@ -1298,6 +1303,7 @@ def test_workflow_run_accepts_input_object() -> None:
         with _build_test_client(root, workflow_enabled=True) as client:
             async def start_workflow_run(**kwargs):
                 assert kwargs["workflow_input"] == {"target_agent_id": "primary"}
+                assert kwargs["user_id"] == "u-1"
                 return "mw:host-1:changelog:abc"
 
             async def get_workflow_status(_run_id):
@@ -1313,9 +1319,25 @@ def test_workflow_run_accepts_input_object() -> None:
             ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
                 submitted = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"input": {"target_agent_id": "primary"}},
+                    json={"input": {"target_agent_id": "primary"}, "user_id": "u-1"},
                 )
             assert submitted.status_code == 200
+
+
+def test_workflow_run_with_agents_requires_a_user_id() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, workflow_enabled=True) as client:
+            with patch.object(workflow_dbos, "start_workflow_run") as start:
+                missing = client.post("/api/v1/workflow/changelog/run", json={})
+                invalid = client.post(
+                    "/api/v1/workflow/changelog/run", json={"user_id": "has space"}
+                )
+            assert missing.status_code == 400
+            assert missing.json()["error"]["code"] == "USER_ID_REQUIRED"
+            assert invalid.status_code == 400
+            assert invalid.json()["error"]["code"] == "INVALID_USER_ID"
+            start.assert_not_called()
 
 
 def test_workflow_run_rejects_non_object_input() -> None:
@@ -1336,7 +1358,7 @@ def test_workflow_run_rejects_invalid_typed_input_before_enqueue() -> None:
             with patch.object(workflow_dbos, "start_workflow_run") as start:
                 response = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"input": {"count": "not-an-integer"}},
+                    json={"input": {"count": "not-an-integer"}, "user_id": "u-1"},
                 )
             assert response.status_code == 422
             assert response.json()["error"]["code"] == "WORKFLOW_INPUT_INVALID"
@@ -1367,7 +1389,7 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
             with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
                 response = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"dedup_key": "manual"},
+                    json={"dedup_key": "manual", "user_id": "u-1"},
                 )
             assert response.status_code == 409
             payload = response.json()["error"]

@@ -10,7 +10,7 @@ tags:
 
 # Remote Tools over MCP
 
-An agent's tool surface extends past its own computer. `build_mcp_servers()` on the spec returns a list of [Model Context Protocol](https://modelcontextprotocol.io) server configs, and the tools those servers publish join the agent's registry next to the local ones:
+An agent's tool surface extends past its own process. `build_mcp_servers()` on the spec returns a list of [Model Context Protocol](https://modelcontextprotocol.io) server configs, and the tools those servers publish join the agent's registry next to the local ones:
 
 ```python
 from mash.mcp.types import MCPServerConfig
@@ -49,7 +49,7 @@ Remote tools get namespaced names, like `mcp_github_search_issues` for a `search
 
 ```mermaid
 flowchart LR
-    subgraph computer ["agent computer (mash agent serve)"]
+    subgraph proc ["agent process (mash agent serve)"]
         A["agent"]
         R["ToolRegistry\nbash · UpdateDocs ·\nmcp_github_search_issues ·\nmcp_github_get_pull_request"]
         M["MCPManager"]
@@ -60,7 +60,7 @@ flowchart LR
     M -- "HTTP / SSE" --> S2["MCP server: …"]
 ```
 
-The manager runs in the runtime process on the agent's computer, so the URL has to be reachable from that container: a service name on the `mash` Docker network, as above, or `host.docker.internal` for a server on the Docker host. Header tokens stay in the runtime's environment, out of reach of the `agent` user that runs bash.
+The manager runs in the agent's process, a subprocess of the host, so the URL has to be reachable from where the host runs: a service name on the `mash` Docker network, as above, for a host in a container, or `localhost` for a host on your machine. Header tokens stay in that process's environment. Bash runs in the user's sandbox, which never sees them.
 
 To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
 

@@ -35,6 +35,7 @@ class HostBuilder:
         self._hosts: list[Host] = []
         self._workflows: list[WorkflowSpec] = []
         self._cortex: Any = None
+        self._evals = False
 
     def agent(
         self,
@@ -64,15 +65,23 @@ class HostBuilder:
     def enable_cortex(self, *, profile_max_chars: int | None = None) -> "HostBuilder":
         """Turn on Cortex, per-user memory shared by every agent in the pool.
 
-        Agents serving a request with a ``user_id`` get the user's profile in
-        their context and the read-only ``search_cortex`` tool. The pool also
-        gets ``cortex-agent`` and the on-demand ``cortex-build`` workflow.
+        Agents get the request user's profile in their context and the
+        read-only ``search_cortex`` tool. The pool also gets ``cortex-agent``
+        and the on-demand ``cortex-build`` workflow.
         """
         from mash.agents.cortex import DEFAULT_PROFILE_MAX_CHARS, CortexSettings
 
         self._cortex = CortexSettings(
             profile_max_chars=profile_max_chars or DEFAULT_PROFILE_MAX_CHARS
         )
+        return self
+
+    def enable_evals(self) -> "HostBuilder":
+        """Turn on masher's evals: ``eval-agent``, ``eval-judge-agent``, and
+        the ``gen-synthetic-evals`` and ``run-experiment`` workflows, which
+        attach to every host.
+        """
+        self._evals = True
         return self
 
     def build(self) -> Pool:
@@ -83,30 +92,8 @@ class HostBuilder:
                 metadata=registered.metadata,
                 agent_id=registered.agent_id,
             )
-        (
-            eval_agent_id,
-            eval_agent_spec_type,
-            build_eval_agent_metadata,
-            eval_judge_agent_id,
-            eval_judge_agent_spec_type,
-            build_eval_judge_agent_metadata,
-            build_masher_workflows,
-        ) = load_masher_components()
-        eval_agent_spec = eval_agent_spec_type()
-        eval_agent_spec.runtime_context.bind_pool(pool)
-        pool.register_agent(
-            eval_agent_spec,
-            metadata=build_eval_agent_metadata(),
-            agent_id=eval_agent_id,
-        )
-        eval_judge_agent_spec = eval_judge_agent_spec_type()
-        pool.register_agent(
-            eval_judge_agent_spec,
-            metadata=build_eval_judge_agent_metadata(),
-            agent_id=eval_judge_agent_id,
-        )
-        for workflow in build_masher_workflows(eval_agent_spec):
-            pool.register_default_workflow(workflow)
+        if self._evals:
+            _register_evals(pool)
         for workflow in self._workflows:
             pool.register_workflow(workflow)
         if self._cortex is not None:
@@ -128,3 +115,29 @@ class HostBuilder:
             pool.define_host(host)
         pool.cortex = self._cortex
         return pool
+
+
+def _register_evals(pool: Pool) -> None:
+    (
+        eval_agent_id,
+        eval_agent_spec_type,
+        build_eval_agent_metadata,
+        eval_judge_agent_id,
+        eval_judge_agent_spec_type,
+        build_eval_judge_agent_metadata,
+        build_masher_workflows,
+    ) = load_masher_components()
+    eval_agent_spec = eval_agent_spec_type()
+    eval_agent_spec.runtime_context.bind_pool(pool)
+    pool.register_agent(
+        eval_agent_spec,
+        metadata=build_eval_agent_metadata(),
+        agent_id=eval_agent_id,
+    )
+    pool.register_agent(
+        eval_judge_agent_spec_type(),
+        metadata=build_eval_judge_agent_metadata(),
+        agent_id=eval_judge_agent_id,
+    )
+    for workflow in build_masher_workflows(eval_agent_spec):
+        pool.register_default_workflow(workflow)

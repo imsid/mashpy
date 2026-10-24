@@ -134,29 +134,24 @@ async def submit_request(
     *,
     message: str,
     session_id: str,
+    user_id: str,
     structured_output: Any = None,
     host_snapshot: dict[str, Any] | None = None,
     context: str | None = None,
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
-    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit one request. A known ``request_id`` returns the existing request."""
     if request_id is not None:
         validate_request_id(request_id)
-    if user_id is not None:
-        validate_user_id(user_id)
+    validate_user_id(user_id)
     normalized_structured_output = serialize_structured_output(structured_output)
-    request_metadata: dict[str, Any] = {}
+    # ``user_id`` is caller context like ``metadata``: stored with the
+    # request, never shown to the model.
+    request_metadata: dict[str, Any] = {"user_id": user_id}
     if parent is not None:
         request_metadata.update(parent_request_metadata(parent, agent_id=self.app_id))
-        if user_id is not None and parent.get("kind") == "workflow":
-            raise ValueError("a request with a workflow parent cannot carry a user_id")
-    if user_id is not None:
-        # Caller context like ``metadata``: stored with the request, never
-        # shown to the model.
-        request_metadata["user_id"] = user_id
     if normalized_structured_output is not None:
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:
@@ -169,7 +164,7 @@ async def submit_request(
         self,
         message=message,
         session_id=session_id,
-        request_metadata=request_metadata or None,
+        request_metadata=request_metadata,
         request_id=request_id,
     )
 

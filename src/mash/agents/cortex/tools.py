@@ -1,4 +1,4 @@
-"""Cortex reads on an agent's computer: the profile block and ``search_cortex``.
+"""Cortex reads in an agent's process: the profile block and ``search_cortex``.
 
 Both are scoped to the request's ``user_id``, taken from the request and never
 from the model's arguments. A request without a user gets neither.

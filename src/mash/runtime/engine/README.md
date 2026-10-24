@@ -89,7 +89,7 @@ Instead, the workflow checkpoints around canonical step primitives:
 - DBOS is initialized with the shared Mash system database config
 - DBOS runs with this process's executor id: `host` by default, or the value
   set by `configure_executor_id(...)` before launch (`agent_executor_id(agent_id)`
-  gives `agent:<agent_id>` for an agent computer). On launch DBOS recovers only
+  gives `agent:<agent_id>` for an agent process). On launch DBOS recovers only
   the pending workflows recorded under that executor id
 - `register_workflow(...)` installs the workflow once
 - `DBOS.launch()` activates the runtime

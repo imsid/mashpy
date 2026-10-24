@@ -26,13 +26,14 @@ facts behind the profile: `topic`, `content`, `origin` (`build` or `app`) and
 `sources` (the agent, session and trace each fact came from). Deleting the
 user row deletes their entries.
 
-## Reads on agent computers
+## Reads in agent processes
 
 `build_agent_server` gives each runtime a `CortexReader` when the pool
-enables Cortex. Reads run in the runtime's `mash` process, which holds the
-database credentials; bash runs as `agent` and cannot reach the tables.
+enables Cortex. Reads run in the agent's process, which holds the database
+credentials; bash runs in the user's sandbox, which has no route to the
+database.
 
-On a request with a `user_id`:
+On every request, for the request's user:
 
 - `context.load` appends an `ABOUT THIS USER` block with the profile, capped
   at `profile_max_chars` with a `[profile truncated]` marker. It reads inside
@@ -41,8 +42,8 @@ On a request with a `user_id`:
   entries matching every term, ranked. The user comes from the request; a
   `user_id` in the arguments is ignored, and the output does not include it.
 
-Requests without a `user_id` get neither. The `/h2a` relay copies the parent
-request's `user_id` onto subagent calls, so a subagent reads the same user.
+The `/h2a` relay copies the parent request's `user_id` onto subagent calls,
+so a subagent reads the same user.
 
 ## `cortex-build`
 
@@ -50,9 +51,10 @@ request's `user_id` onto subagent calls, so a subagent reads the same user.
 collect (code) -> curate (orchestration code: cortex-agent) -> write (code)
 ```
 
-`workflow_input` (`CortexBuildInput`): `user_id`, `limit` (turns per run,
-default 200, max 1000). Run it on demand:
-`POST /api/v1/workflow/cortex-build/run` with `{"input": {"user_id": "u-42"}}`.
+A run builds the Cortex of the user it acts for. `workflow_input`
+(`CortexBuildInput`): `limit` (turns per run, default 200, max 1000). Run it
+on demand: `POST /api/v1/workflow/cortex-build/run` with
+`{"user_id": "u-42", "input": {"limit": 200}}`.
 
 - **collect** loads the user's Cortex and their turns after `built_through`
   from `MemoryStore.list_user_turns`: across agents, oldest first, without

@@ -84,7 +84,8 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         runtime = await self._runtime("writer")
 
         accepted = await runtime.submit_request(
-            message="hi", session_id="s-1", request_id="run_9-summarize"
+            message="hi", session_id="s-1", request_id="run_9-summarize",
+            user_id="u-1",
         )
 
         self.assertEqual(accepted["request_id"], "run_9-summarize")
@@ -92,8 +93,8 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_resubmitting_a_known_request_id_returns_the_existing_request(self) -> None:
         runtime = await self._runtime("writer")
 
-        first = await runtime.submit_request(message="hi", session_id="s-1", request_id="req-a")
-        second = await runtime.submit_request(message="hi again", session_id="s-1", request_id="req-a")
+        first = await runtime.submit_request(message="hi", session_id="s-1", request_id="req-a", user_id="u-1")
+        second = await runtime.submit_request(message="hi again", session_id="s-1", request_id="req-a", user_id="u-1")
 
         self.assertEqual(first, second)
         self.assertEqual(len(await self._accepted_events("req-a")), 1)
@@ -103,16 +104,16 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_request_id_owned_by_another_agent_conflicts(self) -> None:
         writer = await self._runtime("writer")
         research = await self._runtime("research")
-        await writer.submit_request(message="hi", session_id="s-1", request_id="req-a")
+        await writer.submit_request(message="hi", session_id="s-1", request_id="req-a", user_id="u-1")
 
         with self.assertRaises(RequestIdConflictError):
-            await research.submit_request(message="hi", session_id="s-1", request_id="req-a")
+            await research.submit_request(message="hi", session_id="s-1", request_id="req-a", user_id="u-1")
 
     async def test_invalid_request_id_raises(self) -> None:
         runtime = await self._runtime("writer")
 
         with self.assertRaises(ValueError):
-            await runtime.submit_request(message="hi", session_id="s-1", request_id="has space")
+            await runtime.submit_request(message="hi", session_id="s-1", request_id="has space", user_id="u-1")
 
     async def test_workflow_parent_is_recorded_and_stamped_on_events(self) -> None:
         runtime = await self._runtime("writer")
@@ -122,6 +123,7 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             session_id="s-1",
             request_id="run_9-summarize",
             parent={"kind": "workflow", "workflow_id": "changelog", "run_id": "run_9", "task_id": "summarize"},
+            user_id="u-1",
         )
 
         [accepted] = await self._accepted_events("run_9-summarize")
@@ -140,6 +142,7 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             request_id="req_1-sub-0-0",
             parent={"kind": "subagent", "request_id": "req_1", "agent_id": "concierge", "session_id": "s-1"},
             host_snapshot={"host_id": "assistant", "primary": "concierge", "subagents": ["research"]},
+            user_id="u-1",
         )
 
         [accepted] = await self._accepted_events("req_1-sub-0-0")

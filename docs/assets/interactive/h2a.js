@@ -27,13 +27,13 @@
       label: "Pool deploy (mash host serve)",
       blurb:
         "A pool deploy serves the API from the host and runs each agent on its " +
-        "own computer, a container with its own AgentServer. The pool holds one " +
-        "AgentClient per computer, so the client-to-agent hop is HTTP and SSE.",
+        "own process, a subprocess of the host with its own AgentServer. The pool " +
+        "holds one AgentClient per agent process, so the client-to-agent hop is HTTP and SSE.",
       lanes: [
         ["User application", "your app, CLI, or curl"],
         ["Host", "API routes /api/v1 + Pool"],
         ["Client", "AgentClient (httpx)"],
-        ["Agent", "AgentServer + AgentRuntime on the computer"],
+        ["Agent", "AgentServer + AgentRuntime in the agent's process"],
       ],
       ops: {
         submit: {
@@ -45,13 +45,15 @@
               what: "POST /api/v1/agent/assistant/request",
               body:
                 "<p>The caller addresses the host with the agent id in the path. " +
-                code("message") + " and " + code("session_id") + " are required. " +
+                code("message") + ", " + code("session_id") + " and " + code("user_id") +
+                ", the end user the request acts for, are required. " +
                 code("metadata") + " is optional caller context that tools can read " +
                 "and the model never sees. " + code("structured_output") +
                 " is an optional JSON schema.</p>",
               payload: json({
                 message: "Plan the next release.",
                 session_id: "s-1",
+                user_id: "u-42",
                 metadata: { tenant: "acme" },
               }),
             },
@@ -81,14 +83,15 @@
               body:
                 "<p>" + link("AgentClient.post_request", "runtime/client.py") +
                 " POSTs to " + code("/agent/assistant/request") + " on the agent's " +
-                "computer with the agent's bearer token, and returns the " +
-                code("request_id") + " from the accepted payload. The computer's " +
+                "process with the agent's bearer token, and returns the " +
+                code("request_id") + " from the accepted payload. The agent process's " +
                 link("AgentServer", "runtime/server.py") + " calls " +
                 code("runtime.submit_request") + ".</p>",
               payload:
                 'request_id = await client.post_request(\n' +
                 '    "Plan the next release.",\n' +
                 '    session_id="s-1",\n' +
+                '    user_id="u-42",\n' +
                 '    metadata={"tenant": "acme"},\n' +
                 ")",
             },
@@ -133,6 +136,7 @@
               payload: json({
                 message: "Plan the next release.",
                 session_id: "s-1",
+                user_id: "u-42",
                 context: "Release train: 0.24",
               }),
             },
@@ -163,6 +167,7 @@
                 "await client.post_request(\n" +
                 "    message,\n" +
                 "    session_id=session_id,\n" +
+                "    user_id=user_id,\n" +
                 "    host=self.snapshot_for(host),\n" +
                 "    context=context,\n" +
                 ")",
@@ -209,7 +214,7 @@
               what: "AgentClient.stream_response over SSE",
               body:
                 "<p>The client opens " + code("GET /agent/assistant/request/" + RID) +
-                " on the computer and parses each SSE frame. The computer's " +
+                " on the agent's process and parses each SSE frame. Its " +
                 "AgentServer keeps a cursor and calls " +
                 code("runtime.stream_response_events(request_id, cursor, wait_timeout=15)") +
                 " until the runtime reports " + code("done") + ", writing a " +
@@ -292,7 +297,7 @@
               what: "AgentClient.post_interaction → DBOS.send",
               body:
                 "<p>" + link("AgentClient.post_interaction", "runtime/client.py") +
-                " POSTs the response to the computer, whose AgentServer sends it to " +
+                " POSTs the response to the agent's process, whose AgentServer sends it to " +
                 "the request's workflow. The topic is the interaction id.</p>",
               payload:
                 'DBOS.send("' + WFID + '", "approve", topic="' + ITR + '")',

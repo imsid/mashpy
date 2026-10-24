@@ -27,9 +27,10 @@ Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
 
 ## Quick start
 
-Pilot runs from a checkout of this repo with Docker Compose. The host starts
-one container per agent (its computer) through the Docker socket, and mounts
-the checkout read-only into each one at `/home/agent/workspace/mashpy`.
+Pilot runs from a checkout of this repo with Docker Compose. The host runs its
+agents as processes inside its container. Through the Docker socket it starts
+a sandbox per user for their bash commands, and mounts the checkout read-only
+into each one at `/home/agent/mashpy`.
 
 ```bash
 # 1. Clone the repo and put the keys in .env
@@ -39,24 +40,26 @@ printf 'GEMINI_API_KEY=...\nOPENROUTER_API_KEY=sk-or-...\nMASH_HOST_SECRET=%s\n'
 # 2. Start Postgres and the host, from the repo root
 docker compose -f docker-compose.pilot.yml up -d --build
 
-# 3. Install the CLI and ask
+# 3. Install the CLI, save who you are, and ask
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot repl --host guide
 ```
 
-The first start can take a few minutes while the computers import the app.
-`mash computer ls` lists them. The agents read your checkout as it is, so edits
-show up without a restart. Pilot's own code is in the image: after changing it,
-rebuild, remove the computers with
-`docker rm -f $(docker ps -aq --filter label=mash.agent)`, and restart the
-`pilot` service so it recreates them.
+Your sandbox starts with your first bash command; `mash sandbox ls` lists the
+sandboxes. The agents read your checkout as it is, so edits show up without a
+restart. Pilot's own code is in the image: after changing it, run
+`up -d --build`, then remove the sandboxes with
+`docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)` so the next
+command starts them from the new image. Their volumes, and the apps the
+builder made, are kept.
 
 ## The guide team
 
 | Agent | Role |
 |-------|------|
 | `pilot` | The guide. Answers questions about Mash from the mounted source, docs and git history. |
-| `builder` | Builds Mash apps in its own workspace (`/home/agent/workspace/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
+| `builder` | Builds Mash apps in its folder of your sandbox (`/home/agent/workspaces/builder/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
 
 The `guide` host makes `pilot` the primary and `builder` its subagent. The
 guide delegates to the builder when you ask for an app.
@@ -80,9 +83,10 @@ The builder follows the `build-mash-agent`, `build-mash-workflow`, and
 > I need an agent that connects to my MCP server at localhost:3000 and uses Gemini.
 ```
 
-It cannot serve what it builds, because a computer has no Docker. Copy the app
-out with `docker cp mash-agent-builder:/home/agent/workspace/apps/<name> .`
-and run it as any Mash app. Point the CLI at another Mash deployment with
+It cannot serve what it builds, because a sandbox has no Docker. Copy the app
+out with `docker cp <container>:/home/agent/workspaces/builder/apps/<name> .`,
+using the container name `mash sandbox ls` shows for your user, and run it as
+any Mash app. Point the CLI at another Mash deployment with
 `--api-base-url`. Treat this package as a reference when structuring your own
 multi-agent app.
 

@@ -18,6 +18,16 @@ The initial set of instructions loaded into the context window. It describes the
 
 An executable piece of code the model can call. Tools are registered at the start of the agent run and the model decides which ones to invoke based on the task. Tools can be local, operating within the same environment (reading or writing to the filesystem, for example), or remote, communicating with an external service like a CRM or data warehouse. Remote tools are packaged inside an MCP (Model Context Protocol) server and typically require authorization. Mash ships a set of built-in local tools and an interface for registering custom local and remote MCP server tools.
 
+A shell is a local tool with a wider reach than the rest. The model writes each command itself, so it can install packages, write and run scripts, and keep files between steps. Because that code comes from the model, it usually runs in a sandbox.
+
+### Sandbox
+
+An isolated environment where the code a model writes runs, typically a container or virtual machine with its own filesystem. It is kept apart from the agent's credentials, the application's data, and other users' work, and commands in it run as an unprivileged user. Files the model writes persist in the sandbox, so later steps and later sessions can build on them. A platform can give each user their own sandbox, start a fresh one per session, or share one across an agent's users. In Mash, each user gets their own sandbox, with a folder per agent.
+
+### User
+
+The person an agent works for in a given request. The application identifies the user, and that identity decides what the request can reach: the user's past conversations, their memory, and their sandbox. When one agent delegates to another, the delegate works for the same user. In Mash, every request carries a `user_id`.
+
 ### Skill
 
 A markdown file containing instructions for a specific task. Each skill has a short frontmatter description and the full instructions below it. Only the frontmatter is loaded into the context window at startup; the model pulls in the full instructions only when the task calls for them. This is called progressive disclosure. A skill has no code to execute; it is instructions the model reads and follows. Skills live in a folder that gets registered with Mash.
@@ -46,6 +56,7 @@ To make the spec concrete, here is what a Morning Brief agent looks like, one th
 - **Tools**: `web_search` to pull local news, `slack_digest` to fetch unread messages, `rss_feed` to check for new episode drops from subscribed creators
 - **Skill**: instructions for curating the brief, including how to weight topics by the past seven days of engagement data and how to lay out the output
 - **Memory**: stores past briefs and engagement signals so each new brief can reflect what the user has actually read and followed up on
+- **Sandbox**: where it runs the scripts it writes to parse feeds and score topics, and keeps their files for the next morning
 - **Provider**: the model provider of your choice
 
 ### Events
@@ -56,7 +67,7 @@ Events let you observe the agent loop while it is running. Each event has a defi
 
 A host is a pool of agents composed together. It is the bridge between a user application and one or more agents. Within a host, agents are assigned roles: **primary**, **subagent**, and **workflow**. The primary agent handles free-form user requests and can delegate to subagents. Workflow agents run a deterministic sequence of tasks and return structured output.
 
-Host is a Mash-only concept for structuring how applications interface with agents. The interaction model between user application, host, and agents is governed by the [H2A Protocol](../rfcs/host-to-agent-protocol.md). Composing agents through a host means you can add or remove agents without changing the application. Hosts are self-hosted services, accessible over HTTP or via the CLI.
+Host is a Mash-only concept for structuring how applications interface with agents. The interaction model between user application, host, and agents is governed by the [H2A Protocol](../rfcs/host-to-agent-protocol.md). Composing agents through a host means you can add or remove agents without changing the application. Hosts are self-hosted services, accessible over HTTP or via the CLI. The host is also the trust boundary: the application tells it which user each request acts for.
 
 ### Eval
 
@@ -65,4 +76,4 @@ A dataset of test inputs plus a weighted scoring rubric to evaluate the host. Th
 Each eval run is an **Experiment** that takes a given Eval configuration and current snapshot of Host and Agent composition and measures deterministic operational metrics (latency, tokens, steps) alongside qualitative criteria scored by an LLM judge. Experiments can then be compared against each other to see the relative performance difference between two sets of changes. 
 
 **Mash**
-Python SDK for building agents, a runtime for deploying and managing a Host, and exposes an interface for embedding agents into any application.
+Python SDK for building agents, a runtime for deploying and managing a Host with its agents and their sandboxes, and exposes an interface for embedding agents into any application.

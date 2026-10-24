@@ -63,6 +63,7 @@ class WorkflowExecutionContext:
     run_id: str
     workflow_input: dict[str, Any]
     session_id: str | None = None
+    user_id: str | None = None
 
 
 # Per-step attempt is fixed at 1 for now. DBOS recovery attempts are not yet
@@ -104,6 +105,7 @@ async def _mark_run_started(
     workflow_id: str,
     workflow_input: dict[str, Any],
     session_id: str,
+    user_id: str | None,
 ) -> dict[str, Any]:
     store = _store(runner_id)
     now = time.time()
@@ -114,6 +116,7 @@ async def _mark_run_started(
             status=RUN_RUNNING,
             workflow_input=workflow_input,
             session_id=session_id,
+            user_id=user_id,
             created_at=now,
             started_at=now,
         )
@@ -188,6 +191,7 @@ async def _run_code_step(
     ordinal: int,
     workflow_input: dict[str, Any],
     input_snapshot: dict[str, Any],
+    user_id: str | None,
 ) -> dict[str, Any]:
     return await _invoke_code_step(
         runner_id,
@@ -196,6 +200,7 @@ async def _run_code_step(
         ordinal,
         workflow_input,
         input_snapshot,
+        user_id,
     )
 
 
@@ -206,6 +211,7 @@ async def _invoke_code_step(
     ordinal: int,
     workflow_input: dict[str, Any],
     input_snapshot: dict[str, Any],
+    user_id: str | None,
 ) -> dict[str, Any]:
     step = _resolve_step(runner_id, workflow_id, ordinal)
     if not isinstance(step, CodeStep):
@@ -216,6 +222,7 @@ async def _invoke_code_step(
         step_id=step.step_id,
         workflow_input=dict(workflow_input),
         attempt=_ATTEMPT,
+        user_id=user_id,
     )
 
     async def _invoke() -> Any:
@@ -237,6 +244,7 @@ async def _submit_agent_step(
     run_id: str,
     step_id: str,
     session_id: str,
+    user_id: str,
 ) -> str:
     return await post_inline_agent_request(
         runner_id,
@@ -247,6 +255,7 @@ async def _submit_agent_step(
         workflow_run_id=run_id,
         task_id=step_id,
         session_id=session_id,
+        user_id=user_id,
     )
 
 
@@ -331,6 +340,7 @@ class ForwardPipelineStrategy:
             wf_id,
             ctx.workflow_input,
             session_id,
+            ctx.user_id,
         )
 
         prev_output: dict[str, Any] | None = None
@@ -362,6 +372,7 @@ class ForwardPipelineStrategy:
                         run_id,
                         step.step_id,
                         session_id,
+                        ctx.user_id,
                     )
 
                 await dbos_class.run_step_async(
@@ -386,6 +397,7 @@ class ForwardPipelineStrategy:
                             ordinal,
                             ctx.workflow_input,
                             input_snapshot,
+                            ctx.user_id,
                         )
                     else:
                         output_snapshot = await dbos_class.run_step_async(
@@ -397,6 +409,7 @@ class ForwardPipelineStrategy:
                             ordinal,
                             ctx.workflow_input,
                             input_snapshot,
+                            ctx.user_id,
                         )
                 else:
                     payload = await _with_timeout(

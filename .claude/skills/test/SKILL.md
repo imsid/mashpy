@@ -23,10 +23,19 @@ Read the change before designing anything around it.
   `src/pilot/catalog/` say which agents exist (the `pilot` guide and its
   `builder` subagent, plus masher's eval agents and the changelog workflow's
   agent), which tools each one registers, and which models back them.
-  `GET /api/v1/agent` and `/api/v1/hosts` say what is actually deployed.
-- Every agent runs on its own computer, a `mash-agent-<agent_id>` container
-  the host starts through the Docker socket. Behavior inside an agent (tools,
-  bash, files) happens there, not in the host container.
+  `GET /api/v1/agent`, `/api/v1/hosts` and `/api/v1/workflow` say what is
+  actually deployed; the changelog workflow's id is `pilot-changelog`.
+- Every agent runs as a subprocess of the host (`mash agent serve`) inside the
+  host container, so its tools, MCP connections and logs live there; the host
+  log prefixes each agent's lines with `[agent_id]`. Bash is different: every
+  `bash` call runs in the sandbox of the user the request acts for, a
+  `mash-sandbox-<key>` container the host starts through the Docker socket on
+  first use, in `/home/agent/workspaces/<agent_id>`.
+- Every request and every workflow run that reaches an agent carries a
+  `user_id`. Pick distinct users per case when isolation matters.
+- Every pilot agent is named by the `guide` host or a workflow, so disabling
+  one returns `409 AGENT_IN_USE`. Testing a successful disable needs a host
+  or agent you register for the test.
 
 Model choice is part of grounding: an agent whose model cannot drive the path
 you want to test will fail for reasons that have nothing to do with your
@@ -74,26 +83,26 @@ docker compose -f docker-compose.pilot.yml up -d --build
 ```
 
 Mash and pilot code is baked into the image, so a source change needs a
-rebuild, and computers keep the image they were created from. After changing
-code, rebuild, remove the computers, and restart the host so it recreates them
-(`mash computer restart` keeps the old image):
+rebuild. The agent processes restart with the host, but sandboxes keep the
+image they were created from, so remove them too when the change reaches the
+sandbox daemon or the image (their volumes, the users' files, are kept):
 
 ```bash
 docker compose -f docker-compose.pilot.yml up -d --build pilot
-docker rm -f $(docker ps -aq --filter label=mash.agent)
-docker compose -f docker-compose.pilot.yml restart pilot
+docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)
 ```
 
-The repo itself is mounted read-only at `/home/agent/workspace/mashpy` in the
-host and every computer, so edits to files the agents read need no restart.
-**`restart` does not re-read `.env`** — an environment change needs
-`up -d pilot` and recreating the computers, which copy the host's environment
-when they are created. `down -v` wipes the database; use it only when prior
-state is in the way, and say so, because it destroys every earlier run you
-might still want to inspect.
+The repo itself is mounted read-only at `/home/agent/mashpy` in the host and
+every sandbox, so edits to files the agents read need no restart.
+**`restart` does not re-read `.env`**: an environment change needs
+`up -d pilot`. Agent processes inherit the host's environment; sandboxes get
+only their token, so `.env` never reaches bash. `down -v` wipes the database;
+use it only when prior state is in the way, and say so, because it destroys
+every earlier run you might still want to inspect.
 
-The port opens before the pool is ready, and on a cold start the computers can
-take a few minutes to import the app, so wait on the API, not the container:
+The port opens before the pool is ready, and on a cold start the agent
+processes take a while to import the app, so wait on the API, not the
+container:
 
 ```bash
 until [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/agent)" = 200 ]; do sleep 2; done
@@ -111,7 +120,7 @@ The three surfaces:
 ```bash
 # API — every response is wrapped in {"data": ...}; errors are {"error":{"code",...}}
 curl -s -X POST http://127.0.0.1:8000/api/v1/agent/<agent>/request \
-  -H 'Content-Type: application/json' -d '{"message":"...","session_id":"s-1"}'
+  -H 'Content-Type: application/json' -d '{"message":"...","session_id":"s-1","user_id":"u-1"}'
 curl -s http://127.0.0.1:8000/api/v1/agent/<agent>/request/<request_id>/status
 
 # CLI — run it inside the host container; the host's `pilot` binary may be a
@@ -120,8 +129,18 @@ curl -s http://127.0.0.1:8000/api/v1/agent/<agent>/request/<request_id>/status
 # `mash` user cannot write in /opt/mash.
 printf '/status\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T -w /tmp -e HOME=/tmp pilot pilot repl --host guide
 
-# Computers — inspect an agent's environment the way its bash sees it
-docker exec -u agent -w /home/agent/workspace mash-agent-<agent_id> ls
+# Sandboxes — list them, then inspect a user's files the way bash sees them.
+# docker exec copies the container's env (the sandbox token included), so check
+# what bash's environment holds through an agent's bash call, not docker exec.
+docker compose -f docker-compose.pilot.yml exec -T pilot mash sandbox ls
+docker exec -u agent -w /home/agent/workspaces/<agent_id> \
+  $(docker ps -q --filter label=mash.sandbox.user=<user_id>) ls -la
+
+# Agent processes — the host image has no ps or kill; read /proc and signal
+# from python (e.g. to kill one and watch the host restart it)
+docker compose -f docker-compose.pilot.yml exec -T pilot sh -c \
+  'for f in /proc/[0-9]*/cmdline; do tr "\0" " " <$f | grep -q -- "--agent <agent_id>" && basename $(dirname $f); done'
+docker compose -f docker-compose.pilot.yml exec -T pilot python -c "import os,signal;os.kill(<pid>,signal.SIGKILL)"
 
 # Tables
 docker compose -f docker-compose.pilot.yml exec -T db psql -U mash -d mash_pilot -A -F'|' -c \
@@ -143,7 +162,8 @@ them per Bash call, since shell state does not persist between calls.
 A failure is a lead, not a verdict. Before reporting anything, find the
 mechanism in source: the mash code path, the server log
 (`docker compose -f docker-compose.pilot.yml logs pilot --tail 100`), the
-computer's log (`docker logs mash-agent-<agent_id>`), and where
+`[agent_id]` lines in it for one agent's process, the sandbox's own log
+(`docker logs mash-sandbox-<key>`), and where
 relevant the installed dependency itself, which is importable in the container:
 
 ```bash

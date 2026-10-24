@@ -66,7 +66,7 @@ class AgentRuntime:
         self._shutdown_complete = False
 
         self._subagent_access: SubagentAccess | None = None
-        self._computer_bash = False
+        self._sandbox_bash: tuple[str, str] | None = None
         self._cortex: Any = None
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
         self.has_mcp_manager = False
@@ -128,7 +128,7 @@ class AgentRuntime:
         return self._mcp_servers
 
     def attach_subagent_access(self, access: SubagentAccess) -> None:
-        """Give the runtime its route to subagents (the host relay on a computer)."""
+        """Give the runtime its route to subagents (the host relay in an agent process)."""
         self._subagent_access = access
 
     def get_subagent_access(self) -> SubagentAccess | None:
@@ -141,10 +141,10 @@ class AgentRuntime:
     def get_cortex(self) -> Any:
         return self._cortex
 
-    def enable_computer_bash(self) -> None:
-        """Give every turn agent bash on its computer, unless the spec has its own."""
-        self._computer_bash = True
-        factory_helpers.register_computer_bash(self, self.agent)
+    def enable_sandbox_bash(self, *, host_api_url: str, token: str) -> None:
+        """Give every turn agent bash in the request user's sandbox, via the host."""
+        self._sandbox_bash = (host_api_url, token)
+        factory_helpers.register_sandbox_bash(self, self.agent)
 
     async def get_session_info(
         self,
@@ -199,25 +199,25 @@ class AgentRuntime:
         *,
         message: str,
         session_id: str,
+        user_id: str,
         structured_output: Any = None,
         host_snapshot: dict[str, Any] | None = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
-        user_id: str | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
             message=message,
             session_id=session_id,
+            user_id=user_id,
             structured_output=structured_output,
             host_snapshot=host_snapshot,
             context=context,
             metadata=metadata,
             request_id=request_id,
             parent=parent,
-            user_id=user_id,
         )
 
     def describe(self) -> dict[str, Any]:

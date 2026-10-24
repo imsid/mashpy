@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -19,6 +21,7 @@ from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
+from mash.api.routes.sandbox import build_sandbox_router
 from mash.api.routes.common import (
     APIError,
     AppRuntimeState,
@@ -32,31 +35,76 @@ from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
-from mash.runtime.host.computers import DockerComputerProvider
+from mash.runtime.host.host import AgentDisabledError
+from mash.runtime.host.processes import AgentProcessProvider
+from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
+from mash.sandbox.manager import (
+    DEFAULT_IDLE_SECONDS,
+    DEFAULT_MAX_RUNNING,
+    MASH_SANDBOX_IDLE_SECONDS_ENV,
+    MASH_SANDBOX_MAX_RUNNING_ENV,
+    SandboxManager,
+)
+from mash.sandbox.provider import DockerSandboxProvider
 from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
     WorkflowNotFoundError,
     WorkflowResumeNotSupportedError,
+    WorkflowUserRequiredError,
 )
 
 from .config import MashHostConfig
 from .admin_ui import mount_admin_ui
 
 
-def default_computer_provider(pool: Pool, config: MashHostConfig) -> DockerComputerProvider:
-    """Docker computers for a pool served without a configured provider."""
-    del pool
+# uvicorn configures this logger, so the host's startup choices show in its log.
+logger = logging.getLogger("uvicorn.error")
+
+
+async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:
+    """Docker sandboxes when a Docker daemon answers, otherwise none.
+
+    Without sandboxes the host runs and its agents get no ``bash`` tool.
+    """
+    host_secret = config.resolved_host_secret()
+    if not host_secret:
+        logger.warning("no MASH_HOST_SECRET: running without sandboxes; agents get no bash")
+        return None
+    engine = DockerEngine()
+    provider = DockerSandboxProvider(host_secret=host_secret, engine=engine)
+    try:
+        await engine.ping()
+        await provider.prepare()
+    except (DockerEngineError, RuntimeError) as exc:
+        await engine.close()
+        logger.warning("running without sandboxes, agents get no bash: %s", exc)
+        return None
+    logger.info("sandboxes: Docker, namespace '%s'", provider.namespace)
+    return SandboxManager(
+        provider,
+        idle_seconds=float(
+            os.environ.get(MASH_SANDBOX_IDLE_SECONDS_ENV) or DEFAULT_IDLE_SECONDS
+        ),
+        max_running=int(os.environ.get(MASH_SANDBOX_MAX_RUNNING_ENV) or DEFAULT_MAX_RUNNING),
+    )
+
+
+def default_agent_provider(pool: Pool, config: MashHostConfig) -> AgentProcessProvider:
+    """One child process per agent, for a pool served without a configured provider."""
     host_secret = config.resolved_host_secret()
     if not config.host_app or not host_secret:
         raise RuntimeError(
-            "agent computers need the host app and a host secret: pass --host-app "
+            "agents need the host app and a host secret: pass --host-app "
             "(or MASH_HOST_APP) and set MASH_HOST_SECRET"
         )
-    return DockerComputerProvider(
+    # Children reach the host on loopback unless it is bound to one address.
+    bind = config.bind_host if config.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    return AgentProcessProvider(
         host_app=config.host_app,
         host_secret=host_secret,
-        host_api_port=config.bind_port,
+        host_api_url=f"http://{bind}:{config.bind_port}",
+        sandboxes=pool.get_sandboxes() is not None,
     )
 
 
@@ -70,9 +118,13 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         pool.configure_runtime_database_url(
             resolved_config.resolved_runtime_database_url()
         )
-        if pool.list_registered_agents() and not pool.has_computer_provider():
-            pool.configure_computer_provider(
-                default_computer_provider(pool, resolved_config)
+        if pool.get_sandboxes() is None:
+            sandboxes = await default_sandboxes(resolved_config)
+            if sandboxes is not None:
+                pool.configure_sandboxes(sandboxes)
+        if pool.list_registered_agents() and not pool.has_agent_provider():
+            pool.configure_agent_provider(
+                default_agent_provider(pool, resolved_config)
             )
         await pool.start()
         database_url = resolved_config.resolved_runtime_database_url() or ""
@@ -159,6 +211,13 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             content=error_payload("RUNTIME_CLIENT_ERROR", str(exc)),
         )
 
+    @app.exception_handler(AgentDisabledError)
+    async def _agent_disabled_handler(_: Request, exc: AgentDisabledError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=error_payload("AGENT_DISABLED", str(exc), {"agent_id": exc.agent_id}),
+        )
+
     @app.exception_handler(WorkflowNotFoundError)
     async def _workflow_not_found_handler(
         _: Request, exc: WorkflowNotFoundError
@@ -191,6 +250,17 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
                 "WORKFLOW_INPUT_INVALID",
                 str(exc),
                 {"workflow_id": exc.workflow_id, "errors": exc.errors},
+            ),
+        )
+
+    @app.exception_handler(WorkflowUserRequiredError)
+    async def _workflow_user_required_handler(
+        _: Request, exc: WorkflowUserRequiredError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content=error_payload(
+                "USER_ID_REQUIRED", str(exc), {"workflow_id": exc.workflow_id}
             ),
         )
 
@@ -236,6 +306,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         api.include_router(build_cortex_router())
     app.include_router(api)
     app.include_router(build_h2a_router())
+    app.include_router(build_sandbox_router())
 
     @app.get("/")
     async def root() -> dict[str, object]:

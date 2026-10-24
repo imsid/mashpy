@@ -13,6 +13,7 @@ import os
 from typing import Any, Sequence
 
 from mash.cli.client import MashHostClient
+from mash.cli.config import load_config
 from mash.cli.render import RichRenderer
 from mash.cli.shell import MashRemoteShell, ShellTarget
 
@@ -77,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     repl = subparsers.add_parser("repl", help="Enter the REPL of a composed host")
     repl.add_argument("--session-id", default=None, help="Remote session id")
+    repl.add_argument(
+        "--user-id",
+        default=None,
+        help="User to act for (falls back to `mash connect --user-id`)",
+    )
     repl.add_argument(
         "--host",
         dest="target_host",
@@ -227,10 +233,15 @@ def _run_repl(
         described = _describe_host(client, host_id)
         agent_id = described["primary"]["agent_id"].strip()
 
+    saved = load_config()
+    user_id = args.user_id or (saved.user_id if saved else None)
+    if not user_id:
+        raise ValueError("a user id is required. Use --user-id or `mash connect --user-id`.")
     target = ShellTarget(
         api_base_url=base_url,
         agent_id=agent_id,
         session_id=args.session_id or MashRemoteShell.new_session_id(),
+        user_id=user_id,
         host_id=host_id,
     )
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3

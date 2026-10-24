@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from pydantic import ValidationError
 
+from mash.runtime.requests import validate_user_id
+
 from . import dbos as workflow_dbos
 from .registry import WorkflowRegistry
 from .spec import WorkflowSpec
@@ -33,6 +35,7 @@ class WorkflowRun:
     error: str | None = None
     workflow_input: dict[str, Any] | None = None
     session_id: str | None = None
+    user_id: str | None = None
     result: dict[str, Any] | None = None
     steps: list[dict[str, Any]] | None = None
 
@@ -61,6 +64,16 @@ class WorkflowInputValidationError(ValueError):
         self.workflow_id = workflow_id
         self.errors = errors
         super().__init__(f"workflow '{workflow_id}' input validation failed")
+
+
+class WorkflowUserRequiredError(ValueError):
+    """Raised when a run of a workflow that uses agents names no ``user_id``."""
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(
+            f"workflow '{workflow_id}' submits agent requests, so a run requires a user_id"
+        )
 
 
 class WorkflowResumeNotSupportedError(RuntimeError):
@@ -184,7 +197,9 @@ class WorkflowService:
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> WorkflowRun:
+        """Start one run. ``user_id`` is required when the workflow uses agents."""
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
@@ -192,6 +207,10 @@ class WorkflowService:
         normalized_workflow_input = _normalize_workflow_input(workflow_input)
         normalized_session_id = _normalize_optional_text(session_id)
         workflow = self._require_workflow(resolved_workflow_id)
+        if user_id is not None:
+            validate_user_id(user_id)
+        elif workflow.uses_agents:
+            raise WorkflowUserRequiredError(resolved_workflow_id)
         if workflow.input_model is not None:
             try:
                 workflow.input_model.model_validate(normalized_workflow_input)
@@ -212,6 +231,7 @@ class WorkflowService:
                 dedup_key=normalized_dedup_key,
                 workflow_input=normalized_workflow_input,
                 session_id=normalized_session_id,
+                user_id=user_id,
             )
         except workflow_dbos.WorkflowDeduplicatedError as exc:
             existing_run = WorkflowRun(
@@ -542,6 +562,7 @@ def _run_from_record(record: Any) -> WorkflowRun:
         error=record.error,
         workflow_input=dict(record.workflow_input),
         session_id=record.session_id,
+        user_id=record.user_id,
         result=record.result,
     )
 

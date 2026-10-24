@@ -23,6 +23,7 @@ class _FakeClient:
         self.host_workflows: list[str] = []
         self.feedback: list[dict[str, Any]] = []
         self.interactions: list[dict[str, Any]] = []
+        self.submitted_user_ids: list[str] = []
         self.workflow_result: dict[str, Any] = {"status": "ok"}
 
     def health(self):
@@ -108,12 +109,14 @@ class _FakeClient:
         *,
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ):
         self.workflow_runs.append(
             {
                 "workflow_id": workflow_id,
                 "dedup_key": dedup_key,
                 "workflow_input": workflow_input,
+                "user_id": user_id,
             }
         )
         return {
@@ -136,8 +139,9 @@ class _FakeClient:
             "result": {"digest": "ok"},
         }
 
-    def submit_request(self, agent_id: str, *, message: str, session_id: str | None = None):
+    def submit_request(self, agent_id: str, *, message: str, session_id: str, user_id: str):
         del agent_id, message, session_id
+        self.submitted_user_ids.append(user_id)
         return "req-1"
 
     def submit_feedback(self, agent_id: str, **kwargs: Any):
@@ -280,7 +284,7 @@ class MashRemoteShellTests(unittest.TestCase):
     def _build_shell(self) -> MashRemoteShell:
         return MashRemoteShell(
             cast("MashHostClient", _FakeClient()),
-            ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1"),
+            ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1", user_id="u-1"),
         )
 
     def _build_host_shell(self, *, host_workflows: list[str] | None = None) -> MashRemoteShell:
@@ -293,6 +297,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 agent_id="primary",
                 session_id="s-1",
                 host_id="assistant",
+                user_id="u-1",
             ),
         )
 
@@ -337,6 +342,7 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "markdown"):
             shell.handle_repl_message(shell.context, "hello")
         self.assertEqual(shell.context.last_request_id, "req-1")
+        self.assertEqual(_fake(shell).submitted_user_ids, ["u-1"])
 
     def test_session_command_reads_remote_session(self) -> None:
         shell = self._build_shell()
@@ -402,7 +408,7 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
         self.assertEqual(
             _fake(shell).workflow_runs,
-            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None}],
+            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None, "user_id": "u-1"}],
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow status: completed", lines)
@@ -447,7 +453,7 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.command_registry.execute(shell.context, "/workflow run changelog manual")
         self.assertEqual(
             _fake(shell).workflow_runs,
-            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None}],
+            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None, "user_id": "u-1"}],
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow: changelog", lines)
@@ -481,6 +487,7 @@ class MashRemoteShellTests(unittest.TestCase):
                     "workflow_id": "changelog",
                     "dedup_key": "manual",
                     "workflow_input": {"x": 1},
+                    "user_id": "u-1",
                 }
             ],
         )
@@ -977,7 +984,7 @@ class WorkflowResultRenderingTests(unittest.TestCase):
     def _build_shell(self) -> MashRemoteShell:
         return MashRemoteShell(
             cast("MashHostClient", _FakeClient()),
-            ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1"),
+            ShellTarget(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1", user_id="u-1"),
         )
 
     def test_result_renders_as_json_code_block_by_default(self) -> None:

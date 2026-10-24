@@ -10,19 +10,20 @@
 ## Main Components
 - `base.py`: tool interface and shared behavior.
 - `registry.py`: registration and lookup of enabled tools.
-- `bash.py`: shell tool. Bash starts with a clean environment (`HOME`, `PATH`,
-  `LANG`, `PWD`). When an `agent` user exists, as on an agent computer, it runs
-  as that user through `sudo` and starts in `/home/agent/workspace`. The
-  runtime registers it for every agent served on a computer unless the spec
-  registers its own `bash` tool.
+- `bash.py`: the sandbox shell tool. It starts no shell itself: each call
+  posts `{request_id, command, timeout}` to the host's `/sandbox/exec` relay
+  with the agent's token, and the host runs it in the sandbox of the request's
+  user, in `/home/agent/workspaces/<agent_id>` (see `mash.sandbox`). Each call
+  is a fresh shell; files persist. The runtime registers it for every agent
+  when the host has sandboxes, and a spec that registers its own `bash` tool
+  then fails to start.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.
 - `ask_user.py`: `AskUser`, lets agents request information from the user mid-execution.
 - `runtime.py`: the runtime tools `search_conversations` and
-  `get_full_turn_message`. They reach the current session, or with a request
-  `user_id` that user's sessions with the agent, and never another user's
-  turns.
+  `get_full_turn_message`. They reach the current session or the request
+  user's sessions with the agent, and never another user's turns.
 
 ## Tool Approval
 

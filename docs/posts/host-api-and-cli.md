@@ -81,7 +81,7 @@ The `mash` CLI is built entirely on this client. Nothing in it has a private pat
 
 ## The mash command
 
-`mash connect` validates a connection against `GET /health` and persists it: base URL and API key only, with targeting left to per-command `--agent`/`--host` flags. Later commands resolve their connection from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --primary <agent>` (with optional `--subagents` and `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. With a connection in place, one-shot commands cover quick checks: `mash status`, `mash browse`, `mash agents`, `mash workflows`, `mash hosts`, `mash sessions`, and `mash history --session-id ...`.
+`mash connect` validates a connection against `GET /health` and persists it: base URL, API key and the user requests act for (`--user-id`), with targeting left to per-command `--agent`/`--host` flags. Later commands resolve their connection from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --primary <agent>` (with optional `--subagents` and `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. With a connection in place, one-shot commands cover quick checks: `mash status`, `mash browse`, `mash agents`, `mash workflows`, `mash hosts`, `mash sessions`, and `mash history --session-id ...`.
 
 `mash browse` shows the full pool in one view: agents, workflows, and defined hosts. `mash agents`, `mash workflows`, and `mash hosts` list each separately.
 
