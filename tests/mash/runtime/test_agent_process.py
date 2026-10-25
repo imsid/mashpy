@@ -150,7 +150,7 @@ class BuildAgentServerTests(unittest.TestCase):
 
     def test_agent_that_does_not_use_the_sandbox_gets_no_sandbox_tools(self) -> None:
         spec = build_spec(agent_id="research", response_text="ok")
-        spec.uses_sandbox = lambda: False
+        spec.enable_sandbox = lambda: False
         pool = HostBuilder().agent(spec, metadata=metadata()).build()
         server = build_agent_server(
             pool, "research", token="tok", host_api_url="http://host", sandbox_tools=True

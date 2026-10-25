@@ -88,7 +88,7 @@ class AgentSpec(ABC):
         """Whether Mash runtime tools should be auto-registered."""
         return True
 
-    def uses_sandbox(self) -> bool:
+    def enable_sandbox(self) -> bool:
         """Whether the agent gets ``run_code``, ``sandbox_put`` and ``sandbox_get``.
 
         True by default: on a host with sandboxes, every agent can run code in
