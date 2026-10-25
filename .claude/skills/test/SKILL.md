@@ -28,7 +28,8 @@ Read the change before designing anything around it.
 - Every agent runs as a subprocess of the host (`mash agent serve`) inside the
   host container, so its tools, MCP connections and logs live there; the host
   log prefixes each agent's lines with `[agent_id]`. The sandbox tools are
-  different: every `run_code`, `sandbox_put` and `sandbox_get` call acts in the
+  different: every `run_code` call (and `sandbox_put`/`sandbox_get`, for a spec
+  that declares file roots; pilot's agents declare none) acts in the
   sandbox of the user the request acts for, a `mash-sandbox-<key>` container
   the host starts through the Docker socket on first use, in
   `/home/agent/workspaces/<agent_id>`. Sandboxes run `mash-sandbox:pilot`,
@@ -174,33 +175,22 @@ agent has goes into the sandbox, code the model writes analyses it, and the
 user opens the result at a link. Use the `pilot` guide (Gemini): it drives
 multi-call tool loops reliably.
 
-1. Put a CSV on the agent's machine (the host container) and compute the
-   ground truth yourself:
-
-   ```bash
-   docker compose -f docker-compose.pilot.yml exec -T pilot sh -c 'cat > /tmp/sales.csv' <<'EOF'
-   region,product,units,price
-   west,widget,12,2.50
-   east,widget,7,2.50
-   west,gadget,3,10.00
-   north,gadget,5,10.00
-   east,gizmo,9,4.00
-   EOF
-   # revenue by region: west 60.00, east 53.50, north 50.00
-   ```
-
-2. Ask for the analysis and a page, for a fresh user:
+1. Ask for the analysis and a page, for a fresh user. The data goes in the
+   message: pilot's agents declare no file roots, so they have no
+   `sandbox_put`.
 
    ```bash
    curl -s -X POST http://127.0.0.1:8000/api/v1/hosts/guide/request \
      -H 'Content-Type: application/json' -d '{"session_id":"s-code-1","user_id":"u-code-1",
-     "message":"Copy /tmp/sales.csv into your sandbox, load it into a SQLite database there, compute revenue (units*price) by region, and build an HTML page with a table and a bar chart of it. Give me the link."}'
+     "message":"Here is a CSV:\nregion,product,units,price\nwest,widget,12,2.50\neast,widget,7,2.50\nwest,gadget,3,10.00\nnorth,gadget,5,10.00\neast,gizmo,9,4.00\nLoad it into a SQLite database in your sandbox, compute revenue (units*price) by region, and build an HTML page with a table and a bar chart of it. Give me the link."}'
+   # revenue by region: west 60.00, east 53.50, north 50.00
    ```
 
-3. Verify, with criteria fixed before running:
-   - **Tools** (event log): a `sandbox_put` call, then `run_code` calls; no
-     `bash`; the last lifecycle event is `runtime.request.completed`.
-   - **Files** (sandbox): `sales.csv`, a `.db` file and an `.html` file in
+2. Verify, with criteria fixed before running:
+   - **Tools** (event log): `run_code` calls only; no `sandbox_put`,
+     `sandbox_get` or `bash` in the request's tools; the last lifecycle event
+     is `runtime.request.completed`.
+   - **Files** (sandbox): a `.db` file and an `.html` file in
      `/home/agent/workspaces/pilot` of `u-code-1`'s sandbox; `sqlite3` on the
      db returns the three totals.
    - **Link** (HTTP): the response text holds a

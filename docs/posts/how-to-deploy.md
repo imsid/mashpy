@@ -443,7 +443,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | agent process | set by the host | The agent's token |
 | `MASH_HOST_API_URL` | agent process | set by the host | The host address for subagent calls and the sandbox tools |
-| `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, `sandbox_put` and `sandbox_get` |
+| `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots |
 | `MASH_PARENT_PID` | agent process | set by the host | The agent process stops when this process exits |
 | `MASH_SANDBOX_TOKEN` | sandbox | set by the host | The user's sandbox token; the sandbox's only variable |
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; agent processes inherit it |

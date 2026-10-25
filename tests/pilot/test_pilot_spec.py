@@ -98,10 +98,11 @@ def test_agents_get_sandbox_tools() -> None:
             await pool.start()
             try:
                 guide = _agent_runtime(pool, PILOT_AGENT_ID)
-                # The sandbox tools come from the host, not from the specs.
-                assert {"AskUser", "run_code", "sandbox_put", "sandbox_get"} <= set(
-                    guide.agent.tools.list_tools()
-                )
+                # The sandbox tools come from the host, not from the specs. The
+                # guide declares no file roots, so it gets run_code only.
+                guide_tools = set(guide.agent.tools.list_tools())
+                assert {"AskUser", "run_code"} <= guide_tools
+                assert not {"sandbox_put", "sandbox_get"} & guide_tools
                 turn_agent = guide.build_turn_agent(
                     session_id="s-1",
                     trace_id="trace-1",

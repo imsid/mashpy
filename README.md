@@ -319,7 +319,7 @@ mash repl --host assistant
 | **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory and sandbox |
 | **Sandbox** | A container per user where agents' code runs, holding that user's workspaces and nothing else |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
-| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `run_code`, `sandbox_put` and `sandbox_get` when it has sandboxes |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `run_code` when it has sandboxes, and `sandbox_put` and `sandbox_get` for specs that declare file roots |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |

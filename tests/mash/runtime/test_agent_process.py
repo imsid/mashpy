@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import os
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -136,9 +137,24 @@ class BuildAgentServerTests(unittest.TestCase):
         self.assertIsInstance(run_code, RunCodeTool)
         self.assertEqual(run_code._relay.base_url, "http://host/sandbox")
         self.assertIn("/home/agent/workspaces/research", run_code.description)
-        self.assertIsInstance(turn_agent.tools.get("sandbox_put"), SandboxPutTool)
-        self.assertIsInstance(turn_agent.tools.get("sandbox_get"), SandboxGetTool)
+        # No file roots declared, so no tools that read or write the agent's machine.
+        self.assertNotIn("sandbox_put", turn_agent.tools)
+        self.assertNotIn("sandbox_get", turn_agent.tools)
         self.assertNotIn("bash", turn_agent.tools)
+
+    def test_agent_with_file_roots_gets_the_file_tools(self) -> None:
+        spec = build_spec(agent_id="research", response_text="ok")
+        spec.sandbox_file_roots = lambda: [Path("/srv/exports")]
+        pool = HostBuilder().agent(spec, metadata=metadata()).build()
+        server = build_agent_server(
+            pool, "research", token="tok", host_api_url="http://host", sandbox_tools=True
+        )
+
+        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        put = turn_agent.tools.get("sandbox_put")
+        self.assertIsInstance(put, SandboxPutTool)
+        self.assertIsInstance(turn_agent.tools.get("sandbox_get"), SandboxGetTool)
+        self.assertIn("/srv/exports", put.description)
 
     def test_agent_gets_no_sandbox_tools_without_sandboxes(self) -> None:
         server = build_agent_server(

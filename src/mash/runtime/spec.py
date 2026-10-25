@@ -98,6 +98,18 @@ class AgentSpec(ABC):
         """
         return True
 
+    def sandbox_file_roots(self) -> List[Path]:
+        """Folders on this agent's machine that ``sandbox_put`` and ``sandbox_get`` may use.
+
+        Empty by default, and then the agent gets neither tool: only
+        ``run_code``. Return absolute paths to give the agent both, confined to
+        regular files inside these folders. ``/proc``, ``/sys`` and ``/dev`` are
+        refused even inside a root. Have the agent's tools write the data meant
+        for the sandbox into a root, and keep credentials and other secrets out
+        of every root: code in the sandbox can reach the internet.
+        """
+        return []
+
     def build_web_search(self) -> WebSearchProvider | None:
         """Web search provider backing `web_search`/`web_fetch`.
 

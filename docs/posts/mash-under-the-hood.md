@@ -143,7 +143,7 @@ agent via `compaction_token_threshold` and `compaction_turn_limit` in
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
-- **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for, and copy files in and out, when the host has sandboxes
+- **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for when the host has sandboxes; the two file tools copy files in and out of folders the spec declares, and exist only when it declares some
 - **AskUserTool**: pause execution to ask the user a question
 - **InvokeSubagent**: delegate work to a registered subagent and stream its response back
 - **search_conversations**: search stored conversation turns and return ranked previews
@@ -191,7 +191,8 @@ the application asserts and the host trusts. Each user gets a sandbox, a
 container the host starts through the Docker socket the first time an agent
 runs code for that user. It is the user's computer: Mash's sandbox image with
 Python, Node, SQLite and git. When the host has sandboxes, every agent gets
-`run_code`, `sandbox_put` and `sandbox_get`. They post to the host's `/sandbox`
+`run_code`, and an agent whose spec declares file roots also gets
+`sandbox_put` and `sandbox_get`. They post to the host's `/sandbox`
 relay with the agent's token and the request id, and the host picks the user
 from the request, so an agent cannot choose whose sandbox it runs in.
 

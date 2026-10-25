@@ -23,11 +23,16 @@
     `Dockerfile.sandbox`.
   - `sandbox_put(src, dest)` / `sandbox_get(src, dest)`: copy one file (up to
     100 MB) between the agent process's machine and the folder through
-    `/sandbox/files`. `sandbox_put`'s description tells the model never to copy
-    secrets.
-  The runtime registers all three for every agent when the host has
-  sandboxes, unless the spec's `enable_sandbox()` returns False, and a spec that
-  registers a tool with one of these names then fails to start.
+    `/sandbox/files`. They exist only with file roots (`FileRoots`, from the
+    spec's `sandbox_file_roots()`): the path on the agent's machine must
+    resolve, symlinks followed, to a regular file inside a root, and `/proc`,
+    `/sys` and `/dev` are refused even inside one. Reads and writes open the
+    file with `O_NOFOLLOW` and check it with `fstat`. The descriptions name the
+    roots.
+  The runtime registers `run_code` for every agent when the host has
+  sandboxes, and the file tools when the spec also declares roots, unless the
+  spec's `enable_sandbox()` returns False. A spec that registers a tool with
+  one of the three names then fails to start.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.

@@ -167,11 +167,15 @@ tools.register(AskUserTool())  # durable user questions (hosted runtime only)
 ```
 
 Do not register tools named `run_code`, `sandbox_put` or `sandbox_get`. When
-the host has sandboxes (a reachable Docker daemon), every agent gets them:
-`run_code` runs Python, JavaScript or shell in the request user's sandbox in
-`/home/agent/workspaces/<agent_id>`, and the other two copy files between the
-agent's machine and that folder. A spec that registers one of these names
-fails to start on such a host.
+the host has sandboxes (a reachable Docker daemon), every agent gets
+`run_code`, which runs Python, JavaScript or shell in the request user's
+sandbox in `/home/agent/workspaces/<agent_id>`. `sandbox_put` and
+`sandbox_get` copy files between the agent's machine and that folder, and an
+agent gets them only when its spec returns folders from
+`sandbox_file_roots()`; they refuse any path outside those folders. Give an
+agent a root only when its tools write files the model must copy in, and keep
+credentials out of it. A spec that registers one of these names fails to start
+on such a host.
 
 ### Web Search
 
