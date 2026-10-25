@@ -13,6 +13,7 @@ import unittest
 import uuid
 
 from mash.runtime.client import AgentClient
+from mash.runtime.engine.dbos import workflow_id_for
 from mash.runtime.host.processes import STATUS_RUNNING, AgentProcessProvider, _Child
 
 try:
@@ -124,6 +125,55 @@ class AgentProcessProviderTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecoveryOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_recovered_request_waits_for_its_own_agent(self) -> None:
+        owner = f"proc-{uuid.uuid4().hex[:8]}"
+        sibling = f"proc-{uuid.uuid4().hex[:8]}"
+        database_url = _database_url()
+        provider = AgentProcessProvider(
+            host_app=HOST_APP,
+            host_secret="secret",
+            host_api_url="http://127.0.0.1:1",
+            environ={
+                **os.environ,
+                "MASH_DATABASE_URL": database_url,
+                "TEST_PROCESS_AGENT_ID": f"{owner},{sibling}",
+                "TEST_PROCESS_DELAY": "3",
+            },
+            health_timeout=90,
+        )
+        self.addAsyncCleanup(provider.close)
+        endpoint = await provider.ensure(owner)
+        await provider.ensure(sibling)
+        client = AgentClient(endpoint.base_url, owner, token=endpoint.token)
+        request_id = await client.post_request("hello", session_id="s-1", user_id="u-1")
+        await asyncio.sleep(1.0)  # the model call is in flight
+        await provider.stop(owner)
+
+        # Put the request back on DBOS's internal queue, as DBOS recovery does
+        # when the owner restarts, while only the sibling is running.
+        workflow_id = workflow_id_for(owner, request_id)
+        with psycopg.connect(database_url, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE dbos.workflow_status SET status = 'ENQUEUED', "
+                "queue_name = COALESCE(queue_name, '_dbos_internal_queue'), "
+                "started_at_epoch_ms = NULL WHERE workflow_uuid = %s",
+                (workflow_id,),
+            )
+            await asyncio.sleep(5.0)  # several of the sibling's queue polls
+            status = conn.execute(
+                "SELECT status FROM dbos.workflow_status WHERE workflow_uuid = %s",
+                (workflow_id,),
+            ).fetchone()[0]
+        self.assertEqual(status, "ENQUEUED")
+
+        endpoint = await provider.ensure(owner)
+        client = AgentClient(endpoint.base_url, owner, token=endpoint.token)
+        events = [event async for event in client.stream_response(request_id, timeout=60)]
+        self.assertEqual(events[-1]["event"], "request.completed")
+        self.assertEqual(events[-1]["data"]["response"]["text"], "process-ok")
 
 
 class EnableDisableTests(unittest.IsolatedAsyncioTestCase):
