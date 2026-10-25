@@ -9,6 +9,22 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.29.0](https://github.com/imsid/mashpy/compare/mashpy-v0.28.0...mashpy-v0.29.0) (2026-10-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* confine sandbox file tools to declared roots; fix step durations, CLI thinking and agent env ([#243](https://github.com/imsid/mashpy/issues/243))
+
+### Features
+
+* confine sandbox file tools to declared roots; fix step durations, CLI thinking and agent env ([#243](https://github.com/imsid/mashpy/issues/243)) ([3a458ec](https://github.com/imsid/mashpy/commit/3a458ec0df11ac6c5ac7e66163fc8e1e62348e48))
+
+
+### Bug Fixes
+
+* **runtime:** keep an agent's recovered requests in its own process ([#246](https://github.com/imsid/mashpy/issues/246)) ([1086b4f](https://github.com/imsid/mashpy/commit/1086b4f16084a3cfec1be4dbeec63a6005c6262a))
+
 ## [0.28.0](https://github.com/imsid/mashpy/compare/mashpy-v0.27.0...mashpy-v0.28.0) (2026-10-25)
 
 
