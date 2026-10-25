@@ -177,6 +177,33 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
         del trace_id
 
 
+class _SlowFinishLLMProvider(LLMProvider):
+    def __init__(self, delay_seconds: float) -> None:
+        self._delay_seconds = delay_seconds
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        del request
+        await asyncio.sleep(self._delay_seconds)
+        return LLMResponse(
+            thought_summary="",
+            text="Done.",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("Done.")],
+            stop_reason="end_turn",
+            usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+        del logger, session_id, app_id
+
+    def set_trace_id(self, trace_id: Optional[str]) -> None:
+        del trace_id
+
+
 class _AlwaysRespondLLMProvider(LLMProvider):
     @property
     def model(self) -> str:
@@ -297,6 +324,15 @@ class _ResponseThenFinishDefinition(_BaseDefinition):
             system_prompt="You are a test app.",
             max_steps=3,
         )
+
+
+class _SlowFinishDefinition(_BaseDefinition):
+    def __init__(self, root: Path, *, delay_seconds: float) -> None:
+        super().__init__(root)
+        self.provider = _SlowFinishLLMProvider(delay_seconds)
+
+    def build_llm(self) -> LLMProvider:
+        return self.provider
 
 
 class _TwoToolCallLLMProvider(LLMProvider):
@@ -1241,6 +1277,30 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         [0, 1],
                     )
                     self.assertEqual(result["response"]["text"], "Final answer.")
+                finally:
+                    await runtime.shutdown()
+
+    async def test_step_completed_duration_includes_think(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
+                runtime = AgentRuntime.from_spec(
+                    _SlowFinishDefinition(Path(tmp), delay_seconds=0.2),
+                    session_id="host-session",
+                    **_test_stores(),
+                )
+                try:
+                    await runtime.open()
+                    accepted, _, _ = await self._invoke_request(runtime, message="hi")
+                    stored_events = await runtime.runtime_store.list_request_events(
+                        str(accepted["request_id"])
+                    )
+                    step_events = [
+                        event
+                        for event in stored_events
+                        if event.event_type == RuntimeEventType.STEP_COMPLETED.value
+                    ]
+                    self.assertEqual(len(step_events), 1)
+                    self.assertGreaterEqual(step_events[0].payload["duration_ms"], 200)
                 finally:
                     await runtime.shutdown()
 

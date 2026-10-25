@@ -444,6 +444,8 @@ async def plan_request_step(
 ) -> dict[str, Any]:
     runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
+    # A step spans think, act and commit, so its clock starts before the LLM call.
+    step_started_at = float(time.time())
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -523,7 +525,7 @@ async def plan_request_step(
         "result_payloads": [],
         "signals": {},
         "done": False,
-        "step_started_at": float(time.time()),
+        "step_started_at": step_started_at,
     }
 
 
