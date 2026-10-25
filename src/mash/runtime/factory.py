@@ -86,7 +86,10 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
             )
     host_api_url, token = self._sandbox_tools
     for tool in build_sandbox_tools(
-        host_api_url=host_api_url, token=token, agent_id=self.app_id
+        host_api_url=host_api_url,
+        token=token,
+        agent_id=self.app_id,
+        file_roots=self.definition.sandbox_file_roots(),
     ):
         agent.tools.register(tool)
 

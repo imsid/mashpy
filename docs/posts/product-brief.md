@@ -95,8 +95,9 @@ Every request names its user with a `user_id`, which the application sends and
 the host trusts. The host starts a user's sandbox on their first command and
 stops it after 15 idle minutes. With Docker on the host, every agent gets
 `run_code`, which runs Python, JavaScript or shell in the request user's
-sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`), and
-`sandbox_put` and `sandbox_get` to copy files in and out. Its files persist
+sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`). An
+agent whose spec names folders on its machine also gets `sandbox_put` and
+`sandbox_get` to copy files in and out of those folders. Its files persist
 across requests and restarts, and the user opens the pages and files it makes
 at links the host serves. Code runs as an unprivileged `agent` user with a
 clean environment. A sandbox holds only that user's files: the agents' secrets

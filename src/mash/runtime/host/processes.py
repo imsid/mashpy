@@ -6,7 +6,9 @@
 
 waits for its ``/health``, and returns how the host reaches it. The child is
 the app's own trusted code, so it inherits the host's environment, plus its
-agent token and the host's API URL. A supervisor restarts a child that exits,
+agent token and the host's API URL. It does not get ``MASH_HOST_SECRET`` or
+``MASH_API_KEY``: those are the host's, and the agent's model can read any file
+the process can, ``/proc/self/environ`` included. A supervisor restarts a child that exits,
 with backoff from 1 to 30 seconds, on the same port. Children live and die
 with the host: each one exits when its parent does, and the host stops them
 all on shutdown.
@@ -32,6 +34,10 @@ from ..agent_process import (
     MASH_SANDBOX_ENABLED_ENV,
 )
 from .tokens import MASH_HOST_SECRET_ENV, derive_agent_token
+
+# The host secret derives every agent, sandbox and link token, and the API key
+# admits any caller. A child authenticates with its own token and needs neither.
+_HOST_ONLY_ENV = frozenset({MASH_HOST_SECRET_ENV, "MASH_API_KEY"})
 
 _MAX_BACKOFF_SECONDS = 30.0
 # A child that ran this long before exiting restarts after the shortest backoff.
@@ -112,7 +118,11 @@ class AgentProcessProvider:
         self._host_secret = host_secret
         self._host_api_url = host_api_url
         self._sandboxes = sandboxes
-        self._environ = dict(os.environ if environ is None else environ)
+        self._environ = {
+            key: value
+            for key, value in (os.environ if environ is None else environ).items()
+            if key not in _HOST_ONLY_ENV
+        }
         self._health_timeout = float(health_timeout)
         self._stop_timeout = float(stop_timeout)
         self._children: dict[str, _Child] = {}

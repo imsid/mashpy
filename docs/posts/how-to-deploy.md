@@ -191,7 +191,9 @@ use that number in `group_add`. Without the socket, the host runs without
 sandboxes.
 
 Agent processes inherit the host's environment, so provider keys, MCP header
-tokens and anything else a spec reads reach them. MCP URLs resolve inside the
+tokens and anything else a spec reads reach them. `MASH_HOST_SECRET` and
+`MASH_API_KEY` are the exceptions: they stay with the host, and each agent
+authenticates with a token of its own. MCP URLs resolve inside the
 host container. Sandboxes get none of the host's environment.
 
 To give every sandbox files from the Docker host, list bind mounts in
@@ -441,7 +443,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | agent process | set by the host | The agent's token |
 | `MASH_HOST_API_URL` | agent process | set by the host | The host address for subagent calls and the sandbox tools |
-| `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, `sandbox_put` and `sandbox_get` |
+| `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots |
 | `MASH_PARENT_PID` | agent process | set by the host | The agent process stops when this process exits |
 | `MASH_SANDBOX_TOKEN` | sandbox | set by the host | The user's sandbox token; the sandbox's only variable |
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; agent processes inherit it |

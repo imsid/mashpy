@@ -7,6 +7,7 @@ import os
 import socket
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -280,20 +281,17 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_one_call(self, tool_name: str, arguments: dict[str, Any]):
+    async def _run_one_call(
+        self, tool_name: str, arguments: dict[str, Any], *, file_roots=()
+    ):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}
         ):
-            pool = (
-                HostBuilder()
-                .agent(
-                    build_tool_calling_spec(
-                        agent_id="research", tool_name=tool_name, arguments=arguments
-                    ),
-                    metadata=metadata(),
-                )
-                .build()
+            spec = build_tool_calling_spec(
+                agent_id="research", tool_name=tool_name, arguments=arguments
             )
+            spec.sandbox_file_roots = lambda: list(file_roots)
+            pool = HostBuilder().agent(spec, metadata=metadata()).build()
             provider = LocalSandboxProvider()
             pool.configure_runtime_database_url("postgresql://test/runtime")
             pool.configure_sandboxes(SandboxManager(provider))
@@ -351,17 +349,29 @@ class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertRegex(text, r"^http://127\.0\.0\.1:\d+/s/[^/]+/files/research/report\.html$")
 
-    async def test_sandbox_put_copies_a_local_file_into_the_folder(self) -> None:
-        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as fh:
-            fh.write(b"a,b\n1,2\n")
-        self.addCleanup(os.unlink, fh.name)
+    async def test_sandbox_put_copies_a_file_from_a_root_into_the_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "data.csv").write_bytes(b"a,b\n1,2\n")
 
-        text, files, _ = await self._run_one_call(
-            "sandbox_put", {"src": fh.name, "dest": "in/data.csv"}
-        )
+            text, files, _ = await self._run_one_call(
+                "sandbox_put",
+                {"src": "data.csv", "dest": "in/data.csv"},
+                file_roots=[Path(root).resolve()],
+            )
 
         self.assertEqual(text, "Copied 8 bytes to in/data.csv in your sandbox folder.")
         self.assertEqual(files, {"in/data.csv": b"a,b\n1,2\n"})
+
+    async def test_sandbox_put_refuses_the_agent_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            text, files, _ = await self._run_one_call(
+                "sandbox_put",
+                {"src": "/proc/self/environ", "dest": "env.txt"},
+                file_roots=[Path(root).resolve()],
+            )
+
+        self.assertIn("outside the folders you can use", text)
+        self.assertEqual(files, {})
 
 
 if __name__ == "__main__":

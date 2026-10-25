@@ -308,6 +308,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     repl = subparsers.add_parser("repl", parents=[common], help="Start an interactive remote REPL")
     repl.add_argument("--session-id", default=None, help="Remote session id")
+    repl.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Print each step's model thinking under that step",
+    )
 
     host = subparsers.add_parser("host", help="Host management commands")
     host.set_defaults(handler=lambda _: _print_help(host))
@@ -469,7 +474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 user_id=user_id,
                 host_id=target_host_id,
             )
-            MashRemoteShell(client, target).run()
+            MashRemoteShell(client, target, show_thinking=args.show_thinking).run()
             return 0
     except Exception as exc:
         renderer.error(str(exc))

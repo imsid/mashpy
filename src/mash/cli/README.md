@@ -30,7 +30,7 @@ Host-facing commands
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the resolved target and user. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
+- `repl [common] [--session-id ID] [--show-thinking]`: start an interactive remote shell session, pinned to the resolved target and user. `--show-thinking` prints the model's thinking for each step under that step's line; it is off by default. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
 
 Host management
 
@@ -52,7 +52,7 @@ Agent processes
 - `--port`: bind port. Defaults to `9000` or `MASH_AGENT_PORT`.
 - `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
 - `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and the sandbox tools.
-- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code`, `sandbox_put` and `sandbox_get`.
+- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots.
 - `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
 - DBOS runs as executor `agent:<agent_id>` and listens to no queues, so the process recovers only this agent's requests and never runs the host's workflow runs.
 

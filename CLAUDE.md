@@ -42,7 +42,8 @@ agent's and each sandbox's token.
   starts, it runs each agent as a subprocess and keeps an HTTP client for it.
 - **Agent process** — a subprocess of the host (`mash agent serve`) that serves
   one agent's runtime behind an H2A HTTP server on a localhost port. It is the
-  app's own code, so it inherits the host's environment. The host restarts one
+  app's own code, so it inherits the host's environment, except
+  `MASH_HOST_SECRET` and `MASH_API_KEY`. The host restarts one
   that exits, and agents can be enabled and disabled on a running host.
 - **User** — the end user a request acts for, named by the `user_id` every
   submit body carries. The app asserts it and the host trusts it; it scopes the
@@ -51,11 +52,12 @@ agent's and each sandbox's token.
   agent's model writes runs: the user's computer. It runs Mash's sandbox image
   (Python, Node, SQLite, git) and holds that user's workspaces, one folder per
   agent at `/home/agent/workspaces/<agent_id>`, and nothing else: no secrets,
-  no database access. Every agent gets `run_code`, `sandbox_put` and
-  `sandbox_get` when the host has sandboxes, so it can write and run code, keep
-  files and databases, and hand the user links to what it made, without
-  registering anything; a spec opts out with `enable_sandbox()`. Code runs as an
-  `agent` user with a clean environment.
+  no database access. Every agent gets `run_code` when the host has sandboxes,
+  so it can write and run code, keep files and databases, and hand the user
+  links to what it made, without registering anything; a spec opts out with
+  `enable_sandbox()`. An agent gets `sandbox_put` and `sandbox_get`, which copy
+  files between its machine and the sandbox, only when its spec declares
+  `sandbox_file_roots()`. Code runs as an `agent` user with a clean environment.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -214,7 +216,8 @@ Optional overrides:
 | `build_memory_store()` | Postgres (requires `MASH_DATABASE_URL`) | Custom memory backend |
 | `build_mcp_servers()` | `[]` | MCP server connections |
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
-| `enable_sandbox()` | `True` | Get `run_code`, `sandbox_put` and `sandbox_get` on a host with sandboxes |
+| `enable_sandbox()` | `True` | Get the sandbox tools on a host with sandboxes |
+| `sandbox_file_roots()` | `[]` | Folders on the agent's machine that `sandbox_put`/`sandbox_get` may use; without any, the agent gets neither |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |
 | `on_startup(runtime)` | No-op | Hook after runtime init, in the agent's process |
 | `on_shutdown(runtime)` | No-op | Hook before cleanup, in the agent's process |
@@ -358,8 +361,9 @@ tools.register(AskUserTool())  # only works in hosted runtime
 ### Sandbox tools
 
 The sandbox tools come from the host, not from your spec. When the host has
-sandboxes, every agent gets three tools that act in the sandbox of the user the
-request acts for, in `/home/agent/workspaces/<agent_id>`:
+sandboxes, every agent gets `run_code`, and an agent whose spec declares file
+roots also gets `sandbox_put` and `sandbox_get`. They act in the sandbox of the
+user the request acts for, in `/home/agent/workspaces/<agent_id>`:
 
 - `run_code(language, code, timeout=60)` runs `python`, `javascript` or `shell`
   code there as a new process. Files persist between calls and across requests
@@ -367,9 +371,22 @@ request acts for, in `/home/agent/workspaces/<agent_id>`:
   persist in the folder. Its description tells the model what is installed and
   how to hand results to the user.
 - `sandbox_put(src, dest)` copies a file from the machine the agent process
-  runs on into the folder; `sandbox_get(src, dest)` copies one back. For data a
-  tool fetched, have the tool write a file and return its path, so the model
-  can copy it in.
+  runs on into the folder; `sandbox_get(src, dest)` copies one back. Both
+  exist only for a spec that returns folders from `sandbox_file_roots()`, and
+  they read and write only regular files inside those folders (symlinks are
+  followed before the check; `/proc`, `/sys` and `/dev` are always refused).
+  For data a tool fetched, have the tool write a file into a root and return
+  its path, so the model can copy it in. Keep credentials out of every root:
+  code in the sandbox can reach the internet.
+
+```python
+class AnalystAgent(AgentSpec):
+    def sandbox_file_roots(self):
+        return [self.get_agent_data_dir() / "exports"]
+```
+
+Without file roots, the model moves data into the sandbox by writing it into
+its code, which suits tool results of a few hundred rows.
 
 The model shows the user what its code made through links the host serves: a
 file at `<path>` in the folder opens at `$MASH_FILES_URL/<path>`, and a server

@@ -288,3 +288,20 @@ def test_repl_requires_a_user_id(capsys) -> None:
 
     target = shell.call_args.args[1]
     assert target.user_id == "u-42"
+
+
+def test_repl_show_thinking_is_off_by_default() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import main as cli_main
+    from mash.cli.config import CLIConfig
+
+    shell = MagicMock()
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
+    with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
+        cli_main, "load_config", return_value=existing
+    ), patch.object(cli_main, "MashRemoteShell", shell):
+        assert cli_main.main(["repl", "--agent", "primary"]) == 0
+        assert shell.call_args.kwargs["show_thinking"] is False
+        assert cli_main.main(["repl", "--agent", "primary", "--show-thinking"]) == 0
+        assert shell.call_args.kwargs["show_thinking"] is True

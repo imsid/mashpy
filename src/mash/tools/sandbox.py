@@ -6,15 +6,22 @@ on into that folder, and ``sandbox_get`` copies one back. The tools run in the
 agent's runtime and reach the sandbox only through the host's relay
 (``{host}/sandbox``), with the agent's token and the current request id; the
 host picks the user from the request.
+
+``sandbox_put`` and ``sandbox_get`` exist only for an agent whose spec declares
+file roots (``AgentSpec.sandbox_file_roots()``), and they read and write only
+regular files inside those roots. The model chooses the paths, and code in the
+sandbox can reach the internet, so a path outside the roots would let it copy
+out anything the agent process can read.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import httpx
 
@@ -39,6 +46,9 @@ _LANGUAGES = {
     "shell": ("sh", "bash"),
 }
 SANDBOX_TOOL_NAMES = ("run_code", "sandbox_put", "sandbox_get")
+# Kernel and device pseudo-filesystems, refused even inside a root: they expose
+# the process's environment and memory as files.
+_PSEUDO_FS = (Path("/proc"), Path("/sys"), Path("/dev"))
 
 
 class _Relay:
@@ -65,10 +75,56 @@ def _error_message(response: httpx.Response) -> str:
         return response.text or f"status {response.status_code}"
 
 
+class FileRoots:
+    """The folders on the agent's machine that the sandbox file tools may use."""
+
+    def __init__(self, roots: Sequence[Path | str]) -> None:
+        resolved: list[Path] = []
+        for root in roots:
+            path = Path(root).expanduser()
+            if not path.is_absolute():
+                raise ValueError(f"sandbox file root {root} must be an absolute path")
+            path = path.resolve()
+            if _in_pseudo_fs(path):
+                raise ValueError(f"sandbox file root {root} is in {path.parts[1]}, which is refused")
+            resolved.append(path)
+        if not resolved:
+            raise ValueError("at least one sandbox file root is required")
+        self.paths = tuple(resolved)
+
+    def describe(self) -> str:
+        return ", ".join(str(path) for path in self.paths)
+
+    def resolve(self, raw: str) -> Path:
+        """The real path of ``raw`` if it lies inside a root; ValueError otherwise.
+
+        A relative path is taken from the first root. Symlinks are followed, so
+        a link inside a root that points out of it is refused.
+        """
+        path = Path(raw)
+        if not path.is_absolute():
+            path = self.paths[0] / path
+        real = path.resolve()
+        if _in_pseudo_fs(real) or not any(real.is_relative_to(root) for root in self.paths):
+            raise ValueError(f"{raw} is outside the folders you can use: {self.describe()}")
+        return real
+
+
+def _in_pseudo_fs(path: Path) -> bool:
+    return any(path.is_relative_to(root) for root in _PSEUDO_FS)
+
+
 class RunCodeTool:
     """Python, JavaScript or shell in the request user's sandbox."""
 
-    def __init__(self, *, host_api_url: str, token: str, agent_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        host_api_url: str,
+        token: str,
+        agent_id: str,
+        file_roots: FileRoots | None = None,
+    ) -> None:
         self._relay = _Relay(host_api_url, token)
         folder = f"{WORKSPACES_ROOT}/{agent_id}"
         self.name = "run_code"
@@ -112,8 +168,13 @@ class RunCodeTool:
             "URLs in the pages it serves. Servers stop when the sandbox goes idle; "
             "prefer files for pages that need no live server.\n"
             "\n"
-            "Files from elsewhere: copy files from the agent's machine in with "
-            "sandbox_put. The sandbox holds no secrets or credentials."
+            + (
+                "Files from elsewhere: copy files in with sandbox_put, from "
+                f"{file_roots.describe()} on the agent's machine. "
+                if file_roots is not None
+                else "Files from elsewhere: write data from tool results into your code. "
+            )
+            + "The sandbox holds no secrets or credentials."
         )
         self.parameters = {
             "type": "object",
@@ -203,17 +264,16 @@ class RunCodeTool:
 class SandboxPutTool:
     """Copy a file from the agent's machine into the sandbox folder."""
 
-    def __init__(self, *, host_api_url: str, token: str) -> None:
+    def __init__(self, *, host_api_url: str, token: str, file_roots: FileRoots) -> None:
         self._relay = _Relay(host_api_url, token)
+        self._roots = file_roots
         self.name = "sandbox_put"
         self.description = (
             "Copy a file from the machine you run on into your sandbox folder, so "
-            "run_code can use it. Use it for files the user points you to and files "
-            "your other tools wrote. For small data from a tool result, write it into "
-            "your code instead.\n"
-            "Never copy .env files, keys, tokens, credentials, password stores or "
-            "any other sensitive file into the sandbox: code there can reach the "
-            "internet. Copy only the data the task needs.\n"
+            "run_code can use it. You can copy files from these folders only: "
+            f"{file_roots.describe()}. Use it for files your other tools wrote "
+            "there. For small data from a tool result, write it into your code "
+            "instead.\n"
             f"Files are limited to {MAX_FILE_BYTES // (1024 * 1024)} MB."
         )
         self.parameters = {
@@ -221,7 +281,8 @@ class SandboxPutTool:
             "properties": {
                 "src": {
                     "type": "string",
-                    "description": "Path of the file on your machine; ~ is expanded.",
+                    "description": "Path of the file on your machine, absolute or "
+                    f"relative to {file_roots.paths[0]}.",
                 },
                 "dest": {
                     "type": "string",
@@ -242,13 +303,13 @@ class SandboxPutTool:
         request_id = _request_id()
         if not request_id:
             return ToolResult.error("sandbox_put runs only within a request")
-        path = Path(os.path.expanduser(src))
-        if not path.is_file():
-            return ToolResult.error(f"no file at {path}")
-        size = path.stat().st_size
-        if size > MAX_FILE_BYTES:
-            return ToolResult.error(f"{path} is {size} bytes; the limit is {MAX_FILE_BYTES}")
-        data = await asyncio.to_thread(path.read_bytes)
+        try:
+            path = self._roots.resolve(src)
+            data = await asyncio.to_thread(_read_local, path)
+        except ValueError as exc:
+            return ToolResult.error(str(exc))
+        except OSError as exc:
+            return ToolResult.error(f"Cannot read {src}: {exc.strerror or exc}")
         try:
             async with httpx.AsyncClient(timeout=_FILE_RELAY_TIMEOUT) as client:
                 response = await client.put(
@@ -278,12 +339,14 @@ class SandboxPutTool:
 class SandboxGetTool:
     """Copy a file from the sandbox folder to the agent's machine."""
 
-    def __init__(self, *, host_api_url: str, token: str) -> None:
+    def __init__(self, *, host_api_url: str, token: str, file_roots: FileRoots) -> None:
         self._relay = _Relay(host_api_url, token)
+        self._roots = file_roots
         self.name = "sandbox_get"
         self.description = (
             "Copy a file from your sandbox folder to the machine you run on, for "
-            "example a result your other tools need to read. To show a file to the "
+            "example a result your other tools need to read. You can write into "
+            f"these folders only: {file_roots.describe()}. To show a file to the "
             "user, give them its link from run_code instead.\n"
             f"Files are limited to {MAX_FILE_BYTES // (1024 * 1024)} MB."
         )
@@ -296,8 +359,9 @@ class SandboxGetTool:
                 },
                 "dest": {
                     "type": "string",
-                    "description": "Path on your machine to write; ~ is expanded and "
-                    "parent folders are created. An existing file is replaced.",
+                    "description": "Path on your machine to write, absolute or "
+                    f"relative to {file_roots.paths[0]}. Parent folders are "
+                    "created. An existing file is replaced.",
                 },
             },
             "required": ["src", "dest"],
@@ -314,6 +378,10 @@ class SandboxGetTool:
         if not request_id:
             return ToolResult.error("sandbox_get runs only within a request")
         try:
+            path = self._roots.resolve(dest)
+        except ValueError as exc:
+            return ToolResult.error(str(exc))
+        try:
             async with httpx.AsyncClient(timeout=_FILE_RELAY_TIMEOUT) as client:
                 response = await client.get(
                     f"{self._relay.base_url}/files",
@@ -324,11 +392,12 @@ class SandboxGetTool:
             return ToolResult.error(f"Error reaching the sandbox: {exc}")
         if response.status_code != 200:
             return ToolResult.error(f"Sandbox error: {_error_message(response)}")
-        path = Path(os.path.expanduser(dest))
         try:
-            await asyncio.to_thread(_write_local, path, response.content)
+            await asyncio.to_thread(_write_local, self._roots, path, response.content)
+        except ValueError as exc:
+            return ToolResult.error(str(exc))
         except OSError as exc:
-            return ToolResult.error(f"Cannot write {path}: {exc}")
+            return ToolResult.error(f"Cannot write {path}: {exc.strerror or exc}")
         return ToolResult.success(f"Copied {len(response.content)} bytes to {path}.")
 
     def to_llm_format(self) -> Dict[str, Any]:
@@ -339,23 +408,70 @@ class SandboxGetTool:
         }
 
 
-def _write_local(path: Path, data: bytes) -> None:
+def _read_local(path: Path) -> bytes:
+    # O_NOFOLLOW refuses a symlink swapped in after the path was resolved, and
+    # fstat checks the file that was actually opened.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        if info.st_size > MAX_FILE_BYTES:
+            raise ValueError(f"{path} is {info.st_size} bytes; the limit is {MAX_FILE_BYTES}")
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def _write_local(roots: FileRoots, path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    # The folders just made must not lead out of the roots through a symlink.
+    roots.resolve(str(path))
+    # O_NONBLOCK keeps a FIFO planted at the path from blocking the open.
+    fd = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        os.set_blocking(fd, True)
+        os.ftruncate(fd, 0)
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
 
 
-def build_sandbox_tools(*, host_api_url: str, token: str, agent_id: str) -> list[Any]:
-    """The sandbox tools for one agent."""
-    return [
-        RunCodeTool(host_api_url=host_api_url, token=token, agent_id=agent_id),
-        SandboxPutTool(host_api_url=host_api_url, token=token),
-        SandboxGetTool(host_api_url=host_api_url, token=token),
+def build_sandbox_tools(
+    *,
+    host_api_url: str,
+    token: str,
+    agent_id: str,
+    file_roots: Sequence[Path | str] = (),
+) -> list[Any]:
+    """The sandbox tools for one agent.
+
+    ``sandbox_put`` and ``sandbox_get`` come only with ``file_roots``.
+    """
+    roots = FileRoots(file_roots) if file_roots else None
+    tools: list[Any] = [
+        RunCodeTool(
+            host_api_url=host_api_url, token=token, agent_id=agent_id, file_roots=roots
+        )
     ]
+    if roots is not None:
+        tools.append(SandboxPutTool(host_api_url=host_api_url, token=token, file_roots=roots))
+        tools.append(SandboxGetTool(host_api_url=host_api_url, token=token, file_roots=roots))
+    return tools
 
 
 __all__ = [
     "RUN_CODE_DEFAULT_TIMEOUT",
     "SANDBOX_TOOL_NAMES",
+    "FileRoots",
     "RunCodeTool",
     "SandboxGetTool",
     "SandboxPutTool",

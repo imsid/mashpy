@@ -13,7 +13,7 @@ import unittest
 import uuid
 
 from mash.runtime.client import AgentClient
-from mash.runtime.host.processes import STATUS_RUNNING, AgentProcessProvider
+from mash.runtime.host.processes import STATUS_RUNNING, AgentProcessProvider, _Child
 
 try:
     import psycopg
@@ -35,6 +35,27 @@ def _database_url() -> str:
     except Exception as exc:  # pragma: no cover - depends on local postgres
         raise unittest.SkipTest(f"Postgres unavailable: {exc}") from exc
     return url
+
+
+class ChildEnvironmentTests(unittest.TestCase):
+    def test_child_gets_the_host_environment_without_host_only_secrets(self) -> None:
+        provider = AgentProcessProvider(
+            host_app=HOST_APP,
+            host_secret="secret",
+            host_api_url="http://127.0.0.1:1",
+            environ={
+                "MASH_HOST_SECRET": "secret",
+                "MASH_API_KEY": "api-key",
+                "GEMINI_API_KEY": "provider-key",
+            },
+        )
+
+        env = provider._env(_Child(agent_id="a", port=1, token="agent-token"))
+
+        self.assertNotIn("MASH_HOST_SECRET", env)
+        self.assertNotIn("MASH_API_KEY", env)
+        self.assertEqual(env["GEMINI_API_KEY"], "provider-key")
+        self.assertEqual(env["MASH_AGENT_TOKEN"], "agent-token")
 
 
 class AgentProcessProviderTests(unittest.IsolatedAsyncioTestCase):

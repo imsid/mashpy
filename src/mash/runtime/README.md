@@ -319,7 +319,7 @@ lifecycle.
   - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached
 
 - [`agent_process.py`](./agent_process.py)
-  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code`, `sandbox_put` and `sandbox_get` (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
+  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
   - `HostRelay`: the runtime's pool access in an agent process; subagent clients point at the host's `/h2a` relay
   - `stop_with_parent()`: an agent process shuts down when the host whose pid is in `MASH_PARENT_PID` exits
 
@@ -395,7 +395,7 @@ lifecycle.
   - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
 
 - `host/processes.py`
-  - `AgentProcessProvider.ensure(agent_id)`: spawns `mash agent serve --host-app <app> --agent <id> --host 127.0.0.1 --port <free port>` with the host's environment plus `MASH_AGENT_TOKEN`, `MASH_HOST_API_URL`, `MASH_SANDBOX_ENABLED` and `MASH_PARENT_PID`, then waits for `/health`
+  - `AgentProcessProvider.ensure(agent_id)`: spawns `mash agent serve --host-app <app> --agent <id> --host 127.0.0.1 --port <free port>` with the host's environment, less `MASH_HOST_SECRET` and `MASH_API_KEY`, plus `MASH_AGENT_TOKEN`, `MASH_HOST_API_URL`, `MASH_SANDBOX_ENABLED` and `MASH_PARENT_PID`, then waits for `/health`
   - the child's output goes to the host's stderr, one line at a time, prefixed `[<agent_id>]`
   - a child that exits restarts on the same port, with backoff from 1 to 30 seconds; while it is down its routes return `503 AGENT_UNAVAILABLE`
   - `stop(agent_id)` and `close()` send SIGTERM, then SIGKILL after `stop_timeout`; `status(agent_id)` is `starting`, `running` or `unavailable`
