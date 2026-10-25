@@ -91,6 +91,16 @@ Instead, the workflow checkpoints around canonical step primitives:
   set by `configure_executor_id(...)` before launch (`agent_executor_id(agent_id)`
   gives `agent:<agent_id>` for an agent process). On launch DBOS recovers only
   the pending workflows recorded under that executor id
+- DBOS runs under this process's application name: `mash` for the host, and
+  `agent_application_name(agent_id)` (`mash-agent-<slug>-<hash>`) for an agent
+  process, set by `configure_agent_process(...)`. DBOS recovers and resumes a
+  workflow by putting it on its internal queue, which every process polls, and
+  dequeues by application name rather than executor. The name of its own keeps
+  an agent's recovered and resumed requests in that agent's process; under a
+  shared name, another process could take one and fail it with `runtime '<id>'
+  is not registered`
+- only the host declares the workflow-run queue (`ensure_queue_registered`): a
+  queue row belongs to one application, and agent processes never enqueue runs
 - `register_workflow(...)` installs the workflow once
 - `DBOS.launch()` activates the runtime
 - live `AgentRuntime` objects are stored in `_STATE.runtime_registry`

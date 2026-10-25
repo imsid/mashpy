@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import os
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -27,11 +29,30 @@ def agent_executor_id(agent_id: str) -> str:
     return f"agent:{resolved}"
 
 
+# DBOS dequeues by application name and version, not by executor, and its
+# recovery and resume both go through its internal queue, which every process
+# polls. Each agent process gets an application name of its own, so only that
+# process picks up its recovered and resumed requests; the host keeps ``mash``.
+HOST_APPLICATION_NAME = "mash"
+
+
+def agent_application_name(agent_id: str) -> str:
+    """``mash-agent-<slug>-<hash>``: DBOS names allow only ``[a-z0-9_-]``, and
+    the hash keeps two agent ids that slug alike apart."""
+    resolved = str(agent_id or "").strip()
+    if not resolved:
+        raise ValueError("agent_id is required")
+    slug = re.sub(r"[^a-z0-9_-]+", "-", resolved.lower()).strip("-")[:64]
+    digest = hashlib.sha256(resolved.encode()).hexdigest()[:8]
+    return f"mash-agent-{slug}-{digest}" if slug else f"mash-agent-{digest}"
+
+
 @dataclass
 class _DBOSRuntimeState:
     ready: bool = False
     database_url: str | None = None
     executor_id: str = HOST_EXECUTOR_ID
+    application_name: str = HOST_APPLICATION_NAME
     listen_queues: bool = True
     registered_workflow: Any = None
     runtime_registry: dict[str, "AgentRuntime"] = field(default_factory=dict)
@@ -92,10 +113,17 @@ def configure_agent_process(agent_id: str) -> None:
     """Configure DBOS for an agent process. Must run before DBOS launches.
 
     The process runs as ``agent:<agent_id>``, so it recovers only that agent's
-    requests, and listens to no queues, so it never dequeues the host's
-    workflow runs.
+    requests, under an application name of its own, so no other process
+    dequeues them. It listens to no queues and declares none, so it never
+    dequeues or claims the host's workflow-run queue.
     """
+    application_name = agent_application_name(agent_id)
+    if _STATE.ready and _STATE.application_name != application_name:
+        raise RuntimeError(
+            f"DBOS runtime is already launched as '{_STATE.application_name}'"
+        )
     configure_executor_id(agent_executor_id(agent_id))
+    _STATE.application_name = application_name
     _STATE.listen_queues = False
 
 
@@ -113,7 +141,7 @@ async def ensure_dbos_ready(database_url: str) -> None:
     dbos_class, _ = _load_dbos_api()
 
     config: dict[str, Any] = {
-        "name": "mash",
+        "name": _STATE.application_name,
         "system_database_url": resolved_url,
         "executor_id": _STATE.executor_id,
     }
@@ -122,12 +150,14 @@ async def ensure_dbos_ready(database_url: str) -> None:
     dbos_class(config=config)
     # Workflow functions must be registered before launch so recovery can
     # resolve them; the run queue is a system-database row and can only be
-    # declared once launch has opened it.
+    # declared once launch has opened it. A queue row belongs to one
+    # application, so only the host, which enqueues runs, declares it.
     register_workflow(dbos_class)
     if not _STATE.listen_queues:
         dbos_class.listen_queues([])
     dbos_class.launch()
-    await ensure_queue_registered(dbos_class)
+    if _STATE.listen_queues:
+        await ensure_queue_registered(dbos_class)
     _STATE.ready = True
     _STATE.database_url = resolved_url
 
@@ -403,7 +433,9 @@ class DBOSRequestEngine(RequestEngine):
 __all__ = [
     "DBOSRequestEngine",
     "RequestEngine",
+    "HOST_APPLICATION_NAME",
     "HOST_EXECUTOR_ID",
+    "agent_application_name",
     "agent_executor_id",
     "configure_agent_process",
     "configure_executor_id",
