@@ -26,8 +26,8 @@
     `/sandbox/files`. `sandbox_put`'s description tells the model never to copy
     secrets.
   The runtime registers all three for every agent when the host has
-  sandboxes, and a spec that registers a tool with one of these names then
-  fails to start.
+  sandboxes, unless the spec's `enable_sandbox()` returns False, and a spec that
+  registers a tool with one of these names then fails to start.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.

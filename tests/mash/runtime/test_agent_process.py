@@ -148,6 +148,19 @@ class BuildAgentServerTests(unittest.TestCase):
         for name in ("run_code", "sandbox_put", "sandbox_get"):
             self.assertNotIn(name, server.runtime.tools)
 
+    def test_agent_that_does_not_use_the_sandbox_gets_no_sandbox_tools(self) -> None:
+        spec = build_spec(agent_id="research", response_text="ok")
+        spec.enable_sandbox = lambda: False
+        pool = HostBuilder().agent(spec, metadata=metadata()).build()
+        server = build_agent_server(
+            pool, "research", token="tok", host_api_url="http://host", sandbox_tools=True
+        )
+
+        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        for name in ("run_code", "sandbox_put", "sandbox_get"):
+            self.assertNotIn(name, server.runtime.tools)
+            self.assertNotIn(name, turn_agent.tools)
+
     def test_spec_run_code_conflicts_with_sandbox_tools(self) -> None:
         spec = build_spec(agent_id="research", response_text="ok")
         build_tools = spec.build_tools

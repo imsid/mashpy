@@ -88,6 +88,16 @@ class AgentSpec(ABC):
         """Whether Mash runtime tools should be auto-registered."""
         return True
 
+    def enable_sandbox(self) -> bool:
+        """Whether the agent gets ``run_code``, ``sandbox_put`` and ``sandbox_get``.
+
+        True by default: on a host with sandboxes, every agent can run code in
+        the request user's sandbox. Return False for an agent whose model should
+        never reach it, such as one that reads untrusted content and holds
+        credentials.
+        """
+        return True
+
     def build_web_search(self) -> WebSearchProvider | None:
         """Web search provider backing `web_search`/`web_fetch`.
 

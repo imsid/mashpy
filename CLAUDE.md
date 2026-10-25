@@ -54,7 +54,8 @@ agent's and each sandbox's token.
   no database access. Every agent gets `run_code`, `sandbox_put` and
   `sandbox_get` when the host has sandboxes, so it can write and run code, keep
   files and databases, and hand the user links to what it made, without
-  registering anything. Code runs as an `agent` user with a clean environment.
+  registering anything; a spec opts out with `enable_sandbox()`. Code runs as an
+  `agent` user with a clean environment.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -213,6 +214,7 @@ Optional overrides:
 | `build_memory_store()` | Postgres (requires `MASH_DATABASE_URL`) | Custom memory backend |
 | `build_mcp_servers()` | `[]` | MCP server connections |
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
+| `enable_sandbox()` | `True` | Get `run_code`, `sandbox_put` and `sandbox_get` on a host with sandboxes |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |
 | `on_startup(runtime)` | No-op | Hook after runtime init, in the agent's process |
 | `on_shutdown(runtime)` | No-op | Hook before cleanup, in the agent's process |
