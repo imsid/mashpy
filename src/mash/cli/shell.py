@@ -38,11 +38,19 @@ class ShellTarget:
 class MashRemoteShell:
     """Interactive shell backed by a remote Mash host deployment."""
 
-    def __init__(self, client: MashHostClient, target: ShellTarget) -> None:
+    def __init__(
+        self,
+        client: MashHostClient,
+        target: ShellTarget,
+        *,
+        show_thinking: bool = False,
+    ) -> None:
         self.client = client
         self.target = target
         self.renderer = RichRenderer()
-        self.chain_renderer = ChainOfThoughtRenderer(self.renderer.console)
+        self.chain_renderer = ChainOfThoughtRenderer(
+            self.renderer.console, show_thinking=show_thinking
+        )
         self.command_registry = CommandRegistry(
             app_id=self.target.agent_id,
             event_logger=RemoteCommandEventLogger(
@@ -86,9 +94,9 @@ class MashRemoteShell:
         """Render the assistant's final turn from assistant_blocks or text.
 
         Skips any text block whose content was already shown live via delta
-        streaming (streamed_text). Thinking blocks always render — they never
-        appear as text deltas. Falls back to fallback_text when response_payload
-        carries no blocks.
+        streaming (streamed_text). Thinking is not rendered here: the chain
+        renderer shows each step's thinking with that step. Falls back to
+        fallback_text when response_payload carries no blocks.
         """
         if isinstance(response_payload, dict):
             assistant_blocks = response_payload.get("assistant_blocks") or []
@@ -100,13 +108,7 @@ class MashRemoteShell:
         rendered = False
         if assistant_blocks:
             for block in assistant_blocks:
-                block_type = block.get("type")
-                if block_type == "thinking":
-                    content = str(block.get("thinking") or "").strip()
-                    if content:
-                        ctx.renderer.thinking(content)
-                        rendered = True
-                elif block_type == "text":
+                if block.get("type") == "text":
                     block_text = str(block.get("text") or "").strip()
                     if block_text and block_text != streamed_text:
                         ctx.renderer.markdown(block_text)

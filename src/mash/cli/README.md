@@ -30,7 +30,7 @@ Host-facing commands
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID]`: start an interactive remote shell session, pinned to the resolved target and user. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
+- `repl [common] [--session-id ID] [--show-thinking]`: start an interactive remote shell session, pinned to the resolved target and user. `--show-thinking` prints the model's thinking for each step under that step's line; it is off by default. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
 
 Host management
 

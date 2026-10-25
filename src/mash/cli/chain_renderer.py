@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
+from rich.table import Table
 from rich.text import Text
 
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
@@ -20,11 +22,28 @@ from mash.runtime.events.trace import (
 )
 
 
+def _thinking_text(payload: Dict[str, Any]) -> Optional[str]:
+    """Join the thinking blocks of one think-completed payload."""
+    parts = [
+        str(block.get("thinking") or "").strip()
+        for block in list(payload.get("assistant_blocks") or [])
+        if isinstance(block, dict) and block.get("type") == "thinking"
+    ]
+    text = "\n\n".join(part for part in parts if part)
+    return re.sub(r"\n{3,}", "\n\n", text) or None
+
+
 class ChainOfThoughtRenderer:
     """Renders agent's chain of thought in real-time."""
 
-    def __init__(self, console: Optional[Console] = None) -> None:
+    def __init__(
+        self,
+        console: Optional[Console] = None,
+        *,
+        show_thinking: bool = False,
+    ) -> None:
         self._console = console or Console()
+        self._show_thinking = show_thinking
         self._current_trace_id: Optional[str] = None
         self._current_trace_label: Optional[str] = None
         self._current_step: int = 0
@@ -257,6 +276,7 @@ class ChainOfThoughtRenderer:
             "tool_calls": _tool_call_names(tool_calls_detail),
             "tool_calls_detail": tool_calls_detail,
             "assistant_text": _clean_text(payload.get("assistant_text")),
+            "thinking": _thinking_text(payload),
             "token_usage": _dict_value(payload.get("token_usage")),
             "think_duration": _as_int(payload.get("duration_ms")) or 0,
         }
@@ -347,6 +367,7 @@ class ChainOfThoughtRenderer:
             f"  [cyan]→[/cyan] Step {display_step}: {desc}{token_str} "
             f"[dim]{think_duration}ms[/dim]"
         )
+        self._render_thinking(step.get("thinking"), prefix="    ")
 
         if assistant_text and action_type not in ("response", "finish"):
             self._console.print(f"    [dim]assistant: {assistant_text}[/dim]")
@@ -373,6 +394,17 @@ class ChainOfThoughtRenderer:
                         args_preview.append(f"+{len(tool_args) - 2} more")
                     args_str = ", ".join(args_preview)
                     self._console.print(f"    [dim]{tool_name}({args_str})[/dim]")
+
+    def _render_thinking(self, thinking: Optional[str], *, prefix: str) -> None:
+        """Render a step's thinking under its step line, when enabled."""
+        if not self._show_thinking or not thinking:
+            return
+        # A grid keeps wrapped lines aligned under the prefix.
+        grid = Table.grid()
+        grid.add_column(no_wrap=True)
+        grid.add_column()
+        grid.add_row(Text.from_markup(prefix), Text(thinking, style="dim italic"))
+        self._console.print(grid)
 
     def _render_act(self, step: Dict[str, Any]) -> None:
         """Render action phase.
@@ -426,6 +458,7 @@ class ChainOfThoughtRenderer:
             "action_type": _clean_text(payload.get("action_type")),
             "tool_calls": _tool_call_names(tool_calls_detail),
             "tool_calls_detail": tool_calls_detail,
+            "thinking": _thinking_text(payload),
             "token_usage": _dict_value(payload.get("token_usage")),
             "think_duration": _as_int(payload.get("duration_ms")) or 0,
         }
@@ -459,6 +492,9 @@ class ChainOfThoughtRenderer:
         self._console.print(
             f"    [magenta]│[/magenta] [cyan]→[/cyan] Step {counter}: {desc}{token_str} "
             f"[dim]{think_duration}ms[/dim]"
+        )
+        self._render_thinking(
+            step_info["thinking"], prefix="    [magenta]│[/magenta]   "
         )
 
         if tool_calls_detail:

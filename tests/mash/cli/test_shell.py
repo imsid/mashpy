@@ -804,7 +804,7 @@ class MashRemoteShellTests(unittest.TestCase):
             shell.handle_repl_message(shell.context, "hello")
         error.assert_called_once_with("    Subagent subagent error: request failed")
 
-    def test_handle_repl_message_renders_assistant_blocks_in_order(self) -> None:
+    def test_handle_repl_message_renders_text_blocks_without_thinking(self) -> None:
         shell = self._build_shell()
 
         def stream_with_blocks(agent_id: str, request_id: str):
@@ -824,12 +824,10 @@ class MashRemoteShellTests(unittest.TestCase):
             }
 
         _fake(shell).stream_request = stream_with_blocks
-        thinking_calls: list[str] = []
         markdown_calls: list[str] = []
-        with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
-            with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
-                shell.handle_repl_message(shell.context, "hello")
-        self.assertEqual(thinking_calls, ["my reasoning"])
+        with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
+            shell.handle_repl_message(shell.context, "hello")
+        # Thinking belongs to the chain renderer's step lines, not the answer.
         self.assertEqual(markdown_calls, ["text block"])
 
     def test_handle_repl_message_skips_text_block_already_streamed(self) -> None:
@@ -861,17 +859,59 @@ class MashRemoteShellTests(unittest.TestCase):
             }
 
         _fake(shell).stream_request = stream_delta_then_blocks
-        thinking_calls: list[str] = []
         markdown_calls: list[str] = []
-        with patch.object(shell.context.renderer, "thinking", side_effect=thinking_calls.append):
-            with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
-                shell.handle_repl_message(shell.context, "hello")
-        # Thinking block renders even though text streamed live.
-        self.assertEqual(thinking_calls, ["deep thought"])
+        with patch.object(shell.context.renderer, "markdown", side_effect=markdown_calls.append):
+            shell.handle_repl_message(shell.context, "hello")
         # Text block is skipped — it was already shown via delta streaming.
         self.assertEqual(markdown_calls, [])
 
+def _think_event(loop_index: int, thinking: str, *, action_type: str) -> RuntimeEvent:
+    return RuntimeEvent(
+        app_id="primary",
+        agent_id="primary",
+        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+        session_id="s-1",
+        trace_id="trace-1",
+        loop_index=loop_index,
+        payload={
+            "duration_ms": 10,
+            "action_type": action_type,
+            "tool_calls": [],
+            "assistant_blocks": [{"type": "thinking", "thinking": thinking}],
+            "token_usage": {"input": 1, "output": 1},
+        },
+    )
+
+
 class ChainOfThoughtRendererTests(unittest.TestCase):
+    def test_thinking_is_hidden_by_default(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console)
+        renderer.on_runtime_event(_think_event(0, "secret plan", action_type="finish"))
+
+        self.assertNotIn("secret plan", console.export_text())
+
+    def test_show_thinking_renders_each_step_under_its_line(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console, show_thinking=True)
+        renderer.on_runtime_event(_think_event(0, "pick a tool", action_type="tool_call"))
+        renderer.on_runtime_event(_think_event(1, "write the answer", action_type="finish"))
+
+        output = console.export_text()
+        self.assertLess(output.index("Step 1:"), output.index("pick a tool"))
+        self.assertLess(output.index("pick a tool"), output.index("Step 2:"))
+        self.assertLess(output.index("Step 2:"), output.index("write the answer"))
+
+    def test_show_thinking_renders_subagent_steps(self) -> None:
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console, show_thinking=True)
+        renderer.render_subagent_event(
+            _think_event(0, "subagent reasoning", action_type="finish"),
+            agent_id="research",
+        )
+
+        self.assertIn("subagent reasoning", console.export_text())
+
     def test_think_events_use_step_id_for_display_when_step_complete_is_missing(self) -> None:
         console = Console(record=True, width=120)
         renderer = ChainOfThoughtRenderer(console)
