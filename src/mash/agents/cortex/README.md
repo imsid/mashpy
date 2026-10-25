@@ -30,7 +30,7 @@ user row deletes their entries.
 
 `build_agent_server` gives each runtime a `CortexReader` when the pool
 enables Cortex. Reads run in the agent's process, which holds the database
-credentials; bash runs in the user's sandbox, which has no route to the
+credentials; agents' code runs in the user's sandbox, which has no route to the
 database.
 
 On every request, for the request's user:

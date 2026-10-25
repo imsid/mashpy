@@ -4,19 +4,30 @@
 
 ## What This Package Does
 - Defines the base tool contract and registration surface.
-- Houses built-in tools such as bash access, MCP-backed tools, and subagent invocation.
+- Houses built-in tools such as the sandbox tools, MCP-backed tools, and subagent invocation.
 - Provides runtime-facing helpers so tool execution can stay consistent across hosted agents.
 
 ## Main Components
 - `base.py`: tool interface and shared behavior.
 - `registry.py`: registration and lookup of enabled tools.
-- `bash.py`: the sandbox shell tool. It starts no shell itself: each call
-  posts `{request_id, command, timeout}` to the host's `/sandbox/exec` relay
-  with the agent's token, and the host runs it in the sandbox of the request's
-  user, in `/home/agent/workspaces/<agent_id>` (see `mash.sandbox`). Each call
-  is a fresh shell; files persist. The runtime registers it for every agent
-  when the host has sandboxes, and a spec that registers its own `bash` tool
-  then fails to start.
+- `sandbox.py`: the sandbox tools. They run nothing locally: each call goes to
+  the host's `/sandbox` relay with the agent's token and the request id, and
+  the host acts in the sandbox of the request's user, in
+  `/home/agent/workspaces/<agent_id>` (see `mash.sandbox`).
+  - `run_code(language, code, timeout=60)`: `python`, `javascript` or `shell`.
+    The code goes as stdin to a command that writes it to
+    `.mash/runs/<uuid>.<ext>` as the `agent` user, runs it with `python3`,
+    `node` or `bash`, and deletes it. Each call is a new process; files persist.
+    The description lists what Mash's sandbox image holds and how results reach
+    the user (`$MASH_FILES_URL`, `$MASH_PORTS_URL`); keep it in step with
+    `Dockerfile.sandbox`.
+  - `sandbox_put(src, dest)` / `sandbox_get(src, dest)`: copy one file (up to
+    100 MB) between the agent process's machine and the folder through
+    `/sandbox/files`. `sandbox_put`'s description tells the model never to copy
+    secrets.
+  The runtime registers all three for every agent when the host has
+  sandboxes, and a spec that registers a tool with one of these names then
+  fails to start.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.

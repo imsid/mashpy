@@ -29,8 +29,9 @@ Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
 
 Pilot runs from a checkout of this repo with Docker Compose. The host runs its
 agents as processes inside its container. Through the Docker socket it starts
-a sandbox per user for their bash commands, and mounts the checkout read-only
-into each one at `/home/agent/mashpy`.
+a sandbox per user, where the agents' code runs, and mounts the checkout
+read-only into each one at `/home/agent/mashpy`. Compose builds the sandbox
+image, `mash-sandbox:pilot`, from `Dockerfile.sandbox`.
 
 ```bash
 # 1. Clone the repo and put the keys in .env
@@ -46,10 +47,12 @@ mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot repl --host guide
 ```
 
-Your sandbox starts with your first bash command; `mash sandbox ls` lists the
-sandboxes. The agents read your checkout as it is, so edits show up without a
+Your sandbox starts the first time an agent runs code for you; `mash sandbox ls`
+lists the sandboxes. Pages and files the agents make open at the links they
+give you, served by the host on `127.0.0.1:8000`. The agents read your checkout as it is, so edits show up without a
 restart. Pilot's own code is in the image: after changing it, run
-`up -d --build`, then remove the sandboxes with
+`up -d --build`. After changing the sandbox daemon or `Dockerfile.sandbox`,
+also remove the sandboxes with
 `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)` so the next
 command starts them from the new image. Their volumes, and the apps the
 builder made, are kept.

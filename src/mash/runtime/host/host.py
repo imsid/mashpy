@@ -110,9 +110,9 @@ class Pool:
         return self._agent_provider is not None
 
     def configure_sandboxes(self, sandboxes: "SandboxManager") -> None:
-        """Set where agents' bash commands run: each request user's sandbox.
+        """Set where agents' code runs: each request user's sandbox.
 
-        Without sandboxes, agents get no ``bash`` tool. The pool owns the
+        Without sandboxes, agents get no sandbox tools. The pool owns the
         manager from here and closes it in ``close()``.
         """
         if self._clients:

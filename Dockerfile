@@ -13,19 +13,10 @@ COPY src ./src
 
 RUN pip install .
 
-# Two users. In the host container `mash` runs the host and the agent
-# processes. The same image is the sandbox image: there `mash` runs the sandbox
-# daemon, and `agent` runs every bash command and can read only /home/agent.
-# `mash` may start bash as `agent` and nothing else.
-RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash mash \
-    && useradd --create-home --shell /bin/bash agent \
+# `mash` runs the host and the agent processes. The agents' code runs in
+# per-user sandboxes from Dockerfile.sandbox, not here.
+RUN useradd --create-home --shell /bin/bash mash \
     && chmod 0700 /home/mash \
-    && mkdir -p /home/agent/workspaces \
-    && chown -R agent:agent /home/agent \
-    && chmod 0755 /home/agent /home/agent/workspaces \
-    && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
-    && chmod 0440 /etc/sudoers.d/mash-agent \
     && mkdir -p /var/lib/mash \
     && chown mash:mash /var/lib/mash
 

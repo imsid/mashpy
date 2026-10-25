@@ -2,7 +2,7 @@
 
 ``LocalAgentProvider`` runs each agent's ``AgentServer`` in this process on
 its own ``127.0.0.1`` port, and a host relay (``/h2a`` and ``/sandbox``) on
-another, so every request, subagent call, workflow step and bash call takes the
+another, so every request, subagent call, workflow step and sandbox call takes the
 same HTTP path as with agent processes. The servers share the pool's stores,
 standing in for the shared Postgres.
 """
@@ -19,7 +19,7 @@ from fastapi import FastAPI
 
 from mash.api.routes.common import AppRuntimeState
 from mash.api.routes.h2a import build_h2a_router
-from mash.api.routes.sandbox import build_sandbox_router
+from mash.api.routes.sandbox import build_link_router, build_sandbox_router
 from mash.runtime.agent_process import HostRelay
 from mash.runtime.host.processes import STATUS_RUNNING, AgentEndpoint
 from mash.runtime.host.tokens import derive_agent_token
@@ -86,7 +86,7 @@ class LocalAgentProvider:
             HostRelay(self._pool, host_api_url=relay_url, token=token)
         )
         if self._pool.get_sandboxes() is not None:
-            runtime.enable_sandbox_bash(host_api_url=relay_url, token=token)
+            runtime.enable_sandbox_tools(host_api_url=relay_url, token=token)
         server = AgentServer(runtime, token=token)
         self.agent_servers[agent_id] = server
         uvicorn_server, task, port = await self._serve(server.app)
@@ -118,6 +118,7 @@ class LocalAgentProvider:
                 relay = FastAPI()
                 relay.include_router(build_h2a_router())
                 relay.include_router(build_sandbox_router())
+                relay.include_router(build_link_router())
                 relay.state.runtime_state = AppRuntimeState(
                     pool=self._pool,
                     api_event_store=None,
@@ -130,6 +131,8 @@ class LocalAgentProvider:
                 server, task, port = await self._serve(relay)
                 self._relay = (server, task)
                 self._relay_url = f"http://127.0.0.1:{port}"
+                # Links point at this relay, which also serves them.
+                relay.state.runtime_state.public_url = self._relay_url
             return self._relay_url
 
     async def _serve(self, app: Any) -> tuple[_Server, asyncio.Task[None], int]:

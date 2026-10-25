@@ -90,7 +90,7 @@ workflow submits agent requests, that is when it has an `AgentStep` or a
 `CodeStep` that declares `agent_ids` (`WorkflowSpec.uses_agents`); otherwise
 it is optional. The run stores it in `workflow_runs.user_id`, every agent step
 submits for it, and a code step that submits its own agent requests passes
-`ctx.user_id` to `post_inline_agent_request`. Those requests' bash runs in that
+`ctx.user_id` to `post_inline_agent_request`. Those requests' code runs in that
 user's sandbox. A resumed run keeps its user.
 
 An orchestration CodeStep is replayed as part of the parent workflow and is not

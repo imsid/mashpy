@@ -28,10 +28,11 @@ standardizes interactions between user applications and agents.
   replayable runtime events; retries, restarts, and long-running work just
   work.
 - **Sandboxes**: every request acts for a user, and each user gets a sandbox,
-  a container where the `bash` commands the model writes run as an unprivileged
-  user. It holds a folder per agent, whose files persist across requests, and
-  only that user's files: the agents' secrets and the database stay with the
-  host.
+  a container where the code the model writes (Python, JavaScript, shell) runs
+  as an unprivileged user. It holds a folder per agent, whose files and SQLite
+  databases persist across requests, and only that user's files: the agents'
+  secrets and the database stay with the host. Pages, files and servers the
+  code makes open at links the host serves.
 - **Frontier and open-source models**: built-in adapters for Anthropic, OpenAI,
   and Gemini, and any open-source model served over a Chat Completions endpoint,
   self-hosted with vLLM or Ollama or hosted on OpenRouter. Each agent picks its
@@ -67,7 +68,7 @@ workflow step ──► │      │ ▲                      output    │
                   │      │                                  │
                   │      │  resumable · replayable          │
                   └──────┼──────────────────────────────────┘
-                         │ bash
+                         │ run_code
                          ▼
                   ┌─────────────────────────────────────────┐
                   │  Sandbox: one container per user        │
@@ -77,7 +78,7 @@ workflow step ──► │      │ ▲                      output    │
 ```
 
 A request from a user and a step in a workflow ride the same durable loop, and
-the bash commands either one runs land in the sandbox of the user it acts for.
+the code either one runs lands in the sandbox of the user it acts for.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
 at each capability, and the [product brief](docs/posts/product-brief.md) for
@@ -281,14 +282,12 @@ MASH_HOST_SECRET=...   # openssl rand -hex 32
 
 **Start the host:**
 
-The host runs each agent as its own subprocess. For agents to get `bash`, it
-also needs a Docker daemon and an image to start each user's sandbox from,
-built from the Dockerfile in [the deploy guide](docs/posts/how-to-deploy.md#the-image).
-Without Docker the host still runs, and its agents get no `bash`.
+The host runs each agent as its own subprocess. For agents to get the sandbox
+tools, it also needs a Docker daemon; it pulls Mash's sandbox image,
+`ghcr.io/imsid/mash-sandbox`, on first start. Without Docker the host still
+runs, and its agents get no sandbox tools.
 
 ```bash
-docker build -t my-app:dev .
-export MASH_SANDBOX_IMAGE=my-app:dev
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
@@ -318,9 +317,9 @@ mash repl --host assistant
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
 | **Pool** | The deployed pool of role-less agents the API server runs; each agent runs as a subprocess of the host |
 | **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory and sandbox |
-| **Sandbox** | A container per user where agents' `bash` commands run, holding that user's workspaces and nothing else |
+| **Sandbox** | A container per user where agents' code runs, holding that user's workspaces and nothing else |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
-| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `bash` when it has sandboxes |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `run_code`, `sandbox_put` and `sandbox_get` when it has sandboxes |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |

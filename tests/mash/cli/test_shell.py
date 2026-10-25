@@ -954,7 +954,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
                     payload={
                         "duration_ms": 10,
                         "action_type": "tool_call",
-                        "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
+                        "tool_calls": [{"name": "run_code", "arguments": {"language": "shell", "code": "pwd"}}],
                         "token_usage": {"input": 3, "output": 2},
                     },
                 ),

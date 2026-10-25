@@ -6,7 +6,7 @@ Two steps:
   the most recent release section(s) out of the file, no LLM involved.
 - ``summarize`` (AgentStep): one run of the ``changelog-summarizer`` agent over
   the sliced excerpt. It writes a plain-language summary and calls out the
-  changes that matter, reaching for bash (``rg``/``sed``) only when an entry is
+  changes that matter, reaching for ``run_code`` (``rg``/``sed``) only when an entry is
   too terse to explain without looking at the code. Runs on the open Gemma model
   over OpenRouter (``build_default_llm``).
 """
@@ -122,11 +122,12 @@ Your job:
 
 Scanning the code:
 - The changelog entries are terse. When one is too vague to explain (e.g. a rename
-  or a removed flag), use bash to look it up in the repository at {repo_root}:
+  or a removed flag), look it up in the repository at {repo_root} with a
+  `run_code` call in the `shell` language:
   `cd {repo_root} && ` then a single targeted `rg` in `src/mash`,
   then `sed` on the specific file/lines only if you still need to confirm.
 - Do not explore broadly. One or two lookups per unclear entry, then write. If the
-  excerpt is already clear, do not run bash at all.
+  excerpt is already clear, do not run code at all.
 
 Return only the structured output. Do not ask questions."""
 
@@ -141,7 +142,7 @@ class ChangelogSummarizerSpec(AgentSpec):
         return CHANGELOG_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # bash comes from the run user's sandbox.
+        # run_code comes from the run user's sandbox.
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:

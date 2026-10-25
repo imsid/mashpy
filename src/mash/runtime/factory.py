@@ -14,7 +14,7 @@ from mash.skills.tool import SkillTool
 from ..core.agent import Agent
 from ..core.config import SystemPrompt
 from ..memory.signals import build_default_signal_collector
-from ..tools.bash import BashTool
+from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import InvokeSubagentTool
 from .host.subagents import (
@@ -74,17 +74,21 @@ def resolve_host_system_prompt(
     return append_context_block(prompt, context)
 
 
-def register_sandbox_bash(self: "AgentRuntime", agent: Agent) -> None:
-    """Register bash in the request user's sandbox, when the host has sandboxes."""
-    if self._sandbox_bash is None:
+def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
+    """Register the sandbox tools, when the host has sandboxes."""
+    if self._sandbox_tools is None:
         return
-    if "bash" in agent.tools:
-        raise ValueError(
-            f"agent '{self.app_id}' registers its own 'bash' tool; bash runs in the "
-            "request user's sandbox, so remove it from build_tools()"
-        )
-    host_api_url, token = self._sandbox_bash
-    agent.tools.register(BashTool(host_api_url=host_api_url, token=token))
+    for name in SANDBOX_TOOL_NAMES:
+        if name in agent.tools:
+            raise ValueError(
+                f"agent '{self.app_id}' registers its own '{name}' tool; the host "
+                "provides it on the request user's sandbox, so remove it from build_tools()"
+            )
+    host_api_url, token = self._sandbox_tools
+    for tool in build_sandbox_tools(
+        host_api_url=host_api_url, token=token, agent_id=self.app_id
+    ):
+        agent.tools.register(tool)
 
 
 def build_agent_instance(
@@ -120,7 +124,7 @@ def build_agent_instance(
         )
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
-    register_sandbox_bash(self, agent)
+    register_sandbox_tools(self, agent)
     if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
         agent.tools.register(SkillTool(skills))
     collector = getattr(self, "signal_collector", None)

@@ -20,8 +20,8 @@ uv tool install mashpy
 **Configure the environment:**
 
 Requires Python >= 3.10. The host runs every agent as its own subprocess. With
-a Docker daemon it can reach, it also starts a sandbox container per user for
-the `bash` commands agents run; without one, agents get no `bash` tool.
+a Docker daemon it can reach, it also starts a sandbox container per user where
+agents run code; without one, agents get no sandbox tools.
 Set environment variables for the LLM provider you plan to use:
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`, a Postgres URL for
 the durable runtime in `MASH_DATABASE_URL`, and a host secret in
@@ -47,12 +47,14 @@ agent's and each sandbox's token.
 - **User** — the end user a request acts for, named by the `user_id` every
   submit body carries. The app asserts it and the host trusts it; it scopes the
   request's conversation search, its Cortex memory, and its sandbox.
-- **Sandbox** — a container per user, started on first use, where the `bash`
-  commands an agent's model writes run. It holds that user's workspaces, one
-  folder per agent at `/home/agent/workspaces/<agent_id>`, and nothing else:
-  no secrets, no database access. Every agent gets a `bash` tool when the host
-  has sandboxes, so it can write and run code and keep files without
-  registering anything. Bash runs as an `agent` user with a clean environment.
+- **Sandbox** — a container per user, started on first use, where the code an
+  agent's model writes runs: the user's computer. It runs Mash's sandbox image
+  (Python, Node, SQLite, git) and holds that user's workspaces, one folder per
+  agent at `/home/agent/workspaces/<agent_id>`, and nothing else: no secrets,
+  no database access. Every agent gets `run_code`, `sandbox_put` and
+  `sandbox_get` when the host has sandboxes, so it can write and run code, keep
+  files and databases, and hand the user links to what it made, without
+  registering anything. Code runs as an `agent` user with a clean environment.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -134,15 +136,13 @@ def build_pool():
     )
 ```
 
-Run it. The host starts one subprocess per agent. For agents to get `bash`,
-it also needs a Docker daemon and an image for sandboxes, built from the
-Dockerfile in [The image](https://github.com/imsid/mashpy/blob/main/docs/posts/how-to-deploy.md#the-image).
-A host in a container uses its own image; a host on your machine takes the
-image from `MASH_SANDBOX_IMAGE`:
+Run it. The host starts one subprocess per agent. For agents to get the
+sandbox tools, it also needs a Docker daemon; sandboxes run
+`ghcr.io/imsid/mash-sandbox:<mashpy version>`, which the host pulls on first
+start (`MASH_SANDBOX_IMAGE` names another):
 
 ```bash
-docker build -t my-agent:dev .
-export MASH_SANDBOX_IMAGE=my-agent:dev
+export MASH_HOST_SECRET=$(openssl rand -hex 32)
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 ```
 
@@ -353,13 +353,32 @@ tools = ToolRegistry()
 tools.register(AskUserTool())  # only works in hosted runtime
 ```
 
-`bash` comes from the host, not from your spec. When the host has sandboxes,
-every agent gets a `bash` tool that runs each command in the sandbox of the
-user the request acts for, in `/home/agent/workspaces/<agent_id>`. Each call is
-a fresh shell there; files persist between calls and across requests for that
-user. The tool posts the command to the host's `/sandbox/exec` relay with the
-agent's token and the request id, and the host picks the user. A spec that
-registers its own tool named `bash` fails at startup on a host with sandboxes.
+### Sandbox tools
+
+The sandbox tools come from the host, not from your spec. When the host has
+sandboxes, every agent gets three tools that act in the sandbox of the user the
+request acts for, in `/home/agent/workspaces/<agent_id>`:
+
+- `run_code(language, code, timeout=60)` runs `python`, `javascript` or `shell`
+  code there as a new process. Files persist between calls and across requests
+  for that user; variables do not. `pip install --user` and `npm install`
+  persist in the folder. Its description tells the model what is installed and
+  how to hand results to the user.
+- `sandbox_put(src, dest)` copies a file from the machine the agent process
+  runs on into the folder; `sandbox_get(src, dest)` copies one back. For data a
+  tool fetched, have the tool write a file and return its path, so the model
+  can copy it in.
+
+The model shows the user what its code made through links the host serves: a
+file at `<path>` in the folder opens at `$MASH_FILES_URL/<path>`, and a server
+the code started on port `n` at `$MASH_PORTS_URL/<n>/`. Every command sees both
+variables, so the code prints the real link. Links take no API key: the token
+in them, derived from `MASH_HOST_SECRET`, names the user. `MASH_PUBLIC_URL`
+sets the address links use (default: the bind address).
+
+The tools reach the host's `/sandbox` relay with the agent's token and the
+request id, and the host picks the user. A spec that registers its own tool
+with one of these names fails at startup on a host with sandboxes.
 
 ### Web Search
 
@@ -494,8 +513,8 @@ Every submit body carries a `user_id`: the end user the request acts for (1 to
 255 letters, digits, `.`, `_`, `:`, `@` or `-`). A body without one fails
 validation with `422`. The host is the trust boundary: the app asserts the
 user, and the host passes it to the primary. It is stored on the request and
-its turns and never shown to the model, and the request's bash commands run in
-that user's sandbox. Subagent calls carry the parent request's user, set by
+its turns and never shown to the model, and the request's code runs in that
+user's sandbox. Subagent calls carry the parent request's user, set by
 the host's `/h2a` relay, so an agent cannot act for another user.
 `search_conversations` offers scope `user`: the user's conversations with that
 agent.
@@ -585,7 +604,7 @@ pool = (
 - A run acts for a user: `POST /workflow/{id}/run` takes `user_id` next to
   `input`, required when the workflow has an `AgentStep` or a `CodeStep` that
   declares `agent_ids`. The run stores it, `StepContext.user_id` exposes it to
-  code steps, and every agent step submits for it, so its bash runs in that
+  code steps, and every agent step submits for it, so its code runs in that
   user's sandbox. A resumed run keeps its user.
 - Run, resume, inspect, and stream over the API (`POST /workflow/{id}/run`,
   `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
@@ -679,13 +698,14 @@ endpoint depends on observability being enabled.
 
 ```bash
 # Host on your machine, sandboxes in Docker
-export MASH_HOST_SECRET=... MASH_SANDBOX_IMAGE=my-agent:dev
+export MASH_HOST_SECRET=...
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 
 # Host in a container: mount the Docker socket and add its group;
-# sandboxes then run the host's own image on the `mash-sandboxes` network.
-# Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET.
-# Without a Docker socket the host runs and its agents get no bash.
+# sandboxes then run on the `mash-sandboxes` network.
+# Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET, and MASH_PUBLIC_URL
+# to the address users reach the host at.
+# Without a Docker socket the host runs and its agents get no sandbox tools.
 
 # Programmatic
 from mash.api import run_host, MashHostConfig
@@ -699,7 +719,8 @@ run_host(
 
 A deployment runs one host replica, and its agent processes live and die with
 it. A user's sandbox stops after `MASH_SANDBOX_IDLE_SECONDS` (default 900)
-without a command and starts again on the next one, with the same volume. At
+without use and starts again on the next call or link, with the same volume;
+servers the code started do not survive the stop. At
 most `MASH_SANDBOX_MAX_RUNNING` (default 20) run at once. Manage them on the
 Docker host:
 

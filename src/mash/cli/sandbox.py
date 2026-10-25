@@ -66,7 +66,7 @@ def add_sandbox_parser(subparsers) -> None:
     shell.set_defaults(handler=_run_shell)
 
     stop = sandbox_subparsers.add_parser(
-        "stop", help="Stop a user's sandbox; its next bash call starts it again"
+        "stop", help="Stop a user's sandbox; its next use starts it again"
     )
     stop.add_argument("user_id")
     _add_namespace_argument(stop)
@@ -174,7 +174,7 @@ def _run_shell(args) -> int:
 def _shell_argv(name: str, agent_id: str | None, root: bool) -> list[str]:
     folder = f"{WORKSPACES_ROOT}/{agent_id}" if agent_id else WORKSPACES_ROOT
     # docker exec copies the container's environment, token included. Drop it,
-    # or bash commands running as `agent` could read it from this shell's
+    # or code running as `agent` could read it from this shell's
     # /proc/<pid>/environ while the session is open.
     return [
         "docker", "exec", "-it",

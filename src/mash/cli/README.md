@@ -42,7 +42,7 @@ Host management
 - `--cors-origin`: repeatable allowed CORS origin.
 - `--disable-observability`: disable telemetry endpoints.
 - `MASH_HOST_SECRET`: derives each agent's and each sandbox's token and enables the `/h2a` and `/sandbox` relays.
-- The host runs `agent serve` once per agent as a child process. With a reachable Docker daemon it starts sandboxes for bash; it logs which it chose.
+- The host runs `agent serve` once per agent as a child process. With a reachable Docker daemon it starts sandboxes for the agents' code; it logs which it chose, and the sandbox image.
 
 Agent processes
 
@@ -51,8 +51,8 @@ Agent processes
 - `--host`: bind host. Defaults to `127.0.0.1` or `MASH_AGENT_BIND_HOST`.
 - `--port`: bind port. Defaults to `9000` or `MASH_AGENT_PORT`.
 - `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
-- `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and bash.
-- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets the `bash` tool.
+- `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and the sandbox tools.
+- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code`, `sandbox_put` and `sandbox_get`.
 - `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
 - DBOS runs as executor `agent:<agent_id>` and listens to no queues, so the process recovers only this agent's requests and never runs the host's workflow runs.
 
@@ -64,7 +64,7 @@ Sandbox administration (run on the Docker host; sandboxes are found by the `mash
 
 - `sandbox ls [--namespace NS]`: list sandboxes with user, status, uptime, and container name (the volume has the same name).
 - `sandbox shell <user_id> [--agent ID] [--root] [--namespace NS]`: start the sandbox if it is stopped, then `docker exec -it` a bash shell as `agent` in `/home/agent/workspaces`, or in that agent's folder with `--agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspaces/.admin_history`; admin commands are not in the event log.
-- `sandbox stop <user_id> [--namespace NS]`: stop the sandbox now. Its volume is kept, and the user's next bash call starts it again.
+- `sandbox stop <user_id> [--namespace NS]`: stop the sandbox now. Its volume is kept, and the user's next call or link starts it again.
 
 Notes
 

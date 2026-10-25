@@ -87,7 +87,7 @@ class RuntimeTraceTests(unittest.TestCase):
                     payload={
                         "action_type": "tool_call",
                         "assistant_text": "thinking",
-                        "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
+                        "tool_calls": [{"name": "run_code", "arguments": {"language": "shell", "code": "pwd"}}],
                         "token_usage": {"input": 2, "output": 1},
                         "duration_ms": 123,
                     },
@@ -127,7 +127,7 @@ class RuntimeTraceTests(unittest.TestCase):
 
         self.assertEqual(trace["status"], "completed")
         self.assertEqual(trace["summary"]["total_steps"], 1)
-        self.assertEqual(trace["steps"][0]["title"], "Calling tools: bash")
+        self.assertEqual(trace["steps"][0]["title"], "Calling tools: run_code")
         self.assertEqual(trace["steps"][0]["tool_calls"][0]["preview"], "$ pwd")
 
     def test_build_runtime_trace_extracts_runtime_fields(self) -> None:

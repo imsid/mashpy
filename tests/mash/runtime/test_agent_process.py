@@ -31,7 +31,7 @@ from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.processes import AgentEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
 from mash.runtime.factory import build_agent_instance
-from mash.tools.bash import BashTool
+from mash.tools.sandbox import RunCodeTool, SandboxGetTool, SandboxPutTool
 from mash.testing.runtime_fixtures import build_delegating_spec, build_spec, metadata
 
 SECRET = "host-secret"
@@ -125,38 +125,45 @@ class BuildAgentServerTests(unittest.TestCase):
         self.assertEqual(client._headers["Authorization"], "Bearer tok")
         self.assertIsNotNone(relay.get_agent_metadata("research"))
 
-    def test_agent_gets_sandbox_bash_when_the_host_has_sandboxes(self) -> None:
+    def test_agent_gets_sandbox_tools_when_the_host_has_sandboxes(self) -> None:
         server = build_agent_server(
-            _build_pool(), "research", token="tok", host_api_url="http://host", sandbox_bash=True
+            _build_pool(), "research", token="tok", host_api_url="http://host", sandbox_tools=True
         )
 
-        self.assertIsInstance(server.runtime.tools.get("bash"), BashTool)
+        self.assertIsInstance(server.runtime.tools.get("run_code"), RunCodeTool)
         turn_agent = build_agent_instance(server.runtime, session_id="s-1")
-        bash = turn_agent.tools.get("bash")
-        self.assertIsInstance(bash, BashTool)
-        self.assertEqual(bash._exec_url, "http://host/sandbox/exec")
+        run_code = turn_agent.tools.get("run_code")
+        self.assertIsInstance(run_code, RunCodeTool)
+        self.assertEqual(run_code._relay.base_url, "http://host/sandbox")
+        self.assertIn("/home/agent/workspaces/research", run_code.description)
+        self.assertIsInstance(turn_agent.tools.get("sandbox_put"), SandboxPutTool)
+        self.assertIsInstance(turn_agent.tools.get("sandbox_get"), SandboxGetTool)
+        self.assertNotIn("bash", turn_agent.tools)
 
-    def test_agent_gets_no_bash_without_sandboxes(self) -> None:
+    def test_agent_gets_no_sandbox_tools_without_sandboxes(self) -> None:
         server = build_agent_server(
             _build_pool(), "research", token="tok", host_api_url="http://host"
         )
 
-        self.assertNotIn("bash", server.runtime.tools)
+        for name in ("run_code", "sandbox_put", "sandbox_get"):
+            self.assertNotIn(name, server.runtime.tools)
 
-    def test_spec_bash_conflicts_with_sandbox_bash(self) -> None:
+    def test_spec_run_code_conflicts_with_sandbox_tools(self) -> None:
         spec = build_spec(agent_id="research", response_text="ok")
         build_tools = spec.build_tools
 
-        def tools_with_bash():
+        def tools_with_run_code():
             tools = build_tools()
-            tools.register(BashTool(host_api_url="http://elsewhere", token="t"))
+            tools.register(
+                RunCodeTool(host_api_url="http://elsewhere", token="t", agent_id="research")
+            )
             return tools
 
-        spec.build_tools = tools_with_bash
+        spec.build_tools = tools_with_run_code
         pool = HostBuilder().agent(spec, metadata=metadata()).build()
-        with self.assertRaisesRegex(ValueError, "registers its own 'bash' tool"):
+        with self.assertRaisesRegex(ValueError, "registers its own 'run_code' tool"):
             build_agent_server(
-                pool, "research", token="tok", host_api_url="http://host", sandbox_bash=True
+                pool, "research", token="tok", host_api_url="http://host", sandbox_tools=True
             )
 
     def test_unknown_agent_raises(self) -> None:

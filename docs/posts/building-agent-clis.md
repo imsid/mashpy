@@ -59,7 +59,7 @@ class MyAgentSpec(AgentSpec):
         return "my-agent"
 
     def build_tools(self) -> ToolRegistry:
-        # bash comes from the host when it has sandboxes.
+        # run_code comes from the host when it has sandboxes.
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
@@ -88,7 +88,7 @@ def build_pool():
             metadata=AgentMetadata(
                 display_name="My Agent",
                 description="Coding assistant for my workspace.",
-                capabilities=["bash"],
+                capabilities=["run code"],
                 usage_guidance="Default agent for user requests.",
             ),
         )
@@ -164,7 +164,7 @@ python -m my_agent.cli --user-id u-1
 
 This already gives you a working terminal client against the first agent in
 the pool: messages go to the agent for the user you passed (every request acts
-for one, and its bash runs in that user's sandbox), responses stream back with live
+for one, and its code runs in that user's sandbox), responses stream back with live
 chain-of-thought rendering, and the shell ships these built-in commands:
 
 | Command | What it does |

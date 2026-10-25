@@ -90,7 +90,7 @@ entries = await store.search_entries(user_id, query, limit=max(1, limit))
 
 A `user_id` the model puts in the arguments is ignored, and the tool's output does not include the user id.
 
-These reads run in the agent's process, which holds the database credentials. The agent's bash runs in the user's sandbox, which has no database access. The only way an agent sees memory is the block and the tool, and both are cut to one user.
+These reads run in the agent's process, which holds the database credentials. The agent's code runs in the user's sandbox, which has no database access. The only way an agent sees memory is the block and the tool, and both are cut to one user.
 
 ## The tables
 

@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
+_PULL_TIMEOUT = 600.0
 
 
 class DockerEngineError(RuntimeError):
@@ -40,6 +41,19 @@ def _transport_for(docker_host: str | None) -> tuple[httpx.AsyncBaseTransport, s
     if value.startswith("tcp://"):
         return httpx.AsyncHTTPTransport(), f"http://{value[len('tcp://'):]}"
     raise ValueError(f"unsupported DOCKER_HOST '{value}'")
+
+
+def _split_image(image: str) -> tuple[str, str | None]:
+    """``repo[:tag]`` (tag after the last ``/``), with ``latest`` as the default tag.
+
+    A ``repo@digest`` reference is pulled as is.
+    """
+    if "@" in image:
+        return image, None
+    name, _, tag = image.rpartition(":")
+    if not name or "/" in tag:
+        return image, "latest"
+    return name, tag
 
 
 class DockerEngine:
@@ -116,6 +130,29 @@ class DockerEngine:
         await self._call(
             "DELETE", f"/containers/{name}", params={"force": "1"}, allow=(404,)
         )
+
+    async def ensure_image(self, image: str) -> None:
+        """Pull ``image`` unless the daemon already has it."""
+        response = await self._call("GET", f"/images/{image}/json", allow=(404,))
+        if response.status_code != 404:
+            return
+        repository, tag = _split_image(image)
+        try:
+            # The pull streams progress until it is done; errors arrive in the stream.
+            async with self._client.stream(
+                "POST",
+                "/images/create",
+                params={"fromImage": repository, **({"tag": tag} if tag else {})},
+                timeout=_PULL_TIMEOUT,
+            ) as stream:
+                if stream.status_code >= 400:
+                    await stream.aread()
+                    raise DockerEngineError(stream.status_code, stream.text)
+                async for line in stream.aiter_lines():
+                    if '"error"' in line:
+                        raise DockerEngineError(500, json.loads(line).get("error", line))
+        except httpx.HTTPError as exc:
+            raise DockerEngineError(0, f"cannot pull {image}: {exc}") from exc
 
     async def ensure_volume(self, name: str, *, labels: dict[str, str]) -> None:
         response = await self._call("GET", f"/volumes/{name}", allow=(404,))
