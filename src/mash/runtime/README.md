@@ -395,7 +395,7 @@ lifecycle.
   - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
 
 - `host/processes.py`
-  - `AgentProcessProvider.ensure(agent_id)`: spawns `mash agent serve --host-app <app> --agent <id> --host 127.0.0.1 --port <free port>` with the host's environment plus `MASH_AGENT_TOKEN`, `MASH_HOST_API_URL`, `MASH_SANDBOX_ENABLED` and `MASH_PARENT_PID`, then waits for `/health`
+  - `AgentProcessProvider.ensure(agent_id)`: spawns `mash agent serve --host-app <app> --agent <id> --host 127.0.0.1 --port <free port>` with the host's environment, less `MASH_HOST_SECRET` and `MASH_API_KEY`, plus `MASH_AGENT_TOKEN`, `MASH_HOST_API_URL`, `MASH_SANDBOX_ENABLED` and `MASH_PARENT_PID`, then waits for `/health`
   - the child's output goes to the host's stderr, one line at a time, prefixed `[<agent_id>]`
   - a child that exits restarts on the same port, with backoff from 1 to 30 seconds; while it is down its routes return `503 AGENT_UNAVAILABLE`
   - `stop(agent_id)` and `close()` send SIGTERM, then SIGKILL after `stop_timeout`; `status(agent_id)` is `starting`, `running` or `unavailable`

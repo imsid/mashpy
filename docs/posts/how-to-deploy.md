@@ -191,7 +191,9 @@ use that number in `group_add`. Without the socket, the host runs without
 sandboxes.
 
 Agent processes inherit the host's environment, so provider keys, MCP header
-tokens and anything else a spec reads reach them. MCP URLs resolve inside the
+tokens and anything else a spec reads reach them. `MASH_HOST_SECRET` and
+`MASH_API_KEY` are the exceptions: they stay with the host, and each agent
+authenticates with a token of its own. MCP URLs resolve inside the
 host container. Sandboxes get none of the host's environment.
 
 To give every sandbox files from the Docker host, list bind mounts in

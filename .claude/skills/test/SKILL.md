@@ -104,7 +104,8 @@ docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)
 The repo itself is mounted read-only at `/home/agent/mashpy` in the host and
 every sandbox, so edits to files the agents read need no restart.
 **`restart` does not re-read `.env`**: an environment change needs
-`up -d pilot`. Agent processes inherit the host's environment; sandboxes get
+`up -d pilot`. Agent processes inherit the host's environment except
+`MASH_HOST_SECRET` and `MASH_API_KEY`; sandboxes get
 only their token, so `.env` never reaches bash. `down -v` wipes the database;
 use it only when prior state is in the way, and say so, because it destroys
 every earlier run you might still want to inspect.

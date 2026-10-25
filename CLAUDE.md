@@ -42,7 +42,8 @@ agent's and each sandbox's token.
   starts, it runs each agent as a subprocess and keeps an HTTP client for it.
 - **Agent process** — a subprocess of the host (`mash agent serve`) that serves
   one agent's runtime behind an H2A HTTP server on a localhost port. It is the
-  app's own code, so it inherits the host's environment. The host restarts one
+  app's own code, so it inherits the host's environment, except
+  `MASH_HOST_SECRET` and `MASH_API_KEY`. The host restarts one
   that exits, and agents can be enabled and disabled on a running host.
 - **User** — the end user a request acts for, named by the `user_id` every
   submit body carries. The app asserts it and the host trusts it; it scopes the
