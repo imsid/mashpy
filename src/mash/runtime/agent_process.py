@@ -6,7 +6,8 @@ same ``build_pool()`` the host runs, serves one agent from it behind an
 agent's token, and the host checks them against the request's host snapshot.
 When the host has sandboxes, every agent served here gets ``run_code``,
 ``sandbox_put`` and ``sandbox_get``, which act in the request user's sandbox
-through the host's ``/sandbox`` relay. When
+through the host's ``/sandbox`` relay, unless its spec's ``uses_sandbox()``
+returns False. When
 the pool enables Cortex, it also gets read access to the request user's Cortex.
 The pool itself is never started in an agent process; it only supplies the
 agent's spec and the metadata of the agents it may call.
@@ -87,7 +88,7 @@ def build_agent_server(
     server.runtime.attach_subagent_access(
         HostRelay(pool, host_api_url=host_api_url, token=token)
     )
-    if sandbox_tools:
+    if sandbox_tools and spec.uses_sandbox():
         server.runtime.enable_sandbox_tools(host_api_url=host_api_url, token=token)
     if pool.cortex is not None:
         from mash.agents.cortex import CortexReader, CortexStore
