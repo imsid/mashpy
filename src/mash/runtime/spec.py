@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Dict, List
 
 from mash.core.database import resolve_database_url
 from mash.mcp.types import MCPServerConfig
@@ -15,6 +15,7 @@ from ..core.llm import LLMProvider
 from ..memory.store import MemoryStore, PostgresStore
 from ..skills.registry import SkillRegistry
 from ..tools.registry import ToolRegistry
+from ..tools.sandbox import SandboxVariable
 from ..tools.web_search import WebSearchProvider
 
 if TYPE_CHECKING:
@@ -109,6 +110,18 @@ class AgentSpec(ABC):
         of every root: code in the sandbox can reach the internet.
         """
         return []
+
+    def sandbox_env(self) -> Dict[str, SandboxVariable]:
+        """Variables this agent's code sees in the sandbox, by ``MASH_*`` name.
+
+        Empty by default: the sandbox holds no secrets. ``run_code`` sends these
+        with each call, so only this agent's commands see them, and the model
+        reads each ``description``, never the value. Pass only what the agent's
+        code needs and nothing it could misuse: the sandbox can reach the
+        internet, so prefer a read-only, narrowly scoped credential.
+        ``MASH_FILES_URL`` and ``MASH_PORTS_URL`` are the host's.
+        """
+        return {}
 
     def build_web_search(self) -> WebSearchProvider | None:
         """Web search provider backing `web_search`/`web_fetch`.

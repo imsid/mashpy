@@ -174,8 +174,10 @@ sandbox in `/home/agent/workspaces/<agent_id>`. `sandbox_put` and
 agent gets them only when its spec returns folders from
 `sandbox_file_roots()`; they refuse any path outside those folders. Give an
 agent a root only when its tools write files the model must copy in, and keep
-credentials out of it. A spec that registers one of these names fails to start
-on such a host.
+credentials out of it. When the agent's code needs a credential, such as a
+read-only database URL, return it from `sandbox_env()` as a `MASH_*` name
+mapped to `SandboxVariable(value, description)`: only that agent's commands
+see it. A spec that registers one of these names fails to start on such a host.
 
 ### Web Search
 

@@ -52,7 +52,8 @@ agent's and each sandbox's token.
   agent's model writes runs: the user's computer. It runs Mash's sandbox image
   (Python, Node, SQLite, git) and holds that user's workspaces, one folder per
   agent at `/home/agent/workspaces/<agent_id>`, and nothing else: no secrets,
-  no database access. Every agent gets `run_code` when the host has sandboxes,
+  no database access, unless a spec passes its own code a variable with
+  `sandbox_env()`. Every agent gets `run_code` when the host has sandboxes,
   so it can write and run code, keep files and databases, and hand the user
   links to what it made, without registering anything; a spec opts out with
   `enable_sandbox()`. An agent gets `sandbox_put` and `sandbox_get`, which copy
@@ -218,6 +219,7 @@ Optional overrides:
 | `enable_runtime_tools()` | `True` | Auto-register runtime tools |
 | `enable_sandbox()` | `True` | Get the sandbox tools on a host with sandboxes |
 | `sandbox_file_roots()` | `[]` | Folders on the agent's machine that `sandbox_put`/`sandbox_get` may use; without any, the agent gets neither |
+| `sandbox_env()` | `{}` | `MASH_*` variables, as `SandboxVariable(value, description)`, that this agent's code sees in the sandbox |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |
 | `on_startup(runtime)` | No-op | Hook after runtime init, in the agent's process |
 | `on_shutdown(runtime)` | No-op | Hook before cleanup, in the agent's process |
@@ -395,6 +397,28 @@ variables, so the code prints the real link. Links take no API key: the token
 in them, derived from `MASH_HOST_SECRET`, names the user. `MASH_PUBLIC_URL`
 sets the address links use (default: the bind address).
 
+The sandbox holds no secrets. When an agent's code needs one, such as a
+read-only database URL, the spec passes it with `sandbox_env()`. `run_code`
+sends the variables with each call, so only that agent's commands see them,
+and its description gives the model each name and description, never the
+value. Names must match `MASH_[A-Z0-9_]+`, and `MASH_FILES_URL` and
+`MASH_PORTS_URL` stay the host's; anything else fails at startup. Code in the
+sandbox can reach the internet, so pass a narrowly scoped, read-only
+credential.
+
+```python
+from mash.tools.sandbox import SandboxVariable
+
+class AnalystAgent(AgentSpec):
+    def sandbox_env(self):
+        return {
+            "MASH_SALES_DB_URL": SandboxVariable(
+                os.environ["SALES_READER_URL"],
+                "Read-only Postgres URL of the sales database.",
+            )
+        }
+```
+
 The tools reach the host's `/sandbox` relay with the agent's token and the
 request id, and the host picks the user. A spec that registers its own tool
 with one of these names fails at startup on a host with sandboxes.
@@ -555,7 +579,8 @@ The REPL target is fixed for its lifetime; to change composition, exit and
 connections; the host holds one set for its reads (traces, telemetry, sessions,
 workflow runs). Session reads on the host cover agents that use the default
 `build_memory_store()`; an agent that overrides it keeps its store in its own
-process. Sandboxes have no database access.
+process. Sandboxes have no database access unless a spec passes a URL with
+`sandbox_env()`.
 
 **Enabling and disabling agents:** every agent `build_pool()` registers starts
 enabled. `POST /api/v1/agent/{agent_id}/disable` stops its process and

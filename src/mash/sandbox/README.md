@@ -3,7 +3,9 @@
 `src/mash/sandbox` holds per-user sandboxes: the computer where the code an
 agent's model writes runs. A sandbox belongs to one user and holds that user's
 workspaces, one folder per agent at `/home/agent/workspaces/<agent_id>`. It has
-no secrets, no database access, and gets no environment from the host.
+no secrets, no database access, and gets no environment from the host. A
+command sees only the link variables and the `MASH_*` variables its agent's
+spec declares in `sandbox_env()`, which `run_code` sends with each call.
 
 ## Call paths
 
