@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.30.0](https://github.com/imsid/mashpy/compare/mashpy-v0.29.0...mashpy-v0.30.0) (2026-10-26)
+
+
+### Features
+
+* **sandbox:** let a spec pass its own code variables with sandbox_env() ([#247](https://github.com/imsid/mashpy/issues/247)) ([8819bd6](https://github.com/imsid/mashpy/commit/8819bd631e1f618c23917694be63d279419d5449))
+
 ## [0.29.0](https://github.com/imsid/mashpy/compare/mashpy-v0.28.0...mashpy-v0.29.0) (2026-10-25)
 
 
