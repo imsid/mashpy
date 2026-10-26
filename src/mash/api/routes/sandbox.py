@@ -5,9 +5,10 @@ and the id of the request it serves. The host looks up the request, checks it
 belongs to the caller, and acts in the sandbox of the user the request acts
 for, in the caller's folder. The agent never names a user.
 
-- ``POST /sandbox/exec`` takes ``{request_id, command, timeout, stdin?}`` and
-  runs the command. The command sees ``MASH_FILES_URL`` and ``MASH_PORTS_URL``,
-  the user's links to the caller's folder and to the sandbox's ports.
+- ``POST /sandbox/exec`` takes ``{request_id, command, timeout, stdin?, env?}``
+  and runs the command. The command sees ``MASH_FILES_URL`` and
+  ``MASH_PORTS_URL``, the user's links to the caller's folder and to the
+  sandbox's ports, and the caller's own ``MASH_*`` variables in ``env``.
 - ``PUT /sandbox/files?request_id=&path=`` writes the body to a file in the
   caller's folder; ``GET`` with the same query reads one.
 
@@ -32,6 +33,7 @@ from mash.sandbox.daemon import BASH_DEFAULT_TIMEOUT, resolve_workspace_path
 from mash.sandbox.manager import SandboxCapacityError
 from mash.sandbox.provider import SandboxUnavailableError
 from mash.sandbox.tokens import derive_link_token, user_for_link_token
+from mash.tools.sandbox import RESERVED_SANDBOX_ENV, SANDBOX_ENV_NAME
 
 from .common import AppRuntimeState, state_from_request
 from .h2a import bearer_token, h2a_error
@@ -127,6 +129,19 @@ def build_sandbox_router() -> APIRouter:
             return h2a_error(400, "INVALID_REQUEST", "timeout must be a positive number")
         if stdin is not None and not isinstance(stdin, str):
             return h2a_error(400, "INVALID_REQUEST", "stdin must be a string")
+        env = body.get("env") or {}
+        if not isinstance(env, dict) or not all(
+            isinstance(name, str)
+            and SANDBOX_ENV_NAME.match(name)
+            and name not in RESERVED_SANDBOX_ENV
+            and isinstance(value, str)
+            for name, value in env.items()
+        ):
+            return h2a_error(
+                400,
+                "INVALID_REQUEST",
+                "env must map MASH_* names, other than the link variables, to strings",
+            )
 
         state = caller.state
         try:
@@ -136,7 +151,8 @@ def build_sandbox_router() -> APIRouter:
                 command=command,
                 timeout=float(timeout),
                 stdin=stdin,
-                env=link_env(
+                env=env
+                | link_env(
                     state.public_url, state.host_secret, caller.user_id, caller.agent_id
                 ),
             )

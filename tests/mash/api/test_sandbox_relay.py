@@ -25,6 +25,7 @@ from mash.sandbox.manager import SandboxCapacityError, SandboxManager
 from mash.sandbox.tokens import derive_link_token
 from mash.testing.runtime_fixtures import build_tool_calling_spec, metadata
 from mash.testing.sandboxes import LocalSandboxProvider
+from mash.tools.sandbox import SandboxVariable
 
 SECRET = "host-secret"
 PUBLIC = "http://mash.example"
@@ -111,6 +112,24 @@ class SandboxRelayTests(unittest.TestCase):
         self.assertEqual(self._exec(stdin="print(1)").status_code, 200)
         self.assertEqual(self.sandboxes.calls[0]["stdin"], "print(1)")
         self.assertEqual(self._exec(stdin=5).status_code, 400)
+
+    def test_the_callers_variables_reach_the_command_beside_the_links(self) -> None:
+        self.assertEqual(self._exec(env={"MASH_APP_DB_URL": "pg://r"}).status_code, 200)
+
+        env = self.sandboxes.calls[0]["env"]
+        self.assertEqual(env["MASH_APP_DB_URL"], "pg://r")
+        self.assertIn("MASH_FILES_URL", env)
+
+    def test_variables_that_are_not_the_callers_to_set_are_400(self) -> None:
+        for env in (
+            {"PATH": "/tmp"},
+            {"MASH_FILES_URL": "http://evil"},
+            {"MASH_APP_DB_URL": 5},
+            ["MASH_APP_DB_URL"],
+        ):
+            with self.subTest(env=env):
+                self.assertEqual(self._exec(env=env).status_code, 400)
+        self.assertEqual(self.sandboxes.calls, [])
 
     def test_invalid_token_is_401(self) -> None:
         resp = self.http.post(
@@ -282,7 +301,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
 
 class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def _run_one_call(
-        self, tool_name: str, arguments: dict[str, Any], *, file_roots=()
+        self, tool_name: str, arguments: dict[str, Any], *, file_roots=(), env=None
     ):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}
@@ -291,6 +310,7 @@ class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="research", tool_name=tool_name, arguments=arguments
             )
             spec.sandbox_file_roots = lambda: list(file_roots)
+            spec.sandbox_env = lambda: dict(env or {})
             pool = HostBuilder().agent(spec, metadata=metadata()).build()
             provider = LocalSandboxProvider()
             pool.configure_runtime_database_url("postgresql://test/runtime")
@@ -348,6 +368,15 @@ class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertRegex(text, r"^http://127\.0\.0\.1:\d+/s/[^/]+/files/research/report\.html$")
+
+    async def test_run_code_passes_the_specs_variables_to_the_code(self) -> None:
+        text, _, _ = await self._run_one_call(
+            "run_code",
+            {"language": "shell", "code": 'echo "$MASH_APP_DB_URL"'},
+            env={"MASH_APP_DB_URL": SandboxVariable("pg://reader", "A database.")},
+        )
+
+        self.assertEqual(text, "pg://reader")
 
     async def test_sandbox_put_copies_a_file_from_a_root_into_the_folder(self) -> None:
         with tempfile.TemporaryDirectory() as root:

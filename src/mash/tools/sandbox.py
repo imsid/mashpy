@@ -12,16 +12,22 @@ file roots (``AgentSpec.sandbox_file_roots()``), and they read and write only
 regular files inside those roots. The model chooses the paths, and code in the
 sandbox can reach the internet, so a path outside the roots would let it copy
 out anything the agent process can read.
+
+An agent whose spec declares sandbox variables (``AgentSpec.sandbox_env()``)
+sends them with every ``run_code`` call, so its code, and no other agent's,
+sees them, e.g. a read-only database URL.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 import stat
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import httpx
 
@@ -46,6 +52,10 @@ _LANGUAGES = {
     "shell": ("sh", "bash"),
 }
 SANDBOX_TOOL_NAMES = ("run_code", "sandbox_put", "sandbox_get")
+# The names the sandbox daemon accepts for a command's extra variables.
+SANDBOX_ENV_NAME = re.compile(r"^MASH_[A-Z0-9_]{1,64}$")
+# Set by the host on every command; an agent's variables cannot replace them.
+RESERVED_SANDBOX_ENV = ("MASH_FILES_URL", "MASH_PORTS_URL")
 # Kernel and device pseudo-filesystems, refused even inside a root: they expose
 # the process's environment and memory as files.
 _PSEUDO_FS = (Path("/proc"), Path("/sys"), Path("/dev"))
@@ -114,6 +124,28 @@ def _in_pseudo_fs(path: Path) -> bool:
     return any(path.is_relative_to(root) for root in _PSEUDO_FS)
 
 
+@dataclass(frozen=True)
+class SandboxVariable:
+    """A variable an agent's code sees in the sandbox, and what it is for the model."""
+
+    value: str
+    description: str
+
+
+def check_sandbox_env(env: Mapping[str, SandboxVariable]) -> dict[str, SandboxVariable]:
+    """``env`` when every name is one the sandbox accepts; ValueError otherwise."""
+    checked: dict[str, SandboxVariable] = {}
+    for name, variable in env.items():
+        if not isinstance(name, str) or not SANDBOX_ENV_NAME.match(name):
+            raise ValueError(f"sandbox variable {name!r} must match {SANDBOX_ENV_NAME.pattern}")
+        if name in RESERVED_SANDBOX_ENV:
+            raise ValueError(f"sandbox variable {name!r} is set by the host")
+        if not isinstance(variable, SandboxVariable) or not isinstance(variable.value, str):
+            raise ValueError(f"sandbox variable {name!r} must be a SandboxVariable with a str value")
+        checked[name] = variable
+    return checked
+
+
 class RunCodeTool:
     """Python, JavaScript or shell in the request user's sandbox."""
 
@@ -124,8 +156,10 @@ class RunCodeTool:
         token: str,
         agent_id: str,
         file_roots: FileRoots | None = None,
+        env: Mapping[str, SandboxVariable] | None = None,
     ) -> None:
         self._relay = _Relay(host_api_url, token)
+        self._env = {name: variable.value for name, variable in (env or {}).items()}
         folder = f"{WORKSPACES_ROOT}/{agent_id}"
         self.name = "run_code"
         self.description = (
@@ -174,7 +208,7 @@ class RunCodeTool:
                 if file_roots is not None
                 else "Files from elsewhere: write data from tool results into your code. "
             )
-            + "The sandbox holds no secrets or credentials."
+            + _describe_env(env or {})
         )
         self.parameters = {
             "type": "object",
@@ -230,6 +264,7 @@ class RunCodeTool:
                         "command": command,
                         "stdin": code,
                         "timeout": timeout,
+                        **({"env": self._env} if self._env else {}),
                     },
                     headers=self._relay.headers,
                 )
@@ -259,6 +294,19 @@ class RunCodeTool:
             "description": self.description,
             "input_schema": self.parameters,
         }
+
+
+def _describe_env(env: Mapping[str, SandboxVariable]) -> str:
+    if not env:
+        return "The sandbox holds no secrets or credentials."
+    lines = "".join(
+        f"- {name}: {variable.description}\n" for name, variable in env.items()
+    )
+    return (
+        "\n\nYour code also sees these variables. Read them from the environment; "
+        "never print them or write their values into files, which links can serve:\n"
+        + lines
+    )
 
 
 class SandboxPutTool:
@@ -451,15 +499,21 @@ def build_sandbox_tools(
     token: str,
     agent_id: str,
     file_roots: Sequence[Path | str] = (),
+    env: Mapping[str, SandboxVariable] | None = None,
 ) -> list[Any]:
     """The sandbox tools for one agent.
 
-    ``sandbox_put`` and ``sandbox_get`` come only with ``file_roots``.
+    ``sandbox_put`` and ``sandbox_get`` come only with ``file_roots``. ``env``
+    names the variables ``run_code`` passes to the agent's code.
     """
     roots = FileRoots(file_roots) if file_roots else None
     tools: list[Any] = [
         RunCodeTool(
-            host_api_url=host_api_url, token=token, agent_id=agent_id, file_roots=roots
+            host_api_url=host_api_url,
+            token=token,
+            agent_id=agent_id,
+            file_roots=roots,
+            env=check_sandbox_env(env or {}),
         )
     ]
     if roots is not None:
@@ -469,11 +523,15 @@ def build_sandbox_tools(
 
 
 __all__ = [
+    "RESERVED_SANDBOX_ENV",
     "RUN_CODE_DEFAULT_TIMEOUT",
+    "SANDBOX_ENV_NAME",
     "SANDBOX_TOOL_NAMES",
     "FileRoots",
     "RunCodeTool",
     "SandboxGetTool",
     "SandboxPutTool",
+    "SandboxVariable",
     "build_sandbox_tools",
+    "check_sandbox_env",
 ]

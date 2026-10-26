@@ -20,7 +20,10 @@
     `node` or `bash`, and deletes it. Each call is a new process; files persist.
     The description lists what Mash's sandbox image holds and how results reach
     the user (`$MASH_FILES_URL`, `$MASH_PORTS_URL`); keep it in step with
-    `Dockerfile.sandbox`.
+    `Dockerfile.sandbox`. The spec's `sandbox_env()` variables
+    (`SandboxVariable`) go with each call as `env`; the description names them
+    with their descriptions, never their values, and `check_sandbox_env`
+    refuses names the relay would.
   - `sandbox_put(src, dest)` / `sandbox_get(src, dest)`: copy one file (up to
     100 MB) between the agent process's machine and the folder through
     `/sandbox/files`. They exist only with file roots (`FileRoots`, from the

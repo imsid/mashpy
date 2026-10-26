@@ -90,6 +90,7 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
         token=token,
         agent_id=self.app_id,
         file_roots=self.definition.sandbox_file_roots(),
+        env=self.definition.sandbox_env(),
     ):
         agent.tools.register(tool)
 
