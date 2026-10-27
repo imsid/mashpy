@@ -5,7 +5,8 @@ running and returns how the host reaches its daemon. ``DockerSandboxProvider``
 runs each sandbox as a container with a named volume for the user's
 workspaces, on its own network. Sandboxes run Mash's sandbox image,
 ``ghcr.io/imsid/mash-sandbox:<mashpy version>``, unless ``MASH_SANDBOX_IMAGE``
-names another.
+names another. A container made from another image, such as after a mashpy
+upgrade, is replaced; the user's files stay in the volume.
 
 Two networking modes, picked by whether the host itself runs in a container:
 
@@ -240,6 +241,12 @@ class DockerSandboxProvider:
         token = derive_sandbox_token(self._host_secret, user_id)
         await self._engine.ensure_volume(name, labels=sandbox_labels(user_id, self.namespace))
         container = await self._engine.inspect_container(name)
+        if container is not None and (container.get("Config") or {}).get("Image") != self._image:
+            # Made from another image, such as an older mashpy's sandbox image, so
+            # it would keep running that image's daemon. Replace it; the user's
+            # files are in the volume and carry over.
+            await self._engine.remove_container(name)
+            container = None
         if container is None:
             await self._engine.create_container(name, self._container_config(user_id, token))
             await self._engine.start_container(name)
