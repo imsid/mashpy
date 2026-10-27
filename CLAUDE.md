@@ -53,8 +53,8 @@ agent's and each sandbox's token.
   (Python, Node, SQLite, git) and holds that user's workspaces, one folder per
   agent at `/home/agent/workspaces/<agent_id>`, and nothing else: no secrets,
   no database access, unless a spec passes its own code a variable with
-  `sandbox_env()`. Every agent gets `run_code` when the host has sandboxes,
-  so it can write and run code, keep files and databases, and hand the user
+  `sandbox_env()`. Every agent gets `run_code` and `edit_file` when the host has sandboxes,
+  so it can write and run code, change files, keep files and databases, and hand the user
   links to what it made, without registering anything; a spec opts out with
   `enable_sandbox()`. An agent gets `sandbox_put` and `sandbox_get`, which copy
   files between its machine and the sandbox, only when its spec declares
@@ -363,8 +363,8 @@ tools.register(AskUserTool())  # only works in hosted runtime
 ### Sandbox tools
 
 The sandbox tools come from the host, not from your spec. When the host has
-sandboxes, every agent gets `run_code`, and an agent whose spec declares file
-roots also gets `sandbox_put` and `sandbox_get`. They act in the sandbox of the
+sandboxes, every agent gets `run_code` and `edit_file`, and an agent whose spec
+declares file roots also gets `sandbox_put` and `sandbox_get`. They act in the sandbox of the
 user the request acts for, in `/home/agent/workspaces/<agent_id>`:
 
 - `run_code(language, code, timeout=60)` runs `python`, `javascript` or `shell`
@@ -372,6 +372,9 @@ user the request acts for, in `/home/agent/workspaces/<agent_id>`:
   for that user; variables do not. `pip install --user` and `npm install`
   persist in the folder. Its description tells the model what is installed and
   how to hand results to the user.
+- `edit_file(path, old_text, new_text)` replaces `old_text`, which must appear
+  in the file exactly once, with `new_text`, or with `old_text` empty creates
+  a new text file. Otherwise it fails and says why, and the file is unchanged.
 - `sandbox_put(src, dest)` copies a file from the machine the agent process
   runs on into the folder; `sandbox_get(src, dest)` copies one back. Both
   exist only for a spec that returns folders from `sandbox_file_roots()`, and

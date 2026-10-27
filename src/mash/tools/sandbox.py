@@ -1,7 +1,8 @@
 """Sandbox tools: run code in the request user's sandbox and move files to it.
 
 ``run_code`` runs Python, JavaScript or shell code in the agent's folder of the
-sandbox. ``sandbox_put`` copies a file from the machine the agent process runs
+sandbox, and ``edit_file`` creates a text file there or replaces one exact piece
+of one. ``sandbox_put`` copies a file from the machine the agent process runs
 on into that folder, and ``sandbox_get`` copies one back. The tools run in the
 agent's runtime and reach the sandbox only through the host's relay
 (``{host}/sandbox``), with the agent's token and the current request id; the
@@ -34,7 +35,6 @@ import httpx
 from mash.logging.trace_context import get_request_id
 from mash.sandbox.daemon import (
     BASH_MAX_OUTPUT_CHARS,
-    BASH_MAX_OUTPUT_LINES,
     MAX_FILE_BYTES,
     WORKSPACES_ROOT,
 )
@@ -45,13 +45,14 @@ RUN_CODE_DEFAULT_TIMEOUT = 60
 # Room on top of the code's own timeout: a first call starts the sandbox.
 _RELAY_OVERHEAD_SECONDS = 180.0
 _FILE_RELAY_TIMEOUT = 600.0
-# language -> (file extension, interpreter)
+# language -> (file extension, interpreter, its options)
 _LANGUAGES = {
-    "python": ("py", "python3"),
-    "javascript": ("js", "node"),
-    "shell": ("sh", "bash"),
+    "python": ("py", "python3", ""),
+    "javascript": ("js", "node", ""),
+    # A failing command fails the call, rather than hiding behind the last one.
+    "shell": ("sh", "bash", "-e -o pipefail "),
 }
-SANDBOX_TOOL_NAMES = ("run_code", "sandbox_put", "sandbox_get")
+SANDBOX_TOOL_NAMES = ("run_code", "edit_file", "sandbox_put", "sandbox_get")
 # The names the sandbox daemon accepts for a command's extra variables.
 SANDBOX_ENV_NAME = re.compile(r"^MASH_[A-Z0-9_]{1,64}$")
 # Set by the host on every command; an agent's variables cannot replace them.
@@ -75,6 +76,13 @@ class _Relay:
 
 def _request_id() -> str | None:
     return get_request_id() or None
+
+
+def _error_code(response: httpx.Response) -> str:
+    try:
+        return str((response.json().get("error") or {}).get("code") or "")
+    except ValueError:
+        return ""
 
 
 def _error_message(response: httpx.Response) -> str:
@@ -172,16 +180,18 @@ class RunCodeTool:
             "as a new process. Files in the folder persist across calls and requests "
             "for this user; variables and shell state do not, so keep data between "
             "calls in files.\n"
-            "- language `python` runs python3, `javascript` runs node, `shell` runs bash.\n"
-            f"- Output is stdout and stderr together, cut to {BASH_MAX_OUTPUT_LINES} "
-            f"lines and {BASH_MAX_OUTPUT_CHARS} characters. Write large results to a "
-            "file and print a summary.\n"
+            "- language `python` runs python3, `javascript` runs node, `shell` runs bash, "
+            "which stops at the first command that fails.\n"
+            "- `code` is passed as it is, so it needs no quoting. Change files with "
+            "edit_file.\n"
+            f"- Output is stdout and stderr together, cut to {BASH_MAX_OUTPUT_CHARS} "
+            "characters. Write larger results to a file and print a summary.\n"
             "- A non-zero exit returns the output and exit code: read the error, fix "
             "the code, run it again.\n"
             "\n"
             "What is installed:\n"
-            "- Python 3.12 with pip and uv. Only the standard library is installed: "
-            "install pandas, matplotlib or anything else you need first (see below).\n"
+            "- Python 3.12 with pip and uv, and few packages: check with `pip list` and "
+            "install what you need first (see below).\n"
             "- Node 22 with npm.\n"
             "- SQLite: the sqlite3 CLI and Python's sqlite3 module. A database is a "
             "file in your folder, e.g. data.db.\n"
@@ -244,14 +254,14 @@ class RunCodeTool:
         if not request_id:
             return ToolResult.error("run_code runs only within a request")
 
-        extension, interpreter = _LANGUAGES[language]
+        extension, interpreter, options = _LANGUAGES[language]
         # The code arrives on stdin and is written to a file as the agent user,
         # so it needs no quoting and errors name a real file and line. The code
         # itself gets /dev/null as stdin, as a command would.
         script = f".mash/runs/{uuid.uuid4().hex}.{extension}"
         command = (
             f'mkdir -p .mash/runs && cat > {script} && '
-            f'{{ {interpreter} {script} </dev/null; rc=$?; rm -f {script}; exit $rc; }}'
+            f'{{ {interpreter} {options}{script} </dev/null; rc=$?; rm -f {script}; exit $rc; }}'
         )
         try:
             async with httpx.AsyncClient(
@@ -307,6 +317,104 @@ def _describe_env(env: Mapping[str, SandboxVariable]) -> str:
         "never print them or write their values into files, which links can serve:\n"
         + lines
     )
+
+
+class EditFileTool:
+    """Create a text file in the sandbox folder, or replace one exact piece of one."""
+
+    def __init__(self, *, host_api_url: str, token: str) -> None:
+        self._relay = _Relay(host_api_url, token)
+        self.name = "edit_file"
+        self.description = (
+            "Change a text file in your sandbox folder. `old_text` must appear in the "
+            "file exactly once, and is replaced with `new_text`; copy it from the file, "
+            "with enough around it to be unique. With `old_text` empty, a new file is "
+            "created with `new_text`. Read files with run_code."
+        )
+        self.parameters = {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path in your sandbox folder, relative to it.",
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "The exact text to replace, or empty to create the file.",
+                },
+                "new_text": {"type": "string", "description": "The text to put in its place."},
+            },
+            "required": ["path", "old_text", "new_text"],
+        }
+        self.requires_approval = False
+        self.parallel_safe = False
+
+    async def execute(self, args: Dict[str, Any]) -> ToolResult:
+        path = str(args.get("path") or "").strip()
+        old_text = args.get("old_text") or ""
+        new_text = args.get("new_text")
+        if not path:
+            return ToolResult.error("path is required")
+        if not isinstance(old_text, str) or not isinstance(new_text, str):
+            return ToolResult.error("old_text and new_text must be text")
+        if old_text == new_text:
+            return ToolResult.error("old_text and new_text are the same")
+        request_id = _request_id()
+        if not request_id:
+            return ToolResult.error("edit_file runs only within a request")
+        params = {"request_id": request_id, "path": path}
+        try:
+            async with httpx.AsyncClient(timeout=_FILE_RELAY_TIMEOUT) as client:
+                response = await client.get(
+                    f"{self._relay.base_url}/files", params=params, headers=self._relay.headers
+                )
+                exists = response.status_code == 200
+                if not exists and _error_code(response) != "FILE_NOT_FOUND":
+                    return ToolResult.error(f"Sandbox error: {_error_message(response)}")
+                if not old_text:
+                    if exists:
+                        return ToolResult.error(
+                            f"{path} already exists; give old_text to change part of it"
+                        )
+                    updated = new_text
+                else:
+                    if not exists:
+                        return ToolResult.error(
+                            f"no file at {path}; leave old_text empty to create it"
+                        )
+                    try:
+                        text = response.content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        return ToolResult.error(f"{path} is not a UTF-8 text file")
+                    count = text.count(old_text)
+                    if count == 0:
+                        return ToolResult.error(
+                            f"old_text is not in {path}; read the file and copy it exactly"
+                        )
+                    if count > 1:
+                        return ToolResult.error(
+                            f"old_text appears {count} times in {path}; include more "
+                            "of the text around it so it appears once"
+                        )
+                    updated = text.replace(old_text, new_text)
+                response = await client.put(
+                    f"{self._relay.base_url}/files",
+                    params=params,
+                    content=updated.encode("utf-8"),
+                    headers=self._relay.headers,
+                )
+        except httpx.HTTPError as exc:
+            return ToolResult.error(f"Error reaching the sandbox: {exc}")
+        if response.status_code != 200:
+            return ToolResult.error(f"Sandbox error: {_error_message(response)}")
+        return ToolResult.success(f"{'Changed' if old_text else 'Created'} {path}.")
+
+    def to_llm_format(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters,
+        }
 
 
 class SandboxPutTool:
@@ -503,7 +611,8 @@ def build_sandbox_tools(
 ) -> list[Any]:
     """The sandbox tools for one agent.
 
-    ``sandbox_put`` and ``sandbox_get`` come only with ``file_roots``. ``env``
+    ``run_code`` and ``edit_file`` always; ``sandbox_put`` and ``sandbox_get``
+    only with ``file_roots``. ``env``
     names the variables ``run_code`` passes to the agent's code.
     """
     roots = FileRoots(file_roots) if file_roots else None
@@ -514,7 +623,8 @@ def build_sandbox_tools(
             agent_id=agent_id,
             file_roots=roots,
             env=check_sandbox_env(env or {}),
-        )
+        ),
+        EditFileTool(host_api_url=host_api_url, token=token),
     ]
     if roots is not None:
         tools.append(SandboxPutTool(host_api_url=host_api_url, token=token, file_roots=roots))
@@ -527,6 +637,7 @@ __all__ = [
     "RUN_CODE_DEFAULT_TIMEOUT",
     "SANDBOX_ENV_NAME",
     "SANDBOX_TOOL_NAMES",
+    "EditFileTool",
     "FileRoots",
     "RunCodeTool",
     "SandboxGetTool",
