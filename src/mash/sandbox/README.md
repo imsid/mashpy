@@ -59,6 +59,8 @@ in its token.
   `mash.namespace`, network `<ns>-sandboxes`, restart policy `unless-stopped`.
   Sandboxes run `ghcr.io/imsid/mash-sandbox:<mashpy version>`
   (`Dockerfile.sandbox`), pulled on first start, or `MASH_SANDBOX_IMAGE`. A
+  container whose `Config.Image` is another image, as after a mashpy upgrade,
+  is removed and created again; the user's files stay in the volume. A
   host in a container joins the network and reaches daemons by name; a host on
   the Docker host publishes each daemon's port on `127.0.0.1`. `MASH_SANDBOX_MOUNTS`
   adds `source:target[:ro]` bind mounts; `MASH_SANDBOX_NAMESPACE` replaces

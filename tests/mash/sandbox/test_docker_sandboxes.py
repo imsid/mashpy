@@ -41,7 +41,8 @@ class _FakeDaemon:
         self.containers[name] = {
             "Id": f"id-{name}",
             "Name": f"/{name}",
-            "Image": config["Image"],
+            "Image": f"sha256:{config['Image']}",
+            "Config": {"Image": config["Image"]},
             "Labels": config.get("Labels", {}),
             "HostConfig": config.get("HostConfig", {}),
             "State": {"Running": running},
@@ -92,6 +93,9 @@ class _FakeDaemon:
             container = self.containers.get(parts[1])
             if container is None:
                 return httpx.Response(404, json={"message": "No such container"})
+            if method == "DELETE":
+                del self.containers[parts[1]]
+                return httpx.Response(204)
             if parts[2] == "json":
                 return httpx.Response(200, json=container)
             if parts[2] == "start":
@@ -177,6 +181,19 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         [container] = self.daemon.containers.values()
         self.assertTrue(container["State"]["Running"])
+
+    async def test_a_container_made_from_another_image_is_replaced(self) -> None:
+        await self._provider(image="mash-app:old").ensure("u-1")
+        [name] = self.daemon.containers
+        volumes = dict(self.daemon.volumes)
+
+        await self._provider().ensure("u-1")
+
+        self.assertIn(("DELETE", f"/containers/{name}"), self.daemon.calls)
+        container = self.daemon.containers[name]
+        self.assertEqual(container["Config"]["Image"], "mash-app:dev")
+        self.assertTrue(container["State"]["Running"])
+        self.assertEqual(self.daemon.volumes, volumes)
 
     async def test_list_reports_this_namespaces_sandboxes(self) -> None:
         provider = self._provider()
