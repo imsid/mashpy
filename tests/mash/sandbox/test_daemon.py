@@ -17,7 +17,6 @@ import uvicorn
 
 from mash.sandbox.daemon import (
     BASH_MAX_OUTPUT_CHARS,
-    BASH_MAX_OUTPUT_LINES,
     SandboxDaemon,
     build_bash_env,
     resolve_bash_user,
@@ -113,12 +112,15 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["output"], "started")
 
     async def test_truncates_output(self) -> None:
-        many = await self._exec(f"seq 1 {BASH_MAX_OUTPUT_LINES + 10}")
-        self.assertIn(f"{BASH_MAX_OUTPUT_LINES + 10} total lines", many["output"])
-        self.assertNotIn(f"\n{BASH_MAX_OUTPUT_LINES + 1}\n", many["output"])
+        many = await self._exec("seq 1 1000")
+        self.assertTrue(many["output"].startswith("1\n2\n"))
+        self.assertTrue(many["output"].endswith("\n1000"))
 
         wide = await self._exec(f"printf 'x%.0s' $(seq 1 {BASH_MAX_OUTPUT_CHARS + 10})")
-        self.assertIn(f"max {BASH_MAX_OUTPUT_CHARS} chars", wide["output"])
+        self.assertIn(
+            f"first {BASH_MAX_OUTPUT_CHARS} of {BASH_MAX_OUTPUT_CHARS + 10} chars",
+            wide["output"],
+        )
 
     async def test_environment_is_clean(self) -> None:
         with patch.dict(os.environ, {"MASH_SANDBOX_TOKEN": TOKEN, "MASH_HOST_SECRET": "secret"}):

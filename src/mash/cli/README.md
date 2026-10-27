@@ -52,7 +52,7 @@ Agent processes
 - `--port`: bind port. Defaults to `9000` or `MASH_AGENT_PORT`.
 - `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
 - `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and the sandbox tools.
-- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots.
+- `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code` and `edit_file`, and `sandbox_put` and `sandbox_get` when its spec declares file roots.
 - `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
 - DBOS runs as executor `agent:<agent_id>` under an application name of its own and listens to no queues, so the process recovers only this agent's requests, no other process runs them, and it never runs the host's workflow runs.
 

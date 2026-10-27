@@ -40,8 +40,8 @@ SANDBOX_PORT = 9000
 WORKSPACES_ROOT = "/home/agent/workspaces"
 
 BASH_DEFAULT_TIMEOUT = 30
-BASH_MAX_OUTPUT_LINES = 50
-BASH_MAX_OUTPUT_CHARS = 4000
+# Enough to read a whole source file in one call.
+BASH_MAX_OUTPUT_CHARS = 30_000
 # Largest file /files reads or writes.
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
@@ -143,20 +143,12 @@ def build_bash_env(
 
 
 def truncate_output(text: str) -> str:
-    """Keep the first lines and characters of a command's output."""
-    lines = text.splitlines()
-    if not lines:
-        return ""
-    kept = "\n".join(lines[:BASH_MAX_OUTPUT_LINES])
-    suffix_parts: list[str] = []
-    if len(lines) > BASH_MAX_OUTPUT_LINES:
-        suffix_parts.append(f"{len(lines)} total lines")
-    if len(kept) > BASH_MAX_OUTPUT_CHARS:
-        kept = kept[:BASH_MAX_OUTPUT_CHARS].rstrip()
-        suffix_parts.append(f"max {BASH_MAX_OUTPUT_CHARS} chars")
-    if suffix_parts:
-        return f"{kept}\n\n... Output truncated ({', '.join(suffix_parts)}) ..."
-    return kept
+    """Keep the first characters of a command's output."""
+    text = text.rstrip("\n")
+    if len(text) <= BASH_MAX_OUTPUT_CHARS:
+        return text
+    kept = text[:BASH_MAX_OUTPUT_CHARS].rstrip()
+    return f"{kept}\n\n... Output truncated (first {BASH_MAX_OUTPUT_CHARS} of {len(text)} chars) ..."
 
 
 @dataclass(frozen=True)
@@ -482,7 +474,6 @@ __all__ = [
     "AGENT_USER",
     "BASH_DEFAULT_TIMEOUT",
     "BASH_MAX_OUTPUT_CHARS",
-    "BASH_MAX_OUTPUT_LINES",
     "ExecResult",
     "FileNotFound",
     "MASH_SANDBOX_TOKEN_ENV",

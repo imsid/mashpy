@@ -10,7 +10,7 @@ DB = SandboxVariable("postgresql://reader:pw@db/app", "A read-only Postgres URL.
 
 
 def _run_code(env):
-    [tool] = build_sandbox_tools(
+    tool, _ = build_sandbox_tools(
         host_api_url="http://host", token="tok", agent_id="research", env=env
     )
     return tool

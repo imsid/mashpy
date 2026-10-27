@@ -12,7 +12,8 @@ spec declares in `sandbox_env()`, which `run_code` sends with each call.
 ```
 agent process             host                          sandbox u-42
 run_code ─────────► POST /sandbox/exec ──► SandboxManager ─► POST /exec
-sandbox_put/get ──► /sandbox/files ──────►   ensure(u-42) ─► GET/PUT /files
+edit_file ───────┐
+sandbox_put/get ─┴► /sandbox/files ──────►   ensure(u-42) ─► GET/PUT /files
    (agent token,       request identity                       as agent, in
     request_id)        user = u-42                            workspaces/research
 
@@ -37,7 +38,7 @@ in its token.
     environment (`HOME`, `PATH`, `LANG`, `PWD`, `PYTHONUSERBASE=<folder>/.local`
     so `pip install --user` lands in the folder, plus the caller's `MASH_*`
     variables), and returns `{output, exit_code, timed_out}`. Each call is a
-    fresh shell. Output is cut to 50 lines and 4000 characters; the default
+    fresh shell. Output is cut to 30000 characters; the default
     timeout is 30 seconds, after which the command's whole process group is
     killed. A job the command leaves running in the background does not hold
     the call open, and keeps running.

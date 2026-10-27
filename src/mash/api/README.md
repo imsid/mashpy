@@ -46,7 +46,7 @@ Every relay call names the request it serves. The host reads the request's ident
 - Runs the command with `stdin` as its input and returns `{output, exit_code, timed_out}`. The command sees `MASH_FILES_URL` (the user's link to the caller's folder) and `MASH_PORTS_URL`.
 
 `PUT /sandbox/files?request_id=&path=` and `GET /sandbox/files?request_id=&path=`
-- Write the body to, or read, one file at `path` in the caller's folder; sent by `sandbox_put` and `sandbox_get`. `path` must stay in the folder (`400` otherwise); a missing file is `404 FILE_NOT_FOUND`; files are limited to 100 MB (`413`).
+- Write the body to, or read, one file at `path` in the caller's folder; sent by `edit_file`, `sandbox_put` and `sandbox_get`. `path` must stay in the folder (`400` otherwise); a missing file is `404 FILE_NOT_FOUND`; files are limited to 100 MB (`413`).
 
 ## Sandbox Links
 

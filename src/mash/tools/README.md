@@ -24,6 +24,11 @@
     (`SandboxVariable`) go with each call as `env`; the description names them
     with their descriptions, never their values, and `check_sandbox_env`
     refuses names the relay would.
+  - `edit_file(path, old_text, new_text)`: reads the file through
+    `/sandbox/files`, replaces `old_text`, which must appear exactly once, with
+    `new_text`, and writes it back; with `old_text` empty it creates a file
+    that does not exist yet. A missing match, more than one match, or a file
+    that is not UTF-8 fails with a reason and leaves the file as it was.
   - `sandbox_put(src, dest)` / `sandbox_get(src, dest)`: copy one file (up to
     100 MB) between the agent process's machine and the folder through
     `/sandbox/files`. They exist only with file roots (`FileRoots`, from the

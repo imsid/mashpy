@@ -9,7 +9,7 @@
 - `evals`: synthetic eval data model (datasets, rubrics, experiments, runs), scoring service, per-row operational metrics, and the Postgres eval store.
 - `api`: FastAPI app wiring, host serving helpers, and admin dashboard UI serving.
 - `cli`: the `mash` command-line, remote shell flow, and terminal rendering.
-- `tools`: built-in tools such as the sandbox tools (`run_code`, `sandbox_put`, `sandbox_get`), MCP-backed tools, and subagent invocation.
+- `tools`: built-in tools such as the sandbox tools (`run_code`, `edit_file`, `sandbox_put`, `sandbox_get`), MCP-backed tools, and subagent invocation.
 - `sandbox`: per-user sandboxes where agents' code runs: the daemon inside each one, the Docker provider, and the host's `SandboxManager`.
 - `skills`: optional skill abstractions and registration.
 - `memory`: persistent storage, retrieval, and compaction support.

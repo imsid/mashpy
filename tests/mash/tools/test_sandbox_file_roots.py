@@ -88,17 +88,17 @@ class FileRootsTests(unittest.TestCase):
 
 
 class BuildSandboxToolsTests(unittest.TestCase):
-    def test_without_roots_the_agent_gets_only_run_code(self) -> None:
+    def test_without_roots_the_agent_gets_run_code_and_edit_file(self) -> None:
         tools = _tools(())
 
-        self.assertEqual([tool.name for tool in tools], ["run_code"])
+        self.assertEqual([tool.name for tool in tools], ["run_code", "edit_file"])
         self.assertIsInstance(tools[0], RunCodeTool)
         self.assertNotIn("sandbox_put", tools[0].description)
 
     def test_with_roots_the_file_tools_name_them(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
-            run_code, put, get = _tools([root])
+            run_code, _, put, get = _tools([root])
 
         self.assertIsInstance(put, SandboxPutTool)
         self.assertIsInstance(get, SandboxGetTool)
@@ -111,7 +111,7 @@ class FileToolRefusalTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
-        _, self.put, self.get = _tools([self.root])
+        _, _, self.put, self.get = _tools([self.root])
 
     def _run(self, tool, args):
         with bound_request_id("r-1"):
