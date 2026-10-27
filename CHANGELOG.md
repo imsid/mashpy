@@ -9,6 +9,17 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.31.0](https://github.com/imsid/mashpy/compare/mashpy-v0.30.0...mashpy-v0.31.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** let agents read and change sandbox files reliably ([#249](https://github.com/imsid/mashpy/issues/249))
+
+### Features
+
+* **sandbox:** let agents read and change sandbox files reliably ([#249](https://github.com/imsid/mashpy/issues/249)) ([2d38eca](https://github.com/imsid/mashpy/commit/2d38eca6f1e55a87ed51c17a5f48016ad0564f7f))
+
 ## [0.30.0](https://github.com/imsid/mashpy/compare/mashpy-v0.29.0...mashpy-v0.30.0) (2026-10-26)
 
 
