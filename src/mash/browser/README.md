@@ -73,3 +73,7 @@ and Playwright MCP that keeps their sharing of tabs, snapshot files and
 download events, and `LocalBrowserProvider`, which runs daemons over it on
 localhost ports. `tests/mash/browser/test_browser_live.py` runs the daemon
 against a real Chromium and Playwright MCP when `MASH_BROWSER_LIVE=1`.
+`scripts/smoke_browser_image.py` checks a built image: the container's
+processes and routes, the host's provider, and a live view opened in Chrome.
+CI runs it when the image's inputs change (`.github/workflows/browser-image.yml`),
+and the release runs it before publishing the image.
