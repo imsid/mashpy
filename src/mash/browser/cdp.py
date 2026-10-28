@@ -71,13 +71,23 @@ class ChromiumCDP:
             response.raise_for_status()
         return str(response.json()["webSocketDebuggerUrl"])
 
-    async def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def call(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """One CDP call on the browser, or on an attached target's ``session_id``."""
         await asyncio.wait_for(self._connected.wait(), timeout=_CALL_TIMEOUT)
         message_id = next(self._ids)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[message_id] = future
+        message: dict[str, Any] = {"id": message_id, "method": method, "params": params or {}}
+        if session_id is not None:
+            message["sessionId"] = session_id
         try:
-            await self._ws.send(json.dumps({"id": message_id, "method": method, "params": params or {}}))
+            await self._ws.send(json.dumps(message))
             reply = await asyncio.wait_for(future, timeout=_CALL_TIMEOUT)
         finally:
             self._pending.pop(message_id, None)
@@ -131,11 +141,27 @@ class ChromiumCDP:
                     ]
                 },
             )
-        for scheme in ("https", "http"):
-            await self.call(
-                "Storage.clearDataForOrigin",
-                {"origin": f"{scheme}://{domain}", "storageTypes": "all"},
-            )
+        # Chromium refuses Storage.clearDataForOrigin on the browser session;
+        # it works through any page's session.
+        targets = (await self.call("Target.getTargets")).get("targetInfos") or []
+        page = next((t for t in targets if t.get("type") == "page"), None)
+        created = None
+        if page is None:
+            created = (await self.call("Target.createTarget", {"url": "about:blank"}))["targetId"]
+        target_id = created or page["targetId"]
+        attached = await self.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        session_id = attached["sessionId"]
+        try:
+            for scheme in ("https", "http"):
+                await self.call(
+                    "Storage.clearDataForOrigin",
+                    {"origin": f"{scheme}://{domain}", "storageTypes": "all"},
+                    session_id=session_id,
+                )
+        finally:
+            await self.call("Target.detachFromTarget", {"sessionId": session_id})
+            if created is not None:
+                await self.call("Target.closeTarget", {"targetId": created})
         return len(doomed)
 
     async def _run(self) -> None:

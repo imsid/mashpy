@@ -17,6 +17,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from .catalog import PLAYWRIGHT_MCP_VERSION
 
 logger = logging.getLogger(__name__)
@@ -91,9 +93,8 @@ def child_commands(layout: BrowserLayout, *, chromium: str) -> dict[str, list[st
         "playwright-mcp": [
             "playwright-mcp",
             "--cdp-endpoint", f"http://127.0.0.1:{CDP_PORT}",
+            # Binds localhost and answers only Host: localhost, its defaults.
             "--port", str(MCP_PORT),
-            "--host", "127.0.0.1",
-            "--allowed-hosts", "localhost,127.0.0.1",
             "--caps=vision",
             "--output-dir", str(layout.output),
             "--output-max-size", str(OUTPUT_MAX_BYTES),
@@ -109,6 +110,8 @@ class BrowserProcesses:
         self.layout = layout
         self._chromium = chromium
         self._tasks: list[asyncio.Task[None]] = []
+        self._stopping = False
+        self._running: dict[str, asyncio.subprocess.Process] = {}
 
     async def start(self) -> None:
         for folder in (self.layout.profile, self.layout.downloads, self.layout.output):
@@ -120,11 +123,38 @@ class BrowserProcesses:
             # Each child needs the one before it: the display, then Chromium.
             await asyncio.sleep(0.5)
 
+    def begin_stop(self) -> None:
+        """Restart no child that exits from now on."""
+        self._stopping = True
+
+    async def wait_exit(self, name: str, timeout: float) -> bool:
+        """Wait for a child to exit on its own; whether it did in time."""
+        process = self._running.get(name)
+        if process is None:
+            return True
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
     async def stop(self) -> None:
+        """Stop the children one at a time, last started first."""
+        self._stopping = True
         for task in reversed(self._tasks):
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+            await asyncio.gather(task, return_exceptions=True)
         self._tasks.clear()
+
+    async def ready(self) -> bool:
+        """Whether Chromium's CDP and Playwright MCP both answer."""
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.get(f"http://127.0.0.1:{CDP_PORT}/json/version")
+                await client.get(f"http://localhost:{MCP_PORT}/mcp")
+        except httpx.HTTPError:
+            return False
+        return True
 
     async def _keep_running(self, name: str, argv: list[str], env: dict[str, str]) -> None:
         while True:
@@ -132,14 +162,20 @@ class BrowserProcesses:
             process = await asyncio.create_subprocess_exec(
                 *argv, env=env, cwd=str(self.layout.home)
             )
+            self._running[name] = process
             try:
                 code = await process.wait()
             except asyncio.CancelledError:
                 with contextlib.suppress(ProcessLookupError):
                     process.terminate()
-                with contextlib.suppress(Exception):
+                try:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
+                except Exception:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
                 raise
+            if self._stopping:
+                return
             logger.warning("%s exited with %s; restarting", name, code)
             await asyncio.sleep(_RESTART_DELAY)
 

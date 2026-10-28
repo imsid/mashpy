@@ -35,10 +35,15 @@ RUN npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
         install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* /root/.npm
 
+# Python dependencies at the versions uv.lock pins, the ones the tests ran.
 WORKDIR /opt/mash
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN pip install .
+RUN pip install uv \
+    && uv export --frozen --no-dev --no-emit-project --no-hashes -o /tmp/requirements.txt \
+    && pip install -r /tmp/requirements.txt \
+    && pip install --no-deps . \
+    && rm /tmp/requirements.txt
 
 # `browser` runs the daemon and everything it starts. Each user's volume is
 # created from /home/browser: the profile, downloads, uploads, and Playwright

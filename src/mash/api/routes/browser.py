@@ -31,7 +31,6 @@ import mimetypes
 import posixpath
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 import websockets
 from fastapi import APIRouter, Request, WebSocket
@@ -277,11 +276,9 @@ def build_browser_link_router() -> APIRouter:
     async def view_root(request: Request, token: str) -> Response:
         if _handoff(request, token) is None:
             return _view_error()
-        state = state_from_request(request)
-        prefix = urlsplit(state.public_url).path.strip("/")
-        socket_path = "/".join(p for p in (prefix, "s", token, "browser", "websockify") if p)
+        # noVNC resolves `path` against the page's folder, this one.
         return RedirectResponse(
-            f"vnc.html?autoconnect=true&resize=scale&reconnect=true&path={socket_path}",
+            "vnc.html?autoconnect=true&resize=scale&reconnect=true&path=websockify",
             status_code=307,
         )
 

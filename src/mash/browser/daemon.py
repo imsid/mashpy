@@ -114,12 +114,12 @@ class PlaywrightMCPSession:
             await self._task
 
     async def _run(self) -> None:
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
-
         try:
-            async with streamablehttp_client(self._url) as (read, write, _):
-                async with ClientSession(read, write) as session:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+
+            async with streamable_http_client(self._url) as streams:
+                async with ClientSession(streams[0], streams[1]) as session:
                     await session.initialize()
                     self._ready.set_result(None)
                     while (item := await self._queue.get()) is not None:
@@ -291,13 +291,24 @@ class BrowserDaemon:
             self._reaper.cancel()
             for request_id in list(self._requests):
                 await self._close(request_id)
+            if self._processes is not None and self.cdp is not None:
+                # Chromium batches cookie writes and drops them on a signal;
+                # closing it over CDP runs its own shutdown, which writes the
+                # profile out.
+                self._processes.begin_stop()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.cdp.call("Browser.close"), timeout=10.0)
+                await self._processes.wait_exit("chromium", timeout=15.0)
             if self.cdp is not None:
                 await self.cdp.close()
             if self._processes is not None:
                 await self._processes.stop()
 
     async def health(self, request: Request) -> Response:
+        """``200`` once the browser can take calls; ``503`` while its children start."""
         del request
+        if self._processes is not None and not await self._processes.ready():
+            return JSONResponse({"status": "starting"}, status_code=503)
         return JSONResponse({"status": "ok"})
 
     async def call(self, request: Request) -> Response:

@@ -203,6 +203,8 @@ class DockerBrowserProvider:
             "Cmd": ["mash", "browser", "serve", "--host", "0.0.0.0", "--port", str(BROWSER_PORT)],
             "Env": [f"{MASH_BROWSER_TOKEN_ENV}={token}"],
             "Labels": browser_labels(user_id, self.namespace),
+            # Time for Chromium to write its profile out on a stop.
+            "StopTimeout": 30,
             "ExposedPorts": {f"{BROWSER_PORT}/tcp": {}},
             "HostConfig": host_config,
             "NetworkingConfig": {"EndpointsConfig": {self._network: {}}},

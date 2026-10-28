@@ -131,7 +131,7 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("-localhost", commands["x11vnc"])
         mcp = commands["playwright-mcp"]
         self.assertEqual(mcp[mcp.index("--cdp-endpoint") + 1], "http://127.0.0.1:9222")
-        self.assertEqual(mcp[mcp.index("--host") + 1], "127.0.0.1")
+        self.assertNotIn("--host", mcp)
 
 
 if __name__ == "__main__":

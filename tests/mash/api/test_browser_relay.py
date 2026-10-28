@@ -207,8 +207,8 @@ class BrowserRelayTests(unittest.TestCase):
         self.assertEqual(root.status_code, 307)
         location = urlsplit(root.headers["location"])
         self.assertEqual(location.path, "vnc.html")
-        socket_path = parse_qs(location.query)["path"][0]
-        self.assertEqual(f"/{socket_path}", f"{path}websockify")
+        # Relative to the page's folder, as noVNC resolves it.
+        self.assertEqual(parse_qs(location.query)["path"], ["websockify"])
         self.assertEqual(self.http.get(f"{path}vnc.html").text, "<html>noVNC</html>")
 
         self.assertEqual(self.http.portal.call(self._through_view, f"{path}websockify"), b"RFB 003.008\n")
