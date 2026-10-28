@@ -127,6 +127,16 @@ RUN pip install pandas matplotlib
 USER mash
 ```
 
+Browsers run Mash's browser image, `ghcr.io/imsid/mash-browser:<mashpy
+version>`, built from [`Dockerfile.browser`](https://github.com/imsid/mashpy/blob/main/Dockerfile.browser).
+It holds Chromium, Playwright MCP, Xvfb, x11vnc and noVNC, run by a `browser`
+user. The host pulls it only when an agent's spec lists `browser_sites()`, and
+starts one browser per user on the first browser call, on its own network,
+`mash-browsers`, with a volume `mash-browser-<key>` for the user's profile.
+Sandboxes are not on that network. A sign-in link (`/s/<view token>/browser/`)
+uses `MASH_PUBLIC_URL`, and the live view is a websocket, so a proxy in front
+of the host must pass websockets through.
+
 ## Run the host in Docker
 
 This is the production layout, and it works the same on a laptop. The host
@@ -429,23 +439,29 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 |----------|--------|---------|---------|
 | `MASH_HOST_APP` | host | none | `module:attribute` for `build_pool()`; agent processes import the same one |
 | `MASH_DATABASE_URL` | host | none | PostgreSQL connection string; agent processes inherit it |
-| `MASH_HOST_SECRET` | host | none | Derives each agent's and each sandbox's token; required for a pool with agents |
+| `MASH_HOST_SECRET` | host | none | Derives each agent's, each sandbox's and each browser's token, and signs links; required for a pool with agents |
 | `MASH_API_KEY` | host | none | API key for `/api/v1` |
 | `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |
 | `MASH_API_PORT` | host | `8000` | Bind port |
-| `MASH_PUBLIC_URL` | host | the bind address | Where users reach the host; the base of sandbox links |
+| `MASH_PUBLIC_URL` | host | the bind address | Where users reach the host; the base of sandbox links and sign-in links |
 | `MASH_SANDBOX_IMAGE` | host | `ghcr.io/imsid/mash-sandbox:<mashpy version>` | Sandbox image, pulled when missing |
 | `MASH_SANDBOX_MOUNTS` | host | none | Comma-separated `source:target[:ro]` bind mounts added to every sandbox; sources are Docker-host paths |
 | `MASH_SANDBOX_IDLE_SECONDS` | host | `900` | Idle time before a sandbox stops |
 | `MASH_SANDBOX_MAX_RUNNING` | host | `20` | Most sandboxes running at once |
-| `MASH_SANDBOX_NAMESPACE` | host, CLI | `mash` | Prefix for sandbox containers, volumes and network (`<ns>-sandbox-<key>`, `<ns>-sandboxes`), so deployments sharing a Docker daemon keep separate sandboxes |
+| `MASH_SANDBOX_NAMESPACE` | host, CLI | `mash` | Prefix for sandbox and browser containers, volumes and networks (`<ns>-sandbox-<key>`, `<ns>-sandboxes`, `<ns>-browser-<key>`, `<ns>-browsers`), so deployments sharing a Docker daemon keep them separate |
+| `MASH_BROWSER_IMAGE` | host | `ghcr.io/imsid/mash-browser:<mashpy version>` | Browser image, pulled when an agent lists sites |
+| `MASH_BROWSER_IDLE_SECONDS` | host | `900` | Idle time before a browser stops; its profile is kept |
+| `MASH_BROWSER_MAX_RUNNING` | host | `10` | Most browsers running at once |
+| `MASH_BROWSER_HANDOFF_SECONDS` | host | `900` | How long a sign-in link works, and how long a request waits for the user |
 | `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | agent process | set by the host | The agent's token |
 | `MASH_HOST_API_URL` | agent process | set by the host | The host address for subagent calls and the sandbox tools |
 | `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots |
+| `MASH_BROWSER_ENABLED` | agent process | set by the host | `1` when the host has browsers, so an agent whose spec lists sites gets the browser tools |
 | `MASH_PARENT_PID` | agent process | set by the host | The agent process stops when this process exits |
 | `MASH_SANDBOX_TOKEN` | sandbox | set by the host | The user's sandbox token; the sandbox's only variable |
+| `MASH_BROWSER_TOKEN` | browser | set by the host | The user's browser token; the browser's only variable |
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; agent processes inherit it |
 | `OPENAI_API_KEY` | host | none | OpenAI API key; agent processes inherit it |
 | `GEMINI_API_KEY` | host | none | Google Gemini API key; agent processes inherit it |

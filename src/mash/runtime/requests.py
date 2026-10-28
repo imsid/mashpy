@@ -563,19 +563,21 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             },
         }
     if event.event_type == RuntimeEventType.INTERACTION_CREATE.value:
-        return {
-            "event": "request.interaction.create",
-            "data": {
-                "request_id": event.request_id,
-                "agent_id": event.agent_id,
-                "session_id": event.session_id,
-                "interaction_id": event.payload.get("interaction_id"),
-                "type": event.payload.get("type"),
-                "prompt": event.payload.get("prompt"),
-                "schema": event.payload.get("schema"),
-                "timeout_seconds": event.payload.get("timeout_seconds"),
-            },
+        data = {
+            "request_id": event.request_id,
+            "agent_id": event.agent_id,
+            "session_id": event.session_id,
+            "interaction_id": event.payload.get("interaction_id"),
+            "type": event.payload.get("type"),
+            "prompt": event.payload.get("prompt"),
+            "schema": event.payload.get("schema"),
+            "timeout_seconds": event.payload.get("timeout_seconds"),
         }
+        # A browser handoff's live-view link and when it lapses.
+        for field_name in ("url", "expires_at"):
+            if field_name in event.payload:
+                data[field_name] = event.payload[field_name]
+        return {"event": "request.interaction.create", "data": data}
     if event.event_type == RuntimeEventType.INTERACTION_ACK.value:
         data = {
             "request_id": event.request_id,

@@ -14,6 +14,7 @@ from mash.runtime.agent_process import (
     build_agent_server,
     resolve_agent_token,
     resolve_host_api_url,
+    resolve_browser_enabled,
     resolve_sandbox_enabled,
     stop_with_parent,
 )
@@ -159,6 +160,7 @@ def _run_agent_serve_command(args) -> int:
             host_api_url=host_api_url,
             runtime_database_url=args.runtime_database_url,
             sandbox_tools=resolve_sandbox_enabled(),
+            browser_tools=resolve_browser_enabled(),
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

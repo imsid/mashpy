@@ -773,6 +773,39 @@ class MashRemoteShellTests(unittest.TestCase):
         )
         finish_trace.assert_called_once()
 
+    def _browser_handoff(self, typed: str, *, agent_id: str | None = None):
+        shell = self._build_shell()
+        payload = {
+            "interaction_id": "itr_1",
+            "type": "browser",
+            "prompt": "Sign in to pge.com",
+            "url": "http://mash.example/s/tok/browser/",
+            "expires_at": 2000000000,
+        }
+        with patch("builtins.input", return_value=typed), patch(
+            "mash.cli.shell.webbrowser.open"
+        ) as opened, patch.object(shell.renderer, "info") as info:
+            shell.handle_interaction(shell.context, "req-1", payload, agent_id=agent_id)
+        printed = "\n".join(str(call.args[0]) for call in info.call_args_list)
+        return cast(_FakeClient, shell.client).interactions, opened, printed
+
+    def test_browser_handoff_prints_and_opens_the_link_then_answers_done(self) -> None:
+        interactions, opened, printed = self._browser_handoff("")
+
+        self.assertIn("Sign in to pge.com", printed)
+        self.assertIn("Open: http://mash.example/s/tok/browser/", printed)
+        opened.assert_called_once_with("http://mash.example/s/tok/browser/")
+        self.assertEqual(
+            interactions,
+            [{"agent_id": "primary", "request_id": "req-1", "interaction_id": "itr_1", "response": "done"}],
+        )
+
+    def test_browser_handoff_answers_cancel_for_a_subagents_request(self) -> None:
+        interactions, _, _ = self._browser_handoff(" Cancel ", agent_id="research")
+
+        self.assertEqual(interactions[0]["response"], "cancel")
+        self.assertEqual(interactions[0]["agent_id"], "research")
+
     def test_handle_repl_message_renders_subagent_lifecycle(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.chain_renderer, "render_subagent_event") as render_sub:

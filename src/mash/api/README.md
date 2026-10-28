@@ -24,6 +24,7 @@ This README lists the exposed routes, the common request/response conventions, a
 - `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
 - `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 - `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.
+- `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are users' live views of their browser during a sign-in (see Browser Live Views); the view token names the user and the request, and lapses when the handoff ends.
 
 ## H2A Relay
 
@@ -59,6 +60,36 @@ Links open in a browser with no API key. `<link token>` is `<base64url(user_id)>
 - Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Responses are buffered; WebSockets are not forwarded.
 
 Commands get the bases as `MASH_FILES_URL` and `MASH_PORTS_URL`, under `MASH_PUBLIC_URL` (default: the bind address).
+
+## Browser Relay
+
+Every call names the request it serves, and the host checks it as the sandbox relay does: `404 REQUEST_NOT_FOUND` for an unknown request, `403 FORBIDDEN` for another agent's request or an agent whose spec lists no `browser_sites()`. It acts in the browser of the request's user, on the caller's sites, starting the browser if needed. `503 BROWSER_UNAVAILABLE` when the host has no browsers or one fails to start; `503 BROWSER_CAPACITY` when `MASH_BROWSER_MAX_RUNNING` browsers are all busy. No `{data}` envelope. Results are `{content, images, page_url, is_error}`, where `images` are `{media_type, data}` with base64 data.
+
+`POST /browser/call`
+- Body: `{request_id, tool, arguments}`. `tool` is one of the relayed Playwright MCP tools (`mash.browser.catalog.RELAYED_TOOLS`); another name is `400 UNKNOWN_TOOL`.
+- Runs it in the request's own tab. A URL outside the caller's sites, or a page a call lands on outside them, comes back as an error result and the page is not shown.
+
+`POST /browser/save`
+- Body: `{request_id, download_id, path}`. Copies a finished download into `path` in the caller's sandbox folder; sent by `browser_save`.
+
+`POST /browser/upload`
+- Body: `{request_id, path, target, element?}`. Reads `path` from the caller's sandbox folder, clicks `target` to open the file chooser, and picks the file; sent by `browser_upload`.
+
+`POST /browser/handoff` and `POST /browser/handoff/end`
+- Body: `{request_id}`. Start returns `{url, expires_at, timeout_seconds}`, the user's live-view link; end revokes it and returns the page. The runtime sends both around a `browser` interaction.
+
+## Browser Live Views
+
+`<view token>` is `<base64url(claims)>.<hmac>` over the user, the request and an expiry (`MASH_BROWSER_HANDOFF_SECONDS`, default 900), derived from `MASH_HOST_SECRET`. A request's token works while its handoff is open; one made by `mash browser view`, for no request, works until it expires. Otherwise `404`.
+
+`GET /s/<view token>/browser/`
+- Redirects to noVNC's client, `vnc.html`, set to connect to the websocket below.
+
+`GET /s/<view token>/browser/<path>`
+- Serves noVNC's client files from the user's browser.
+
+`WS /s/<view token>/browser/websockify`
+- Bridges noVNC to the VNC server on the display Chromium draws to. No `frame-ancestors` restriction, so an app can embed the view.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -210,6 +241,19 @@ Commands get the bases as `MASH_FILES_URL` and `MASH_PORTS_URL`, under `MASH_PUB
   still delivered on `request.completed`.
 - Terminates when event name is `request.completed`, `request.error`, or
   `request.cancelled`.
+
+`POST /api/v1/agent/{agent_id}/request/{request_id}/interaction`
+- Answers an interaction the request is waiting on. Body: `{interaction_id, response}`.
+- Interactions arrive on the event stream as `request.interaction.create` with
+  `interaction_id`, `type`, `prompt`, `schema` and `timeout_seconds`:
+  - `info`: `response` is text. `choice`: a list of the options picked.
+  - `approval`: `approve`, `deny` or `skip`, for an approval-gated tool.
+  - `browser`: a sign-in handoff from `browser_handoff`. The payload adds `url`,
+    the user's live view of their browser, and `expires_at` (unix seconds).
+    Show the user the link (a button that opens it, or the view in an iframe),
+    then answer `done` when they finish or `cancel`.
+- `request.interaction.ack` follows with the `response`, plus `timed_out` or
+  `cancelled` when set.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/status`
 - Returns the current DBOS workflow status for a request.
@@ -541,6 +585,24 @@ deletes them. See `src/mash/agents/cortex/README.md`.
 - Deletes the user's profile and entries and resets the build watermark.
 
 Errors: `404 CORTEX_NOT_FOUND` for an unknown user or entry, `400 INVALID_USER_ID`.
+
+### Browsers
+
+Present on every host; `503 BROWSER_UNAVAILABLE` when it has no browsers.
+
+`GET /api/v1/browser/users/{user_id}/sites`
+- Returns `{user_id, sites}`: each `{domain, cookies}` the user's browser
+  profile holds cookies for, which is where the user is signed in. Starts the
+  browser if it is stopped.
+
+`DELETE /api/v1/browser/users/{user_id}/sites/{domain}`
+- Signs the user out of `domain` and its subdomains: deletes their cookies and
+  clears their storage. Returns `{user_id, domain, cookies}` with the number
+  deleted.
+
+`DELETE /api/v1/browser/users/{user_id}`
+- Stops the user's browser and deletes its volume, profile included. Returns
+  `{user_id, deleted: true}`.
 
 ### Observability
 

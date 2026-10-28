@@ -64,15 +64,16 @@ class LLMContentBlock:
         tool_call_id: str,
         content: str,
         is_error: bool = False,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> "LLMContentBlock":
-        return cls(
-            type="tool_result",
-            data={
-                "tool_call_id": tool_call_id,
-                "content": content,
-                "is_error": is_error,
-            },
-        )
+        data: Dict[str, Any] = {
+            "tool_call_id": tool_call_id,
+            "content": content,
+            "is_error": is_error,
+        }
+        if images:
+            data["images"] = list(images)
+        return cls(type="tool_result", data=data)
 
 
 @dataclass
@@ -178,6 +179,16 @@ class LLMCapabilities:
     reasoning_content: bool = False
 
 
+def tool_result_images(message: "LLMMessage") -> List[Dict[str, str]]:
+    """Every image the tool results in ``message`` carry, in order."""
+    return [
+        image
+        for block in message.content
+        if block.type == "tool_result"
+        for image in block.data.get("images") or []
+    ]
+
+
 def coerce_content_blocks(content: str | List[Dict[str, Any]]) -> List[LLMContentBlock]:
     """Normalize stored message content into runtime blocks."""
     if isinstance(content, str):
@@ -200,11 +211,14 @@ def coerce_content_blocks(content: str | List[Dict[str, Any]]) -> List[LLMConten
                 "arguments": payload.get("input", {}),
             }
         elif block_type == "tool_result":
+            images = payload.get("images")
             payload = {
                 "tool_call_id": payload.get("tool_call_id", payload.get("tool_use_id")),
                 "content": payload.get("content", ""),
                 "is_error": payload.get("is_error", False),
             }
+            if images:
+                payload["images"] = list(images)
         elif block_type == "reasoning":
             payload = {
                 "id": payload.get("id", ""),

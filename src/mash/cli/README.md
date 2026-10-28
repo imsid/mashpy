@@ -41,8 +41,8 @@ Host management
 - `--api-key`: optional bearer API key, or `MASH_API_KEY`.
 - `--cors-origin`: repeatable allowed CORS origin.
 - `--disable-observability`: disable telemetry endpoints.
-- `MASH_HOST_SECRET`: derives each agent's and each sandbox's token and enables the `/h2a` and `/sandbox` relays.
-- The host runs `agent serve` once per agent as a child process. With a reachable Docker daemon it starts sandboxes for the agents' code; it logs which it chose, and the sandbox image.
+- `MASH_HOST_SECRET`: derives each agent's, each sandbox's and each browser's token and enables the `/h2a`, `/sandbox` and `/browser` relays.
+- The host runs `agent serve` once per agent as a child process. With a reachable Docker daemon it starts sandboxes for the agents' code, and browsers when an agent's spec lists `browser_sites()`; it logs which it chose, and the images.
 
 Agent processes
 
@@ -53,6 +53,7 @@ Agent processes
 - `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
 - `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and the sandbox tools.
 - `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code` and `edit_file`, and `sandbox_put` and `sandbox_get` when its spec declares file roots.
+- `MASH_BROWSER_ENABLED=1`: the host has browsers, so the agent gets the browser tools when its spec lists sites.
 - `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
 - DBOS runs as executor `agent:<agent_id>` under an application name of its own and listens to no queues, so the process recovers only this agent's requests, no other process runs them, and it never runs the host's workflow runs.
 
@@ -65,6 +66,16 @@ Sandbox administration (run on the Docker host; sandboxes are found by the `mash
 - `sandbox ls [--namespace NS]`: list sandboxes with user, status, uptime, and container name (the volume has the same name).
 - `sandbox shell <user_id> [--agent ID] [--root] [--namespace NS]`: start the sandbox if it is stopped, then `docker exec -it` a bash shell as `agent` in `/home/agent/workspaces`, or in that agent's folder with `--agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspaces/.admin_history`; admin commands are not in the event log.
 - `sandbox stop <user_id> [--namespace NS]`: stop the sandbox now. Its volume is kept, and the user's next call or link starts it again.
+
+Browsers
+
+- `browser serve [--host H] [--port 9000] [--home DIR] [--novnc-dir DIR]`: the browser daemon, run inside each browser container. It starts Xvfb, Chromium, x11vnc and Playwright MCP as its children and restarts any that exits. `--cdp-url` and `--mcp-url` use a Chromium and a Playwright MCP that are already running instead. Requires `MASH_BROWSER_TOKEN`.
+
+Browser administration (run on the Docker host; browsers are found by the `mash.browser.user` label; `--namespace` as for sandboxes)
+
+- `browser ls [--namespace NS]`: list browsers with user, status, uptime, and container name (the volume has the same name).
+- `browser view <user_id> [--public-url URL]`: print a live-view link to the user's browser, valid for 15 minutes. Needs `MASH_HOST_SECRET` and `MASH_PUBLIC_URL` (or `--public-url`), the address users reach the host at.
+- `browser stop <user_id> [--namespace NS]`: stop the browser now. Its profile is kept, and the user's next browser call starts it again.
 
 Notes
 
@@ -87,6 +98,11 @@ Notes
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the shell's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
+
+When a request waits on an interaction, the shell asks for the answer in place.
+For a `browser` handoff it prints the prompt and the live-view link, opens the
+link in your browser, and waits: press Enter when you are done in the browser,
+or type `cancel`.
 
 Each `/command` invocation is wrapped in `command.start` and
 `command.complete`/`command.error` events. The remote shell ships them

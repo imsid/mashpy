@@ -231,11 +231,25 @@ class AnthropicProvider(BaseLLMProvider):
                 for block in message.content:
                     if block.type != "tool_result":
                         continue
+                    content: Any = block.data.get("content", "")
+                    images = block.data.get("images") or []
+                    if images:
+                        content = [{"type": "text", "text": content or "(image)"}] + [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": image["media_type"],
+                                    "data": image["data"],
+                                },
+                            }
+                            for image in images
+                        ]
                     results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.data.get("tool_call_id"),
-                            "content": block.data.get("content", ""),
+                            "content": content,
                             "is_error": block.data.get("is_error", False),
                         }
                     )

@@ -9,10 +9,13 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from ...core.context import Context, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...logging.events import AgentTraceEvent
+from ...logging.trace_context import get_workflow_id
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
@@ -86,6 +89,8 @@ def _step_tool_result_payload(
     }
     if isinstance(result.structured_output, dict):
         payload["structured_output"] = dict(result.structured_output)
+    if result.images:
+        payload["result"]["images"] = [dict(image) for image in result.images]
     return payload
 
 
@@ -913,6 +918,8 @@ INTERACTION_SCHEMAS = {
     "approval": {"type": "enum", "options": ["approve", "deny", "skip"]},
     "info": {"type": "text"},
     "choice": lambda options: {"type": "multi_select", "options": list(options)},
+    # A browser handoff: the user acts in a live view, then says how it went.
+    "browser": {"type": "enum", "options": ["done", "cancel"]},
 }
 
 # Marker a cancel sends to a pending interaction's topic. No user response can
@@ -939,6 +946,7 @@ async def open_interaction(
     prompt: str,
     options: list[str] | None = None,
     timeout_seconds: int = 300,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """Mint the interaction id and emit its create event in one checkpointed step.
 
@@ -957,6 +965,7 @@ async def open_interaction(
         prompt=prompt,
         options=options,
         timeout_seconds=timeout_seconds,
+        extra=extra,
     )
     return interaction_id
 
@@ -972,6 +981,7 @@ async def emit_interaction_create(
     prompt: str,
     options: list[str] | None = None,
     timeout_seconds: int = 300,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     runtime = _require_runtime(agent_id)
     if interaction_type == "choice":
@@ -989,6 +999,8 @@ async def emit_interaction_create(
             event_type=RuntimeEventType.INTERACTION_CREATE.value,
             dedupe_key=f"interaction.create.{interaction_id}",
             payload={
+                # Type-specific fields, e.g. a browser handoff's url and expires_at.
+                **dict(extra or {}),
                 "interaction_id": interaction_id,
                 "type": interaction_type,
                 "prompt": prompt,
@@ -1032,6 +1044,56 @@ async def emit_interaction_ack(
             payload=payload,
         ),
     )
+
+
+async def start_browser_handoff(agent_id: str, request_id: str) -> dict[str, Any]:
+    """Ask the host for a live-view link to the request user's browser.
+
+    ``{url, expires_at, timeout_seconds}``, or ``{error}`` when there is no one
+    to hand off to: a workflow request, or an agent without browser tools.
+    """
+    runtime = _require_runtime(agent_id)
+    if get_workflow_id():
+        return {
+            "error": (
+                "Nobody is watching this workflow run to sign in. Stop and report that "
+                "the site needs a sign-in; the next interactive request can do it."
+            )
+        }
+    relay = getattr(runtime, "_browser_tools", None)
+    if relay is None:
+        return {"error": "This agent has no browser."}
+    host_api_url, token = relay
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{host_api_url.rstrip('/')}/browser/handoff",
+                json={"request_id": request_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError as exc:
+        return {"error": f"Error reaching the browser: {exc}"}
+    if response.status_code != 200:
+        return {"error": f"Browser error: {response.text}"}
+    return dict(response.json())
+
+
+async def end_browser_handoff(agent_id: str, request_id: str) -> dict[str, Any]:
+    """Revoke the request's live view; the page as the user left it."""
+    runtime = _require_runtime(agent_id)
+    host_api_url, token = runtime._browser_tools
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{host_api_url.rstrip('/')}/browser/handoff/end",
+                json={"request_id": request_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError as exc:
+        return {"content": f"Error reaching the browser: {exc}", "is_error": True}
+    if response.status_code != 200:
+        return {"content": f"Browser error: {response.text}", "is_error": True}
+    return dict(response.json())
 
 
 async def complete_request(

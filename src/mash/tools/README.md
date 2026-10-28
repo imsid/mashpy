@@ -8,7 +8,11 @@
 - Provides runtime-facing helpers so tool execution can stay consistent across hosted agents.
 
 ## Main Components
-- `base.py`: tool interface and shared behavior.
+- `base.py`: tool interface and shared behavior. A `ToolResult` may carry
+  `images` (`ToolImage`: media type and base64 data), such as a screenshot;
+  the runtime passes them to the model with the text, and each provider
+  adapter maps them to its API. A request's context keeps the three most
+  recent images; older ones become a note.
 - `registry.py`: registration and lookup of enabled tools.
 - `sandbox.py`: the sandbox tools. They run nothing locally: each call goes to
   the host's `/sandbox` relay with the agent's token and the request id, and
@@ -41,6 +45,28 @@
   sandboxes, and the file tools when the spec also declares roots, unless the
   spec's `enable_sandbox()` returns False. A spec that registers a tool with
   one of the three names then fails to start.
+- `browser.py`: the browser tools, for an agent whose spec lists sites
+  (`browser_sites()`) on a host with browsers. They run nothing locally: each
+  call goes to the host's `/browser` relay with the agent's token and the
+  request id, and the host acts in the browser of the request's user, on the
+  spec's sites (see `mash.browser`).
+  - A subset of Playwright MCP's tools under their own names, with the schemas
+    of the pinned version (`mash.browser.catalog`): navigate and go back, read
+    the page as an accessibility tree with refs (`browser_snapshot`,
+    `browser_find`), act by ref (click, hover, type, fill a form, select,
+    press a key), dialogs, waits, tabs, screenshots, and clicks and scrolls by
+    coordinates. Page JavaScript and raw file uploads are not relayed.
+    Results carry the page between `<web-content>` tags, and every
+    description tells the model that page text is data from the site.
+  - `browser_save(download_id, path)`: copies a download into the agent's
+    sandbox folder. `browser_upload(target, element, path)`: gives a file from
+    that folder to the file chooser `target` opens.
+  - `browser_handoff(reason)`: hands the browser to the user, for a sign-in, a
+    security code or a captcha. The durable runtime intercepts it as a
+    `browser` interaction with a live-view link; its `execute` only runs
+    outside one, and fails. In a workflow request it fails at once.
+  A spec that registers a tool with one of these names fails to start on a
+  host with browsers.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
 - `subagent.py`: `InvokeSubagent`, used by primary agents to call registered subagents.

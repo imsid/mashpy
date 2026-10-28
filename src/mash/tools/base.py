@@ -4,7 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Protocol
+from typing import Any, Callable, Dict, List, Protocol
+
+
+@dataclass(frozen=True)
+class ToolImage:
+    """An image a tool returns to the model: base64 ``data`` of ``media_type``."""
+
+    media_type: str
+    data: str
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"media_type": self.media_type, "data": self.data}
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "ToolImage":
+        return cls(media_type=str(value.get("media_type") or "image/png"), data=str(value["data"]))
 
 
 @dataclass
@@ -15,6 +30,8 @@ class ToolResult:
     is_error: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
     structured_output: Dict[str, Any] | None = None
+    # Images the model sees with the text, such as a screenshot.
+    images: List[ToolImage] = field(default_factory=list)
 
     @classmethod
     def success(cls, content: str, **metadata: Any) -> ToolResult:

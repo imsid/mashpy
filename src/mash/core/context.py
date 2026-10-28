@@ -98,15 +98,20 @@ class ToolResult:
     is_error: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
     structured_output: Dict[str, Any] | None = None
+    # ``{"media_type", "data"}`` dicts: images the model sees with the text.
+    images: List[Dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format."""
-        return {
+        block: Dict[str, Any] = {
             "type": "tool_result",
             "tool_call_id": self.tool_call_id,
             "content": self.content,
             "is_error": self.is_error,
         }
+        if self.images:
+            block["images"] = [dict(image) for image in self.images]
+        return block
 
 
 @dataclass
@@ -161,6 +166,30 @@ class Context:
     ) -> None:
         """Add a message to the context."""
         self.messages.append(Message(role=role, content=content, metadata=metadata))
+
+    def drop_old_images(self, keep: int) -> None:
+        """Keep only the ``keep`` most recent tool-result images.
+
+        A request's context is checkpointed at every step, so screenshots would
+        otherwise pile up in each checkpoint. Older images become a note.
+        """
+        seen = 0
+        for message in reversed(self.messages):
+            if not isinstance(message.content, list):
+                continue
+            for block in reversed(message.content):
+                images = block.get("images") if isinstance(block, dict) else None
+                if not images:
+                    continue
+                if seen + len(images) <= keep:
+                    seen += len(images)
+                    continue
+                kept = max(0, keep - seen)
+                seen = keep
+                block["images"] = images[len(images) - kept:] if kept else []
+                if not block["images"]:
+                    del block["images"]
+                block["content"] = f"{block.get('content') or ''}\n[older image omitted]".strip()
 
     def add_user_message(self, content: str, **metadata: Any) -> None:
         """Add a user message."""

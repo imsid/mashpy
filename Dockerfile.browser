@@ -1,0 +1,54 @@
+# Mash's browser image: the Chromium each user's agents browse with.
+#
+# Published as ghcr.io/imsid/mash-browser:<mashpy version>; hosts use it unless
+# MASH_BROWSER_IMAGE names another. `mash browser serve` runs Xvfb, Chromium,
+# x11vnc and Playwright MCP as its children (src/mash/browser/processes.py).
+#
+# The Playwright MCP version here, PLAYWRIGHT_MCP_VERSION in
+# src/mash/browser/catalog.py, and src/mash/browser/playwright_tools.json
+# change together.
+
+FROM node:22-slim AS node
+
+FROM python:3.12-slim
+
+ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates xvfb x11vnc novnc fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npm --version
+
+# Playwright MCP, and the Chromium build its Playwright drives, with the
+# system libraries Chromium needs.
+RUN npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
+    && node "$(npm root -g)/@playwright/mcp/node_modules/playwright/cli.js" \
+        install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
+WORKDIR /opt/mash
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN pip install .
+
+# `browser` runs the daemon and everything it starts. Each user's volume is
+# created from /home/browser: the profile, downloads, uploads, and Playwright
+# MCP's output.
+RUN useradd --create-home --shell /bin/bash browser \
+    && chmod 0700 /home/browser
+
+USER browser
+WORKDIR /home/browser
+
+EXPOSE 9000
+
+CMD ["mash", "browser", "serve"]

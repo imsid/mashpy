@@ -21,6 +21,11 @@ from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
+from mash.api.routes.browser import (
+    build_browser_api_router,
+    build_browser_link_router,
+    build_browser_router,
+)
 from mash.api.routes.sandbox import build_link_router, build_sandbox_router
 from mash.api.routes.common import (
     APIError,
@@ -36,6 +41,16 @@ from mash.evals import EvalService, PostgresEvalStore
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
 from mash.runtime.host.host import AgentDisabledError
+from mash.browser.manager import (
+    DEFAULT_HANDOFF_SECONDS,
+    DEFAULT_IDLE_SECONDS as DEFAULT_BROWSER_IDLE_SECONDS,
+    DEFAULT_MAX_RUNNING as DEFAULT_BROWSER_MAX_RUNNING,
+    MASH_BROWSER_HANDOFF_SECONDS_ENV,
+    MASH_BROWSER_IDLE_SECONDS_ENV,
+    MASH_BROWSER_MAX_RUNNING_ENV,
+    BrowserManager,
+)
+from mash.browser.provider import DockerBrowserProvider
 from mash.runtime.host.processes import AgentProcessProvider
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.manager import (
@@ -94,6 +109,42 @@ async def default_sandboxes(config: MashHostConfig) -> SandboxManager | None:
     )
 
 
+async def default_browsers(pool: Pool, config: MashHostConfig) -> BrowserManager | None:
+    """Docker browsers when an agent lists sites and a Docker daemon answers.
+
+    Without browsers the host runs and its agents get no browser tools.
+    """
+    if not pool.wants_browsers():
+        return None
+    host_secret = config.resolved_host_secret()
+    if not host_secret:
+        logger.warning("no MASH_HOST_SECRET: running without browsers; agents get no browser tools")
+        return None
+    engine = DockerEngine()
+    provider = DockerBrowserProvider(host_secret=host_secret, engine=engine)
+    try:
+        await engine.ping()
+        await provider.prepare()
+    except (DockerEngineError, RuntimeError) as exc:
+        await engine.close()
+        logger.warning("running without browsers, agents get no browser tools: %s", exc)
+        return None
+    logger.info("browsers: Docker, namespace '%s', image %s", provider.namespace, provider.image)
+    return BrowserManager(
+        provider,
+        host_secret=host_secret,
+        idle_seconds=float(
+            os.environ.get(MASH_BROWSER_IDLE_SECONDS_ENV) or DEFAULT_BROWSER_IDLE_SECONDS
+        ),
+        max_running=int(
+            os.environ.get(MASH_BROWSER_MAX_RUNNING_ENV) or DEFAULT_BROWSER_MAX_RUNNING
+        ),
+        handoff_seconds=int(
+            os.environ.get(MASH_BROWSER_HANDOFF_SECONDS_ENV) or DEFAULT_HANDOFF_SECONDS
+        ),
+    )
+
+
 def default_agent_provider(pool: Pool, config: MashHostConfig) -> AgentProcessProvider:
     """One child process per agent, for a pool served without a configured provider."""
     host_secret = config.resolved_host_secret()
@@ -109,6 +160,7 @@ def default_agent_provider(pool: Pool, config: MashHostConfig) -> AgentProcessPr
         host_secret=host_secret,
         host_api_url=f"http://{bind}:{config.bind_port}",
         sandboxes=pool.get_sandboxes() is not None,
+        browsers=pool.get_browsers() is not None,
     )
 
 
@@ -126,6 +178,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             sandboxes = await default_sandboxes(resolved_config)
             if sandboxes is not None:
                 pool.configure_sandboxes(sandboxes)
+        if pool.get_browsers() is None:
+            browsers = await default_browsers(pool, resolved_config)
+            if browsers is not None:
+                pool.configure_browsers(browsers)
         if pool.list_registered_agents() and not pool.has_agent_provider():
             pool.configure_agent_provider(
                 default_agent_provider(pool, resolved_config)
@@ -305,6 +361,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api.include_router(build_telemetry_router())
     api.include_router(build_feedback_router())
     api.include_router(build_evals_router())
+    api.include_router(build_browser_api_router())
     if getattr(pool, "cortex", None) is not None:
         from mash.agents.cortex.routes import build_cortex_router
 
@@ -313,6 +370,8 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     app.include_router(build_h2a_router())
     app.include_router(build_sandbox_router())
     app.include_router(build_link_router())
+    app.include_router(build_browser_router())
+    app.include_router(build_browser_link_router())
 
     @app.get("/")
     async def root() -> dict[str, object]:

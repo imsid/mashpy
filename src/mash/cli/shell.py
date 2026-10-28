@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -267,13 +269,22 @@ class MashRemoteShell:
 
         self.renderer.info(f"\n{prompt}")
 
-        if interaction_type == "approval":
+        if interaction_type == "browser":
+            url = str(payload.get("url") or "")
+            self.renderer.info(f"  Open: {url}")
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+            self.renderer.info('  Press Enter when you\'re done (or type "cancel")')
+            user_input = input("  > ").strip().lower()
+            response: Any = "cancel" if user_input == "cancel" else "done"
+
+        elif interaction_type == "approval":
             options = ["approve", "deny", "skip"]
             self.renderer.info(f"  Options: {', '.join(options)}")
             user_input = input("  > ").strip().lower()
             if user_input not in options:
                 user_input = "deny"
-            response: Any = user_input
+            response = user_input
 
         elif interaction_type == "choice":
             options = []

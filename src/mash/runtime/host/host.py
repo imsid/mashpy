@@ -23,6 +23,7 @@ from .subagents import AgentMetadata
 from .types import AgentRegistration, Host
 
 if TYPE_CHECKING:
+    from mash.browser.manager import BrowserManager
     from mash.sandbox.manager import SandboxManager
 
 
@@ -75,6 +76,7 @@ class Pool:
         self._hosts: Dict[str, Host] = {}
         self._agent_provider: AgentProvider | None = None
         self._sandboxes: SandboxManager | None = None
+        self._browsers: BrowserManager | None = None
         self._clients: Dict[str, AgentClientLike] = {}
         # Every registered agent starts enabled; the set resets on restart.
         self._disabled: set[str] = set()
@@ -121,6 +123,26 @@ class Pool:
 
     def get_sandboxes(self) -> "SandboxManager | None":
         return self._sandboxes
+
+    def configure_browsers(self, browsers: "BrowserManager") -> None:
+        """Set where agents browse: each request user's browser.
+
+        Without browsers, agents get no browser tools. The pool owns the
+        manager from here and closes it in ``close()``.
+        """
+        if self._clients:
+            raise RuntimeError("browsers must be configured before start()")
+        self._browsers = browsers
+
+    def get_browsers(self) -> "BrowserManager | None":
+        return self._browsers
+
+    def wants_browsers(self) -> bool:
+        """Whether any registered agent lists sites to browse."""
+        return any(
+            registration.definition.browser_sites()
+            for registration in self._registered.values()
+        )
 
     def register_agent(
         self,
@@ -369,6 +391,8 @@ class Pool:
             await shared_workflow_store.open()
             if self._sandboxes is not None:
                 await self._sandboxes.start()
+            if self._browsers is not None:
+                await self._browsers.start()
 
             if self._registered:
                 if self._agent_provider is None:
@@ -614,6 +638,8 @@ class Pool:
             await self._agent_provider.close()
         if self._sandboxes is not None:
             await self._sandboxes.close()
+        if self._browsers is not None:
+            await self._browsers.close()
 
         if self._shared_runtime_store is not None:
             await self._shared_runtime_store.close()

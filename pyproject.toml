@@ -36,6 +36,7 @@ dependencies = [
   "starlette>=0.52.0",
   "tomli>=2.0.1; python_version < '3.11'",
   "uvicorn>=0.30.0",
+  "websockets>=13.0",
 ]
 
 [project.urls]
@@ -50,6 +51,9 @@ mash = "mash.cli.main:main"
 pilot = "pilot.cli:main"
 
 [project.optional-dependencies]
+browser = [
+  "playwright>=1.50",
+]
 dev = [
   "build>=1.2.2",
   "packaging>=23.0",
@@ -79,4 +83,5 @@ exclude = ["apps*", "tests*"]
   "skills/*/assets/**/*",
 ]
 "mash.storage.migrations" = ["*.sql"]
+"mash.browser" = ["playwright_tools.json"]
 "pilot" = ["skills/*/SKILL.md"]

@@ -28,10 +28,31 @@ from .types import (
     LLMResponse,
     LLMTokenUsage,
     LLMToolDefinition,
+    tool_result_images,
 )
 from .utils import block_value
 
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+
+
+def _image_steps(message: Any) -> List[Dict[str, Any]]:
+    """A user step with the tool results' images, after the results.
+
+    Function results carry text, so images follow them as user input.
+    """
+    images = tool_result_images(message)
+    if not images:
+        return []
+    return [
+        {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "Images from the tool results above:"}]
+            + [
+                {"type": "image", "data": image["data"], "mime_type": image["media_type"]}
+                for image in images
+            ],
+        }
+    ]
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -233,6 +254,7 @@ class GeminiProvider(BaseLLMProvider):
                             "is_error": block.data.get("is_error", False),
                             "name": call_id_to_name.get(call_id, ""),
                         })
+                steps.extend(_image_steps(message))
         return steps
 
     def _delta_messages_to_steps(
@@ -255,6 +277,7 @@ class GeminiProvider(BaseLLMProvider):
                             "is_error": block.data.get("is_error", False),
                             "name": call_id_to_name.get(call_id, ""),
                         })
+                steps.extend(_image_steps(message))
             elif message.role == "user":
                 text_parts = [
                     b.data.get("text", "")

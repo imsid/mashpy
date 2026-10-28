@@ -33,6 +33,9 @@ if TYPE_CHECKING:
     from ..memory.signals import SignalCollector
     from ..tools.registry import ToolRegistry
 
+# Tool-result images a request's context keeps; older ones become a note.
+MAX_CONTEXT_IMAGES = 3
+
 
 class TruncatedToolCallError(RuntimeError):
     """A ``max_tokens`` stop truncated the model mid-tool-call.
@@ -724,6 +727,7 @@ class Agent:
                 is_error=result.is_error,
                 metadata=result.metadata,
                 structured_output=result.structured_output,
+                images=[image.to_dict() for image in getattr(result, "images", None) or []],
             )
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             # Common errors from tool execution: wrong args, missing keys, etc.
@@ -761,6 +765,7 @@ class Agent:
             # Add tool results to context in proper format
             tool_result_blocks = [result.to_dict() for result in results]
             context.add_message(MessageRole.TOOL, tool_result_blocks)
+            context.drop_old_images(MAX_CONTEXT_IMAGES)
 
         return context
 

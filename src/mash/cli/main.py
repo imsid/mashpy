@@ -8,6 +8,7 @@ from typing import Callable, Sequence
 
 from mash import __version__, get_docs_url
 from mash.api.main import add_agent_serve_parser, add_serve_parser
+from mash.cli.browser import add_browser_parser
 from mash.cli.sandbox import add_sandbox_parser
 
 from .client import MashHostClient
@@ -325,6 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_agent_serve_parser(agent_subparsers)
 
     add_sandbox_parser(subparsers)
+    add_browser_parser(subparsers)
     return parser
 
 

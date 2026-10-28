@@ -161,6 +161,10 @@ class DockerEngine:
                 "POST", "/volumes/create", body={"Name": name, "Labels": labels}
             )
 
+    async def remove_volume(self, name: str) -> None:
+        # 404: already gone.
+        await self._call("DELETE", f"/volumes/{name}", allow=(404,))
+
     async def ensure_network(self, name: str, *, labels: dict[str, str]) -> None:
         response = await self._call("GET", f"/networks/{name}", allow=(404,))
         if response.status_code == 404:

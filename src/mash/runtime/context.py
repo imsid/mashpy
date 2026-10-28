@@ -268,6 +268,7 @@ def result_payloads_to_context_results(
                 content=str(result_payload.get("content") or ""),
                 is_error=bool(result_payload.get("is_error")),
                 metadata=result_metadata,
+                images=[dict(image) for image in result_payload.get("images") or []],
             )
         )
     return results

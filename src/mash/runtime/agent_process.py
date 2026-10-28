@@ -7,7 +7,9 @@ agent's token, and the host checks them against the request's host snapshot.
 When the host has sandboxes, every agent served here gets ``run_code``,
 ``sandbox_put`` and ``sandbox_get``, which act in the request user's sandbox
 through the host's ``/sandbox`` relay, unless its spec's ``enable_sandbox()``
-returns False. When
+returns False. When the host has browsers, an agent whose spec lists sites
+(``browser_sites()``) also gets the browser tools, which act in the request
+user's browser through the host's ``/browser`` relay. When
 the pool enables Cortex, it also gets read access to the request user's Cortex.
 The pool itself is never started in an agent process; it only supplies the
 agent's spec and the metadata of the agents it may call.
@@ -31,6 +33,9 @@ MASH_AGENT_TOKEN_ENV = "MASH_AGENT_TOKEN"
 MASH_HOST_API_URL_ENV = "MASH_HOST_API_URL"
 # Set to "1" by the host when it has sandboxes, so agents get the sandbox tools.
 MASH_SANDBOX_ENABLED_ENV = "MASH_SANDBOX_ENABLED"
+# Set to "1" by the host when it has browsers, so agents with sites get the
+# browser tools.
+MASH_BROWSER_ENABLED_ENV = "MASH_BROWSER_ENABLED"
 # The host's pid: an agent process stops when its host is gone.
 MASH_PARENT_PID_ENV = "MASH_PARENT_PID"
 
@@ -63,6 +68,7 @@ def build_agent_server(
     host_api_url: str,
     runtime_database_url: str | None = None,
     sandbox_tools: bool = False,
+    browser_tools: bool = False,
 ) -> AgentServer:
     """Build the ``AgentServer`` for one agent of ``pool``.
 
@@ -90,6 +96,8 @@ def build_agent_server(
     )
     if sandbox_tools and spec.enable_sandbox():
         server.runtime.enable_sandbox_tools(host_api_url=host_api_url, token=token)
+    if browser_tools and spec.browser_sites():
+        server.runtime.enable_browser_tools(host_api_url=host_api_url, token=token)
     if pool.cortex is not None:
         from mash.agents.cortex import CortexReader, CortexStore
         from mash.core.database import resolve_database_url
@@ -111,6 +119,10 @@ def resolve_host_api_url(explicit_value: str | None = None) -> str | None:
 
 def resolve_sandbox_enabled() -> bool:
     return os.environ.get(MASH_SANDBOX_ENABLED_ENV, "").strip() == "1"
+
+
+def resolve_browser_enabled() -> bool:
+    return os.environ.get(MASH_BROWSER_ENABLED_ENV, "").strip() == "1"
 
 
 def stop_with_parent() -> None:
@@ -136,11 +148,13 @@ __all__ = [
     "MASH_AGENT_TOKEN_ENV",
     "MASH_HOST_API_URL_ENV",
     "MASH_PARENT_PID_ENV",
+    "MASH_BROWSER_ENABLED_ENV",
     "MASH_SANDBOX_ENABLED_ENV",
     "HostRelay",
     "build_agent_server",
     "resolve_agent_token",
     "resolve_host_api_url",
+    "resolve_browser_enabled",
     "resolve_sandbox_enabled",
     "stop_with_parent",
 ]
