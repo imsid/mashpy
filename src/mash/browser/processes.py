@@ -80,6 +80,15 @@ def child_commands(layout: BrowserLayout, *, chromium: str) -> dict[str, list[st
             "--no-sandbox",
             "--no-first-run",
             "--no-default-browser-check",
+            # No banners about the build or the flags, no sign-in prompt, and
+            # less background traffic. Chromium still makes some calls of its
+            # own on a fresh profile (account check, push registration).
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync",
+            "--disable-default-apps",
+            "--test-type",
+            "--disable-infobars",
             "--disable-dev-shm-usage",
             f"--window-size={width},{height}",
             "--window-position=0,0",
