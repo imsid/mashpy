@@ -247,7 +247,7 @@ tools, it also needs a Docker daemon; it pulls Mash's sandbox image,
 `ghcr.io/imsid/mash-sandbox`, on first start. Without Docker the host still
 runs, and its agents get no sandbox tools. Agents whose specs list sites with
 `browser_sites()` also get the browser tools, and the host pulls Mash's browser
-image, `ghcr.io/imsid/mash-browser`, the first time one opens a page.
+image, `ghcr.io/imsid/mash-browser`, on first start too.
 
 ```bash
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
