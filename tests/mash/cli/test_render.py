@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from rich.console import Console
+from rich.theme import Theme
 
 from mash.cli.chain_renderer import ChainOfThoughtRenderer
 from mash.cli.render import RichRenderer
@@ -26,6 +27,15 @@ class RichRendererTests(unittest.TestCase):
         self.assertTrue(lines)
         self.assertTrue(any("Assistant" in line for line in lines))
         self.assertTrue(all(len(line) <= 80 for line in lines))
+
+    def test_link_stays_on_one_line_past_console_width(self) -> None:
+        console = Console(width=80, record=True, theme=Theme({"info": "bold cyan"}))
+        renderer = RichRenderer(console=console)
+        url = "http://127.0.0.1:8000/s/" + "a" * 120 + "/browser/"
+
+        renderer.link(f"  Open: {url}")
+
+        self.assertIn(url, console.export_text(styles=False).splitlines()[0])
 
 
 class ChainRendererTokenDisplayTests(unittest.TestCase):

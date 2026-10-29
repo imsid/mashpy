@@ -271,7 +271,7 @@ class MashRemoteShell:
 
         if interaction_type == "browser":
             url = str(payload.get("url") or "")
-            self.renderer.info(f"  Open: {url}")
+            self.renderer.link(f"  Open: {url}")
             with contextlib.suppress(Exception):
                 webbrowser.open(url)
             self.renderer.info('  Press Enter when you\'re done (or type "cancel")')

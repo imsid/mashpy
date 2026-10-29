@@ -167,7 +167,7 @@ def _run_view(args) -> int:
         return 1
     expires_at = int(time.time()) + DEFAULT_HANDOFF_SECONDS
     token = make_view_token(secret, args.user_id, "", expires_at)
-    renderer.info(f"{public_url.rstrip('/')}/s/{token}/browser/")
+    renderer.link(f"{public_url.rstrip('/')}/s/{token}/browser/")
     renderer.info(f"Valid for {DEFAULT_HANDOFF_SECONDS // 60} minutes.")
     return 0
 

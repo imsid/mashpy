@@ -784,9 +784,13 @@ class MashRemoteShellTests(unittest.TestCase):
         }
         with patch("builtins.input", return_value=typed), patch(
             "mash.cli.shell.webbrowser.open"
-        ) as opened, patch.object(shell.renderer, "info") as info:
+        ) as opened, patch.object(shell.renderer, "info") as info, patch.object(
+            shell.renderer, "link"
+        ) as link:
             shell.handle_interaction(shell.context, "req-1", payload, agent_id=agent_id)
-        printed = "\n".join(str(call.args[0]) for call in info.call_args_list)
+        printed = "\n".join(
+            str(call.args[0]) for call in info.call_args_list + link.call_args_list
+        )
         return cast(_FakeClient, shell.client).interactions, opened, printed
 
     def test_browser_handoff_prints_and_opens_the_link_then_answers_done(self) -> None:
