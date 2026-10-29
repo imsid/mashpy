@@ -20,6 +20,10 @@ class Renderer(Protocol):
         """Render informational text."""
         ...
 
+    def link(self, text: str) -> None:
+        """Render a line holding a link, never broken across lines."""
+        ...
+
     def warn(self, text: str) -> None:
         """Render warning text."""
         ...
@@ -75,6 +79,12 @@ class RichRenderer:
     def info(self, text: str) -> None:
         """Render informational text."""
         self._console.print(text, style="info")
+
+    def link(self, text: str) -> None:
+        """Render a line holding a link, never broken across lines."""
+        # Rich breaks long lines with real newlines, which breaks a URL for
+        # anyone copying it; soft wrapping leaves the wrapping to the terminal.
+        self._console.print(text, style="info", soft_wrap=True)
 
     def warn(self, text: str) -> None:
         """Render warning text."""

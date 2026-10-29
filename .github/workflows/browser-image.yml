@@ -1,0 +1,79 @@
+name: Browser image
+
+# Builds Dockerfile.browser and runs scripts/smoke_browser_image.py against it,
+# only when something the image or the smoke test depends on changes. The
+# release job runs the same smoke test before it publishes the image.
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile.browser
+      - src/mash/browser/**
+      - src/mash/api/routes/browser.py
+      - src/mash/sandbox/containers.py
+      - src/mash/sandbox/docker_engine.py
+      - src/mash/sandbox/provider.py
+      - pyproject.toml
+      - uv.lock
+      - scripts/smoke_browser_image.py
+      - .github/workflows/browser-image.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Dockerfile.browser
+      - src/mash/browser/**
+      - src/mash/api/routes/browser.py
+      - src/mash/sandbox/containers.py
+      - src/mash/sandbox/docker_engine.py
+      - src/mash/sandbox/provider.py
+      - pyproject.toml
+      - uv.lock
+      - scripts/smoke_browser_image.py
+      - .github/workflows/browser-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.browser
+          load: true
+          tags: mash-browser:ci
+          cache-from: type=gha,scope=browser-image
+          cache-to: type=gha,mode=max,scope=browser-image
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen --extra browser
+
+      # The live-view check opens the link in the runner's installed Chrome.
+      - name: Smoke test
+        run: uv run python scripts/smoke_browser_image.py mash-browser:ci

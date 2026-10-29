@@ -33,6 +33,7 @@ from .types import (
     LLMResponse,
     LLMTokenUsage,
     LLMToolDefinition,
+    tool_result_images,
 )
 from .utils import block_value
 
@@ -283,6 +284,24 @@ class OSSCompatibleProvider(BaseLLMProvider):
                         "role": "tool",
                         "tool_call_id": block.data.get("tool_call_id"),
                         "content": block.data.get("content", ""),
+                    }
+                )
+            images = tool_result_images(message)
+            if images:
+                # Chat Completions tool messages carry text only.
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Images from the tool results above:"}]
+                        + [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{image['media_type']};base64,{image['data']}"
+                                },
+                            }
+                            for image in images
+                        ],
                     }
                 )
         return messages

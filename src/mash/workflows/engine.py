@@ -223,6 +223,7 @@ async def _invoke_code_step(
         workflow_input=dict(workflow_input),
         attempt=_ATTEMPT,
         user_id=user_id,
+        browsers=getattr(require_runner(runner_id), "get_browsers", lambda: None)(),
     )
 
     async def _invoke() -> Any:

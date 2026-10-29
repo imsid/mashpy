@@ -14,6 +14,8 @@ from mash.skills.tool import SkillTool
 from ..core.agent import Agent
 from ..core.config import SystemPrompt
 from ..memory.signals import build_default_signal_collector
+from ..browser.sites import check_sites
+from ..tools.browser import browser_tool_names, build_browser_tools
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import InvokeSubagentTool
@@ -95,6 +97,25 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
         agent.tools.register(tool)
 
 
+def register_browser_tools(self: "AgentRuntime", agent: Agent) -> None:
+    """Register the browser tools, when the host has browsers and the spec lists sites."""
+    if self._browser_tools is None:
+        return
+    for name in browser_tool_names():
+        if name in agent.tools:
+            raise ValueError(
+                f"agent '{self.app_id}' registers its own '{name}' tool; the host "
+                "provides it on the request user's browser, so remove it from build_tools()"
+            )
+    try:
+        check_sites(self.definition.browser_sites())
+    except ValueError as exc:
+        raise ValueError(f"agent '{self.app_id}': {exc}") from exc
+    host_api_url, token = self._browser_tools
+    for tool in build_browser_tools(host_api_url=host_api_url, token=token):
+        agent.tools.register(tool)
+
+
 def build_agent_instance(
     self: "AgentRuntime",
     *,
@@ -129,6 +150,7 @@ def build_agent_instance(
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
     register_sandbox_tools(self, agent)
+    register_browser_tools(self, agent)
     if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
         agent.tools.register(SkillTool(skills))
     collector = getattr(self, "signal_collector", None)

@@ -102,7 +102,7 @@ sequenceDiagram
     Engine->>Agent: think (plan step)
     Agent-->>Engine: action + tool calls
 
-    opt interaction needed (approval or AskUser)
+    opt interaction needed (approval, AskUser or browser_handoff)
         Engine->>Events: append request.interaction.create
         Events-->>Server: SSE request.interaction.create
         Server-->>Client: SSE request.interaction.create
@@ -319,7 +319,7 @@ lifecycle.
   - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached
 
 - [`agent_process.py`](./agent_process.py)
-  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
+  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. With `browser_tools` (the host sets `MASH_BROWSER_ENABLED=1` when it has browsers) an agent whose spec lists `browser_sites()` also gets the browser tools (`mash.tools.browser`), and the engine turns its `browser_handoff` calls into `browser` interactions carrying a live-view link. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
   - `HostRelay`: the runtime's pool access in an agent process; subagent clients point at the host's `/h2a` relay
   - `stop_with_parent()`: an agent process shuts down when the host whose pid is in `MASH_PARENT_PID` exits
 

@@ -43,6 +43,9 @@ with. The same metadata becomes the delegation directory when an agent serves
 as a subagent, as [the composition post](composing-agents.md) covered.
 Every request acts for the user `mash connect` saved, and the code the agents
 run for that user runs in their own sandbox. `mash sandbox ls` lists the sandboxes.
+When you ask the guide about the published docs or the GitHub repository, it
+searches them in a Chromium the host starts for you on first
+use; `mash browser view <user_id>` prints a link to watch it.
 
 ## Compose a team
 

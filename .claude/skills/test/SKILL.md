@@ -35,6 +35,10 @@ Read the change before designing anything around it.
   `/home/agent/workspaces/<agent_id>`. Sandboxes run `mash-sandbox:pilot`,
   which compose builds from `Dockerfile.sandbox`. Users open what the code made
   at `http://127.0.0.1:8000/s/<link token>/...`.
+- The browser tools act in the browser of the request's user, a
+  `mash-browser-<key>` container the host starts on first use from
+  `mash-browser:pilot` (`Dockerfile.browser`). Only `pilot` has them, on
+  `https://imsid.github.io` and `https://github.com`.
 - Every request and every workflow run that reaches an agent carries a
   `user_id`. Pick distinct users per case when isolation matters.
 - Every pilot agent is named by the `guide` host or a workflow, so disabling
@@ -86,7 +90,8 @@ the secret. If `.env` lacks it, export one in the shell for the run
 docker compose -f docker-compose.pilot.yml up -d --build
 ```
 
-Building the images is heavy (two images, Node and mashpy's dependencies), and
+Building the images is heavy (three images, Node, Chromium and mashpy's
+dependencies), and
 on a laptop it competes with everything else Docker runs. Ask the user before
 the first build of a session, and mention other running stacks
 (`docker ps`) they may want to stop.
@@ -98,8 +103,15 @@ sandbox daemon, `Dockerfile.sandbox` or `run_code`'s promises about the image
 (their volumes, the users' files, are kept):
 
 ```bash
-docker compose -f docker-compose.pilot.yml up -d --build sandbox-image pilot
+docker compose -f docker-compose.pilot.yml up -d --build sandbox-image browser-image pilot
 docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)
+```
+
+Browsers likewise keep their image: remove them when the change reaches
+`src/mash/browser` or `Dockerfile.browser` (their profiles are kept):
+
+```bash
+docker rm -f $(docker ps -aq --filter label=mash.browser.user)
 ```
 
 The repo itself is mounted read-only at `/home/agent/mashpy` in the host and
@@ -204,6 +216,46 @@ multi-call tool loops reliably.
    - **Isolation**: `u-code-2` asking "list the files in your sandbox folder"
      sees none of `u-code-1`'s files.
 
+### Case: browser use
+
+Use this when a change touches the browser tools, the daemon, the relay, the
+live view or the browser image. Pilot searches public pages, so no sign-in is
+needed. Use a fresh user, so the case also covers starting the browser.
+
+1. Ask for a docs search and a summary:
+
+   ```bash
+   curl -s -X POST http://127.0.0.1:8000/api/v1/hosts/guide/request \
+     -H 'Content-Type: application/json' -d '{"session_id":"s-web-1","user_id":"u-web-1",
+     "message":"Search the Mash docs site for \"sandbox\" and summarize what the pages you find say. Cite their URLs."}'
+   ```
+
+   To watch it, run `mash browser view u-web-1` in the host container while
+   the request runs and open the link it prints.
+
+2. Verify, with criteria fixed before running:
+   - **Tools** (event log): `browser_navigate` to `https://imsid.github.io/mashpy/`,
+     then typing into the search box (`browser_type`, `browser_fill_form` or
+     `browser_press_key`), then `browser_snapshot` or a click on a result.
+     There are no `run_code` calls, and the last lifecycle event is
+     `runtime.request.completed`.
+   - **Browser** (CLI): `mash browser ls` shows a running browser for
+     `u-web-1` and none for users that have not browsed.
+   - **Answer**: it cites `https://imsid.github.io/mashpy/...` URLs that
+     return `200` with `curl`, and what it says about them is on those pages.
+   - **GitHub**: in the same session, "Search the GitHub issues of
+     imsid/mashpy for \"browser\" and summarize the open ones." gets
+     answered with issue or pull request numbers that
+     `gh issue view <n> -R imsid/mashpy` (or `gh pr view`) confirms.
+   - **Sites**: "Open https://example.com and tell me its title." gets a
+     tool error saying the origin is outside the sites the agent may open,
+     and no tool result in the event log holds that page's text.
+
+Signing in is out of this case, since it needs a person at the live view.
+To exercise `browser_handoff` by hand, ask pilot for a GitHub code search,
+which asks a signed-out browser to sign in. In the REPL, pilot gives you the
+live-view link and waits for Enter.
+
 ---
 
 ## Phase 5 — Diagnose failures by reading
@@ -212,7 +264,9 @@ A failure is a lead, not a verdict. Before reporting anything, find the
 mechanism in source: the mash code path, the server log
 (`docker compose -f docker-compose.pilot.yml logs pilot --tail 100`), the
 `[agent_id]` lines in it for one agent's process, the sandbox's own log
-(`docker logs mash-sandbox-<key>`), and where
+(`docker logs mash-sandbox-<key>`), the browser's
+(`docker logs mash-browser-<key>`, which holds Chromium's and Playwright MCP's
+output too), and where
 relevant the installed dependency itself, which is importable in the container:
 
 ```bash

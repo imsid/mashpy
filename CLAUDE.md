@@ -59,6 +59,12 @@ agent's and each sandbox's token.
   `enable_sandbox()`. An agent gets `sandbox_put` and `sandbox_get`, which copy
   files between its machine and the sandbox, only when its spec declares
   `sandbox_file_roots()`. Code runs as an `agent` user with a clean environment.
+- **Browser** — a Chromium per user, in its own container next to the user's
+  sandbox, whose profile keeps the sites the user signed in to. An agent whose
+  spec lists sites with `browser_sites()` gets the browser tools, which drive
+  it through the host on those sites only. When a site needs a sign-in, the
+  agent hands the browser to the user through a live-view link; Mash never
+  sees the password. Code in the sandbox has no route to the browser.
 - **Host** — an immutable composition over the pool (`host_id`, `primary`,
   `subagents`, `workflows`). The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
@@ -220,6 +226,7 @@ Optional overrides:
 | `enable_sandbox()` | `True` | Get the sandbox tools on a host with sandboxes |
 | `sandbox_file_roots()` | `[]` | Folders on the agent's machine that `sandbox_put`/`sandbox_get` may use; without any, the agent gets neither |
 | `sandbox_env()` | `{}` | `MASH_*` variables, as `SandboxVariable(value, description)`, that this agent's code sees in the sandbox |
+| `browser_sites()` | `[]` | Origins the agent may open in the user's browser, e.g. `https://*.example.com`; without any, the agent gets no browser tools |
 | `build_web_search()` | `None` | Web search provider (`web_search`/`web_fetch`); off until set |
 | `on_startup(runtime)` | No-op | Hook after runtime init, in the agent's process |
 | `on_shutdown(runtime)` | No-op | Hook before cleanup, in the agent's process |
@@ -425,6 +432,43 @@ class AnalystAgent(AgentSpec):
 The tools reach the host's `/sandbox` relay with the agent's token and the
 request id, and the host picks the user. A spec that registers its own tool
 with one of these names fails at startup on a host with sandboxes.
+
+### Browser tools
+
+The browser tools also come from the host. On a host with browsers (a Docker
+daemon, and some agent listing sites), an agent whose spec returns origins
+from `browser_sites()` gets them. They act in the browser of the user the
+request acts for, in a tab of the request's own:
+
+- Playwright MCP's page tools under their own names: `browser_navigate`,
+  `browser_navigate_back`, `browser_snapshot` (the page as an accessibility
+  tree with a ref on each element), `browser_find`, `browser_click`,
+  `browser_hover`, `browser_type`, `browser_fill_form`,
+  `browser_select_option`, `browser_press_key`, `browser_handle_dialog`,
+  `browser_wait_for`, `browser_tabs`, `browser_take_screenshot` (an image the
+  model sees), `browser_mouse_click_xy` and `browser_mouse_wheel`. Page text
+  comes back between `<web-content>` tags, as data from the site.
+- `browser_save(download_id, path)` copies a download into the agent's sandbox
+  folder, for `run_code`; `browser_upload(target, element, path)` gives a file
+  from that folder to a file input.
+- `browser_handoff(reason)` pauses the request on a `browser` interaction whose
+  payload carries `url`, a live view of the browser, and `expires_at`. The
+  user signs in there and answers `done` (the REPL opens the link and waits for
+  Enter; an app shows the link and posts the answer). The profile keeps the
+  session for later requests. In a workflow run it fails at once.
+
+```python
+class BillingAgent(AgentSpec):
+    def browser_sites(self):
+        return ["https://*.pge.com"]
+```
+
+A URL outside the sites fails, and a click or redirect that leaves them goes
+back without showing the page. List the sign-in pages the sites redirect to as
+well. The browser is shared by every agent acting for the user, so list only
+what the agent's job needs. Workflow code drives the same browser with
+Playwright through `ctx.browser()` (`pip install 'mashpy[browser]'`). Apps list
+and clear a user's signed-in sites under `/api/v1/browser/users/{user_id}`.
 
 ### Web Search
 
@@ -777,6 +821,13 @@ mash sandbox shell <user_id> --agent <id>   # bash as `agent` in that agent's fo
 mash sandbox stop <user_id>                 # stop it now; the volume is kept
 ```
 
+Browsers run `ghcr.io/imsid/mash-browser:<mashpy version>`
+(`MASH_BROWSER_IMAGE` names another), stop after `MASH_BROWSER_IDLE_SECONDS`
+(default 900) and are capped at `MASH_BROWSER_MAX_RUNNING` (default 10). A
+handoff's link lasts `MASH_BROWSER_HANDOFF_SECONDS` (default 900) and uses
+`MASH_PUBLIC_URL`. `mash browser ls`, `mash browser view <user_id>` (a
+live-view link) and `mash browser stop <user_id>` manage them.
+
 For full deployment instructions (compose file, server deployment, the
 environment reference, and external API access), see
 [how-to-deploy.md](docs/posts/how-to-deploy.md).
@@ -807,5 +858,6 @@ on a specific subsystem:
 - [API server](https://github.com/imsid/mashpy/blob/main/src/mash/api/README.md)
 - [CLI](https://github.com/imsid/mashpy/blob/main/src/mash/cli/README.md)
 - [Memory](https://github.com/imsid/mashpy/blob/main/src/mash/memory/README.md)
+- [Browser](https://github.com/imsid/mashpy/blob/main/src/mash/browser/README.md)
 - [MCP integration](https://github.com/imsid/mashpy/blob/main/src/mash/mcp/README.md)
 - [Cortex](https://github.com/imsid/mashpy/blob/main/src/mash/agents/cortex/README.md)

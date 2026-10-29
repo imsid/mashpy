@@ -12,12 +12,14 @@ from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
 from mash.agents.masher import EVAL_AGENT_ID, EVAL_JUDGE_AGENT_ID
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
+from mash.browser.manager import BrowserManager
 from mash.sandbox.manager import SandboxManager
+from mash.testing.browsers import LocalBrowserProvider
 from mash.testing.sandboxes import LocalSandboxProvider
 from mash.workflows import StepContext
 from pilot.catalog._base import APP_NAME, REPO_ROOT
 from pilot.catalog.agents.builder import BUILDER_AGENT_ID
-from pilot.catalog.agents.pilot import PILOT_AGENT_ID, PilotSpec
+from pilot.catalog.agents.pilot import BROWSER_SITES, PILOT_AGENT_ID, PilotSpec
 from pilot.catalog.workflows.changelog import (
     CHANGELOG_AGENT_ID,
     CHANGELOG_WORKFLOW_ID,
@@ -88,13 +90,17 @@ def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
             asyncio.run(pool.close())
 
 
-def test_agents_get_sandbox_tools() -> None:
+def test_agents_get_sandbox_and_browser_tools() -> None:
     with _keyless_models():
 
         async def _run() -> None:
             pool = build_pool()
             pool.configure_runtime_database_url("postgresql://test/runtime")
             pool.configure_sandboxes(SandboxManager(LocalSandboxProvider()))
+            assert pool.wants_browsers()
+            pool.configure_browsers(
+                BrowserManager(LocalBrowserProvider(), host_secret="local-agents")
+            )
             await pool.start()
             try:
                 guide = _agent_runtime(pool, PILOT_AGENT_ID)
@@ -103,6 +109,8 @@ def test_agents_get_sandbox_tools() -> None:
                 guide_tools = set(guide.agent.tools.list_tools())
                 assert {"AskUser", "run_code"} <= guide_tools
                 assert not {"sandbox_put", "sandbox_get"} & guide_tools
+                # Only the guide lists sites, so only it drives the browser.
+                assert {"browser_navigate", "browser_snapshot", "browser_handoff"} <= guide_tools
                 turn_agent = guide.build_turn_agent(
                     session_id="s-1",
                     trace_id="trace-1",
@@ -115,6 +123,7 @@ def test_agents_get_sandbox_tools() -> None:
 
                 builder = _agent_runtime(pool, BUILDER_AGENT_ID)
                 assert "Skill" in builder.agent.tools
+                assert "browser_navigate" not in builder.agent.tools
                 assert sorted(s.name for s in builder.agent.skills.list_skills()) == [
                     "build-mash-agent",
                     "build-mash-host",
@@ -137,6 +146,20 @@ def test_guide_prompt_points_at_the_mounted_repo_and_the_builder() -> None:
     assert str(REPO_ROOT) in prompt
     assert "`builder`" in prompt
     assert "`CLAUDE.md`" in prompt
+    assert "https://imsid.github.io/mashpy/" in prompt
+    assert "https://github.com/imsid/mashpy" in prompt
+
+
+def test_guide_opens_only_the_docs_site_and_github() -> None:
+    from mash.browser.sites import check_sites, url_allowed
+
+    sites = PilotSpec().browser_sites()
+    assert sites == list(BROWSER_SITES)
+    check_sites(sites)
+    assert url_allowed("https://imsid.github.io/mashpy/search/?q=sandbox", sites)
+    assert url_allowed("https://github.com/imsid/mashpy/issues?q=browser", sites)
+    assert url_allowed("https://github.com/login", sites)
+    assert not url_allowed("https://example.com/", sites)
 
 
 def test_read_changelog_slices_the_latest_release() -> None:

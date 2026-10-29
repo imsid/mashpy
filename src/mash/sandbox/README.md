@@ -72,6 +72,9 @@ in its token.
   `MASH_SANDBOX_MAX_RUNNING` (default 20) running, stopping the least recently
   used idle one to make room or raising `SandboxCapacityError` when all are
   busy. After a host restart, running sandboxes count as active from then.
+- `containers.py`: `ContainerManager`, that lifecycle on its own, shared with
+  the browsers' `BrowserManager` (`mash.browser`). `hold(user_id)` keeps a
+  container counted as in use for the length of a block.
 - `docker_engine.py`: the minimal async Docker Engine API client over the Unix
   socket (`DOCKER_HOST`, `/var/run/docker.sock`, or Docker Desktop's
   `~/.docker/run/docker.sock`).

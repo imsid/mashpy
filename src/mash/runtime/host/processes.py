@@ -31,6 +31,7 @@ from ..agent_process import (
     MASH_AGENT_TOKEN_ENV,
     MASH_HOST_API_URL_ENV,
     MASH_PARENT_PID_ENV,
+    MASH_BROWSER_ENABLED_ENV,
     MASH_SANDBOX_ENABLED_ENV,
 )
 from .tokens import MASH_HOST_SECRET_ENV, derive_agent_token
@@ -106,6 +107,7 @@ class AgentProcessProvider:
         host_secret: str,
         host_api_url: str,
         sandboxes: bool = False,
+        browsers: bool = False,
         environ: Mapping[str, str] | None = None,
         health_timeout: float = 120.0,
         stop_timeout: float = 10.0,
@@ -118,6 +120,7 @@ class AgentProcessProvider:
         self._host_secret = host_secret
         self._host_api_url = host_api_url
         self._sandboxes = sandboxes
+        self._browsers = browsers
         self._environ = {
             key: value
             for key, value in (os.environ if environ is None else environ).items()
@@ -182,6 +185,7 @@ class AgentProcessProvider:
             MASH_AGENT_TOKEN_ENV: child.token,
             MASH_HOST_API_URL_ENV: self._host_api_url,
             MASH_SANDBOX_ENABLED_ENV: "1" if self._sandboxes else "0",
+            MASH_BROWSER_ENABLED_ENV: "1" if self._browsers else "0",
             MASH_PARENT_PID_ENV: str(os.getpid()),
         }
 

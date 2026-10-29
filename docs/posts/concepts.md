@@ -24,9 +24,13 @@ A shell is a local tool with a wider reach than the rest. The model writes each 
 
 An isolated environment where the code a model writes runs, typically a container or virtual machine with its own filesystem. It is kept apart from the agent's credentials, the application's data, and other users' work, and commands in it run as an unprivileged user. Files the model writes persist in the sandbox, so later steps and later sessions can build on them. A platform can give each user their own sandbox, start a fresh one per session, or share one across an agent's users. In Mash, each user gets their own sandbox, with a folder per agent.
 
+### Browser
+
+A web browser the agent drives through tools: it opens pages, reads them, clicks, types and downloads files. Most agent browsers read a page as its accessibility tree, a text outline of the page's elements, and some also look at screenshots. The browser's profile keeps cookies, so a site the user signed in to stays signed in for later tasks. That makes the profile a credential, and platforms keep it apart from the code the model writes and limit which sites an agent may open. A site that needs a sign-in is usually handed to the person, who signs in through a view of the same browser. In Mash, each user gets their own browser, shared by the agents acting for them.
+
 ### User
 
-The person an agent works for in a given request. The application identifies the user, and that identity decides what the request can reach: the user's past conversations, their memory, and their sandbox. When one agent delegates to another, the delegate works for the same user. In Mash, every request carries a `user_id`.
+The person an agent works for in a given request. The application identifies the user, and that identity decides what the request can reach: the user's past conversations, their memory, their sandbox and their browser. When one agent delegates to another, the delegate works for the same user. In Mash, every request carries a `user_id`.
 
 ### Skill
 

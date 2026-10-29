@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 from pydantic import BaseModel
 
@@ -18,7 +19,8 @@ class StepContext:
     with external effects can build its own idempotency key (e.g.
     ``f"{ctx.run_id}:{ctx.step_id}"``). The framework never invents one.
     ``user_id`` is the user the run acts for; a step that submits agent
-    requests submits them for this user.
+    requests submits them for this user. ``browser()`` opens that user's
+    browser.
     """
 
     run_id: str
@@ -26,6 +28,44 @@ class StepContext:
     workflow_input: dict[str, Any]
     attempt: int = 1
     user_id: str | None = None
+    # The host's BrowserManager, when it has browsers.
+    browsers: Any = field(default=None, repr=False, compare=False)
+
+    @contextlib.asynccontextmanager
+    async def browser(self) -> AsyncIterator[Any]:
+        """A Playwright ``BrowserContext`` in the run user's browser.
+
+        It is the user's profile, signed in wherever the user is. Pages the
+        block opens close when it ends, and the connection drops; the browser
+        keeps running. Needs Playwright (``pip install 'mashpy[browser]'``).
+        """
+        if self.browsers is None:
+            raise RuntimeError("this host has no browsers")
+        if not self.user_id:
+            raise RuntimeError("ctx.browser() needs a run that acts for a user")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise RuntimeError(
+                "ctx.browser() needs Playwright: pip install 'mashpy[browser]'"
+            ) from exc
+        async with self.browsers.hold(self.user_id) as endpoint:
+            url = endpoint.base_url.replace("http://", "ws://", 1) + "/cdp"
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.connect_over_cdp(
+                    url, headers={"Authorization": f"Bearer {endpoint.token}"}
+                )
+                context = browser.contexts[0]
+                opened: list[Any] = []
+                # Playwright wraps handlers, which a builtin method cannot take.
+                context.on("page", lambda page: opened.append(page))
+                try:
+                    yield context
+                finally:
+                    for page in opened:
+                        with contextlib.suppress(Exception):
+                            await page.close()
+                    await browser.close()
 
 
 @dataclass(frozen=True, init=False)

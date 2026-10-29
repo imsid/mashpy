@@ -1,8 +1,9 @@
 """Agents on localhost ports in this process, for tests.
 
 ``LocalAgentProvider`` runs each agent's ``AgentServer`` in this process on
-its own ``127.0.0.1`` port, and a host relay (``/h2a`` and ``/sandbox``) on
-another, so every request, subagent call, workflow step and sandbox call takes the
+its own ``127.0.0.1`` port, and a host relay (``/h2a``, ``/sandbox`` and
+``/browser``) on another, so every request, subagent call, workflow step,
+sandbox and browser call takes the
 same HTTP path as with agent processes. The servers share the pool's stores,
 standing in for the shared Postgres.
 """
@@ -18,6 +19,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from mash.api.routes.common import AppRuntimeState
+from mash.api.routes.browser import build_browser_link_router, build_browser_router
 from mash.api.routes.h2a import build_h2a_router
 from mash.api.routes.sandbox import build_link_router, build_sandbox_router
 from mash.runtime.agent_process import HostRelay
@@ -87,6 +89,9 @@ class LocalAgentProvider:
         )
         if self._pool.get_sandboxes() is not None:
             runtime.enable_sandbox_tools(host_api_url=relay_url, token=token)
+        browsers = getattr(self._pool, "get_browsers", lambda: None)()
+        if browsers is not None and spec.browser_sites():
+            runtime.enable_browser_tools(host_api_url=relay_url, token=token)
         server = AgentServer(runtime, token=token)
         self.agent_servers[agent_id] = server
         uvicorn_server, task, port = await self._serve(server.app)
@@ -119,6 +124,8 @@ class LocalAgentProvider:
                 relay.include_router(build_h2a_router())
                 relay.include_router(build_sandbox_router())
                 relay.include_router(build_link_router())
+                relay.include_router(build_browser_router())
+                relay.include_router(build_browser_link_router())
                 relay.state.runtime_state = AppRuntimeState(
                     pool=self._pool,
                     api_event_store=None,

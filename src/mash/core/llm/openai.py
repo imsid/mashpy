@@ -248,11 +248,21 @@ class OpenAIProvider(BaseLLMProvider):
                         }
                     )
                 elif block.type == "tool_result":
+                    output: Any = block.data.get("content", "")
+                    images = block.data.get("images") or []
+                    if images:
+                        output = [{"type": "input_text", "text": output or "(image)"}] + [
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{image['media_type']};base64,{image['data']}",
+                            }
+                            for image in images
+                        ]
                     items.append(
                         {
                             "type": "function_call_output",
                             "call_id": block.data.get("tool_call_id"),
-                            "output": block.data.get("content", ""),
+                            "output": output,
                         }
                     )
         return items

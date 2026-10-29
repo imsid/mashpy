@@ -123,6 +123,19 @@ class AgentSpec(ABC):
         """
         return {}
 
+    def browser_sites(self) -> List[str]:
+        """The sites this agent may open in the request user's browser.
+
+        Empty by default, and then the agent gets no browser tools. Each entry
+        is an origin, such as ``https://example.com``, whose host may start
+        with ``*.`` to match the domain and its subdomains
+        (``https://*.example.com``); ``"*"`` allows every site. List the sign-in
+        pages the sites send users to as well. The browser holds the user's
+        signed-in sessions, shared by every agent acting for them, so list
+        only the sites this agent's job needs.
+        """
+        return []
+
     def build_web_search(self) -> WebSearchProvider | None:
         """Web search provider backing `web_search`/`web_fetch`.
 

@@ -1,7 +1,8 @@
 """Pilot — the Mash codebase guide.
 
-It answers from the mashpy checkout mounted read-only in every sandbox, and
-hands work that builds a Mash app to the builder subagent.
+It answers from the mashpy checkout mounted read-only in every sandbox, looks
+things up on the published docs site and the GitHub repository in the user's
+browser, and hands work that builds a Mash app to the builder subagent.
 """
 
 from __future__ import annotations
@@ -16,6 +17,11 @@ from mash.tools.registry import ToolRegistry
 from ..._base import APP_NAME, REPO_ROOT, build_primary_llm
 
 PILOT_AGENT_ID = "pilot"
+
+# The sites pilot may open in the user's browser.
+DOCS_SITE = "https://imsid.github.io/mashpy/"
+GITHUB_REPO = "https://github.com/imsid/mashpy"
+BROWSER_SITES = ("https://imsid.github.io", "https://github.com")
 
 # Where things are documented. Paths only: the guide reads what it needs.
 DOC_MAP = (
@@ -48,6 +54,13 @@ How to answer:
 - Cite the files you relied on as `path:line`.
 - Keep answers concise and grounded in what the code does today.
 
+The published docs site is {DOCS_SITE} and the repository is {GITHUB_REPO}.
+Open them with the browser tools when the user asks about the site or GitHub:
+what the published docs say, or the issues, pull requests and discussions.
+Search with the site's own search box or GitHub's search, read the result
+pages with `browser_snapshot`, and cite the URLs of the pages you read. Answer
+questions about the code from the checkout, not the browser.
+
 When the user asks you to analyse data or make a page, chart or file, write and
 run the code with `run_code` in your own folder, and give the user the link
 your code prints.
@@ -77,6 +90,9 @@ class PilotSpec(AgentSpec):
     def build_skills(self) -> SkillRegistry:
         return SkillRegistry()
 
+    def browser_sites(self) -> list[str]:
+        return list(BROWSER_SITES)
+
     def build_llm(self) -> LLMProvider:
         return build_primary_llm(PILOT_AGENT_ID)
 
@@ -101,6 +117,7 @@ def build_metadata() -> AgentMetadata:
         capabilities=[
             "Mash codebase questions",
             "reading source, docs and git history",
+            "searching the docs site and the GitHub repository",
         ],
         usage_guidance=(
             "Default entry point for questions about how Mash works. Delegates "

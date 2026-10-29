@@ -18,8 +18,8 @@ Postgres.
 
 You author two things. A workflow is the pipeline itself, the shape of the
 automation as code. An agent is an LLM loop running inside a harness that gives
-it tools, skills, memory, a sandbox for the code it writes, and a durable
-request lifecycle. An agent serves user requests directly, runs as a step
+it tools, skills, memory, a sandbox for the code it writes, a browser for the
+sites it works on, and a durable request lifecycle. An agent serves user requests directly, runs as a step
 inside a workflow, or both. Either way, it works for a user.
 
 ## Workflows
@@ -68,21 +68,25 @@ request ────────► │   │     Agent Loop        │ ──�
                   │   └─ tools ───── skills ──┘  structured │
 workflow step ──► │      │ ▲                      output    │
 (api/cli)         │      │ │ user interaction               │
-                  │      │ ▼ (approval / ask-user)          │
+                  │      │ ▼ (approval / ask-user /         │
+                  │      │    browser sign-in)              │
                   │      │                                  │
                   │      │  resumable · replayable          │
                   └──────┼──────────────────────────────────┘
-                         │ run_code
-                         ▼
-                  ┌─────────────────────────────────────────┐
-                  │  Sandbox: one container per user        │
-                  │  /home/agent/workspaces/<agent_id>      │
-                  │  files persist · no secrets · no db     │
-                  └─────────────────────────────────────────┘
+                         ├────────────────────────────┐
+                         │ run_code                   │ browser_*
+                         ▼                            ▼
+                  ┌──────────────────────────┐ ┌──────────────────────────┐
+                  │  Sandbox: one per user   │ │  Browser: one per user   │
+                  │  workspaces/<agent_id>   │ │  Chromium with a profile │
+                  │  files persist           │ │  listed sites only       │
+                  │  no secrets · no db      │ │  sign-in via live view   │
+                  └──────────────────────────┘ └──────────────────────────┘
 ```
 
 A request from a user and a step in a workflow ride the same durable loop, and
-the code either one runs lands in the sandbox of the user it acts for.
+the code either one runs lands in the sandbox of the user it acts for. An agent
+that lists sites drives that user's browser.
 
 ## Sandboxes
 
@@ -106,6 +110,29 @@ and the database stay with the host.
 Each agent runs as a process of the host, with its credentials, its model
 connection, and the tools you registered. Those tools run in that process,
 and the code the model writes goes to the sandbox.
+
+## Browsers
+
+Some work only happens in a website: downloading a bill from a utility's
+portal, checking an order's status, filling in a form. Mash gives each user a
+browser for it, a Chromium in a container of its own next to the user's
+sandbox. Its profile keeps the sites the user signed in to, and every agent
+acting for that user shares it.
+
+An agent gets the browser tools when its spec lists sites with
+`browser_sites()`, such as `https://*.example.com`. The tools are Playwright
+MCP's page tools: the model reads the page as an accessibility tree, clicks,
+types, and takes screenshots it can see. A URL outside the listed sites fails,
+and a click that leaves them goes back without showing the page. Downloads
+can be copied into the sandbox, where the agent's code reads them.
+
+When a site needs a sign-in, the agent calls `browser_handoff`. The request
+pauses on a durable interaction whose payload carries a live-view link to the
+browser. The user opens it, signs in, and answers `done`; the REPL opens the
+link and waits for Enter, and an app shows it and posts the answer. Mash never
+sees the password, and the profile keeps the session for later requests. Code
+in the sandbox has no route to the browser, so the user's signed-in sessions
+stay out of reach of the code the model writes.
 
 ## The pool and hosts
 
@@ -131,6 +158,7 @@ flowchart TD
     P --> W1["Workflow: research-brief"]
     A1 -- "run_code" --> S["Sandboxes<br/>one per user"]
     A2 -- "run_code" --> S
+    A1 -- "browser_*" --> B["Browsers<br/>one per user"]
 ```
 
 ## The execution surface

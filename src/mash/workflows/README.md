@@ -93,6 +93,24 @@ submits for it, and a code step that submits its own agent requests passes
 `ctx.user_id` to `post_inline_agent_request`. Those requests' code runs in that
 user's sandbox. A resumed run keeps its user.
 
+On a host with browsers, a code step drives the run user's browser with
+`ctx.browser()`, an async context manager that yields a Playwright
+`BrowserContext` over CDP (`pip install 'mashpy[browser]'`). It is the user's
+profile, signed in wherever the user is, with no site list: workflow code is
+the app's own. Pages the block opens close when it ends. A known flow can run
+here and fall back to an `AgentStep` with browser tools when the page has
+changed. An agent step that needs a sign-in fails at once, since nobody is
+watching the run; an interactive request does the sign-in, and the next run
+uses the session.
+
+```python
+async def fetch_bill(inp: BillIn, ctx: StepContext) -> BillOut:
+    async with ctx.browser() as browser:
+        page = await browser.new_page()
+        await page.goto("https://www.pge.com/myaccount/billing")
+        ...
+```
+
 An orchestration CodeStep is replayed as part of the parent workflow and is not
 memoized as one opaque DBOS step. Use it only for dynamic orchestration, keep
 child starts serial and deterministic, and record per-item progress under stable

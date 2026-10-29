@@ -24,6 +24,7 @@ from .steps import (
     commit_request_step,
     complete_request,
     emit_interaction_ack,
+    end_browser_handoff,
     fail_request,
     finalize_structured_output,
     is_interaction_cancel_sentinel,
@@ -33,6 +34,7 @@ from .steps import (
     plan_request_step,
     run_step_tool_batch,
     run_step_tool_call,
+    start_browser_handoff,
     start_request_trace,
 )
 
@@ -44,6 +46,8 @@ def workflow_id_for(agent_id: str, request_id: str) -> str:
 def _interaction_timeout_default(interaction_type: str) -> Any:
     if interaction_type == "approval":
         return "deny"
+    if interaction_type == "browser":
+        return "cancel"
     if interaction_type == "choice":
         return []
     return ""
@@ -61,6 +65,7 @@ async def _run_interaction(
     options: list[str] | None,
     timeout_seconds: int,
     step_prefix: str,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[str, Any, bool]:
     """Create an interaction, wait for a response, retrying past a cancel.
 
@@ -88,6 +93,7 @@ async def _run_interaction(
             prompt=prompt,
             options=options,
             timeout_seconds=timeout_seconds,
+            extra=extra,
         )
         response = await DBOS.recv_async(
             interaction_id, timeout_seconds=timeout_seconds
@@ -178,6 +184,80 @@ async def _handle_ask_user_interaction(
     }
 
 
+async def _handle_browser_handoff(
+    agent_id: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    workflow_state: dict[str, Any],
+    *,
+    tool_call: dict[str, Any],
+    loop_index: int,
+    call_index: int,
+) -> dict[str, Any]:
+    """Intercept browser_handoff: a live-view link, then a durable interaction.
+
+    The host mints the link in a checkpointed step, so a replay hands the user
+    the same one. The request waits for ``done`` or ``cancel``; ending the
+    handoff revokes the link and returns the page as the user left it.
+    """
+    arguments = dict(tool_call.get("arguments") or {})
+    reason = str(arguments.get("reason") or "The page needs you.").strip()
+    started = await DBOS.run_step_async(
+        {"name": f"browser.handoff.start.{loop_index}.{call_index}"},
+        start_browser_handoff,
+        agent_id,
+        request_id,
+    )
+    metadata: dict[str, Any] = {}
+    images: list[dict[str, Any]] = []
+    if "error" in started:
+        content, is_error = str(started["error"]), True
+    else:
+        interaction_id, response, timed_out = await _run_interaction(
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            loop_index=loop_index,
+            interaction_type="browser",
+            prompt=reason,
+            options=None,
+            timeout_seconds=int(started.get("timeout_seconds") or 900),
+            step_prefix=f"browser.handoff.{call_index}",
+            extra={"url": started["url"], "expires_at": started["expires_at"]},
+        )
+        page = await DBOS.run_step_async(
+            {"name": f"browser.handoff.end.{loop_index}.{call_index}"},
+            end_browser_handoff,
+            agent_id,
+            request_id,
+        )
+        metadata = {"interaction_id": interaction_id, "timed_out": timed_out}
+        if response == "done" and not timed_out:
+            content = f"The user is done in the browser. The page now:\n{page.get('content') or ''}"
+            is_error = bool(page.get("is_error"))
+            images = list(page.get("images") or [])
+        elif timed_out:
+            content, is_error = "The user did not finish in the browser before the link expired.", True
+        else:
+            content, is_error = "The user cancelled the handoff.", True
+    result: dict[str, Any] = {"content": content, "is_error": is_error, "metadata": metadata}
+    if images:
+        result["images"] = images
+    result_payload = {
+        "tool_call_id": tool_call.get("id", ""),
+        "tool_name": "browser_handoff",
+        "duration_ms": 0,
+        "result": result,
+    }
+    return {
+        **workflow_state,
+        "result_payloads": list(workflow_state.get("result_payloads") or [])
+        + [result_payload],
+    }
+
+
 async def _run_tool_call_for_workflow(
     agent_id: str,
     request_id: str,
@@ -198,6 +278,17 @@ async def _run_tool_call_for_workflow(
             workflow_state,
             tool_call=tool_call,
             loop_index=loop_index,
+        )
+    if str(tool_call.get("name") or "") == "browser_handoff":
+        return await _handle_browser_handoff(
+            agent_id,
+            request_id,
+            session_id,
+            trace_id,
+            workflow_state,
+            tool_call=tool_call,
+            loop_index=loop_index,
+            call_index=call_index,
         )
     # InvokeSubagent runs as an ordinary step. Its subagent request id is fixed
     # by this call's position, so a replay or retry resubmits the same id and

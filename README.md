@@ -33,6 +33,12 @@ standardizes interactions between user applications and agents.
   databases persist across requests, and only that user's files: the agents'
   secrets and the database stay with the host. Pages, files and servers the
   code makes open at links the host serves.
+- **Browsers**: each user also gets a browser, a Chromium in its own container
+  whose profile keeps the sites the user signed in to. An agent that lists
+  sites drives it with Playwright MCP's page tools, on those sites only. When a
+  site needs a sign-in, the agent hands the browser to the user through a
+  live-view link, and the profile keeps the session for later requests. Mash
+  never sees the password, and code in the sandbox has no route to the browser.
 - **Frontier and open-source models**: built-in adapters for Anthropic, OpenAI,
   and Gemini, and any open-source model served over a Chat Completions endpoint,
   self-hosted with vLLM or Ollama or hosted on OpenRouter. Each agent picks its
@@ -64,21 +70,25 @@ request ────────► │   │     Agent Loop        │ ──�
                   │   └─ tools ───── skills ──┘  structured │
 workflow step ──► │      │ ▲                      output    │
 (api/cli)         │      │ │ user interaction               │
-                  │      │ ▼ (approval / ask-user)          │
+                  │      │ ▼ (approval / ask-user /         │
+                  │      │    browser sign-in)              │
                   │      │                                  │
                   │      │  resumable · replayable          │
                   └──────┼──────────────────────────────────┘
-                         │ run_code
-                         ▼
-                  ┌─────────────────────────────────────────┐
-                  │  Sandbox: one container per user        │
-                  │  /home/agent/workspaces/<agent_id>      │
-                  │  files persist · no secrets · no db     │
-                  └─────────────────────────────────────────┘
+                         ├────────────────────────────┐
+                         │ run_code                   │ browser_*
+                         ▼                            ▼
+                  ┌──────────────────────────┐ ┌──────────────────────────┐
+                  │  Sandbox: one per user   │ │  Browser: one per user   │
+                  │  workspaces/<agent_id>   │ │  Chromium with a profile │
+                  │  files persist           │ │  listed sites only       │
+                  │  no secrets · no db      │ │  sign-in via live view   │
+                  └──────────────────────────┘ └──────────────────────────┘
 ```
 
 A request from a user and a step in a workflow ride the same durable loop, and
-the code either one runs lands in the sandbox of the user it acts for.
+the code either one runs lands in the sandbox of the user it acts for. An agent
+that lists sites drives that user's browser.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
 at each capability, and the [product brief](docs/posts/product-brief.md) for
@@ -285,7 +295,9 @@ MASH_HOST_SECRET=...   # openssl rand -hex 32
 The host runs each agent as its own subprocess. For agents to get the sandbox
 tools, it also needs a Docker daemon; it pulls Mash's sandbox image,
 `ghcr.io/imsid/mash-sandbox`, on first start. Without Docker the host still
-runs, and its agents get no sandbox tools.
+runs, and its agents get no sandbox tools. Agents whose specs list sites with
+`browser_sites()` also get the browser tools, and the host pulls Mash's browser
+image, `ghcr.io/imsid/mash-browser`, the first time one opens a page.
 
 ```bash
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
@@ -316,10 +328,11 @@ mash repl --host assistant
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
 | **Pool** | The deployed pool of role-less agents the API server runs; each agent runs as a subprocess of the host |
-| **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory and sandbox |
+| **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory, sandbox and browser |
 | **Sandbox** | A container per user where agents' code runs, holding that user's workspaces and nothing else |
+| **Browser** | A Chromium per user, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
-| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `run_code` and `edit_file` when it has sandboxes, and `sandbox_put` and `sandbox_get` for specs that declare file roots |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
@@ -344,8 +357,8 @@ generation API, or public sharing surface. See
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
 shipped in this repo at [`src/pilot/`](src/pilot/). Its `pilot` agent answers
-questions from the source, and its `builder` agent builds Mash apps in the
-user's sandbox. It also ships the `pilot-changelog` workflow. Run it from a checkout,
+questions from the source and searches the docs site and GitHub in the user's
+browser, and its `builder` agent builds Mash apps in the user's sandbox. It also ships the `pilot-changelog` workflow. Run it from a checkout,
 with `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `MASH_HOST_SECRET` in `.env`:
 
 ```bash
@@ -372,7 +385,7 @@ scaffolding from the REPL.
 - [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
 - [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
 - [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem
-- [Deployment guide](docs/posts/how-to-deploy.md): agent processes, sandboxes, Docker, the host on a server
+- [Deployment guide](docs/posts/how-to-deploy.md): agent processes, sandboxes, browsers, Docker, the host on a server
 - [Building agent CLIs](docs/posts/building-agent-clis.md) — custom CLI development
 - [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
 - [Package overview](src/mash/README.md) — subsystem boundaries and module guides

@@ -15,13 +15,20 @@
 #           servers in a sandbox are served under 127.0.0.1:8000/s/.
 #   sandbox-image — builds mash-sandbox:pilot from Dockerfile.sandbox, the
 #           image every sandbox runs, then exits.
+#   browser-image — builds mash-browser:pilot from Dockerfile.browser, the
+#           image of the browser the host starts per user (mash-browser-<key>)
+#           when the guide opens the docs site or GitHub, then exits. See
+#           `mash browser ls`; `mash browser view <user_id>` gives a link to
+#           watch it.
 #
 # This checkout is mounted read-only at /home/agent/mashpy in the host and in
 # every sandbox, so the agents see your edits as you make them. Pilot's own
 # code is baked into the images: after changing src/pilot or src/mash, run
-# `up -d --build`. Sandboxes keep the image they were created from; remove them
-# with `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)` to pick
-# up a new one (their volumes are kept).
+# `up -d --build`. Sandboxes and browsers keep the image they were created
+# from; remove them with
+# `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)` and
+# `docker rm -f $(docker ps -aq --filter label=mash.browser.user)` to pick up
+# a new one (their volumes are kept).
 #
 # Once healthy, use the pilot CLI:
 #   pilot browse
@@ -54,6 +61,14 @@ services:
     command: ["true"]
     restart: "no"
 
+  browser-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    image: mash-browser:pilot
+    command: ["true"]
+    restart: "no"
+
   pilot:
     build:
       context: .
@@ -64,6 +79,7 @@ services:
       MASH_DATABASE_URL: postgresql://mash:mash@db:5432/mash_pilot
       MASH_HOST_SECRET: ${MASH_HOST_SECRET:?set MASH_HOST_SECRET in .env}
       MASH_SANDBOX_IMAGE: mash-sandbox:pilot
+      MASH_BROWSER_IMAGE: mash-browser:pilot
       # Where your browser reaches this host, for the links agents hand out.
       MASH_PUBLIC_URL: http://127.0.0.1:8000
       # A Docker-host path, since the daemon resolves it for each sandbox.
@@ -83,6 +99,8 @@ services:
       db:
         condition: service_healthy
       sandbox-image:
+        condition: service_completed_successfully
+      browser-image:
         condition: service_completed_successfully
     restart: unless-stopped
 
