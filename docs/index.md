@@ -18,15 +18,15 @@ standardizes interactions between user applications and agents.
 
 Workflows run durably with a per-step audit trail. The agent harness includes
 web search, local and remote (MCP) tools, a per-user sandbox for the code
-agents write, skills, context and memory management, human-in-the-loop (HITL),
+agents write, a per-user browser for the sites they work on, skills, context and memory management, human-in-the-loop (HITL),
 synthetic evals, an API/CLI for access, and observability. It runs on both frontier and open source models.
 
 **Try it now with Pilot:**
 
 [Pilot](https://github.com/imsid/mashpy/tree/main/src/pilot) is a ready-made Mash host
 that ships in the mashpy repo. Its `pilot` agent answers questions about the Mash
-codebase from the source, and its `builder` agent builds Mash apps in the user's
-sandbox. It runs from a checkout with Docker Compose, which is a good way to get a
+codebase from the source and searches the docs site and GitHub in the user's
+browser, and its `builder` agent builds Mash apps in the user's sandbox. It runs from a checkout with Docker Compose, which is a good way to get a
 feel for the runtime before building your own.
 
 ```bash
@@ -245,7 +245,9 @@ MASH_HOST_SECRET=...   # openssl rand -hex 32
 The host runs each agent as its own subprocess. For agents to get the sandbox
 tools, it also needs a Docker daemon; it pulls Mash's sandbox image,
 `ghcr.io/imsid/mash-sandbox`, on first start. Without Docker the host still
-runs, and its agents get no sandbox tools.
+runs, and its agents get no sandbox tools. Agents whose specs list sites with
+`browser_sites()` also get the browser tools, and the host pulls Mash's browser
+image, `ghcr.io/imsid/mash-browser`, the first time one opens a page.
 
 ```bash
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
@@ -301,7 +303,7 @@ mash repl --host assistant
 - [**Exploring Mash with Pilot**](posts/exploring-mash-with-pilot.md): ask the Pilot CLI questions about the Mash codebase
 - [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development with dynamic host composition
 - [**Building dynamic hosts over the API**](posts/building-dynamic-hosts-apis.md): compose agent teams at runtime over plain HTTP
-- [**Deploying a Mash Host**](posts/how-to-deploy.md): agent processes and per-user sandboxes, on a laptop or a server
+- [**Deploying a Mash Host**](posts/how-to-deploy.md): agent processes, per-user sandboxes and browsers, on a laptop or a server
 - [**Release process**](posts/releasing.md): how versioning, changelogs, and releases work
 
 ## Learnings

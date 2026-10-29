@@ -72,7 +72,8 @@ with context loaded from memory and tools and skills available to it, accepting
 input from the CLI, the API, or a scheduled workflow, and producing signals and
 optional structured output when it completes. The whole thing is resumable and
 replayable across restarts. The code the model writes leaves the request for
-the sandbox of the user it acts for. The diagram below maps that
+the sandbox of the user it acts for, and the browser tools drive that user's
+browser. The diagram below maps that
 shape, and the rest of this section walks through its parts.
 
 ```
@@ -87,17 +88,20 @@ request ────────► │   │     Agent Loop        │ ──�
                   │   └─ tools ───── skills ──┘  structured │
 workflow ───────► │      │ ▲                      output    │
 (schedule/trigger)│      │ │ user interaction               │
-                  │      │ ▼ (approval / ask-user)          │
+                  │      │ ▼ (approval / ask-user /         │
+                  │      │    browser sign-in)              │
                   │      │                                  │
                   │      │  resumable · replayable          │
                   └──────┼──────────────────────────────────┘
-                         │ run_code
-                         ▼
-                  ┌─────────────────────────────────────────┐
-                  │  Sandbox: one container per user        │
-                  │  /home/agent/workspaces/<agent_id>      │
-                  │  files persist · no secrets · no db     │
-                  └─────────────────────────────────────────┘
+                         ├────────────────────────────┐
+                         │ run_code                   │ browser_*
+                         ▼                            ▼
+                  ┌──────────────────────────┐ ┌──────────────────────────┐
+                  │  Sandbox: one per user   │ │  Browser: one per user   │
+                  │  workspaces/<agent_id>   │ │  Chromium with a profile │
+                  │  files persist           │ │  listed sites only       │
+                  │  no secrets · no db      │ │  sign-in via live view   │
+                  └──────────────────────────┘ └──────────────────────────┘
 ```
 
 **Frontier and OSS models**
@@ -144,6 +148,7 @@ agent via `compaction_token_threshold` and `compaction_turn_limit` in
 Mash ships with runtime tools that are available to every agent out of the box:
 
 - **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for when the host has sandboxes; the two file tools copy files in and out of folders the spec declares, and exist only when it declares some
+- **browser_navigate**, **browser_snapshot**, **browser_click** and the rest of Playwright MCP's page tools, plus **browser_save**, **browser_upload** and **browser_handoff**: drive the browser of the user the request acts for, on the sites the spec lists with `browser_sites()`, and exist only for a spec that lists some
 - **AskUserTool**: pause execution to ask the user a question
 - **InvokeSubagent**: delegate work to a registered subagent and stream its response back
 - **search_conversations**: search stored conversation turns and return ranked previews
@@ -214,6 +219,57 @@ the agent processes on the host. A sandbox stops after
 `MASH_SANDBOX_MAX_RUNNING` (default 20) run at once, and `mash sandbox ls`,
 `shell` and `stop` manage them from the Docker host. Without a Docker daemon the
 host still runs, and its agents get no sandbox tools.
+
+### Browsers
+
+Each user also gets a browser: a Chromium in a container of its own,
+`mash-browser-<key>`, next to the user's sandbox and on a separate Docker
+network. Its profile, on the container's volume, keeps the sites the user
+signed in to, and every agent acting for that user shares it. The host starts
+browsers only when some agent's spec lists sites with `browser_sites()`, and
+only those agents get the browser tools.
+
+```text
+agent process ──► host /browser/call ──► mash-browser-<key> (one per user)
+  browser_click     request → user,        daemon ─► Playwright MCP ─► Chromium
+                    sites from the spec    one MCP session and tab per request
+
+user ───────────► /s/<view token>/browser/ ──► noVNC live view of the same Chromium
+```
+
+The tools post to the host's `/browser` relay with the agent's token and the
+request id, like the sandbox tools, and the host adds the user and the spec's
+sites. Inside the container, a daemon runs Chromium headed on a virtual
+display, with Playwright MCP 0.0.83 attached to it over CDP. The daemon is
+Playwright MCP's client: each request gets its own MCP session and its own
+tab. It checks every URL against the sites before a call runs, and when a
+click or redirect lands outside them it goes back and returns an error
+instead of the page. Page text comes back between `<web-content>` tags, so the
+model reads it as data from the site. `browser_take_screenshot` returns an
+image the model sees, and the runtime keeps the three most recent images in
+context.
+
+Downloads land in the browser container, and `browser_save` copies one into
+the agent's sandbox folder, where `run_code` reads it. `browser_upload` goes
+the other way, from the folder to a file input. The browser holds the user's
+signed-in sessions, so the sandbox has no route to it: the sandboxes are not
+on the browsers' network and hold no browser token.
+
+A sign-in uses `browser_handoff`. The engine opens a durable interaction of
+type `browser` whose payload carries `url`, a live-view link, and
+`expires_at`. The link is a view token valid for
+`MASH_BROWSER_HANDOFF_SECONDS` (default 900), and it opens noVNC in the
+user's own browser, showing the request's tab. The user signs in, answers `done`, and the request resumes with the
+session in the profile. The token is revoked when the interaction ends. In a
+workflow run, `browser_handoff` fails at once, since no one is there to sign
+in; workflow code can drive the same browser with Playwright through
+`ctx.browser()`.
+
+A browser stops after `MASH_BROWSER_IDLE_SECONDS` (default 900) without use,
+at most `MASH_BROWSER_MAX_RUNNING` (default 10) run at once, and
+`mash browser ls`, `view` and `stop` manage them from the Docker host. Apps
+list and clear a user's signed-in sites under
+`/api/v1/browser/users/{user_id}`.
 
 ### Human-in-the-Loop Interactions (HITL)
 
