@@ -2,12 +2,15 @@
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
 shipped in this repo at [`src/pilot/`](.). You ask Pilot about Mash and it
-answers from the source tree, or asks its builder to build a Mash app for you.
+answers from the source tree, looks things up on the docs site and GitHub in
+a browser, or asks its builder to build a Mash app for you.
 
 ```text
 > Summarize how HostBuilder registers pooled agents and host compositions.
 > Trace how an accepted request moves through AgentRuntime and RequestEngine.
 > When is request.waiting emitted, and what does it mean for a busy session?
+> Search the docs site for "sandbox" and summarize what it says.
+> Search the GitHub issues for "browser" and summarize the open ones.
 ```
 
 ## Models and keys
@@ -30,8 +33,10 @@ Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
 Pilot runs from a checkout of this repo with Docker Compose. The host runs its
 agents as processes inside its container. Through the Docker socket it starts
 a sandbox per user, where the agents' code runs, and mounts the checkout
-read-only into each one at `/home/agent/mashpy`. Compose builds the sandbox
-image, `mash-sandbox:pilot`, from `Dockerfile.sandbox`.
+read-only into each one at `/home/agent/mashpy`. It also starts a browser
+per user when the guide opens the docs site or GitHub. Compose builds both
+images: `mash-sandbox:pilot` from `Dockerfile.sandbox` and
+`mash-browser:pilot` from `Dockerfile.browser`.
 
 ```bash
 # 1. Clone the repo and put the keys in .env
@@ -48,20 +53,25 @@ pilot repl --host guide
 ```
 
 Your sandbox starts the first time an agent runs code for you; `mash sandbox ls`
-lists the sandboxes. Pages and files the agents make open at the links they
+lists the sandboxes. Your browser starts the first time the guide opens a page;
+`mash browser ls` lists the browsers, and `mash browser view <user_id>` prints
+a link where you can watch the guide drive yours. Pages and files the agents make open at the links they
 give you, served by the host on `127.0.0.1:8000`. The agents read your checkout as it is, so edits show up without a
 restart. Pilot's own code is in the image: after changing it, run
 `up -d --build`. After changing the sandbox daemon or `Dockerfile.sandbox`,
 also remove the sandboxes with
 `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)` so the next
 command starts them from the new image. Their volumes, and the apps the
-builder made, are kept.
+builder made, are kept. Browsers work the same way: after changing
+`src/mash/browser` or `Dockerfile.browser`, remove them with
+`docker rm -f $(docker ps -aq --filter label=mash.browser.user)`; their
+profiles are kept.
 
 ## The guide team
 
 | Agent | Role |
 |-------|------|
-| `pilot` | The guide. Answers questions about Mash from the mounted source, docs and git history. |
+| `pilot` | The guide. Answers questions about Mash from the mounted source, docs and git history, and searches the published docs site (`imsid.github.io`) and the GitHub repository in your browser. |
 | `builder` | Builds Mash apps in its folder of your sandbox (`/home/agent/workspaces/builder/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
 
 The `guide` host makes `pilot` the primary and `builder` its subagent. The

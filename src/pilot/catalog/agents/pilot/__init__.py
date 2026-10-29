@@ -1,3 +1,3 @@
-from .spec import PILOT_AGENT_ID, PilotSpec, build_metadata
+from .spec import BROWSER_SITES, PILOT_AGENT_ID, PilotSpec, build_metadata
 
-__all__ = ["PILOT_AGENT_ID", "PilotSpec", "build_metadata"]
+__all__ = ["BROWSER_SITES", "PILOT_AGENT_ID", "PilotSpec", "build_metadata"]
