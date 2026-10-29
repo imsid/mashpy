@@ -9,6 +9,18 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.32.0](https://github.com/imsid/mashpy/compare/mashpy-v0.31.0...mashpy-v0.32.0) (2026-10-29)
+
+
+### Features
+
+* **browser:** give agents a per-user browser driven through Playwright MCP ([#253](https://github.com/imsid/mashpy/issues/253)) ([b5fb875](https://github.com/imsid/mashpy/commit/b5fb87557aa2ca571cce9a93fdfeef48425b0d8b))
+
+
+### Bug Fixes
+
+* **sandbox:** replace a user's sandbox made from another image ([#251](https://github.com/imsid/mashpy/issues/251)) ([6b58c6d](https://github.com/imsid/mashpy/commit/6b58c6d20288bc8816a296ac66a9fbdfb7a43805))
+
 ## [0.31.0](https://github.com/imsid/mashpy/compare/mashpy-v0.30.0...mashpy-v0.31.0) (2026-10-27)
 
 
