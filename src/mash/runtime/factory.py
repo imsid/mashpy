@@ -64,6 +64,24 @@ def resolve_host_subagents(
     return resolved
 
 
+def _with_directory(
+    self: "AgentRuntime",
+    base_prompt: SystemPrompt,
+    subagents: dict[str, AgentMetadata],
+) -> SystemPrompt:
+    """Append the RunSubAgents directory, listing this agent first."""
+    if not subagents:
+        return base_prompt
+    access = self.get_subagent_access()
+    own_metadata = access.get_agent_metadata(self.app_id) if access is not None else None
+    return build_subagent_prompt_block(
+        base_prompt,
+        subagents,
+        own_agent_id=self.app_id,
+        own_metadata=own_metadata,
+    )
+
+
 def resolve_host_system_prompt(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
@@ -76,9 +94,8 @@ def resolve_host_system_prompt(
     The subagent routing block is appended first, then any caller-supplied
     per-request ``context`` after it.
     """
-    prompt = build_subagent_prompt_block(
-        self.system_prompt,
-        resolve_host_subagents(self, host, parent_kind),
+    prompt = _with_directory(
+        self, self.system_prompt, resolve_host_subagents(self, host, parent_kind)
     )
     return append_context_block(prompt, context)
 
@@ -159,9 +176,7 @@ def build_agent_instance(
         config.system_prompt = base_prompt
     host_subagents = resolve_host_subagents(self, host, parent_kind)
     if host_subagents:
-        config.system_prompt = build_subagent_prompt_block(
-            config.system_prompt, host_subagents
-        )
+        config.system_prompt = _with_directory(self, config.system_prompt, host_subagents)
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
     register_sandbox_tools(self, agent)

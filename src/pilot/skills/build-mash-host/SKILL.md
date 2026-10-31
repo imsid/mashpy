@@ -64,8 +64,8 @@ see `build-mash-workflow` for defining them.
 ## How Host Routing Works
 
 Submitting a request to a host routes it to that host's primary and, for
-that request only, gives the primary a directory of the host's subagents,
-built from their `AgentMetadata`. The primary delegates with `RunSubAgents`,
+that request only, gives the primary a directory of itself and the host's
+subagents, built from their `AgentMetadata`. The primary delegates with `RunSubAgents`,
 which runs one or more child requests at the same time on its subagents or
 on itself. The primary's model reads the directory to decide when to
 delegate, so **delegation quality is a prompt-engineering surface**: vague

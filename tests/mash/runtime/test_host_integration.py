@@ -1123,6 +1123,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             self.assertNotIn("AskUser", child.tools)
                             self.assertNotIn("SUBAGENTS", str(child.config.system_prompt))
                         self.assertIn("SUBAGENTS", str(primary_agent.config.system_prompt))
+                        self.assertIn("- primary-app (you)", str(primary_agent.config.system_prompt))
                     finally:
                         await primary_agent.tools.shutdown()
                         await research_agent.tools.shutdown()

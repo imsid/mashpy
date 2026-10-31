@@ -574,8 +574,10 @@ pool = (
 ```
 
 Every request the user starts gets a `RunSubAgents` tool. Submitting a
-request to a host also gives the primary a prompt block describing that
-host's subagents, for that request only. The same agent can be primary in one
+request to a host also gives the primary a directory in its prompt, for that
+request only: the primary itself, marked `(you)`, then the host's subagents,
+each from its `AgentMetadata`, with guidance to split a task only when its
+parts do not depend on each other. The same agent can be primary in one
 host and a subagent in another.
 
 `RunSubAgents(requests=[{agent_id, prompt, output_schema?}], timeout_seconds)`
