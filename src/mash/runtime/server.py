@@ -15,11 +15,12 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine.workflow import workflow_id_for
-from .errors import RequestStaleError
+from .errors import RequestStaleError, RequestTerminalError
 from .events import PostgresRuntimeStore
 from .requests import (
     RequestIdConflictError,
     parent_request_metadata,
+    validate_mode,
     validate_request_id,
     validate_user_id,
 )
@@ -133,6 +134,11 @@ class AgentServer:
                     self.rerun_request,
                     methods=["POST"],
                 ),
+                Route(
+                    "/agent/{agent_id:str}/request/{request_id:str}/mode",
+                    self.set_request_mode,
+                    methods=["POST"],
+                ),
             ],
         )
         if token:
@@ -241,6 +247,12 @@ class AgentServer:
             except ValueError as exc:
                 return _json_error(400, "INVALID_PARENT", str(exc))
 
+        mode = payload.get("mode", "fg")
+        try:
+            validate_mode(mode)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_REQUEST", str(exc))
+
         user_id = payload.get("user_id")
         if user_id is None:
             return _json_error(400, "INVALID_REQUEST", "user_id is required")
@@ -273,6 +285,7 @@ class AgentServer:
                 request_id=request_id,
                 parent=parent,
                 user_id=user_id,
+                mode=mode,
             )
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
@@ -359,6 +372,32 @@ class AgentServer:
 
     async def rerun_request(self, request: Request) -> Response:
         return await self._control(request, self.runtime.rerun_request)
+
+    async def set_request_mode(self, request: Request) -> Response:
+        agent_id = request.path_params.get("agent_id", "").strip()
+        if agent_id != self.agent_id:
+            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+        request_id = request.path_params.get("request_id", "").strip()
+        if not request_id:
+            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return _json_error(400, "INVALID_JSON", "Request body must be valid JSON")
+        if not isinstance(payload, dict):
+            return _json_error(400, "INVALID_REQUEST", "Request body must be an object")
+        mode = payload.get("mode")
+        try:
+            validate_mode(mode)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_REQUEST", str(exc))
+        try:
+            result = await self.runtime.set_request_mode(request_id, mode)
+        except KeyError:
+            return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
+        except RequestTerminalError as exc:
+            return _json_error(409, "REQUEST_TERMINAL", str(exc))
+        return JSONResponse(result)
 
     async def _control(self, request: Request, operation) -> Response:
         agent_id = request.path_params.get("agent_id", "").strip()

@@ -115,6 +115,22 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(self.runtime.submissions[0]["user_id"], "u@acme.io")
 
+    def test_mode_defaults_to_fg_and_forwards_bg(self) -> None:
+        self._post({"message": "plan it", "session_id": "s-1"})
+        self._post({"message": "plan it", "session_id": "s-1", "mode": "bg"})
+
+        self.assertEqual(
+            [submission["mode"] for submission in self.runtime.submissions], ["fg", "bg"]
+        )
+
+    def test_invalid_mode_returns_400(self) -> None:
+        for mode in ("later", "", None, 1):
+            with self.subTest(mode=mode):
+                resp = self._post({"message": "plan it", "session_id": "s-1", "mode": mode})
+                self.assertEqual(resp.status_code, 400)
+                self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.runtime.submissions, [])
+
     def test_invalid_user_id_returns_400(self) -> None:
         for user_id in ("", "has space", 42, "x" * 256):
             resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": user_id})

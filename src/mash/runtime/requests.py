@@ -17,7 +17,7 @@ from ..logging.trace_context import (
     get_workflow_id,
     get_workflow_run_id,
 )
-from .errors import RequestStaleError, classify_error
+from .errors import RequestStaleError, RequestTerminalError, classify_error
 from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
 from .events.types import STARTED_BY_USER
 from .structured_output import serialize_structured_output
@@ -50,6 +50,12 @@ def validate_user_id(user_id: Any) -> str:
             "user_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
         )
     return user_id
+
+
+def validate_mode(mode: Any) -> str:
+    if mode not in {m.value for m in RequestMode}:
+        raise ValueError("mode must be 'fg' or 'bg'")
+    return str(mode)
 
 
 def _require_str(parent: dict[str, Any], key: str) -> str:
@@ -142,11 +148,13 @@ async def submit_request(
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
+    mode: str = RequestMode.FG.value,
 ) -> dict[str, Any]:
     """Submit one request. A known ``request_id`` returns the existing request."""
     if request_id is not None:
         validate_request_id(request_id)
     validate_user_id(user_id)
+    validate_mode(mode)
     normalized_structured_output = serialize_structured_output(structured_output)
     # ``user_id`` is caller context like ``metadata``: stored with the
     # request, never shown to the model.
@@ -167,6 +175,7 @@ async def submit_request(
         session_id=session_id,
         request_metadata=request_metadata,
         request_id=request_id,
+        mode=mode,
     )
 
 
@@ -177,6 +186,7 @@ async def _submit_request(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
+    mode: str = RequestMode.FG.value,
 ) -> dict[str, Any]:
     self.require_open()
     if not isinstance(session_id, str):
@@ -205,6 +215,7 @@ async def _submit_request(
             session_id=target_session_id,
             request_metadata=request_metadata,
             request_id=request_id,
+            mode=mode,
         )
 
 
@@ -286,6 +297,7 @@ async def _submit_request_inner(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
+    mode: str = RequestMode.FG.value,
 ) -> dict[str, Any]:
     target_session_id = session_id
     request_id = request_id or str(uuid.uuid4())
@@ -305,7 +317,7 @@ async def _submit_request_inner(
                 "message": message,
                 "initial_session_id": target_session_id,
                 "request_metadata": dict(request_metadata or {}),
-                "mode": RequestMode.FG.value,
+                "mode": mode,
                 "started_by": STARTED_BY_USER,
                 "parent_request_id": None,
             },
@@ -341,6 +353,51 @@ async def _submit_request_inner(
         )
         raise
     return to_public_event(accepted_event)["data"]
+
+
+async def set_request_mode(
+    self: "AgentRuntime",
+    request_id: str,
+    mode: str,
+) -> dict[str, Any]:
+    """Switch a running request between ``fg`` and ``bg``.
+
+    Raises ``KeyError`` for an unknown request and ``RequestTerminalError``
+    once the request has finished.
+    """
+    self.require_open()
+    validate_mode(mode)
+    events = await self.runtime_store.list_request_events(request_id)
+    accepted = next(
+        (
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    if accepted is None or accepted.agent_id != self.app_id:
+        raise KeyError(request_id)
+    status = await self.runtime_store.get_request_lifecycle(request_id)
+    if status is not None and status.terminal:
+        raise RequestTerminalError(
+            f"request '{request_id}' is {status.value}; its mode cannot change"
+        )
+    # No dedupe key: a request can switch any number of times, and seq
+    # orders the switches.
+    await append_runtime_event(
+        self,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=self.app_id,
+            agent_id=self.app_id,
+            trace_id=next((e.trace_id for e in events if e.trace_id), None),
+            session_id=accepted.session_id,
+            event_type=RuntimeEventType.REQUEST_MODE_CHANGED.value,
+            payload={"mode": mode},
+        ),
+    )
+    return {"request_id": request_id, "agent_id": self.app_id, "mode": mode}
 
 
 async def stream_response_events(

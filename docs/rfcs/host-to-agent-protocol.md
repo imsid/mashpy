@@ -2,9 +2,9 @@
 
 Status: Draft
 
-Version: 0.6.0
+Version: 0.7.0
 
-Last Updated: 2026-10-23
+Last Updated: 2026-10-31
 
 ## 1. Overview
 
@@ -208,6 +208,7 @@ Inputs:
 - optional `context: string`: prompt text added to the request
 - optional `host: object`: the host composition snapshot the request runs against (`host_id`, `primary`, `subagents`)
 - optional `parent: object`: the request or workflow step that issued this request
+- optional `mode: string`: `fg` (the default) when the conversation waits on the request, or `bg` when the user keeps talking while it runs
 
 `parent` has one of two shapes:
 
@@ -228,7 +229,10 @@ Rules:
 - `user_id` MUST be present and MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:`, `@` or `-`.
 - A request with a `subagent` parent MUST carry the parent request's `user_id`. A host relay enforces this (section 10.5).
 - A request with a `workflow` parent MUST carry the workflow run's `user_id`.
+- `mode`, when present, MUST be `fg` or `bg`.
 - Requests that share a `session_id` MUST be accepted. The runtime does not wait for an earlier request in the same session to finish.
+
+The mode says nothing about how the request runs. A `bg` request runs the same agent loop, saves its turn when it finishes, and can be resumed, cancelled and answered like any other. The mode changes only while the request runs (section 6.6).
 
 The accepted payload contains:
 
@@ -361,10 +365,15 @@ A client also provides these operations:
 - `cancel_request`: stop a running request
 - `resume_request`: continue a cancelled request from its last recorded step
 - `rerun_request`: start a previous request over as a new request
+- `set_request_mode`: switch a running request between `fg` and `bg` (section 6.6)
 - `describe`: list the agent's tools and skills (section 8.7)
 - `compact_session`: summarize a session's history and reset its token accounting (section 8.8)
 
 Request submission is idempotent on `request_id`. When `post_request` names a `request_id` that already belongs to a request of the same agent, the runtime returns that request's accepted payload and does not start a new execution. Its stream then replays from the first event. A `request_id` that belongs to another agent is rejected. Without `request_id`, every submission creates a new request.
+
+### 6.6 Request Mode
+
+A running request switches mode with `set_request_mode(request_id, mode)`. The runtime appends a `runtime.request.mode_changed` event with payload `{"mode": "fg" | "bg"}`, which the stream publishes as `agent.trace`. A request can switch any number of times, and the event order gives the switches' order. A request that is terminal keeps its mode, and the switch fails with `409 REQUEST_TERMINAL`.
 
 ## 7. Interactions
 
@@ -475,6 +484,7 @@ The HTTP plus SSE binding defines these endpoints for one agent:
 - `POST /agent/{agent_id}/request/{request_id}/resume`
 - `POST /agent/{agent_id}/request/{request_id}/cancel`
 - `POST /agent/{agent_id}/request/{request_id}/rerun`
+- `POST /agent/{agent_id}/request/{request_id}/mode`
 
 Equivalent route shapes are permitted if they preserve the same semantics.
 
@@ -491,9 +501,9 @@ For `POST /agent/{agent_id}/request`, the server MUST:
 7. if `metadata` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
 8. if `context` is present, validate that it is a string, and if `host` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
 9. if `parent` is present, validate it against the shapes in section 6.1, returning `400 INVALID_PARENT` otherwise
-10. validate that `user_id` is present and well formed (section 6.1), returning `400 INVALID_REQUEST` otherwise
+10. validate that `user_id` is present and well formed, and that `mode`, when present, is `fg` or `bg` (section 6.1), returning `400 INVALID_REQUEST` otherwise
 11. if `request_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. If it belongs to a request of this agent, return `200 OK` with that request's accepted payload. If it belongs to another agent, return `409 REQUEST_ID_CONFLICT`
-12. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, and `user_id`
+12. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, `user_id`, and `mode`
 13. return `202 Accepted` with the accepted payload as the body
 
 Example error:
@@ -541,6 +551,15 @@ For the `status`, `resume`, `cancel`, and `rerun` routes, the server MUST:
 5. otherwise return `200 OK` with the operation's result as the body, without the host's `{data}` envelope
 
 Results and semantics are the same as the host routes in section 10.4.
+
+For `POST /agent/{agent_id}/request/{request_id}/mode`, the server MUST:
+
+1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
+2. read the body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
+3. validate that `mode` is `fg` or `bg`, returning `400 INVALID_REQUEST` otherwise
+4. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`
+5. return `409 REQUEST_TERMINAL` if the request is terminal
+6. append `runtime.request.mode_changed` and return `200 OK` with `{"request_id", "agent_id", "mode"}`
 
 ### 8.6 Authentication
 
@@ -626,7 +645,7 @@ A body that fails schema validation, including an empty `message` or `session_id
 
 ### 10.2 Agent Requests
 
-- `POST /agent/{agent_id}/request`: body `{message, session_id, user_id, structured_output?, metadata?}`. Returns `200` with `{"data": {"request_id": ...}}`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`. A request to a disabled agent returns `409 AGENT_DISABLED`.
+- `POST /agent/{agent_id}/request`: body `{message, session_id, user_id, structured_output?, metadata?, mode?}`. `mode` is `fg` (the default) or `bg`. Returns `200` with `{"data": {"request_id": ...}}`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`. A request to a disabled agent returns `409 AGENT_DISABLED`.
 - `GET /agent/{agent_id}/request/{request_id}/events`: the SSE stream for the request (section 6.2). The host closes the stream after writing `request.completed`, `request.error`, or `request.cancelled`.
 - `POST /agent/{agent_id}/request/{request_id}/interaction`: body `{interaction_id, response}`. Returns `200` with `{"data": {"ok": true, "interaction_id": ...}}`.
 
@@ -634,7 +653,7 @@ A body that fails schema validation, including an empty `message` or `session_id
 
 A host MAY expose named compositions of a primary agent and its subagents. A request submitted to a composition runs on the primary agent with a snapshot of the composition taken at submit time, so redefining the composition does not affect requests already accepted.
 
-- `POST /hosts/{host_id}/request`: body `{message, session_id, user_id, structured_output?, context?, metadata?}`. `context` is prompt text added for this request. Returns `200` with `{"data": {"request_id", "agent_id", "session_id", "user_id"}}`, where `agent_id` is the primary. An unknown `host_id` returns `404 HOST_NOT_FOUND`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`.
+- `POST /hosts/{host_id}/request`: body `{message, session_id, user_id, structured_output?, context?, metadata?, mode?}`. `context` is prompt text added for this request. Returns `200` with `{"data": {"request_id", "agent_id", "session_id", "user_id"}}`, where `agent_id` is the primary. An unknown `host_id` returns `404 HOST_NOT_FOUND`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`.
 
 The host is the trust boundary for `user_id`: the user application authenticates to the host and asserts the user, and the host passes it unchanged to the primary.
 
@@ -646,8 +665,9 @@ The caller streams and answers interactions through the agent routes using the r
 - `POST /agent/{agent_id}/request/{request_id}/cancel` stops a running request at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`. Returns `request_id`, `workflow_id`, `status: "cancelled"`, and `message`. A request that is already terminal is left unchanged and its current status is returned.
 - `POST /agent/{agent_id}/request/{request_id}/resume` continues a cancelled request, or one whose automatic recovery attempts ran out, from its last recorded step, and appends `request.resumed`. Returns `request_id`, `workflow_id`, `status: "resumed"`, `previous_status`, and `message`. A completed or pending request returns its current status without changes. A failed request cannot be resumed; the response reports `status: "failed"` and the request must be rerun. If the request's session has a newer saved turn than the request, resume returns `409 REQUEST_STALE`, because resuming would replay context the session has moved past.
 - `POST /agent/{agent_id}/request/{request_id}/rerun` starts the request over as a new request with a new `request_id`, from the original message and request metadata, against the session's current history. It works for a request in any state. Returns the new request's accepted payload.
+- `POST /agent/{agent_id}/request/{request_id}/mode`: body `{"mode": "fg" | "bg"}`. Switches a running request (section 6.6) and returns `request_id`, `agent_id` and `mode`. A terminal request returns `409 REQUEST_TERMINAL`.
 
-Unknown request ids return `404 REQUEST_NOT_FOUND` on all four routes.
+Unknown request ids return `404 REQUEST_NOT_FOUND` on all five routes.
 
 ### 10.5 Agent Relay
 
@@ -687,7 +707,7 @@ HTTP status codes used by the bindings:
 - `401 Unauthorized` for a missing or invalid bearer token
 - `403 Forbidden` for an agent relay call the caller's token or the parent request does not permit (section 10.5)
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
-- `409 Conflict` for resuming a stale request, a `request_id` that belongs to another agent, or a request to a disabled agent
+- `409 Conflict` for resuming a stale request, switching the mode of a terminal request, a `request_id` that belongs to another agent, or a request to a disabled agent
 - `422 Unprocessable Entity` for host request bodies that fail schema validation
 - `500 Internal Server Error` for unexpected failures
 

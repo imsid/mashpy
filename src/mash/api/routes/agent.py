@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.runtime import AgentClientError
-from mash.runtime.client import AgentUnavailableError
+from mash.runtime.client import AgentUnavailableError, RequestModeConflictError
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.host.host import AgentInUseError
 from mash.runtime.host.processes import AgentStartError
@@ -20,6 +20,8 @@ from mash.runtime.structured_output import serialize_structured_output
 from .common import (
     APIError,
     CompactSessionRequest,
+    RequestModeValue,
+    SetRequestModeRequest,
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
@@ -156,8 +158,38 @@ def build_agent_router() -> APIRouter:
             structured_output=structured_output,
             metadata=body.metadata,
             user_id=require_user_id(body.user_id),
+            mode=body.mode,
         )
         return success({"request_id": request_id})
+
+    @router.post("/agent/{agent_id}/request/{request_id}/mode")
+    async def set_request_mode(
+        request: Request,
+        agent_id: str,
+        request_id: str,
+        body: SetRequestModeRequest,
+    ) -> dict[str, Any]:
+        client = get_client(request, agent_id)
+        normalized = request_id.strip()
+        if not normalized:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="request_id is required",
+                status_code=400,
+            )
+        try:
+            result = await client.set_request_mode(normalized, body.mode)
+        except RequestModeConflictError as exc:
+            raise APIError(
+                code="REQUEST_TERMINAL", message=str(exc), status_code=409
+            ) from exc
+        except AgentUnavailableError:
+            raise
+        except AgentClientError as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(result)
 
     @router.get("/agent/{agent_id}/request/{request_id}/events")
     async def stream_request_events(
@@ -366,6 +398,46 @@ def build_agent_router() -> APIRouter:
                 model=settings["model"],
                 max_steps=settings["max_steps"],
             )
+        )
+
+    @router.get("/agent/{agent_id}/sessions/{session_id}/requests")
+    async def list_session_requests(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        mode: Optional[RequestModeValue] = Query(default=None),
+        status: Optional[
+            Literal["running", "completed", "failed", "cancelled"]
+        ] = Query(default=None),
+        started_by: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        """The session's requests, newest first, from every agent in it."""
+        store = get_runtime_store(request, require_agent_id(agent_id))
+        records = await store.list_session_requests(
+            require_session_id(session_id),
+            mode=mode,
+            status=status,
+            started_by=started_by,
+        )
+        return success(
+            {
+                "requests": [
+                    {
+                        key: record.get(key)
+                        for key in (
+                            "request_id",
+                            "agent_id",
+                            "message",
+                            "mode",
+                            "status",
+                            "started_by",
+                            "parent_request_id",
+                            "started_at",
+                        )
+                    }
+                    for record in records
+                ]
+            }
         )
 
     @router.get("/agent/{agent_id}/sessions/{session_id}/history")
