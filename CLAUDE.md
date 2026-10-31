@@ -72,7 +72,8 @@ agent's and each sandbox's token.
   a restart.
 - **ToolRegistry / Tool** — register callable tools the agent can use.
   Tools implement `name`, `description`, `parameters` (JSON schema),
-  `requires_approval`, and `async execute(args) -> ToolResult`.
+  `requires_approval`, `async execute(args) -> ToolResult`, and
+  `to_llm_format()`.
 - **SkillRegistry / Skill** — optional markdown instruction bundles loaded
   on demand via a meta-`Skill` tool.
 - **LLMProvider** — abstract LLM contract. Shipped adapters:
@@ -326,6 +327,14 @@ class MyTool:
     async def execute(self, args):
         result = do_something(args["query"])
         return ToolResult.success(result)
+
+    def to_llm_format(self):
+        # The registry calls this to describe the tool to the model.
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters,
+        }
 
 # Register it:
 tools = ToolRegistry()
