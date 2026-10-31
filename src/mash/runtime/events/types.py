@@ -25,6 +25,7 @@ class RuntimeEventType(str, Enum):
     REQUEST_FAILED = "runtime.request.failed"
     REQUEST_CANCELLED = "runtime.request.cancelled"
     REQUEST_RESUMED = "runtime.request.resumed"
+    REQUEST_MODE_CHANGED = "runtime.request.mode_changed"
     STEP_FAILED = "runtime.step.failed"
 
 
@@ -45,6 +46,23 @@ class RequestStatus(str, Enum):
     @property
     def terminal(self) -> bool:
         return self is not RequestStatus.RUNNING
+
+
+class RequestMode(str, Enum):
+    """Whether the conversation waits on a request.
+
+    ``fg``: a client reads its stream and the user's next message comes after
+    it. ``bg``: the user keeps talking and the client reports it when it ends
+    or needs input. The mode says nothing about how the request runs.
+    """
+
+    FG = "fg"
+    BG = "bg"
+
+
+# ``started_by`` of a request the user started; an agent-started request
+# records the starting agent's id instead.
+STARTED_BY_USER = "user"
 
 
 class FeedbackType(str, Enum):
@@ -109,3 +127,39 @@ def accepted_user_id(event: RuntimeEvent) -> Optional[str]:
     request_metadata = (event.payload or {}).get("request_metadata") or {}
     user_id = request_metadata.get("user_id")
     return user_id if isinstance(user_id, str) and user_id else None
+
+
+@dataclass(frozen=True)
+class AcceptedRequest:
+    """What an accepted event records about how its request was started."""
+
+    session_id: Optional[str]
+    mode: str
+    started_by: str
+    started_at: float
+    parent_request_id: Optional[str]
+
+
+def accepted_request(event: RuntimeEvent) -> Optional[AcceptedRequest]:
+    """The start facts an accepted event carries, or None for other events."""
+    if event.event_type != RuntimeEventType.REQUEST_ACCEPTED.value:
+        return None
+    payload = event.payload or {}
+    mode = payload.get("mode")
+    started_by = payload.get("started_by")
+    parent_request_id = payload.get("parent_request_id")
+    return AcceptedRequest(
+        session_id=event.session_id,
+        mode=mode if mode in {m.value for m in RequestMode} else RequestMode.FG.value,
+        started_by=(
+            started_by
+            if isinstance(started_by, str) and started_by
+            else STARTED_BY_USER
+        ),
+        started_at=float(event.created_at),
+        parent_request_id=(
+            parent_request_id
+            if isinstance(parent_request_id, str) and parent_request_id
+            else None
+        ),
+    )

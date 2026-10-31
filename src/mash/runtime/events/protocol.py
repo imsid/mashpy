@@ -68,6 +68,31 @@ class RuntimeStore(Protocol):
         app_id: str | None = None,
     ) -> str | None: ...
 
+    async def list_session_requests(
+        self,
+        session_id: str,
+        *,
+        mode: str | None = None,
+        status: str | None = None,
+        started_by: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """A session's requests, newest first.
+
+        Each record has ``request_id``, ``agent_id``, ``user_id``,
+        ``session_id``, ``message``, ``mode``, ``status``, ``started_by``,
+        ``parent_request_id`` and ``started_at``.
+        """
+        ...
+
+    async def list_child_requests(
+        self,
+        parent_request_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The requests a request started with RunSubAgents, as records."""
+        ...
+
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord: ...
 
     async def list_feedback(

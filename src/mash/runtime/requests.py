@@ -18,7 +18,8 @@ from ..logging.trace_context import (
     get_workflow_run_id,
 )
 from .errors import RequestStaleError, classify_error
-from .events import RequestStatus, RuntimeEvent, RuntimeEventType
+from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
+from .events.types import STARTED_BY_USER
 from .structured_output import serialize_structured_output
 
 if TYPE_CHECKING:
@@ -304,6 +305,9 @@ async def _submit_request_inner(
                 "message": message,
                 "initial_session_id": target_session_id,
                 "request_metadata": dict(request_metadata or {}),
+                "mode": RequestMode.FG.value,
+                "started_by": STARTED_BY_USER,
+                "parent_request_id": None,
             },
         ),
     )

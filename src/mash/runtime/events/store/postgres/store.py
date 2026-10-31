@@ -227,6 +227,30 @@ class PostgresRuntimeStore(RuntimeStore):
             self._pool, trace_id, app_id=app_id
         )
 
+    async def list_session_requests(
+        self,
+        session_id: str,
+        *,
+        mode: str | None = None,
+        status: str | None = None,
+        started_by: str | None = None,
+    ) -> list[dict[str, Any]]:
+        await self.open()
+        return await loaders.list_session_requests(
+            self._pool, session_id, mode=mode, status=status, started_by=started_by
+        )
+
+    async def list_child_requests(
+        self,
+        parent_request_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        await self.open()
+        return await loaders.list_child_requests(
+            self._pool, parent_request_id, status=status
+        )
+
     async def append_feedback(self, feedback: FeedbackRecord) -> FeedbackRecord:
         await self.open()
         return await loaders.append_feedback(self._pool, feedback)
