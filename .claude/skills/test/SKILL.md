@@ -256,6 +256,73 @@ To exercise `browser_handoff` by hand, ask pilot for a GitHub code search,
 which asks a signed-out browser to sign in. In the REPL, pilot gives you the
 live-view link and waits for Enter.
 
+### Case: background requests
+
+Use this when a change touches request mode, the mode or session-requests
+routes, cancel, `RunSubAgents`, the `/h2a` relay, or the REPL's `/bg`,
+Ctrl-Z and idle watching. Pilot has no sleep tool, so a long-running request
+asks the agent to run `sleep N` through `run_code`; give it a `timeout` above
+N. Submit on the `guide` host so `pilot` (Gemini) is the caller and `builder`
+(Gemma) is a subagent it can split work onto.
+
+```bash
+# a bg request on the guide host
+curl -s -X POST http://127.0.0.1:8000/api/v1/hosts/guide/request \
+  -H 'Content-Type: application/json' -d '{"session_id":"s-bg-1","user_id":"u-bg-1","mode":"bg",
+  "message":"Use run_code to run the shell command `sleep 45` in your sandbox (timeout 90). When it finishes, reply with exactly: timer done"}'
+# the session's requests, and the columns behind them
+curl -s 'http://127.0.0.1:8000/api/v1/agent/pilot/sessions/s-bg-1/requests?mode=bg&status=running'
+psql ... -c "select request_id,agent_id,mode,status,started_by,parent_request_id from runtime_request where session_id='s-bg-1'"
+```
+
+1. **Mode** (API, tables): the submit returns while the request runs. Its row
+   has `mode=bg`, `started_by=user`, and the list route returns it with
+   `agent_id=pilot`. `POST .../request/<id>/mode` with `fg`, then `bg`,
+   returns 200 each, and the event log holds two
+   `runtime.request.mode_changed` rows in that order. After completion the
+   mode route returns `409 REQUEST_TERMINAL`, and `/status` (DBOS) agrees with
+   the row's `completed`.
+2. **REPL** (CLI): `/bg` notices print from a background thread while the
+   prompt is up, and Ctrl-Z must reach the shell as SIGTSTP, so piped stdin
+   cannot test this. Drive the REPL in a pty from the Mac with pexpect
+   (`uv run --with pexpect python drive.py`), spawning
+   `docker compose -f docker-compose.pilot.yml exec -it -w /tmp -e HOME=/tmp pilot pilot repl --host guide --user-id u-repl-1 --session-id <fresh>`
+   and sending Ctrl-Z with `child.sendcontrol("z")`. Strip ANSI codes before
+   matching: Rich colors the brackets around a short id separately from the
+   id. Check:
+   - `/bg <sleep 40, then reply>` prints `[xxxxxxxx] running in the background`
+     and the prompt comes back; `/bg --list` shows it running; while idle,
+     `[xxxxxxxx] done` prints with the reply.
+   - Ctrl-Z while a `sleep 30` request streams prints
+     `[xxxxxxxx] moved to the background`, and its row is `bg` and running.
+   - `/bg --switch <prefix>` replays the earlier steps (the `run_code` line
+     shows again), renders the reply, and the row ends `fg` and `completed`.
+   - `/bg --switch zz` prints `No background request matches 'zz'.`
+3. **Splitting** (tables): a bg request saying "Call the RunSubAgents tool
+   exactly once with three items: two with agent_id "pilot" and one with
+   agent_id "builder". Ask each item for one short fact about the Mash
+   framework, answering in one sentence without using any tools. Then
+   combine the three facts into one short answer." Check:
+   - exactly three rows with `parent_request_id` = the parent, agents
+     {pilot, pilot, builder}, `mode=bg`, `started_by=pilot`;
+   - the parent's one `runtime.subagent.call.completed` holds three entries in
+     item order, each `completed`;
+   - the first `llm.request.start` of each child has neither `RunSubAgents`
+     nor `AskUser` in `payload->'tools'`, and the parent's has both;
+   - the children's `memory_turns` rows have `replayable = false`.
+4. **Kill** (API, tables, DBOS): the same split, with each item told to run
+   `sleep 90` through `run_code` (timeout 120) and reply "slept". Once all
+   three children have a `runtime.tool.call.started` row, cancel the parent
+   with `POST .../request/<parent>/cancel`. Within 30 seconds all four rows
+   are `cancelled`, each has one `runtime.request.cancelled` event and no
+   `runtime.request.completed`, and
+   `select status from dbos.workflow_status where workflow_uuid='<agent_id>:<request_id>'`
+   is `CANCELLED` for all four, read after the sleeps would have ended.
+
+Gemma can fail the `builder` item. That shows as a `failed` entry in its slot
+while the others complete, which still exercises failure isolation; it is
+model noise, not a defect.
+
 ---
 
 ## Phase 5 — Diagnose failures by reading
