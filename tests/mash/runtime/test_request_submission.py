@@ -23,10 +23,14 @@ class ParentRequestMetadataTests(unittest.TestCase):
                 "agent_id": "concierge",
                 "session_id": "s-1",
                 "invoke_opts": {"mode": "fast"},
+                "started_by": "concierge",
+                "parent_request_id": "req_1",
             },
             agent_id="research",
         )
 
+        self.assertEqual(metadata["parent"]["started_by"], "concierge")
+        self.assertEqual(metadata["parent"]["parent_request_id"], "req_1")
         self.assertEqual(metadata["primary_session_id"], "s-1")
         self.assertEqual(metadata["primary_app_id"], "concierge")
         self.assertEqual(metadata["subagent_id"], "research")
@@ -50,6 +54,11 @@ class ParentRequestMetadataTests(unittest.TestCase):
             {"kind": "subagent", "agent_id": "concierge", "session_id": "s-1"},
             {"kind": "workflow", "workflow_id": "changelog", "run_id": "run_9"},
             {"kind": "subagent", "request_id": "r", "agent_id": "a", "session_id": "s", "invoke_opts": []},
+            {"kind": "subagent", "request_id": "r", "agent_id": "a", "session_id": "s"},
+            {"kind": "subagent", "request_id": "r", "agent_id": "a", "session_id": "s",
+             "started_by": "user", "parent_request_id": "r"},
+            {"kind": "subagent", "request_id": "r", "agent_id": "a", "session_id": "s",
+             "started_by": "a", "parent_request_id": "other"},
         ):
             with self.subTest(parent=parent):
                 with self.assertRaises(ValueError):
@@ -140,12 +149,28 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             message="find papers",
             session_id="s-1",
             request_id="req_1-sub-0-0",
-            parent={"kind": "subagent", "request_id": "req_1", "agent_id": "concierge", "session_id": "s-1"},
+            parent={
+                "kind": "subagent",
+                "request_id": "req_1",
+                "agent_id": "concierge",
+                "session_id": "s-1",
+                "started_by": "concierge",
+                "parent_request_id": "req_1",
+            },
             host_snapshot={"host_id": "assistant", "primary": "concierge", "subagents": ["research"]},
             user_id="u-1",
+            mode="bg",
         )
 
         [accepted] = await self._accepted_events("req_1-sub-0-0")
+        self.assertEqual(accepted.payload["mode"], "bg")
+        self.assertEqual(accepted.payload["started_by"], "concierge")
+        self.assertEqual(accepted.payload["parent_request_id"], "req_1")
+        [record] = await runtime.runtime_store.list_child_requests("req_1")
+        self.assertEqual(
+            (record["request_id"], record["mode"], record["started_by"]),
+            ("req_1-sub-0-0", "bg", "concierge"),
+        )
         request_metadata = accepted.payload["request_metadata"]
         self.assertEqual(request_metadata["subagent_id"], "research")
         self.assertEqual(request_metadata["primary_app_id"], "concierge")

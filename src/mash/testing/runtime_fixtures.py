@@ -146,11 +146,15 @@ class DelegatingLLMProvider(LLMProvider):
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        name="InvokeSubagent",
+                        name="RunSubAgents",
                         arguments={
-                            "agent_id": self._subagent_id,
-                            "prompt": self._subagent_prompt,
-                            "opts": {"timeout_ms": 1500},
+                            "requests": [
+                                {
+                                    "agent_id": self._subagent_id,
+                                    "prompt": self._subagent_prompt,
+                                }
+                            ],
+                            "timeout_seconds": 5,
                         },
                     )
                 ],
@@ -158,11 +162,15 @@ class DelegatingLLMProvider(LLMProvider):
                     LLMContentBlock.text("Delegating."),
                     LLMContentBlock.tool_call(
                         tool_call_id="call-1",
-                        name="InvokeSubagent",
+                        name="RunSubAgents",
                         arguments={
-                            "agent_id": self._subagent_id,
-                            "prompt": self._subagent_prompt,
-                            "opts": {"timeout_ms": 1500},
+                            "requests": [
+                                {
+                                    "agent_id": self._subagent_id,
+                                    "prompt": self._subagent_prompt,
+                                }
+                            ],
+                            "timeout_seconds": 5,
                         },
                     ),
                 ],

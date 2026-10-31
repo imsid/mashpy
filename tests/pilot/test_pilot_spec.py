@@ -117,7 +117,7 @@ def test_agents_get_sandbox_and_browser_tools() -> None:
                     host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
                 )
                 try:
-                    assert "InvokeSubagent" in turn_agent.tools
+                    assert "RunSubAgents" in turn_agent.tools
                 finally:
                     await turn_agent.tools.shutdown()
 

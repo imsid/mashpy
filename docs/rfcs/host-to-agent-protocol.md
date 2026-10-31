@@ -214,12 +214,12 @@ Inputs:
 
 ```json
 {"kind": "subagent", "request_id": "req_1", "agent_id": "concierge",
- "session_id": "s-1", "invoke_opts": {}}
+ "session_id": "s-1", "started_by": "concierge", "parent_request_id": "req_1"}
 {"kind": "workflow", "workflow_id": "changelog", "run_id": "run_9",
  "task_id": "summarize"}
 ```
 
-A `subagent` parent names the primary's request, agent and session; `invoke_opts` is optional. A `workflow` parent names the workflow, run and step. Requests with a parent are kept out of the agent's replayed conversation history, and a workflow parent's ids are recorded on every event of the request.
+A `subagent` parent names the request, agent and session of the `RunSubAgents` call that started the request. `started_by` MUST equal `agent_id` and `parent_request_id` MUST equal `request_id`; the runtime records them as the request's `started_by` and `parent_request_id`. `invoke_opts` is optional. A `workflow` parent names the workflow, run and step. Requests with a parent are kept out of the agent's replayed conversation history, and a workflow parent's ids are recorded on every event of the request.
 
 Rules:
 
@@ -662,7 +662,7 @@ The caller streams and answers interactions through the agent routes using the r
 ### 10.4 Request Control
 
 - `GET /agent/{agent_id}/request/{request_id}/status` returns `request_id`, `workflow_id`, `status`, and the engine's raw `dbos_status`, plus `error` and `recovery_attempts` when present. `status` is one of `pending`, `queued`, `completed`, `failed`, `cancelled`. A request the engine does not know returns `404 REQUEST_NOT_FOUND`. This is useful when a stream goes silent after a process crash: `pending` means the request will continue once the runtime recovers it.
-- `POST /agent/{agent_id}/request/{request_id}/cancel` stops a running request at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`. Returns `request_id`, `workflow_id`, `status: "cancelled"`, and `message`. A request that is already terminal is left unchanged and its current status is returned.
+- `POST /agent/{agent_id}/request/{request_id}/cancel` stops a running request at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`. The host then cancels the request's running children, each through its own agent; a child whose agent is disabled is skipped. Returns `request_id`, `workflow_id`, `status: "cancelled"`, and `message`. A request that is already terminal is left unchanged and its current status is returned.
 - `POST /agent/{agent_id}/request/{request_id}/resume` continues a cancelled request, or one whose automatic recovery attempts ran out, from its last recorded step, and appends `request.resumed`. Returns `request_id`, `workflow_id`, `status: "resumed"`, `previous_status`, and `message`. A completed or pending request returns its current status without changes. A failed request cannot be resumed; the response reports `status: "failed"` and the request must be rerun. If the request's session has a newer saved turn than the request, resume returns `409 REQUEST_STALE`, because resuming would replay context the session has moved past.
 - `POST /agent/{agent_id}/request/{request_id}/rerun` starts the request over as a new request with a new `request_id`, from the original message and request metadata, against the session's current history. It works for a request in any state. Returns the new request's accepted payload.
 - `POST /agent/{agent_id}/request/{request_id}/mode`: body `{"mode": "fg" | "bg"}`. Switches a running request (section 6.6) and returns `request_id`, `agent_id` and `mode`. A terminal request returns `409 REQUEST_TERMINAL`.
@@ -671,14 +671,15 @@ Unknown request ids return `404 REQUEST_NOT_FOUND` on all five routes.
 
 ### 10.5 Agent Relay
 
-A host whose agents run in separate processes MAY expose a relay that agents use to call their subagents. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
+A host whose agents run in separate processes MAY expose a relay that agents use to start, follow and cancel the child requests of their `RunSubAgents` calls. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
 
 - Each agent authenticates with its own bearer token. The relay returns `401 UNAUTHORIZED` for a token that matches no agent.
-- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller, and a `host` snapshot whose `subagents` contain `subagent_id`. Otherwise the relay returns `403 FORBIDDEN`.
+- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller. `subagent_id` MUST be the caller itself, or be in the `subagents` of the request's `host` snapshot. A request without a `host` may target only the caller. Otherwise the relay returns `403 FORBIDDEN`.
 - The relay looks up the parent request. A parent request it does not know returns `400 INVALID_PARENT`, and one that belongs to another agent returns `403 FORBIDDEN`.
 - The relay sets the forwarded request's `user_id` to the parent request's. A `user_id` in the body that differs from the parent's returns `403 FORBIDDEN`. An agent cannot act for another user through its subagents.
-- An allowed request is forwarded to the subagent's client.
+- An allowed request is forwarded to the subagent's client, `mode` included.
 - `GET /agent/{subagent_id}/request/{request_id}` streams the request's events. Only the agent named in the request's `parent` may stream it.
+- `POST /agent/{subagent_id}/request/{request_id}/cancel` cancels the request through the subagent's client and returns its result (section 10.4). Only the agent named in the request's `parent` may cancel it; another caller gets `403 FORBIDDEN`, and an unknown request `404 REQUEST_NOT_FOUND`.
 
 ## 11. Error Model
 

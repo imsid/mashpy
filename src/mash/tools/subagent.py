@@ -1,50 +1,50 @@
-"""Tool for invoking subagents through a client interface."""
+"""RunSubAgents: run child requests at the same time and wait for all of them."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+import uuid
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
 from ..logging import (
     AgentTraceEvent,
     get_request_id,
     get_request_metadata,
-    get_subagent_request_id,
+    get_subagent_id_prefix,
     get_trace_id,
 )
 from ..runtime.errors import classify_error
 from .base import ToolResult
 
-DEFAULT_SUBAGENT_TIMEOUT_MS = 360_000
+DEFAULT_TIMEOUT_SECONDS = 360
+
+# Child ids are UUID5s in this namespace, so the REPL's 8-character short ids
+# stay distinct; a ``{request_id}-sub-...`` string would share the parent's
+# prefix.
+CHILD_REQUEST_NAMESPACE = uuid.UUID("6f0d3b1e-8c47-4f53-9a8e-2b5d1c7e4a90")
 
 
-class _SubagentCancelled(Exception):
-    """The subagent's own request was cancelled.
-
-    A subagent runs as its own request and workflow, so it can be cancelled
-    directly. Cancelling the primary never cascades to a child that is already
-    running, which makes this the child's own terminal state rather than a
-    failure of the invocation.
-    """
-
-    def __init__(self, request_id: Optional[str]) -> None:
-        super().__init__("subagent request was cancelled")
-        self.request_id = request_id
+def child_request_id(prefix: str, index: int) -> str:
+    """The id of the ``index``-th child of the call bound to ``prefix``."""
+    return str(uuid.uuid5(CHILD_REQUEST_NAMESPACE, f"{prefix}-{index}"))
 
 
-class SupportsSubagentClient(Protocol):
-    """The H2A client operations a subagent call uses."""
+class SupportsChildClient(Protocol):
+    """The H2A client operations RunSubAgents uses for one child."""
 
     async def post_request(
         self,
         message: str,
         *,
         session_id: str,
+        structured_output: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
         request_id: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
+        mode: Optional[str] = None,
     ) -> str:
         """Submit one request; a known ``request_id`` returns the existing one."""
 
@@ -54,78 +54,99 @@ class SupportsSubagentClient(Protocol):
         *,
         timeout: Optional[float] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Yield streamed request events for a submitted subagent request."""
+        """Yield the child's streamed events."""
+
+    async def cancel_request(self, request_id: str) -> Dict[str, Any]:
+        """Cancel the child."""
 
 
 class SupportsEventEmit(Protocol):
-    """Event logger protocol used for forwarding subagent stream events."""
+    """Event logger protocol used for forwarding child stream events."""
 
     async def emit(self, event: AgentTraceEvent) -> None:
         """Emit one trace event."""
 
 
-class InvokeSubagentTool:
-    """Tool entrypoint used by primary agents to call subagents."""
+def _child_error(data: Dict[str, Any]) -> Dict[str, Any]:
+    error = classify_error(data.get("error") or "request failed")
+    for key in ("error_code", "retryable"):
+        if data.get(key) is not None:
+            error[key] = data.get(key)
+    return error
 
-    name = "InvokeSubagent"
+
+class RunSubAgentsTool:
+    """Start one or more ``bg`` child requests and return when all are done."""
+
+    name = "RunSubAgents"
     requires_approval = False
-    # Runs a whole subagent request; never run concurrently.
+    # The concurrency is inside the one call.
     parallel_safe = False
     description = (
-        "Invoke a subagent by id with a focused prompt. "
-        "Use this when a specialized subagent can help with the task."
+        "Run one or more requests at the same time, each on this agent or one "
+        "of its subagents, and wait for all of them. Use one item to hand a "
+        "task to a subagent; use several to split a large task into parts that "
+        "run at once, then write one answer from their results. Returns one "
+        "entry per item, in order, with the child's request_id, its status "
+        "(completed, failed, cancelled or timed_out), and its response, "
+        "structured output or error."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "Subagent identifier to invoke.",
+            "requests": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {
+                            "type": "string",
+                            "description": "This agent's own id, or a subagent of the host.",
+                        },
+                        "prompt": {"type": "string"},
+                        "output_schema": {
+                            "type": "object",
+                            "description": "Optional JSON schema for the child's structured output.",
+                        },
+                    },
+                    "required": ["agent_id", "prompt"],
+                },
             },
-            "prompt": {
-                "type": "string",
-                "description": "Prompt sent to the subagent.",
-            },
-            "opts": {
-                "type": "object",
-                "description": (
-                    "Optional invocation options, e.g. {\"timeout_ms\": 30000}. "
-                    f"Defaults to {DEFAULT_SUBAGENT_TIMEOUT_MS} ms."
-                ),
-                "additionalProperties": True,
+            "timeout_seconds": {
+                "type": "integer",
+                "description": f"Defaults to {DEFAULT_TIMEOUT_SECONDS}.",
             },
         },
-        "required": ["agent_id", "prompt"],
+        "required": ["requests"],
     }
 
     def __init__(
         self,
         *,
-        primary_app_id: str,
-        client_resolver: Callable[[str], SupportsSubagentClient],
-        primary_session_id_provider: Optional[Callable[[], str]] = None,
-        primary_session_id: Optional[str] = None,
+        caller_agent_id: str,
+        client_resolver: Callable[[str], SupportsChildClient],
+        session_id: str,
         host: Optional[Dict[str, Any]] = None,
         event_logger: Optional[SupportsEventEmit] = None,
     ) -> None:
         if client_resolver is None:
             raise ValueError("client_resolver is required")
+        if not str(session_id or "").strip():
+            raise ValueError("session_id is required")
+        self._caller_agent_id = caller_agent_id
+        # The model names this agent in an item to run part of the work itself.
+        self.description = (
+            f"{type(self).description} Your own agent_id is '{caller_agent_id}'."
+        )
         self._client_resolver = client_resolver
-        self._primary_app_id = primary_app_id
+        self._session_id = str(session_id).strip()
         self._host = dict(host) if host is not None else None
         self._event_logger = event_logger
-        if primary_session_id_provider is not None:
-            self._primary_session_id_provider = primary_session_id_provider
-        elif primary_session_id:
-            self._primary_session_id_provider = lambda: primary_session_id
-        else:
-            raise ValueError("primary_session_id or primary_session_id_provider is required")
 
     async def _emit_stream_event(
         self,
         *,
-        primary_session_id: str,
-        subagent_session_id: str,
         agent_id: str,
         request_id: str,
         event_name: str,
@@ -136,18 +157,17 @@ class InvokeSubagentTool:
         trace_id = get_trace_id()
         if not trace_id:
             return
-
         try:
             await self._event_logger.emit(
                 AgentTraceEvent(
                     event_type=f"subagent.{event_name}",
-                    app_id=self._primary_app_id,
-                    session_id=primary_session_id,
+                    app_id=self._caller_agent_id,
+                    session_id=self._session_id,
                     trace_id=trace_id,
                     payload={
                         "agent_id": agent_id,
-                        "primary_session_id": primary_session_id,
-                        "subagent_session_id": subagent_session_id,
+                        "primary_session_id": self._session_id,
+                        "subagent_session_id": self._session_id,
                         "request_id": request_id,
                         "event": event_name,
                         "data": dict(data),
@@ -155,276 +175,180 @@ class InvokeSubagentTool:
                 )
             )
         except Exception:
-            # Subagent telemetry should never change tool behavior.
+            # Child telemetry should never change tool behavior.
             return
 
-    def _error_result(
-        self,
-        *,
-        agent_id: str,
-        primary_session_id: str,
-        subagent_session_id: str,
-        started_at: float,
-        request_id: Optional[str],
-        error: object,
-        error_source: str,
-    ) -> ToolResult:
-        payload = {
-            "agent_id": agent_id,
-            "primary_session_id": primary_session_id,
-            "subagent_session_id": subagent_session_id,
-            "request_id": request_id,
-            "error_source": error_source,
-            "duration_ms": int((time.time() - started_at) * 1000),
-            **classify_error(error),
-        }
-        return ToolResult.error(
-            json.dumps(payload, ensure_ascii=True),
-            agent_id=agent_id,
-            primary_session_id=primary_session_id,
-            subagent_session_id=subagent_session_id,
-            request_id=request_id,
-            error_source=error_source,
-            error_code=payload.get("error_code"),
-            retryable=payload.get("retryable"),
-        )
-
-    def _response_error_result(
-        self,
-        *,
-        agent_id: str,
-        primary_session_id: str,
-        subagent_session_id: str,
-        started_at: float,
-        request_id: Optional[str],
-        error: str,
-        error_code: str,
-    ) -> ToolResult:
-        payload = {
-            "agent_id": agent_id,
-            "primary_session_id": primary_session_id,
-            "subagent_session_id": subagent_session_id,
-            "request_id": request_id,
-            "error_source": "subagent_response",
-            "error_code": error_code,
-            "retryable": False,
-            "duration_ms": int((time.time() - started_at) * 1000),
-            "error": error,
-        }
-        return ToolResult.error(
-            json.dumps(payload, ensure_ascii=True),
-            agent_id=agent_id,
-            primary_session_id=primary_session_id,
-            subagent_session_id=subagent_session_id,
-            request_id=request_id,
-            error_source="subagent_response",
-            error_code=error_code,
-            retryable=False,
-        )
+    @staticmethod
+    def _parse(args: Dict[str, Any]) -> tuple[list[Dict[str, Any]], int] | str:
+        requests = args.get("requests")
+        if not isinstance(requests, list) or not requests:
+            return "requests must be a non-empty array"
+        items: list[Dict[str, Any]] = []
+        for index, item in enumerate(requests):
+            if not isinstance(item, dict):
+                return f"requests[{index}] must be an object"
+            agent_id = str(item.get("agent_id") or "").strip()
+            prompt = str(item.get("prompt") or "").strip()
+            output_schema = item.get("output_schema")
+            if not agent_id:
+                return f"requests[{index}].agent_id is required"
+            if not prompt:
+                return f"requests[{index}].prompt is required"
+            if output_schema is not None and not isinstance(output_schema, dict):
+                return f"requests[{index}].output_schema must be an object"
+            items.append(
+                {"agent_id": agent_id, "prompt": prompt, "output_schema": output_schema}
+            )
+        timeout = args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+        if timeout is None:
+            timeout = DEFAULT_TIMEOUT_SECONDS
+        if isinstance(timeout, bool):
+            return "timeout_seconds must be a positive integer"
+        try:
+            timeout = int(timeout)
+        except (TypeError, ValueError):
+            return "timeout_seconds must be a positive integer"
+        if timeout <= 0:
+            return "timeout_seconds must be a positive integer"
+        return items, timeout
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
-        agent_id = str(args.get("agent_id", "")).strip()
-        prompt = str(args.get("prompt", "")).strip()
-        opts = args.get("opts") or {}
-        if not agent_id:
-            return ToolResult.error("agent_id is required")
-        if not prompt:
-            return ToolResult.error("prompt is required")
-        if not isinstance(opts, dict):
-            return ToolResult.error("opts must be an object")
+        parsed = self._parse(args)
+        if isinstance(parsed, str):
+            return ToolResult.error(parsed)
+        items, timeout_seconds = parsed
 
-        primary_session_id = self._primary_session_id_provider().strip()
-        if not primary_session_id:
-            return ToolResult.error("primary_session_id is required")
-        # A subagent call runs under the parent session: it is a trace within it
-        # (executed by the subagent), not a session of its own.
-        subagent_session_id = primary_session_id
+        started_at = time.monotonic()
+        deadline = started_at + timeout_seconds
+        caller_request_id = get_request_id() or ""
+        # The parent request's caller metadata is bound for its run; forward it
+        # so the children inherit the context.
+        inherited_metadata = get_request_metadata()
+        parent = {
+            "kind": "subagent",
+            "request_id": caller_request_id,
+            "agent_id": self._caller_agent_id,
+            "session_id": self._session_id,
+            "started_by": self._caller_agent_id,
+            "parent_request_id": caller_request_id,
+        }
+        # The durable loop binds a prefix fixed by this call's position, so a
+        # replayed or retried call resubmits the same ids and gets back the
+        # children already running instead of starting new ones.
+        prefix = get_subagent_id_prefix()
 
-        started_at = time.time()
-        request_id: Optional[str] = None
-        try:
-            timeout_ms: Optional[int] = DEFAULT_SUBAGENT_TIMEOUT_MS
-            timeout_value = opts.get("timeout_ms")
-            if timeout_value is not None:
-                try:
-                    timeout_ms = int(timeout_value)
-                except (TypeError, ValueError):
-                    timeout_ms = DEFAULT_SUBAGENT_TIMEOUT_MS
-                if timeout_ms is not None and timeout_ms <= 0:
-                    timeout_ms = DEFAULT_SUBAGENT_TIMEOUT_MS
-
-            client = self._client_resolver(agent_id)
-
-            # The parent request's caller metadata is bound for the duration of
-            # its run; forward it so the subagent request inherits the context.
-            inherited_metadata = get_request_metadata()
-            parent = {
-                "kind": "subagent",
-                "request_id": get_request_id() or "",
-                "agent_id": self._primary_app_id,
-                "session_id": primary_session_id,
-                "invoke_opts": dict(opts),
-            }
-
-            async def _invoke() -> Dict[str, Any] | None:
-                nonlocal request_id
-                # The durable loop binds a request id fixed by this call's
-                # position, so a replayed or retried call resubmits the same id
-                # and reattaches to the subagent request it already started.
+        entries: list[Dict[str, Any]] = [{} for _ in items]
+        submitted: list[tuple[int, Any, str]] = []
+        for index, item in enumerate(items):
+            agent_id = item["agent_id"]
+            entry: Dict[str, Any] = {"agent_id": agent_id, "request_id": None}
+            entries[index] = entry
+            try:
+                client = self._client_resolver(agent_id)
                 request_id = await client.post_request(
-                    prompt,
-                    session_id=subagent_session_id,
+                    item["prompt"],
+                    session_id=self._session_id,
+                    structured_output=item["output_schema"],
                     metadata=inherited_metadata or None,
-                    request_id=get_subagent_request_id(),
+                    request_id=(
+                        child_request_id(prefix, index) if prefix else None
+                    ),
                     host=self._host,
                     parent=parent,
+                    mode="bg",
                 )
-                timeout_seconds = None if timeout_ms is None else max(1, int(timeout_ms)) / 1000.0
+            except Exception as exc:
+                entry.update({"status": "failed", **classify_error(exc)})
+                continue
+            entry["request_id"] = request_id
+            submitted.append((index, client, request_id))
 
-                result: Optional[Dict[str, Any]] = None
-                async for event in client.stream_response(request_id, timeout=timeout_seconds):
-                    event_name = str(event.get("event") or "")
-                    data = event.get("data")
-                    if not isinstance(data, dict):
-                        data = {}
-
-                    if event_name:
-                        await self._emit_stream_event(
-                            primary_session_id=primary_session_id,
-                            subagent_session_id=subagent_session_id,
-                            agent_id=agent_id,
-                            request_id=request_id,
-                            event_name=event_name,
-                            data=data,
-                        )
-
-                    if event_name == "request.completed":
-                        result = data
-                        break
-                    if event_name == "request.cancelled":
-                        raise _SubagentCancelled(
-                            str(data.get("request_id") or request_id or "") or None
-                        )
-                    if event_name == "request.error":
-                        error_payload = classify_error(data.get("error") or "request failed")
-                        if data.get("error_code") is not None:
-                            error_payload["error_code"] = data.get("error_code")
-                        if data.get("retryable") is not None:
-                            error_payload["retryable"] = data.get("retryable")
-                        raise RuntimeError(
-                            json.dumps(
-                                {
-                                    "request_id": data.get("request_id", request_id),
-                                    **error_payload,
-                                },
-                                ensure_ascii=True,
-                            )
-                        )
-                    if timeout_seconds is not None and time.time() - started_at > timeout_seconds:
-                        raise TimeoutError("agent invoke timed out")
-                return result
-
-            result = await _invoke()
-
-            if result is None:
-                return self._error_result(
-                    agent_id=agent_id,
-                    primary_session_id=primary_session_id,
-                    subagent_session_id=subagent_session_id,
-                    started_at=started_at,
-                    request_id=request_id,
-                    error="subagent stream ended without a terminal event",
-                    error_source="stream",
-                )
-
-            response = result.get("response")
-            if isinstance(response, dict):
-                text = response.get("text", "")
-                metadata = response.get("metadata", {})
-            else:
-                text = result.get("text", "")
-                metadata = result.get("metadata", {})
-            if not isinstance(metadata, dict):
-                metadata = {}
-        except _SubagentCancelled as exc:
-            return self._error_result(
-                agent_id=agent_id,
-                primary_session_id=primary_session_id,
-                subagent_session_id=subagent_session_id,
-                started_at=started_at,
-                request_id=exc.request_id or request_id,
-                error=str(exc),
-                error_source="cancelled",
+        await asyncio.gather(
+            *(
+                self._wait(entries[index], client, request_id, deadline)
+                for index, client, request_id in submitted
             )
-        except Exception as exc:
-            if isinstance(exc, RuntimeError):
-                try:
-                    parsed = json.loads(str(exc))
-                except json.JSONDecodeError:
-                    parsed = None
-                if isinstance(parsed, dict) and "error" in parsed:
-                    payload = {
-                        "agent_id": agent_id,
-                        "primary_session_id": primary_session_id,
-                        "subagent_session_id": subagent_session_id,
-                        "request_id": parsed.get("request_id", request_id),
-                        "error_source": "subagent",
-                        "duration_ms": int((time.time() - started_at) * 1000),
-                        **classify_error(parsed.get("error")),
-                    }
-                    if parsed.get("error_code") is not None:
-                        payload["error_code"] = parsed.get("error_code")
-                    if parsed.get("retryable") is not None:
-                        payload["retryable"] = parsed.get("retryable")
-                    return ToolResult.error(
-                        json.dumps(payload, ensure_ascii=True),
-                        agent_id=agent_id,
-                        primary_session_id=primary_session_id,
-                        subagent_session_id=subagent_session_id,
-                        request_id=payload.get("request_id"),
-                        error_source="subagent",
-                        error_code=payload.get("error_code"),
-                        retryable=payload.get("retryable"),
-                    )
-
-            return self._error_result(
-                agent_id=agent_id,
-                primary_session_id=primary_session_id,
-                subagent_session_id=subagent_session_id,
-                started_at=started_at,
-                request_id=request_id,
-                error=exc,
-                error_source="timeout" if isinstance(exc, TimeoutError) else "subagent",
-            )
-
-        payload = {
-            "agent_id": agent_id,
-            "primary_session_id": primary_session_id,
-            "subagent_session_id": subagent_session_id,
-            "primary_app_id": self._primary_app_id,
-            "request_id": result.get("request_id"),
-            "text": text,
-            "metadata": metadata,
-            "duration_ms": int((time.time() - started_at) * 1000),
-        }
-        normalized_text = str(text or "").strip()
-        if not normalized_text:
-            return self._response_error_result(
-                agent_id=agent_id,
-                primary_session_id=primary_session_id,
-                subagent_session_id=subagent_session_id,
-                started_at=started_at,
-                request_id=result.get("request_id"),
-                error="subagent returned an empty response",
-                error_code="empty_response",
-            )
-        return ToolResult.success(
-            json.dumps(payload, ensure_ascii=True),
-            agent_id=agent_id,
-            primary_session_id=primary_session_id,
-            subagent_session_id=subagent_session_id,
-            request_id=result.get("request_id"),
         )
+
+        for entry in entries:
+            entry.setdefault("status", "failed")
+        agent_ids = list(dict.fromkeys(item["agent_id"] for item in items))
+        request_ids = [entry.get("request_id") for entry in entries]
+        return ToolResult.success(
+            json.dumps(entries, ensure_ascii=True),
+            agent_id=", ".join(agent_ids),
+            agent_ids=agent_ids,
+            primary_session_id=self._session_id,
+            subagent_session_id=self._session_id,
+            request_id=request_ids[0] if len(request_ids) == 1 else None,
+            request_ids=request_ids,
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+        )
+
+    async def _wait(
+        self,
+        entry: Dict[str, Any],
+        client: Any,
+        request_id: str,
+        deadline: float,
+    ) -> None:
+        """Follow one child's stream into ``entry`` until it ends or times out."""
+        try:
+            await asyncio.wait_for(
+                self._follow(entry, client, request_id),
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+        except asyncio.TimeoutError:
+            entry.update(
+                {
+                    "status": "timed_out",
+                    "error": "the child did not finish before timeout_seconds",
+                }
+            )
+            try:
+                await client.cancel_request(request_id)
+            except Exception:
+                pass
+        except Exception as exc:
+            entry.update({"status": "failed", **classify_error(exc)})
+        if "status" not in entry:
+            entry.update(
+                {
+                    "status": "failed",
+                    "error": "the child's stream ended without a terminal event",
+                }
+            )
+
+    async def _follow(self, entry: Dict[str, Any], client: Any, request_id: str) -> None:
+        agent_id = entry["agent_id"]
+        async for event in client.stream_response(request_id):
+            event_name = str(event.get("event") or "")
+            data = event.get("data")
+            if not isinstance(data, dict):
+                data = {}
+            if event_name:
+                await self._emit_stream_event(
+                    agent_id=agent_id,
+                    request_id=request_id,
+                    event_name=event_name,
+                    data=data,
+                )
+            if event_name == "request.completed":
+                response = data.get("response")
+                response = response if isinstance(response, dict) else {}
+                metadata = response.get("metadata")
+                metadata = metadata if isinstance(metadata, dict) else {}
+                entry["status"] = "completed"
+                entry["response"] = str(response.get("text") or "")
+                if metadata.get("structured_output") is not None:
+                    entry["structured_output"] = metadata["structured_output"]
+                return
+            if event_name == "request.cancelled":
+                entry["status"] = "cancelled"
+                return
+            if event_name == "request.error":
+                entry.update({"status": "failed", **_child_error(data)})
+                return
 
     def to_llm_format(self) -> Dict[str, Any]:
         return {

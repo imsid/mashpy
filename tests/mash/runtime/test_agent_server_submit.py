@@ -157,7 +157,14 @@ class AgentServerSubmitTests(unittest.TestCase):
 
     def test_forwards_request_id_context_host_and_parent(self) -> None:
         host = {"host_id": "assistant", "primary": "concierge", "subagents": ["agent-a"]}
-        parent = {"kind": "subagent", "request_id": "req_1", "agent_id": "concierge", "session_id": "s-1"}
+        parent = {
+            "kind": "subagent",
+            "request_id": "req_1",
+            "agent_id": "concierge",
+            "session_id": "s-1",
+            "started_by": "concierge",
+            "parent_request_id": "req_1",
+        }
         resp = self._post(
             {
                 "message": "find papers",

@@ -11,7 +11,7 @@ from ...logging import (
     bound_request_id,
     bound_request_metadata,
     bound_session_id,
-    bound_subagent_request_id,
+    bound_subagent_id_prefix,
 )
 from ...logging.trace_context import bound_workflow_ids
 from .. import context as context_helpers
@@ -290,14 +290,15 @@ async def _run_tool_call_for_workflow(
             loop_index=loop_index,
             call_index=call_index,
         )
-    # InvokeSubagent runs as an ordinary step. Its subagent request id is fixed
-    # by this call's position, so a replay or retry resubmits the same id and
-    # idempotent submission reattaches to the request already started. Stable
-    # across replay because loop/call index come from checkpointed state.
-    subagent_request_id = None
-    if str(tool_call.get("name") or "") == "InvokeSubagent":
-        subagent_request_id = f"{request_id}-sub-{loop_index}-{call_index}"
-    with bound_subagent_request_id(subagent_request_id):
+    # RunSubAgents runs as an ordinary step. Its child ids derive from a
+    # prefix fixed by this call's position, so a replay or retry resubmits the
+    # same ids and idempotent submission returns the children already
+    # running. Stable across replay because loop/call index come from
+    # checkpointed state.
+    subagent_id_prefix = None
+    if str(tool_call.get("name") or "") == "RunSubAgents":
+        subagent_id_prefix = f"{request_id}-sub-{loop_index}-{call_index}"
+    with bound_subagent_id_prefix(subagent_id_prefix):
         return await retry_transient(
             lambda: DBOS.run_step_async(
                 {"name": f"tool.call.{loop_index}.{call_index}"},
@@ -454,7 +455,7 @@ async def execute_request_workflow(
 
                 # Calls run in order. A maximal run of consecutive parallel-safe
                 # calls executes concurrently as one atomic DBOS batch step; a
-                # serial call (approval-gated, AskUser, InvokeSubagent,
+                # serial call (approval-gated, AskUser, RunSubAgents,
                 # parallel_safe=False) is a barrier that runs alone, so nothing
                 # crosses it. `existing_results` lets a recovered workflow skip
                 # calls whose results are already recorded.

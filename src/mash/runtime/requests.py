@@ -86,7 +86,15 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             "agent_id": _require_str(parent, "agent_id"),
             "session_id": _require_str(parent, "session_id"),
             "invoke_opts": dict(invoke_opts),
+            "started_by": _require_str(parent, "started_by"),
+            "parent_request_id": _require_str(parent, "parent_request_id"),
         }
+        # The child's row records who started it and from which request;
+        # both name the parent, so they must agree with it.
+        if normalized["started_by"] != normalized["agent_id"]:
+            raise ValueError("parent.started_by must be parent.agent_id")
+        if normalized["parent_request_id"] != normalized["request_id"]:
+            raise ValueError("parent.parent_request_id must be parent.request_id")
         return {
             "parent": normalized,
             "primary_session_id": normalized["session_id"],
@@ -302,6 +310,12 @@ async def _submit_request_inner(
     target_session_id = session_id
     request_id = request_id or str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
+    started_by = STARTED_BY_USER
+    parent_request_id = None
+    parent = (request_metadata or {}).get("parent")
+    if isinstance(parent, dict) and parent.get("kind") == "subagent":
+        started_by = str(parent.get("started_by") or parent.get("agent_id"))
+        parent_request_id = parent.get("parent_request_id") or parent.get("request_id")
     accepted_event = await append_runtime_event(
         self,
         RuntimeEvent(
@@ -318,8 +332,8 @@ async def _submit_request_inner(
                 "initial_session_id": target_session_id,
                 "request_metadata": dict(request_metadata or {}),
                 "mode": mode,
-                "started_by": STARTED_BY_USER,
-                "parent_request_id": None,
+                "started_by": started_by,
+                "parent_request_id": parent_request_id,
             },
         ),
     )

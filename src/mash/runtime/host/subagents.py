@@ -53,7 +53,10 @@ def build_subagent_prompt_block(
 
     lines = [
         "SUBAGENTS",
-        "Delegate work using InvokeSubagent(agent_id, prompt, opts).",
+        "Delegate work using RunSubAgents(requests=[{agent_id, prompt}], timeout_seconds).",
+        "Each item runs as its own request, and all items run at the same time.",
+        "An item's agent_id can be one of the subagents below or your own id, "
+        "to split a large task into parts you run yourself.",
     ]
     for agent_id in sorted(subagents.keys()):
         meta = subagents[agent_id]
@@ -62,7 +65,8 @@ def build_subagent_prompt_block(
         lines.append(f"  Capabilities: {capabilities}")
         lines.append(f"  Guidance: {meta.usage_guidance}")
     lines.append(
-        "When delegating, choose the best subagent id and pass a concise task prompt."
+        "When delegating, choose the best agent id for each item and pass a "
+        "concise task prompt."
     )
     guidance = "\n".join(lines)
 

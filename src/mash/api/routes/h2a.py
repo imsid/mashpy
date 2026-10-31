@@ -1,11 +1,12 @@
 """H2A relay for calls agent processes make to the host.
 
-A primary agent in its process calls its subagents through these routes,
-never directly. They speak H2A as ``AgentServer`` does (no ``{data}``
-envelope), so the agent uses a plain ``AgentClient`` pointed at
+An agent in its process starts its RunSubAgents children through these
+routes, never directly. They speak H2A as ``AgentServer`` does (no
+``{data}`` envelope), so the agent uses a plain ``AgentClient`` pointed at
 ``{host}/h2a``. Each call authenticates with the caller's agent token; the
 host checks it against the request's ``parent`` and host snapshot, then
-forwards to the subagent's client. The subagent request acts for the parent
+forwards to the child agent's client. A child runs on the calling agent
+itself or on one of the host's subagents. The subagent request acts for the parent
 request's user: the host copies ``user_id`` from the parent's stored request,
 so a primary cannot name another user.
 """
@@ -77,7 +78,9 @@ def build_h2a_router() -> APIRouter:
             )
         host = body.get("host")
         subagents = host.get("subagents") if isinstance(host, dict) else None
-        if not isinstance(subagents, list) or agent_id not in subagents:
+        if agent_id != caller and (
+            not isinstance(subagents, list) or agent_id not in subagents
+        ):
             return h2a_error(
                 403, "FORBIDDEN", f"subagent '{agent_id}' is not in the request's host"
             )
@@ -128,6 +131,7 @@ def build_h2a_router() -> APIRouter:
                 host=host,
                 parent=parent,
                 user_id=identity.user_id,
+                mode=body.get("mode"),
             )
         except AgentUnavailableError as exc:
             return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
@@ -143,10 +147,10 @@ def build_h2a_router() -> APIRouter:
             status_code=202,
         )
 
-    @router.get("/agent/{agent_id}/request/{request_id}")
-    async def stream_subagent_request(
+    async def _own_child(
         request: Request, agent_id: str, request_id: str
-    ) -> Response:
+    ) -> JSONResponse | None:
+        """None when the caller submitted ``request_id`` on ``agent_id``."""
         caller = _caller(request)
         if isinstance(caller, JSONResponse):
             return caller
@@ -164,8 +168,35 @@ def build_h2a_router() -> APIRouter:
             return h2a_error(
                 403, "FORBIDDEN", f"agent '{caller}' did not submit request '{request_id}'"
             )
+        return None
 
-        client = state.pool.get_client(agent_id)
+    @router.post("/agent/{agent_id}/request/{request_id}/cancel")
+    async def cancel_subagent_request(
+        request: Request, agent_id: str, request_id: str
+    ) -> Response:
+        refused = await _own_child(request, agent_id, request_id)
+        if refused is not None:
+            return refused
+        try:
+            client = state_from_request(request).pool.get_client(agent_id)
+        except AgentDisabledError as exc:
+            return h2a_error(409, "AGENT_DISABLED", str(exc))
+        try:
+            result = await client.cancel_request(request_id)
+        except AgentUnavailableError as exc:
+            return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
+        except AgentClientError as exc:
+            return h2a_error(502, "AGENT_ERROR", str(exc))
+        return JSONResponse(result)
+
+    @router.get("/agent/{agent_id}/request/{request_id}")
+    async def stream_subagent_request(
+        request: Request, agent_id: str, request_id: str
+    ) -> Response:
+        refused = await _own_child(request, agent_id, request_id)
+        if refused is not None:
+            return refused
+        client = state_from_request(request).pool.get_client(agent_id)
 
         async def _generate() -> AsyncIterator[str]:
             async for event in client.stream_response(request_id):

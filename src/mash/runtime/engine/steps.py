@@ -167,9 +167,14 @@ async def _plan_step_payload(
     trace_id: str,
     host: dict[str, Any] | None = None,
     user_id: str | None = None,
+    parent_kind: str | None = None,
 ) -> dict[str, Any]:
     agent = runtime.build_turn_agent(
-        session_id=session_id, trace_id=trace_id, host=host, user_id=user_id
+        session_id=session_id,
+        trace_id=trace_id,
+        host=host,
+        user_id=user_id,
+        parent_kind=parent_kind,
     )
     try:
         plan = await agent.plan_step(context)
@@ -207,9 +212,14 @@ async def _run_tool_call_payload(
     trace_id: str,
     host: dict[str, Any] | None = None,
     user_id: str | None = None,
+    parent_kind: str | None = None,
 ) -> tuple[ContextToolResult, int]:
     agent = runtime.build_turn_agent(
-        session_id=session_id, trace_id=trace_id, host=host, user_id=user_id
+        session_id=session_id,
+        trace_id=trace_id,
+        host=host,
+        user_id=user_id,
+        parent_kind=parent_kind,
     )
     started_at = time.time()
     try:
@@ -396,8 +406,10 @@ async def load_request_context(
     host = metadata.get("host") or None
     request_context = metadata.get("context")
     user_id = user_id_from_request_metadata(metadata)
+    parent = metadata.get("parent")
+    parent_kind = parent.get("kind") if isinstance(parent, dict) else None
     system_prompt = factory_helpers.resolve_host_system_prompt(
-        runtime, host, request_context
+        runtime, host, request_context, parent_kind=parent_kind
     )
     cortex = runtime.get_cortex()
     if cortex is not None and user_id:
@@ -430,6 +442,7 @@ async def load_request_context(
         "compaction": dict(context_payload.get("compaction") or {}),
         "host": host,
         "user_id": user_id,
+        "parent_kind": parent_kind,
         "loop_index": 0,
         "aggregate_usage": {"input": 0, "output": 0},
         "tool_usage": {},
@@ -476,6 +489,7 @@ async def plan_request_step(
         trace_id=trace_id,
         host=workflow_state.get("host") or None,
         user_id=workflow_state.get("user_id"),
+        parent_kind=workflow_state.get("parent_kind"),
     )
     action_payload = {
         key: value
@@ -544,6 +558,7 @@ async def _execute_and_record_tool_call(
     tool_call: ToolCall,
     host: dict[str, Any] | None,
     user_id: str | None = None,
+    parent_kind: str | None = None,
 ) -> dict[str, Any]:
     """Run one tool call, emitting its started/completed events.
 
@@ -576,6 +591,7 @@ async def _execute_and_record_tool_call(
         trace_id=trace_id,
         host=host,
         user_id=user_id,
+        parent_kind=parent_kind,
     )
     result_payload = _step_tool_result_payload(
         tool_call,
@@ -584,7 +600,7 @@ async def _execute_and_record_tool_call(
     )
     event_type = (
         RuntimeEventType.SUBAGENT_CALL_COMPLETED.value
-        if tool_call.name == "InvokeSubagent"
+        if tool_call.name == "RunSubAgents"
         else RuntimeEventType.TOOL_CALL_COMPLETED.value
     )
     await append_runtime_event(
@@ -633,6 +649,7 @@ async def run_step_tool_call(
         tool_call=tool_call,
         host=workflow_state.get("host") or None,
         user_id=workflow_state.get("user_id"),
+        parent_kind=workflow_state.get("parent_kind"),
     )
     return {
         **dict(workflow_state or {}),
@@ -699,6 +716,7 @@ async def run_step_tool_batch(
     loop_index = int(workflow_state.get("loop_index") or 0)
     host = workflow_state.get("host") or None
     user_id = workflow_state.get("user_id")
+    parent_kind = workflow_state.get("parent_kind")
     tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
@@ -714,6 +732,7 @@ async def run_step_tool_batch(
             tool_call=tool_calls[index],
             host=host,
             user_id=user_id,
+            parent_kind=parent_kind,
         ),
     )
 

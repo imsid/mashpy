@@ -310,6 +310,7 @@ class AgentRuntime:
         trace_id: str,
         host: dict[str, Any] | None = None,
         user_id: str | None = None,
+        parent_kind: str | None = None,
     ) -> Any:
         agent = factory_helpers.build_agent_instance(
             self,
@@ -317,6 +318,8 @@ class AgentRuntime:
             shared_llm=self._shared_llm,
             host=host,
             user_id=user_id,
+            parent_kind=parent_kind,
+            for_request=True,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent
