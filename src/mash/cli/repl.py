@@ -66,7 +66,9 @@ class REPL:
         # Main loop
         while True:
             try:
-                with patch_stdout():
+                # raw: notices that background threads print above the
+                # prompt keep their colors instead of showing escaped codes.
+                with patch_stdout(raw=True):
                     line = session.prompt(
                         [("class:prompt", "> ")],
                         style=prompt_style,

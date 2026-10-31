@@ -139,10 +139,16 @@ class _FakeClient:
             "result": {"digest": "ok"},
         }
 
-    def submit_request(self, agent_id: str, *, message: str, session_id: str, user_id: str):
-        del agent_id, message, session_id
+    def submit_request(
+        self, agent_id: str, *, message: str, session_id: str, user_id: str, mode: str = "fg"
+    ):
+        del agent_id, message, session_id, mode
         self.submitted_user_ids.append(user_id)
         return "req-1"
+
+    def list_session_requests(self, agent_id: str, session_id: str, **filters: Any):
+        del agent_id, session_id, filters
+        return []
 
     def submit_feedback(self, agent_id: str, **kwargs: Any):
         self.feedback.append({"agent_id": agent_id, **kwargs})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from .background import parse_bg_args
 from .commands import Command
 
 
@@ -532,6 +533,20 @@ def register_default_commands(shell) -> None:
             ctx.renderer.info(f"Trace {trace_id}")
             _render_trace(ctx.renderer, data)
 
+    def bg_command(ctx, args: list[str]) -> None:
+        parsed = parse_bg_args(args)
+        if isinstance(parsed, str):
+            ctx.renderer.error(parsed)
+            return
+        if parsed.action == "start":
+            shell.start_background(ctx, parsed.message)
+        elif parsed.action == "list":
+            shell.list_background(ctx)
+        elif parsed.action == "switch":
+            shell.switch_to(ctx, parsed.request_id)
+        else:
+            shell.kill(ctx, parsed.request_id)
+
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))
     )
@@ -579,6 +594,17 @@ def register_default_commands(shell) -> None:
             name="trace",
             help="Show trace analysis for recent traces (/trace [N])",
             handler=trace_command,
+        )
+    )
+    shell.command_registry.register(
+        Command(
+            name="bg",
+            help=(
+                "Run a request in the background, or list, switch to and kill them "
+                "(/bg <message> | --list | --switch <id> | --kill <id>); "
+                "Ctrl-Z sends the streaming request to the background"
+            ),
+            handler=bg_command,
         )
     )
     shell.command_registry.register(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 import uuid
 import webbrowser
 from collections.abc import Callable
@@ -11,13 +12,24 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+from rich.markup import escape
+
 from mash.runtime.events import (
     runtime_event_from_stream_payload,
     runtime_event_response_preview,
 )
 
+from .background import (
+    BackgroundWatchers,
+    MovedToBackground,
+    Notice,
+    ctrl_z_moves_to_background,
+    list_rows,
+    resolve_prefix,
+    short_id,
+)
 from .chain_renderer import ChainOfThoughtRenderer
-from .client import MashHostClient
+from .client import MashHostClient, MashHostClientError
 from .command_log import RemoteCommandEventLogger
 from .commands import Command, CommandRegistry
 from .default_commands import register_default_commands
@@ -73,7 +85,61 @@ class MashRemoteShell:
             host_id=self.target.host_id,
         )
         self._workflow_result_renderers: dict[str, Callable[[dict[str, Any]], None]] = {}
+        # Notices from watcher threads wait while a stream is being read, so
+        # they never land in the middle of the request on screen.
+        self._notice_lock = threading.Lock()
+        self._following = False
+        self._pending_notices: list[Notice] = []
+        self.watchers = BackgroundWatchers(self._watcher_client, self.notify)
         register_default_commands(self)
+
+    def _watcher_client(self) -> Any:
+        copy = getattr(self.client, "copy", None)
+        return copy() if callable(copy) else self.client
+
+    def _render_notice(self, notice: Notice) -> None:
+        # Escaped: Rich would read a short id like "[a1b2c3d4]" as markup.
+        for kind, text in notice:
+            if kind == "markdown":
+                self.renderer.markdown(text)
+            elif kind == "warn":
+                self.renderer.warn(escape(text))
+            elif kind == "error":
+                self.renderer.error(escape(text))
+            else:
+                self.renderer.info(escape(text))
+
+    def notify(self, notice: Notice) -> None:
+        """Print a watcher's notice now, or once the current stream read ends."""
+        with self._notice_lock:
+            if self._following:
+                self._pending_notices.append(notice)
+                return
+        self._render_notice(notice)
+
+    def _set_following(self, following: bool) -> None:
+        with self._notice_lock:
+            self._following = following
+            pending = [] if following else self._pending_notices
+            if not following:
+                self._pending_notices = []
+        for notice in pending:
+            self._render_notice(notice)
+
+    def refresh_watchers(self, ctx: CLIContext) -> None:
+        """Watch the session's running bg requests the user started."""
+        try:
+            records = self.client.list_session_requests(
+                ctx.agent_id,
+                ctx.session_id,
+                mode="bg",
+                status="running",
+                started_by="user",
+            )
+        except Exception as exc:
+            self.renderer.warn(f"Could not list background requests: {exc}")
+            return
+        self.watchers.refresh(records)
 
     def register_command(self, command: Command) -> None:
         self.command_registry.register(command)
@@ -328,13 +394,15 @@ class MashRemoteShell:
                 display = str(response)
             self.renderer.info(f"  Accepted: {display}")
 
-    def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
+    def submit_message(self, ctx: CLIContext, message: str, *, mode: str = "fg") -> str:
+        """Submit a message to the pinned host or agent; returns the request id."""
         if ctx.host_id:
             accepted = self.client.submit_host_request(
                 ctx.host_id,
                 message=message,
                 session_id=ctx.session_id,
                 user_id=ctx.user_id,
+                mode=mode,
             )
             request_id = str(accepted.get("request_id") or "")
             accepted_agent_id = str(accepted.get("agent_id") or "").strip()
@@ -346,48 +414,94 @@ class MashRemoteShell:
                 message=message,
                 session_id=ctx.session_id,
                 user_id=ctx.user_id,
+                mode=mode,
             )
         ctx.last_request_id = request_id or None
+        return request_id
+
+    def handle_repl_message(self, ctx: CLIContext, message: str) -> None:
+        request_id = self.submit_message(ctx, message)
+        try:
+            self.follow_request(ctx, ctx.agent_id, request_id)
+        finally:
+            self.refresh_watchers(ctx)
+
+    def follow_request(
+        self,
+        ctx: CLIContext,
+        agent_id: str,
+        request_id: str,
+        *,
+        child: bool = False,
+    ) -> str:
+        """Read a request's stream from its first event until it ends.
+
+        Answers its interactions and renders its final response. Ctrl-Z stops
+        reading and sends the request to the background; a child, whose mode
+        belongs to the agent that started it, is only left to run. Returns
+        ``completed``, ``cancelled`` or ``backgrounded``.
+        """
         final_payload: dict[str, Any] | None = None
         cancelled = False
+        moved = False
+        self._set_following(True)
         try:
-            for event in self.client.stream_request(ctx.agent_id, request_id):
-                event_name = str(event.get("event") or "")
-                payload = event.get("data")
-                if not isinstance(payload, dict):
-                    continue
+            with ctrl_z_moves_to_background():
+                for event in self.client.stream_request(agent_id, request_id):
+                    event_name = str(event.get("event") or "")
+                    payload = event.get("data")
+                    if not isinstance(payload, dict):
+                        continue
 
-                if event_name == "agent.trace":
-                    self._render_trace_event(payload)
-                    continue
+                    if event_name == "agent.trace":
+                        self._render_trace_event(payload)
+                        continue
 
-                if event_name == "request.interaction.create":
-                    self.handle_interaction(ctx, request_id, payload)
-                    continue
+                    if event_name == "request.interaction.create":
+                        self.handle_interaction(ctx, request_id, payload, agent_id=agent_id)
+                        continue
 
-                if event_name == "request.interaction.ack":
-                    self.render_interaction_ack(payload)
-                    continue
+                    if event_name == "request.interaction.ack":
+                        self.render_interaction_ack(payload)
+                        continue
 
-                if event_name == "request.completed":
-                    final_payload = payload
-                    break
+                    if event_name == "request.completed":
+                        final_payload = payload
+                        break
 
-                if event_name == "request.cancelled":
-                    cancelled = True
-                    break
+                    if event_name == "request.cancelled":
+                        cancelled = True
+                        break
 
-                if event_name == "request.error":
-                    error = payload.get("error")
-                    raise RuntimeError(str(error or "remote request failed"))
+                    if event_name == "request.error":
+                        error = payload.get("error")
+                        raise RuntimeError(str(error or "remote request failed"))
+        except MovedToBackground:
+            moved = True
         finally:
             self.chain_renderer.finish_trace()
+            self._set_following(False)
+
+        if moved:
+            sid = short_id(request_id)
+            if child:
+                self.renderer.info(escape(f"[{sid}] keeps running under its parent"))
+                return "backgrounded"
+            try:
+                self.client.set_request_mode(agent_id, request_id, "bg")
+            except MashHostClientError as exc:
+                self.renderer.warn(
+                    escape(f"[{sid}] could not move to the background: {exc}")
+                )
+            self.renderer.info(escape(f"[{sid}] moved to the background"))
+            self.watchers.watch(agent_id, request_id)
+            return "backgrounded"
 
         if cancelled:
             # A cancelled request is a terminal outcome someone asked for, so
             # the shell reports it and returns to the prompt.
             self.renderer.warn("  Request cancelled.")
-            return
+            return "cancelled"
 
         if final_payload is None:
             raise RuntimeError("stream ended without a terminal event")
@@ -395,15 +509,73 @@ class MashRemoteShell:
         final_session_id = str(final_payload.get("session_id") or "").strip()
         if final_session_id:
             ctx.session_id = final_session_id
-            ctx.session_ids[ctx.agent_id] = final_session_id
+            ctx.session_ids[agent_id] = final_session_id
 
         chain_streamed = self.chain_renderer.take_streamed_text()
         response_obj = final_payload.get("response")
         fallback = str(final_payload.get("text") or "")
         self.render_final_response(ctx, response_obj, fallback, chain_streamed)
+        return "completed"
+
+    def start_background(self, ctx: CLIContext, message: str) -> None:
+        """``/bg <message>``: submit in the background and return to the prompt."""
+        request_id = self.submit_message(ctx, message, mode="bg")
+        self.renderer.info(escape(f"[{short_id(request_id)}] running in the background"))
+        self.watchers.watch(ctx.agent_id, request_id)
+
+    def _background_records(self, ctx: CLIContext) -> list[dict[str, Any]]:
+        return self.client.list_session_requests(ctx.agent_id, ctx.session_id, mode="bg")
+
+    def _resolve(self, ctx: CLIContext, prefix: str) -> dict[str, Any] | None:
+        resolved = resolve_prefix(prefix, self._background_records(ctx))
+        if isinstance(resolved, str):
+            self.renderer.error(escape(resolved))
+            return None
+        return resolved
+
+    def list_background(self, ctx: CLIContext) -> None:
+        """``/bg --list``: the session's bg requests, children under parents."""
+        records = self._background_records(ctx)
+        if not records:
+            self.renderer.warn("No background requests in this session.")
+            return
+        rows = [[escape(cell) for cell in row] for row in list_rows(records)]
+        self.renderer.table(["ID", "Message", "Status", "Started by"], rows)
+
+    def switch_to(self, ctx: CLIContext, prefix: str) -> None:
+        """``/bg --switch <id>``: bring a request to the foreground and follow it."""
+        record = self._resolve(ctx, prefix)
+        if record is None:
+            return
+        request_id = str(record["request_id"])
+        agent_id = str(record.get("agent_id") or ctx.agent_id)
+        child = bool(record.get("parent_request_id"))
+        if not child and record.get("status") == "running":
+            try:
+                self.client.set_request_mode(agent_id, request_id, "fg")
+            except MashHostClientError:
+                # It finished in the meantime; replaying still shows it.
+                pass
+        self.watchers.silence(request_id)
+        try:
+            self.follow_request(ctx, agent_id, request_id, child=child)
+        finally:
+            self.refresh_watchers(ctx)
+
+    def kill(self, ctx: CLIContext, prefix: str) -> None:
+        """``/bg --kill <id>``: cancel a request and its children."""
+        record = self._resolve(ctx, prefix)
+        if record is None:
+            return
+        request_id = str(record["request_id"])
+        self.watchers.silence(request_id)
+        self.client.cancel_request(str(record.get("agent_id") or ctx.agent_id), request_id)
+        self.renderer.warn(escape(f"[{short_id(request_id)}] cancelled"))
 
 
     def run(self) -> None:
+        # A restarted REPL picks up the bg requests still running.
+        self.refresh_watchers(self.context)
         repl = REPL(
             app_id=f"{self.context.agent_id}@remote",
             command_registry=self.command_registry,

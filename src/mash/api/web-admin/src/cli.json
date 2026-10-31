@@ -653,6 +653,17 @@
             "required": false,
             "default": null,
             "choices": null
+          },
+          {
+            "flags": [
+              "--show-thinking"
+            ],
+            "name": "show_thinking",
+            "help": "Print each step's model thinking under that step",
+            "positional": false,
+            "required": false,
+            "default": false,
+            "choices": null
           }
         ],
         "subcommands": []
@@ -950,6 +961,162 @@
             "subcommands": []
           }
         ]
+      },
+      {
+        "name": "browser",
+        "help": "Serve and manage per-user browsers",
+        "args": [],
+        "subcommands": [
+          {
+            "name": "serve",
+            "help": "Run the browser daemon (inside a browser container)",
+            "args": [
+              {
+                "flags": [
+                  "--host"
+                ],
+                "name": "host",
+                "help": "Bind host",
+                "positional": false,
+                "required": false,
+                "default": "0.0.0.0",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--port"
+                ],
+                "name": "port",
+                "help": "Bind port",
+                "positional": false,
+                "required": false,
+                "default": 9000,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--home"
+                ],
+                "name": "home",
+                "help": "The browser's data folder",
+                "positional": false,
+                "required": false,
+                "default": "/home/browser",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--novnc-dir"
+                ],
+                "name": "novnc_dir",
+                "help": "noVNC's web client",
+                "positional": false,
+                "required": false,
+                "default": "/usr/share/novnc",
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--cdp-url"
+                ],
+                "name": "cdp_url",
+                "help": "Use a running Chromium's CDP endpoint instead of starting one",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--mcp-url"
+                ],
+                "name": "mcp_url",
+                "help": "Use a running Playwright MCP's /mcp endpoint instead of starting one",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "ls",
+            "help": "List browsers",
+            "args": [
+              {
+                "flags": [
+                  "--namespace"
+                ],
+                "name": "namespace",
+                "help": "Deployment namespace (or set MASH_SANDBOX_NAMESPACE; default mash)",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "view",
+            "help": "Print a live-view link to a user's browser",
+            "args": [
+              {
+                "flags": [
+                  "user_id"
+                ],
+                "name": "user_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--public-url"
+                ],
+                "name": "public_url",
+                "help": "The address users reach the host at (or set MASH_PUBLIC_URL)",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "stop",
+            "help": "Stop a user's browser; its profile is kept",
+            "args": [
+              {
+                "flags": [
+                  "user_id"
+                ],
+                "name": "user_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--namespace"
+                ],
+                "name": "namespace",
+                "help": "Deployment namespace (or set MASH_SANDBOX_NAMESPACE; default mash)",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          }
+        ]
       }
     ]
   },
@@ -958,6 +1125,11 @@
       {
         "name": "agent",
         "help": "List available agents (host members only when connected through a host)",
+        "aliases": []
+      },
+      {
+        "name": "bg",
+        "help": "Run a request in the background, or list, switch to and kill them (/bg <message> | --list | --switch <id> | --kill <id>); Ctrl-Z sends the streaming request to the background",
         "aliases": []
       },
       {
