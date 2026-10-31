@@ -25,7 +25,7 @@ The system lives entirely inside Mash, opt-in per pool with `HostBuilder.enable_
 
 ### Host
 
-A host is a named composition of agents: one primary and zero or more subagents. It is the unit of deployment and the unit of evaluation. When a user request arrives, the primary agent handles it and can delegate to subagents via the `InvokeSubagent` tool.
+A host is a named composition of agents: one primary and zero or more subagents. It is the unit of deployment and the unit of evaluation. When a user request arrives, the primary agent handles it and can delegate to subagents via the `RunSubAgents` tool.
 
 ```
 Host: travel-assistant

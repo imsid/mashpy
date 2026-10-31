@@ -219,7 +219,7 @@ This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async` 
 Implemented by `run_step_tool_call(...)`, with special handling for:
 
 - **`AskUser`**: Intercepted by `_handle_ask_user_interaction()`. Instead of executing the tool, the workflow emits `runtime.interaction.create`, durably blocks via `DBOS.recv()`, and returns the user's response as a normal tool result. This enables agent-initiated user interaction.
-- **`InvokeSubagent`**: Runs as an ordinary step under a bound request id, `{request_id}-sub-{loop_index}-{call_index}`. The tool submits the subagent request with that id, so a replay or retry of the step resubmits it and idempotent submission reattaches to the request already started.
+- **`RunSubAgents`**: Runs as an ordinary step under a bound prefix, `{request_id}-sub-{loop_index}-{call_index}`. The tool gives its `n`-th child the id `uuid5(namespace, f"{prefix}-{n}")`, so a replay or retry of the step resubmits the same ids and idempotent submission returns the children already running. The step returns once every child has ended or the call's timeout has cancelled the rest.
 
 For all other tools, this step:
 

@@ -30,13 +30,19 @@ This README lists the exposed routes, the common request/response conventions, a
 
 Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `AgentClient` at `{host}/h2a`.
 
+An agent process starts, follows and cancels its `RunSubAgents` children here.
+
 `POST /h2a/agent/{subagent_id}/request`
 - Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot.
-- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id` or `subagent_id` is not in `host.subagents`.
-- Forwards to the subagent's client and returns `202` with the accepted payload.
+- `subagent_id` is the caller itself or one of `host.subagents`; a request without a `host` may target only the caller.
+- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id` or `subagent_id` is not an allowed target.
+- Forwards to the subagent's client, `mode` included, and returns `202` with the accepted payload.
 
 `GET /h2a/agent/{subagent_id}/request/{request_id}`
 - Streams the subagent request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
+
+`POST /h2a/agent/{subagent_id}/request/{request_id}/cancel`
+- Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.
 
 ## Sandbox Relay
 
@@ -195,7 +201,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   reaches the prompt. It is stored on the request (a crash-replayed request
   reruns with the same metadata), bound for the duration of the run so tools
   can read it via `mash.logging.get_request_metadata()`, and inherited by
-  subagent requests made through `InvokeSubagent`.
+  child requests made through `RunSubAgents`.
 - Returns `request_id`, `agent_id` (the primary), `session_id`, and
   `user_id`. Stream
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
@@ -223,6 +229,9 @@ Every call names the request it serves, and the host checks it as the sandbox re
   never reaches the model. Readable during execution via
   `mash.logging.get_request_metadata()` and inherited by subagent requests.
 - Requires a `user_id`, as on the host route.
+- Optionally accepts `mode`: `fg` (the default) when the conversation waits on
+  the request, `bg` when the user keeps talking while it runs. The mode does
+  not change how the request runs.
 - A disabled agent returns `409 AGENT_DISABLED` here and on its other request routes.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
@@ -297,8 +306,10 @@ Every call names the request it serves, and the host checks it as the sandbox re
   execution stops at the next step boundary. A request parked on an
   interaction has that prompt acked as cancelled, and the cancel path emits the
   terminal `runtime.request.cancelled` event (visible as `request.cancelled` on
-  the SSE stream) so streams terminate. Cancel never cascades to subagent
-  children — an already-invoked child runs to completion.
+  the SSE stream) so streams terminate. The host then cancels the request's
+  running `RunSubAgents` children, each through its own agent, skipping a child
+  whose agent is disabled. Splitting is one level deep, so there is no further
+  level to walk. The trace cancel route does the same.
 - Path params:
   - `agent_id`
   - `request_id`
@@ -310,6 +321,13 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Cancelling an already-terminal request is an idempotent no-op that reports the
   current state. Resume the cancelled request to continue from its last
   checkpoint.
+
+`POST /api/v1/agent/{agent_id}/request/{request_id}/mode`
+- Body: `{"mode": "fg" | "bg"}`. Switches a running request's mode and appends
+  `runtime.request.mode_changed`, which the SSE stream shows as `agent.trace`.
+- Returns `request_id`, `agent_id` and `mode`.
+- `409 REQUEST_TERMINAL` once the request is terminal; `404 REQUEST_NOT_FOUND`
+  for an unknown request.
 
 `POST /api/v1/agent/{agent_id}/request/{request_id}/rerun`
 - Starts a previous request over as a brand-new request. Rebuilds from the
@@ -337,6 +355,14 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Path params:
   - `agent_id`
   - `session_id`
+
+`GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests`
+- Lists the session's requests from every agent in it, newest first, read from
+  `runtime_request` on the host.
+- Query params: `mode` (`fg` | `bg`), `status` (`running` | `completed` |
+  `failed` | `cancelled`), `started_by` (`user` or an agent id).
+- Returns `requests`, each with `request_id`, `agent_id`, `message`, `mode`,
+  `status`, `started_by`, `parent_request_id` and `started_at`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}/history`
 - Returns session history turns.

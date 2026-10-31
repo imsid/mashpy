@@ -136,8 +136,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
 Submission is the moment composition takes effect. The server resolves the
 host, routes to its primary, and snapshots `{host_id, primary, subagents}`
 onto the request. For every turn of that request, the primary's system
-prompt carries a directory of exactly those subagents and its
-`InvokeSubagent` tool accepts exactly those ids.
+prompt carries a directory of exactly those subagents, and its
+`RunSubAgents` tool accepts those ids plus the primary's own.
 
 `session_id` is yours to choose. Conversation history lives with the
 primary agent, keyed by agent and session, so sending a later message to
@@ -194,7 +194,7 @@ sequenceDiagram
     H->>C: submit to primary
     API-->>App: request_id, agent_id: concierge
     App->>API: GET /v1/agent/concierge/request/{id}/events
-    C->>H: InvokeSubagent via /h2a relay
+    C->>H: RunSubAgents via /h2a relay
     H->>E: checked against snapshot, forwarded
     API-->>App: SSE: agent.trace, subagent.*, request.completed
 ```

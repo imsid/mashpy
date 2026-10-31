@@ -10,7 +10,7 @@
 
 ## Change Rules
 - Keep tool execution behavior reusable across primary agents and subagents.
-- Preserve the `InvokeSubagent` contract used by runtime host composition.
+- Preserve the `RunSubAgents` contract used by runtime host composition: one entry per item, in order, and a child's failure stays in its entry.
 - If tool schemas or runtime metadata change, update dependent tests and docs together.
 - If `requires_approval` semantics change, update the runtime workflow loop and H2A RFC together.
 

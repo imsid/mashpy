@@ -63,14 +63,15 @@ see `build-mash-workflow` for defining them.
 
 ## How Host Routing Works
 
-Submitting a request to a host routes it to that host's primary and — for
-that request only — wires the primary with an `InvokeSubagent` tool plus a
-directory of the host's subagents, built from their `AgentMetadata`. The
-primary's model reads that directory to decide when to delegate, so
-**delegation quality is a prompt-engineering surface**: vague
+Submitting a request to a host routes it to that host's primary and, for
+that request only, gives the primary a directory of the host's subagents,
+built from their `AgentMetadata`. The primary delegates with `RunSubAgents`,
+which runs one or more child requests at the same time on its subagents or
+on itself. The primary's model reads the directory to decide when to
+delegate, so **delegation quality is a prompt-engineering surface**: vague
 `usage_guidance` produces vague routing. A bare request to the same agent
-(`POST /v1/agent/{agent_id}/request`) gets no directory and no delegation
-tool — the agent answers alone.
+(`POST /v1/agent/{agent_id}/request`) gets no directory, and its
+`RunSubAgents` can run children only on the agent itself.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \

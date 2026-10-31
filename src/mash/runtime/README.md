@@ -166,7 +166,7 @@ The `RuntimeStore` boundary is intentionally small:
 
 This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened.
 
-A request's lifecycle state is one such record, not an inference: the five events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a subagent call's parent and copy its user. The table is a projection of the log and is rebuildable from it. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
+A request's lifecycle state is one such record, not an inference: the five events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a subagent call's parent and copy its user. The accepted event also writes `session_id`, `mode` (`fg` or `bg`), `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`, and `runtime.request.mode_changed` updates `mode` in the same transaction as its append. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log and is rebuildable from it. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
 
 ### Runtime Durability
 
@@ -292,7 +292,7 @@ lifecycle.
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)
-  - subagent tool wiring
+  - `RunSubAgents` wiring on requests the user started; a child gets neither `RunSubAgents` nor `AskUser`
 
 - [`context.py`](./context.py)
   - session history loading
@@ -410,7 +410,9 @@ At a high level, one request flows like this:
    existing accepted payload instead (`AgentServer` answers `200`, not `202`).
    A `parent` object (`kind: "subagent"` or `"workflow"`) is mapped onto the
    request metadata keys the engine reads (`subagent_id`, `workflow_id`,
-   `workflow_run_id`, `task_id`).
+   `workflow_run_id`, `task_id`). The submit's `mode` (`fg` by default) and a
+   `subagent` parent's `started_by` and `parent_request_id` go into the
+   accepted event's payload.
 3. `AgentRuntime` delegates execution start to the configured `RequestEngine`.
 4. The workflow engine runs durable steps from `engine/workflow.py` and `engine/steps.py`.
 5. Those steps load/build context, run think/tool phases, persist turns, and append `RuntimeEvent`s.
@@ -615,7 +617,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 ### Request Status, Cancel, Resume, and Rerun APIs
 
-`AgentRuntime` exposes four methods for inspecting and controlling a request:
+`AgentRuntime` exposes five methods for inspecting and controlling a request:
 
 - `get_request_status(request_id)` — queries the DBOS workflow status directly (not the event log). Returns `pending`, `completed`, `failed`, `cancelled`, or `queued`. Use this when the event stream goes silent after a crash to determine whether the request will be auto-recovered (`pending`) or needs manual intervention (`failed`).
 
@@ -625,6 +627,8 @@ There are three layers of failure handling, each covering a different scenario:
 
   A `failed` request cannot be resumed: `DBOS.resume_workflows` updates only workflows whose status is outside `SUCCESS` and `ERROR`, so the call would be a silent no-op. The method reports the failed status and points at rerun. Resuming a failed request from its last checkpoint would need `DBOS.fork_workflow`, which mints a new workflow id and so breaks the request/workflow/trace 1:1 mapping that `workflow_id_for` assumes.
 
+- `set_request_mode(request_id, mode)` switches a running request between `fg` and `bg` by appending `runtime.request.mode_changed`. It raises `RequestTerminalError` once the request is terminal. The mode tells clients whether the conversation waits on the request; it does not change how the request runs.
+
 - `rerun_request(request_id)` — submits a new request built from the original's `request.accepted` payload (message plus full request metadata, including the host snapshot), with `rerun_of` stamped into the metadata. New request id, new trace, and `context.load` runs fresh against the session's current history. Works regardless of the original's terminal state.
 
 These are also available through `AgentClient` and the HTTP API:
@@ -633,6 +637,9 @@ These are also available through `AgentClient` and the HTTP API:
 - `POST /agent/{agent_id}/request/{request_id}/cancel`
 - `POST /agent/{agent_id}/request/{request_id}/resume`
 - `POST /agent/{agent_id}/request/{request_id}/rerun`
+- `POST /agent/{agent_id}/request/{request_id}/mode` (`409 REQUEST_TERMINAL` once terminal)
+
+On the host, both cancel routes (by request and by trace) also cancel the request's running `RunSubAgents` children, each through its own agent. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `mode`, `status` and `started_by`.
 
 Trace and request are one to one, so the admin UI addresses a request by the trace it is already showing; the same four operations are exposed keyed by trace id, with the request id resolved server-side:
 

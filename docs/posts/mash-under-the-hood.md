@@ -150,7 +150,7 @@ Mash ships with runtime tools that are available to every agent out of the box:
 - **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for when the host has sandboxes; the two file tools copy files in and out of folders the spec declares, and exist only when it declares some
 - **browser_navigate**, **browser_snapshot**, **browser_click** and the rest of Playwright MCP's page tools, plus **browser_save**, **browser_upload** and **browser_handoff**: drive the browser of the user the request acts for, on the sites the spec lists with `browser_sites()`, and exist only for a spec that lists some
 - **AskUserTool**: pause execution to ask the user a question
-- **InvokeSubagent**: delegate work to a registered subagent and stream its response back
+- **RunSubAgents**: run one or more requests at the same time on registered subagents or the agent itself, and return their results in order
 - **search_conversations**: search stored conversation turns and return ranked previews
 - **get_full_turn_message**: expand search results into full turn text
 

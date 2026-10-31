@@ -41,7 +41,7 @@ for step in range(self.config.max_steps):
 The LLM emits tool calls during `plan_step`. The `act` phase executes them. What those calls do covers a wide range:
 
 - **Skills** — a `Skill` meta-tool fetches the relevant markdown instruction bundle and surfaces it back to the LLM as a tool result
-- **Subagent invocation** — `InvokeSubagent` sends a request to another agent in the pool and streams back its output
+- **Subagent invocation** — `RunSubAgents` sends one or more requests to other agents in the pool, or to the agent itself, runs them at the same time and streams back their output
 - **Web search and fetch** — `web_search` and `web_fetch` are registered tools when a web search provider is configured
 - **Remote MCP tools** — tools registered from MCP servers (GitHub, databases, custom servers) are called the same way as local tools
 - **Memory** — `memory_search` and `memory_store` read and write to the agent's memory store

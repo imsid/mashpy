@@ -332,7 +332,7 @@ mash repl --host assistant
 | **Sandbox** | A container per user where agents' code runs, holding that user's workspaces and nothing else |
 | **Browser** | A Chromium per user, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
 | **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
-| **ToolRegistry** | Register callable tools; built-ins include AskUser and InvokeSubagent, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser and RunSubAgents, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |

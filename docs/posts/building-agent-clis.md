@@ -37,9 +37,9 @@ A Mash agent CLI has four layers:
 ```
 
 The pool is the unit of deploy. A host is the unit of composition: it picks
-a primary and a set of subagents from the pool, and the primary gets an
-`InvokeSubagent` tool plus a routing directory for exactly that set, per
-request. The same pool can serve several hosts at once.
+a primary and a set of subagents from the pool, and the primary gets a
+routing directory for exactly that set, per request, and delegates to them
+with `RunSubAgents`. The same pool can serve several hosts at once.
 
 ## Step 1: Define the Pool
 
