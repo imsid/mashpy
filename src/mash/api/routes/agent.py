@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Query, Request
@@ -10,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from mash.runtime import AgentClientError
 from mash.runtime.client import AgentUnavailableError, RequestModeConflictError
 from mash.runtime.errors import RequestStaleError
-from mash.runtime.host.host import AgentInUseError
+from mash.runtime.host.host import AgentDisabledError, AgentInUseError
 from mash.runtime.host.processes import AgentStartError
 from mash.runtime.events import build_reasoning_trace
 from mash.memory.signals import build_default_signal_collector
@@ -39,7 +40,51 @@ from .common import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 _REQUEST_ID_KEYS = ("request_id", "workflow_id")
+
+
+async def _cancel_with_children(
+    request: Request, agent_id: str, request_id: str
+) -> dict[str, Any]:
+    """Cancel a request through its agent, then cancel its running children.
+
+    Children are the requests its RunSubAgents calls started. Each is
+    cancelled through the client for its own agent. Splitting is one level
+    deep, so there is no further level to walk. A child whose agent is
+    disabled is skipped, and so is one that fails to cancel: the parent is
+    already cancelled.
+    """
+    client = get_client(request, agent_id)
+    try:
+        result = await client.cancel_request(request_id)
+    except AgentUnavailableError:
+        raise
+    except (KeyError, AgentClientError) as exc:
+        raise APIError(
+            code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+        ) from exc
+    pool = state_from_request(request).pool
+    store = pool.get_runtime_store()
+    if store is None:
+        return result
+    for child in await store.list_child_requests(request_id, status="running"):
+        child_agent_id = child.get("agent_id")
+        if not child_agent_id:
+            continue
+        try:
+            await pool.get_client(child_agent_id).cancel_request(child["request_id"])
+        except (AgentDisabledError, ValueError):
+            continue
+        except AgentClientError as exc:
+            logger.warning(
+                "could not cancel child request %s of %s: %s",
+                child["request_id"],
+                request_id,
+                exc,
+            )
+    return result
 
 
 def _without_request_ids(payload: dict[str, Any], trace_id: str) -> dict[str, Any]:
@@ -313,7 +358,6 @@ def build_agent_router() -> APIRouter:
     async def cancel_request(
         request: Request, agent_id: str, request_id: str
     ) -> dict[str, Any]:
-        client = get_client(request, agent_id)
         normalized = request_id.strip()
         if not normalized:
             raise APIError(
@@ -321,15 +365,7 @@ def build_agent_router() -> APIRouter:
                 message="request_id is required",
                 status_code=400,
             )
-        try:
-            result = await client.cancel_request(normalized)
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(result)
+        return success(await _cancel_with_children(request, agent_id, normalized))
 
     @router.post("/agent/{agent_id}/request/{request_id}/rerun")
     async def rerun_request(
@@ -557,15 +593,7 @@ def build_agent_router() -> APIRouter:
         request: Request, agent_id: str, trace_id: str
     ) -> dict[str, Any]:
         request_id = await _request_id_for_trace(request, agent_id, trace_id)
-        client = get_client(request, agent_id)
-        try:
-            result = await client.cancel_request(request_id)
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
+        result = await _cancel_with_children(request, agent_id, request_id)
         return success(_without_request_ids(result, trace_id))
 
     @router.post("/agent/{agent_id}/trace/{trace_id}/resume")
