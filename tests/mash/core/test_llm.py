@@ -703,7 +703,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
             steps=[
                 SimpleNamespace(type="user_input", content=[]),
                 SimpleNamespace(
-                    type="function_call", id="call-1", name="InvokeSubagent",
+                    type="function_call", id="call-1", name="RunSubAgents",
                     arguments={"agent": "x"}, signature="sig-abc",
                 ),
             ],
@@ -731,14 +731,14 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
             LLMMessage(role="assistant", content=[
                 LLMContentBlock(type="thinking", data={"thinking": "", "signature": "sig-xyz"}),
                 LLMContentBlock.tool_call(
-                    tool_call_id="call-1", name="InvokeSubagent", arguments={"a": 1},
+                    tool_call_id="call-1", name="RunSubAgents", arguments={"a": 1},
                 ),
             ]),
             LLMMessage(role="tool", content=[
                 LLMContentBlock.tool_result(tool_call_id="call-1", content="done"),
             ]),
         ]
-        steps = provider._messages_to_steps(messages, {"call-1": "InvokeSubagent"})
+        steps = provider._messages_to_steps(messages, {"call-1": "RunSubAgents"})
 
         self.assertEqual(
             [step["type"] for step in steps],

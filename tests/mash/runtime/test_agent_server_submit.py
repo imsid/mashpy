@@ -115,6 +115,22 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(self.runtime.submissions[0]["user_id"], "u@acme.io")
 
+    def test_mode_defaults_to_fg_and_forwards_bg(self) -> None:
+        self._post({"message": "plan it", "session_id": "s-1"})
+        self._post({"message": "plan it", "session_id": "s-1", "mode": "bg"})
+
+        self.assertEqual(
+            [submission["mode"] for submission in self.runtime.submissions], ["fg", "bg"]
+        )
+
+    def test_invalid_mode_returns_400(self) -> None:
+        for mode in ("later", "", None, 1):
+            with self.subTest(mode=mode):
+                resp = self._post({"message": "plan it", "session_id": "s-1", "mode": mode})
+                self.assertEqual(resp.status_code, 400)
+                self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.runtime.submissions, [])
+
     def test_invalid_user_id_returns_400(self) -> None:
         for user_id in ("", "has space", 42, "x" * 256):
             resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": user_id})
@@ -141,7 +157,14 @@ class AgentServerSubmitTests(unittest.TestCase):
 
     def test_forwards_request_id_context_host_and_parent(self) -> None:
         host = {"host_id": "assistant", "primary": "concierge", "subagents": ["agent-a"]}
-        parent = {"kind": "subagent", "request_id": "req_1", "agent_id": "concierge", "session_id": "s-1"}
+        parent = {
+            "kind": "subagent",
+            "request_id": "req_1",
+            "agent_id": "concierge",
+            "session_id": "s-1",
+            "started_by": "concierge",
+            "parent_request_id": "req_1",
+        }
         resp = self._post(
             {
                 "message": "find papers",

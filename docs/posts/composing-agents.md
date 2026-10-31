@@ -1,6 +1,6 @@
 ---
 title: Composing Agents Under One Host
-description: How a flat pool of agents gets composed into hosts, with delegation through InvokeSubagent, per-request role wiring, mirrored traces, and shared infrastructure.
+description: How a flat pool of agents gets composed into hosts, with delegation through RunSubAgents, per-request role wiring, mirrored traces, and shared infrastructure.
 date: 2026-06-10
 author: imsid
 tags:
@@ -52,7 +52,7 @@ Because roles live in the host and not on the agent, the same agent can be the p
 
 Delegation quality is therefore a prompt-engineering surface. Vague `usage_guidance` produces vague routing.
 
-The directory is per-request, not baked into the runtime. A bare request to the same agent (`POST /v1/agent/{agent_id}/request`) gets no directory and no delegation tool — the agent answers alone.
+The directory is per-request, not baked into the runtime. A bare request to the same agent (`POST /v1/agent/{agent_id}/request`) gets no directory, and its delegation tool can only run work on the agent itself.
 
 ## Delegation is a tool call
 
@@ -60,20 +60,32 @@ Alongside the directory, the per-turn build installs one tool on the primary:
 
 ```python
 # src/mash/tools/subagent.py
-class InvokeSubagentTool:
-    name = "InvokeSubagent"
+class RunSubAgentsTool:
+    name = "RunSubAgents"
     parameters = {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", ...},
-            "prompt":   {"type": "string", ...},
-            "opts":     {"type": "object", ...},  # e.g. {"timeout_ms": 30000}
+            "requests": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string", ...},
+                        "prompt": {"type": "string"},
+                        "output_schema": {"type": "object", ...},
+                    },
+                    "required": ["agent_id", "prompt"],
+                },
+            },
+            "timeout_seconds": {"type": "integer", ...},  # defaults to 360
         },
-        "required": ["agent_id", "prompt"],
+        "required": ["requests"],
     }
 ```
 
-Each agent runs in its own process, so invoking it is an HTTP call. The primary's process submits a normal Mash request to the host's `/h2a` relay with the primary's agent token, a `parent` naming the calling request, and the request's host snapshot. The relay refuses an agent id outside the snapshot's subagent list, even if it exists in the pool, and forwards the rest to the subagent's process. The child request goes down the same `submit_request` path and durable workflow as any external request, and the subagent's response streams back through the relay to become the tool result the primary observes on its next think.
+Each item runs as its own child request, and all of them run at the same time. One item hands a task to a subagent. Several items split a large task, and an item's `agent_id` can be the primary's own id, so the primary can run parts of the work itself. The tool returns when every child has ended, with one entry per item in order: the child's request id, its status, and its response or error. A child gets neither `RunSubAgents` nor `AskUser`, so splitting is one level deep.
+
+Each agent runs in its own process, so starting a child is an HTTP call. The primary's process submits a normal Mash request, in `bg` mode, to the host's `/h2a` relay with the primary's agent token, a `parent` naming the calling request, and the request's host snapshot. The relay refuses an agent id that is neither the primary nor in the snapshot's subagent list, even if it exists in the pool, and forwards the rest to the subagent's process. The child request goes down the same `submit_request` path and durable workflow as any external request, and the subagent's response streams back through the relay to become the tool result the primary observes on its next think.
 
 Two details keep this delegation well-behaved:
 
@@ -84,7 +96,7 @@ Two details keep this delegation well-behaved:
 ```mermaid
 flowchart TD
     H["host: pilot\n(primary + subagent ids, /h2a relay)"]
-    P["process: pilot\n(directory + InvokeSubagent, per request)"]
+    P["process: pilot\n(directory + RunSubAgents, per request)"]
     A["process: cli-copilot\nown model, memory scope"]
     B["process: api-copilot"]
     W["workflow-only agents\n(hidden from delegation)"]
@@ -98,7 +110,7 @@ flowchart TD
     A --- PG
 ```
 
-`InvokeSubagent` runs as an ordinary step. The subagent request is its own DBOS workflow, submitted under a request id built from the primary's request id and the call's position (`{request_id}-sub-{loop}-{call}`). A replayed or retried step resubmits that id, and the subagent's runtime returns the request it already started instead of starting a second.
+`RunSubAgents` runs as an ordinary step. Each child request is its own DBOS workflow, submitted under an id derived from the primary's request id, the call's position and the item's index: a UUID5 of `{request_id}-sub-{loop}-{call}-{index}`. A replayed or retried step resubmits those ids, and each child's runtime returns the request it already started instead of starting a second. Cancelling the primary's request cancels its running children.
 
 ## The second registration kind
 

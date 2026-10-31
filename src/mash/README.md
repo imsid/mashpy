@@ -25,8 +25,9 @@
 4. Each agent runs as a subprocess of the host that serves its runtime with `mash.runtime.AgentServer` over HTTP + SSE on a localhost port. The pool starts them through an `AgentProvider` (`AgentProcessProvider`) and keeps one `AgentClient` per agent. Agents can be enabled and disabled on a running host.
 5. Every request acts for a user. The code an agent's model writes runs in that user's sandbox, reached through the host's `/sandbox` relay, and the user opens what it made at links the host serves under `/s/`; a host without a Docker daemon runs and its agents get no sandbox tools. An agent whose spec lists sites drives that user's browser through the host's `/browser` relay, and hands it to the user at a live-view link when a site needs a sign-in.
 6. `mash.api` exposes that host over HTTP, including workflow routes, and `mash.cli` talks to it as a remote client.
-7. Primary agents delegate focused work with `InvokeSubagent`, which calls the subagent through the host's `/h2a` relay.
-8. A pool that calls `HostBuilder.enable_cortex()` keeps per-user memory: each request reads its user's Cortex, and the `cortex-build` workflow builds it on demand.
+7. Agents delegate and split work with `RunSubAgents`, which runs one or more child requests at the same time, on the agent itself or the host's subagents, through the host's `/h2a` relay.
+8. Each request runs in `fg` or `bg` mode. A `bg` request runs the same way while the user keeps talking; the REPL's `/bg` starts, lists, switches to and kills them.
+9. A pool that calls `HostBuilder.enable_cortex()` keeps per-user memory: each request reads its user's Cortex, and the `cortex-build` workflow builds it on demand.
 
 ## Public Entry Points
 - `mash`: top-level authoring exports (`AgentSpec`, `AgentMetadata`, `Host`, `HostBuilder`, `Pool`, `WorkflowSpec`, `CodeStep`, `AgentStep`, `StepContext`).

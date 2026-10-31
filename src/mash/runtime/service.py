@@ -212,6 +212,7 @@ class AgentRuntime:
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
+        mode: str = "fg",
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
@@ -224,7 +225,11 @@ class AgentRuntime:
             metadata=metadata,
             request_id=request_id,
             parent=parent,
+            mode=mode,
         )
+
+    async def set_request_mode(self, request_id: str, mode: str) -> dict[str, Any]:
+        return await request_helpers.set_request_mode(self, request_id, mode)
 
     def describe(self) -> dict[str, Any]:
         """The agent's registered tools and skills."""
@@ -305,6 +310,7 @@ class AgentRuntime:
         trace_id: str,
         host: dict[str, Any] | None = None,
         user_id: str | None = None,
+        parent_kind: str | None = None,
     ) -> Any:
         agent = factory_helpers.build_agent_instance(
             self,
@@ -312,6 +318,8 @@ class AgentRuntime:
             shared_llm=self._shared_llm,
             host=host,
             user_id=user_id,
+            parent_kind=parent_kind,
+            for_request=True,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent

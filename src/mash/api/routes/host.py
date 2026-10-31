@@ -116,6 +116,7 @@ def build_host_router() -> APIRouter:
                 context=body.context,
                 metadata=body.metadata,
                 user_id=require_user_id(body.user_id),
+                mode=body.mode,
             )
         except ValueError as exc:
             raise APIError(

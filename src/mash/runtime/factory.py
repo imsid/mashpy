@@ -18,7 +18,7 @@ from ..browser.sites import check_sites
 from ..tools.browser import browser_tool_names, build_browser_tools
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
-from ..tools.subagent import InvokeSubagentTool
+from ..tools.subagent import RunSubAgentsTool
 from .host.subagents import (
     AgentMetadata,
     append_context_block,
@@ -32,12 +32,17 @@ if TYPE_CHECKING:
 def resolve_host_subagents(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
+    parent_kind: str | None = None,
 ) -> dict[str, AgentMetadata]:
     """Resolve a host snapshot's subagent ids to pool metadata.
 
     Only the host's primary routes to subagents. A subagent request carries the
-    same snapshot, but must not see its siblings or call them.
+    same snapshot, but must not see its siblings or call them. A request a
+    RunSubAgents call started gets none either, even when it runs on the
+    primary itself: splitting is one level deep.
     """
+    if parent_kind == "subagent":
+        return {}
     if not host or host.get("primary") != self.app_id:
         return {}
     subagent_ids = [str(value) for value in host.get("subagents") or []]
@@ -59,19 +64,38 @@ def resolve_host_subagents(
     return resolved
 
 
+def _with_directory(
+    self: "AgentRuntime",
+    base_prompt: SystemPrompt,
+    subagents: dict[str, AgentMetadata],
+) -> SystemPrompt:
+    """Append the RunSubAgents directory, listing this agent first."""
+    if not subagents:
+        return base_prompt
+    access = self.get_subagent_access()
+    own_metadata = access.get_agent_metadata(self.app_id) if access is not None else None
+    return build_subagent_prompt_block(
+        base_prompt,
+        subagents,
+        own_agent_id=self.app_id,
+        own_metadata=own_metadata,
+    )
+
+
 def resolve_host_system_prompt(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
     context: str | None = None,
+    *,
+    parent_kind: str | None = None,
 ) -> SystemPrompt:
     """Render the base prompt with the subagent block and request context.
 
     The subagent routing block is appended first, then any caller-supplied
     per-request ``context`` after it.
     """
-    prompt = build_subagent_prompt_block(
-        self.system_prompt,
-        resolve_host_subagents(self, host),
+    prompt = _with_directory(
+        self, self.system_prompt, resolve_host_subagents(self, host, parent_kind)
     )
     return append_context_block(prompt, context)
 
@@ -123,7 +147,15 @@ def build_agent_instance(
     shared_llm: Any = None,
     host: dict[str, Any] | None = None,
     user_id: str | None = None,
+    parent_kind: str | None = None,
+    for_request: bool = False,
 ) -> Agent:
+    """Build an agent; ``for_request`` builds one for a request's turn.
+
+    A request's agent gets ``RunSubAgents`` unless a ``RunSubAgents`` call
+    started the request, in which case it gets neither ``RunSubAgents`` nor
+    ``AskUser``: the user talks to the calling agent, not its children.
+    """
     tools = self.definition.build_tools()
     skills = getattr(self, "skills", None) or self.definition.build_skills()
     llm = shared_llm if shared_llm is not None else self.definition.build_llm()
@@ -142,11 +174,9 @@ def build_agent_instance(
     base_prompt = getattr(self, "system_prompt", None)
     if base_prompt is not None:
         config.system_prompt = base_prompt
-    host_subagents = resolve_host_subagents(self, host)
+    host_subagents = resolve_host_subagents(self, host, parent_kind)
     if host_subagents:
-        config.system_prompt = build_subagent_prompt_block(
-            config.system_prompt, host_subagents
-        )
+        config.system_prompt = _with_directory(self, config.system_prompt, host_subagents)
 
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
     register_sandbox_tools(self, agent)
@@ -172,8 +202,19 @@ def build_agent_instance(
     web_search = self.definition.build_web_search()
     if web_search is not None:
         configure_web_search_tools(self, agent, web_search)
-    if host_subagents and host is not None:
-        configure_subagent_tools(self, agent, session_id=session_id, host=host)
+    if for_request:
+        if parent_kind == "subagent":
+            for name in ("RunSubAgents", "AskUser"):
+                if name in agent.tools:
+                    agent.tools.unregister(name)
+        else:
+            configure_run_subagents(
+                self,
+                agent,
+                session_id=session_id,
+                host=host,
+                subagent_ids=set(host_subagents),
+            )
     return agent
 
 
@@ -308,35 +349,47 @@ def configure_web_search_tools(
         return
 
 
-def configure_subagent_tools(
+def configure_run_subagents(
     self: "AgentRuntime",
     agent: Agent,
     *,
     session_id: str,
-    host: dict[str, Any],
+    host: dict[str, Any] | None,
+    subagent_ids: set[str],
 ) -> None:
+    """Register ``RunSubAgents`` for a request the user started.
+
+    Its children may run on this agent or on the host's subagents. Without
+    subagent access (a runtime outside a host) there is no route to any
+    child, so the tool is not registered.
+    """
     access = self.get_subagent_access()
     if access is None:
-        raise RuntimeError(
-            f"agent '{self.app_id}' received a host snapshot but has no subagent access"
-        )
-    host_id = str(host.get("host_id") or "")
-    allowed = {str(value) for value in host.get("subagents") or []}
+        if subagent_ids:
+            raise RuntimeError(
+                f"agent '{self.app_id}' received a host snapshot but has no subagent access"
+            )
+        return
+    host_id = str((host or {}).get("host_id") or "")
+    allowed = {self.app_id, *subagent_ids}
 
     def client_resolver(agent_id: str) -> Any:
         if agent_id not in allowed:
+            if host_id:
+                raise ValueError(f"agent '{agent_id}' is not in host '{host_id}'")
             raise ValueError(
-                f"subagent '{agent_id}' is not in host '{host_id}'"
+                f"agent '{agent_id}' is not available; without a host, "
+                f"RunSubAgents runs only on '{self.app_id}'"
             )
         return access.get_client(agent_id)
 
-    if "InvokeSubagent" in agent.tools:
-        agent.tools.unregister("InvokeSubagent")
+    if "RunSubAgents" in agent.tools:
+        agent.tools.unregister("RunSubAgents")
     agent.tools.register(
-        InvokeSubagentTool(
+        RunSubAgentsTool(
             client_resolver=client_resolver,
-            primary_app_id=self.app_id,
-            primary_session_id=session_id,
+            caller_agent_id=self.app_id,
+            session_id=session_id,
             host=host,
             event_logger=self.get_event_logger(),
         )

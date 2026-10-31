@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Optional
+import logging
+from typing import Any, AsyncIterator, Literal, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.runtime import AgentClientError
-from mash.runtime.client import AgentUnavailableError
+from mash.runtime.client import AgentUnavailableError, RequestModeConflictError
 from mash.runtime.errors import RequestStaleError
-from mash.runtime.host.host import AgentInUseError
+from mash.runtime.host.host import AgentDisabledError, AgentInUseError
 from mash.runtime.host.processes import AgentStartError
 from mash.runtime.events import build_reasoning_trace
 from mash.memory.signals import build_default_signal_collector
@@ -20,6 +21,8 @@ from mash.runtime.structured_output import serialize_structured_output
 from .common import (
     APIError,
     CompactSessionRequest,
+    RequestModeValue,
+    SetRequestModeRequest,
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
@@ -37,7 +40,51 @@ from .common import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 _REQUEST_ID_KEYS = ("request_id", "workflow_id")
+
+
+async def _cancel_with_children(
+    request: Request, agent_id: str, request_id: str
+) -> dict[str, Any]:
+    """Cancel a request through its agent, then cancel its running children.
+
+    Children are the requests its RunSubAgents calls started. Each is
+    cancelled through the client for its own agent. Splitting is one level
+    deep, so there is no further level to walk. A child whose agent is
+    disabled is skipped, and so is one that fails to cancel: the parent is
+    already cancelled.
+    """
+    client = get_client(request, agent_id)
+    try:
+        result = await client.cancel_request(request_id)
+    except AgentUnavailableError:
+        raise
+    except (KeyError, AgentClientError) as exc:
+        raise APIError(
+            code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+        ) from exc
+    pool = state_from_request(request).pool
+    store = pool.get_runtime_store()
+    if store is None:
+        return result
+    for child in await store.list_child_requests(request_id, status="running"):
+        child_agent_id = child.get("agent_id")
+        if not child_agent_id:
+            continue
+        try:
+            await pool.get_client(child_agent_id).cancel_request(child["request_id"])
+        except (AgentDisabledError, ValueError):
+            continue
+        except AgentClientError as exc:
+            logger.warning(
+                "could not cancel child request %s of %s: %s",
+                child["request_id"],
+                request_id,
+                exc,
+            )
+    return result
 
 
 def _without_request_ids(payload: dict[str, Any], trace_id: str) -> dict[str, Any]:
@@ -156,8 +203,38 @@ def build_agent_router() -> APIRouter:
             structured_output=structured_output,
             metadata=body.metadata,
             user_id=require_user_id(body.user_id),
+            mode=body.mode,
         )
         return success({"request_id": request_id})
+
+    @router.post("/agent/{agent_id}/request/{request_id}/mode")
+    async def set_request_mode(
+        request: Request,
+        agent_id: str,
+        request_id: str,
+        body: SetRequestModeRequest,
+    ) -> dict[str, Any]:
+        client = get_client(request, agent_id)
+        normalized = request_id.strip()
+        if not normalized:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="request_id is required",
+                status_code=400,
+            )
+        try:
+            result = await client.set_request_mode(normalized, body.mode)
+        except RequestModeConflictError as exc:
+            raise APIError(
+                code="REQUEST_TERMINAL", message=str(exc), status_code=409
+            ) from exc
+        except AgentUnavailableError:
+            raise
+        except AgentClientError as exc:
+            raise APIError(
+                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
+        return success(result)
 
     @router.get("/agent/{agent_id}/request/{request_id}/events")
     async def stream_request_events(
@@ -281,7 +358,6 @@ def build_agent_router() -> APIRouter:
     async def cancel_request(
         request: Request, agent_id: str, request_id: str
     ) -> dict[str, Any]:
-        client = get_client(request, agent_id)
         normalized = request_id.strip()
         if not normalized:
             raise APIError(
@@ -289,15 +365,7 @@ def build_agent_router() -> APIRouter:
                 message="request_id is required",
                 status_code=400,
             )
-        try:
-            result = await client.cancel_request(normalized)
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(result)
+        return success(await _cancel_with_children(request, agent_id, normalized))
 
     @router.post("/agent/{agent_id}/request/{request_id}/rerun")
     async def rerun_request(
@@ -366,6 +434,46 @@ def build_agent_router() -> APIRouter:
                 model=settings["model"],
                 max_steps=settings["max_steps"],
             )
+        )
+
+    @router.get("/agent/{agent_id}/sessions/{session_id}/requests")
+    async def list_session_requests(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        mode: Optional[RequestModeValue] = Query(default=None),
+        status: Optional[
+            Literal["running", "completed", "failed", "cancelled"]
+        ] = Query(default=None),
+        started_by: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        """The session's requests, newest first, from every agent in it."""
+        store = get_runtime_store(request, require_agent_id(agent_id))
+        records = await store.list_session_requests(
+            require_session_id(session_id),
+            mode=mode,
+            status=status,
+            started_by=started_by,
+        )
+        return success(
+            {
+                "requests": [
+                    {
+                        key: record.get(key)
+                        for key in (
+                            "request_id",
+                            "agent_id",
+                            "message",
+                            "mode",
+                            "status",
+                            "started_by",
+                            "parent_request_id",
+                            "started_at",
+                        )
+                    }
+                    for record in records
+                ]
+            }
         )
 
     @router.get("/agent/{agent_id}/sessions/{session_id}/history")
@@ -485,15 +593,7 @@ def build_agent_router() -> APIRouter:
         request: Request, agent_id: str, trace_id: str
     ) -> dict[str, Any]:
         request_id = await _request_id_for_trace(request, agent_id, trace_id)
-        client = get_client(request, agent_id)
-        try:
-            result = await client.cancel_request(request_id)
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
+        result = await _cancel_with_children(request, agent_id, request_id)
         return success(_without_request_ids(result, trace_id))
 
     @router.post("/agent/{agent_id}/trace/{trace_id}/resume")

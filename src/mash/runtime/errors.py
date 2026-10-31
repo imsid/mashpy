@@ -12,6 +12,13 @@ log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
+class RequestTerminalError(RuntimeError):
+    """A request's mode cannot change once it has finished.
+
+    Mode only changes while the request runs. The API maps this to HTTP 409.
+    """
+
+
 class RequestStaleError(RuntimeError):
     """A request cannot be resumed because its session has moved on.
 

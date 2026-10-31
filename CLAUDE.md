@@ -72,7 +72,8 @@ agent's and each sandbox's token.
   a restart.
 - **ToolRegistry / Tool** — register callable tools the agent can use.
   Tools implement `name`, `description`, `parameters` (JSON schema),
-  `requires_approval`, and `async execute(args) -> ToolResult`.
+  `requires_approval`, `async execute(args) -> ToolResult`, and
+  `to_llm_format()`.
 - **SkillRegistry / Skill** — optional markdown instruction bundles loaded
   on demand via a meta-`Skill` tool.
 - **LLMProvider** — abstract LLM contract. Shipped adapters:
@@ -327,6 +328,14 @@ class MyTool:
         result = do_something(args["query"])
         return ToolResult.success(result)
 
+    def to_llm_format(self):
+        # The registry calls this to describe the tool to the model.
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters,
+        }
+
 # Register it:
 tools = ToolRegistry()
 tools.register(MyTool())
@@ -345,7 +354,7 @@ Tool calls a model emits together in one turn run concurrently by default, on
 both the in-process loop and the durable runtime. A tool opts out by setting
 `parallel_safe = False` (the default is `True`), which makes it run alone as a
 barrier — nothing in the turn runs concurrently with it. Approval-gated tools,
-`AskUser`, and `InvokeSubagent` are always serialized. Calls run in order, with
+`AskUser`, and `RunSubAgents` are always serialized. Calls run in order, with
 each maximal run of consecutive parallel-safe calls dispatched together (capped
 by `max_parallel_tools`); on the durable runtime that run executes as one atomic
 step. A failing tool is captured as an error result and never aborts the other
@@ -564,12 +573,32 @@ pool = (
 )
 ```
 
-Submitting a request to a host wires the primary with an `InvokeSubagent`
-tool and a prompt block describing that host's subagents — for that request
-only. The same agent can be primary in one host and a subagent in another.
-The primary's process calls a subagent through the host's `/h2a` relay, which
-checks the call against the request's composition and forwards it to the
-subagent's process.
+Every request the user starts gets a `RunSubAgents` tool. Submitting a
+request to a host also gives the primary a directory in its prompt, for that
+request only: the primary itself, marked `(you)`, then the host's subagents,
+each from its `AgentMetadata`, with guidance to split a task only when its
+parts do not depend on each other. The same agent can be primary in one
+host and a subagent in another.
+
+`RunSubAgents(requests=[{agent_id, prompt, output_schema?}], timeout_seconds)`
+runs each item as its own child request, all at the same time, and returns
+when all of them are done. An item's `agent_id` is one of the host's
+subagents or the calling agent itself, so one item hands a task to a subagent
+and several split a large task into parts. Without a host, the agent can run
+children only on itself. The result has one entry per item, in order: the
+child's `request_id`, its `status` (`completed`, `failed`, `cancelled` or
+`timed_out`), and its response, structured output or error. One child's
+failure stays in its entry. `timeout_seconds` defaults to 360; when it passes,
+the tool cancels the children still running.
+
+Each child is a `bg` request in the calling request's session, started by the
+calling agent, with `parent_request_id` set to the calling request. Its turn
+stays out of the session's replayed history. A child gets neither
+`RunSubAgents` nor `AskUser`: splitting is one level deep, and the user talks
+to the calling agent. The calling agent's process starts children through the
+host's `/h2a` relay, which checks each against the request's composition and
+forwards it to the child agent's process. Cancelling a request cancels its
+running children.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
@@ -638,6 +667,35 @@ to a disabled agent returns `409 AGENT_DISABLED`; requests in flight stay
 pending and continue when the agent is enabled. The enabled set is in memory
 and resets on restart. Adding an agent that is not in `build_pool()` takes a
 deploy.
+
+## Background Requests
+
+Every request runs in one of two modes. In `fg` the conversation waits on it;
+in `bg` the user keeps talking and the client reports it when it finishes,
+fails or needs input. The mode does not change how the request runs: a `bg`
+request runs the same agent loop, saves its turn when it finishes, and can be
+resumed, cancelled and answered like any other.
+
+Submit bodies take `mode` (`fg` by default). `POST
+/api/v1/agent/{agent_id}/request/{request_id}/mode` with `{"mode": "bg"}` or
+`{"mode": "fg"}` switches a running request and returns `409` once it has
+finished. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists
+a session's requests newest first, filtered by `mode`, `status` and
+`started_by` (`user`, or the agent that started a `RunSubAgents` child).
+
+In the REPL:
+
+```bash
+› /bg set a timer for 2 mins     # submit in the background, back to the prompt
+› /bg --list                     # the session's bg requests, children under parents
+› /bg --switch a1b2c3d4          # bring one to the foreground, replay and follow it
+› /bg --kill a1b2c3d4            # cancel it and its children
+```
+
+Ctrl-Z while a request streams sends it to the background. Ids are the first
+8 characters of the request id, and any unique prefix works. While the prompt
+is idle, the REPL prints when each `bg` request you started is done, fails,
+is cancelled or needs input (`/bg --switch` to answer).
 
 ## Workflows
 

@@ -17,8 +17,9 @@ from ..logging.trace_context import (
     get_workflow_id,
     get_workflow_run_id,
 )
-from .errors import RequestStaleError, classify_error
-from .events import RequestStatus, RuntimeEvent, RuntimeEventType
+from .errors import RequestStaleError, RequestTerminalError, classify_error
+from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
+from .events.types import STARTED_BY_USER
 from .structured_output import serialize_structured_output
 
 if TYPE_CHECKING:
@@ -51,6 +52,12 @@ def validate_user_id(user_id: Any) -> str:
     return user_id
 
 
+def validate_mode(mode: Any) -> str:
+    if mode not in {m.value for m in RequestMode}:
+        raise ValueError("mode must be 'fg' or 'bg'")
+    return str(mode)
+
+
 def _require_str(parent: dict[str, Any], key: str) -> str:
     value = parent.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -79,7 +86,15 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             "agent_id": _require_str(parent, "agent_id"),
             "session_id": _require_str(parent, "session_id"),
             "invoke_opts": dict(invoke_opts),
+            "started_by": _require_str(parent, "started_by"),
+            "parent_request_id": _require_str(parent, "parent_request_id"),
         }
+        # The child's row records who started it and from which request;
+        # both name the parent, so they must agree with it.
+        if normalized["started_by"] != normalized["agent_id"]:
+            raise ValueError("parent.started_by must be parent.agent_id")
+        if normalized["parent_request_id"] != normalized["request_id"]:
+            raise ValueError("parent.parent_request_id must be parent.request_id")
         return {
             "parent": normalized,
             "primary_session_id": normalized["session_id"],
@@ -141,11 +156,13 @@ async def submit_request(
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
+    mode: str = RequestMode.FG.value,
 ) -> dict[str, Any]:
     """Submit one request. A known ``request_id`` returns the existing request."""
     if request_id is not None:
         validate_request_id(request_id)
     validate_user_id(user_id)
+    validate_mode(mode)
     normalized_structured_output = serialize_structured_output(structured_output)
     # ``user_id`` is caller context like ``metadata``: stored with the
     # request, never shown to the model.
@@ -166,6 +183,7 @@ async def submit_request(
         session_id=session_id,
         request_metadata=request_metadata,
         request_id=request_id,
+        mode=mode,
     )
 
 
@@ -176,6 +194,7 @@ async def _submit_request(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
+    mode: str = RequestMode.FG.value,
 ) -> dict[str, Any]:
     self.require_open()
     if not isinstance(session_id, str):
@@ -204,6 +223,7 @@ async def _submit_request(
             session_id=target_session_id,
             request_metadata=request_metadata,
             request_id=request_id,
+            mode=mode,
         )
 
 
@@ -285,10 +305,17 @@ async def _submit_request_inner(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
+    mode: str = RequestMode.FG.value,
 ) -> dict[str, Any]:
     target_session_id = session_id
     request_id = request_id or str(uuid.uuid4())
     workflow_id = f"{self.app_id}:{request_id}"
+    started_by = STARTED_BY_USER
+    parent_request_id = None
+    parent = (request_metadata or {}).get("parent")
+    if isinstance(parent, dict) and parent.get("kind") == "subagent":
+        started_by = str(parent.get("started_by") or parent.get("agent_id"))
+        parent_request_id = parent.get("parent_request_id") or parent.get("request_id")
     accepted_event = await append_runtime_event(
         self,
         RuntimeEvent(
@@ -304,6 +331,9 @@ async def _submit_request_inner(
                 "message": message,
                 "initial_session_id": target_session_id,
                 "request_metadata": dict(request_metadata or {}),
+                "mode": mode,
+                "started_by": started_by,
+                "parent_request_id": parent_request_id,
             },
         ),
     )
@@ -337,6 +367,51 @@ async def _submit_request_inner(
         )
         raise
     return to_public_event(accepted_event)["data"]
+
+
+async def set_request_mode(
+    self: "AgentRuntime",
+    request_id: str,
+    mode: str,
+) -> dict[str, Any]:
+    """Switch a running request between ``fg`` and ``bg``.
+
+    Raises ``KeyError`` for an unknown request and ``RequestTerminalError``
+    once the request has finished.
+    """
+    self.require_open()
+    validate_mode(mode)
+    events = await self.runtime_store.list_request_events(request_id)
+    accepted = next(
+        (
+            e
+            for e in events
+            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+        ),
+        None,
+    )
+    if accepted is None or accepted.agent_id != self.app_id:
+        raise KeyError(request_id)
+    status = await self.runtime_store.get_request_lifecycle(request_id)
+    if status is not None and status.terminal:
+        raise RequestTerminalError(
+            f"request '{request_id}' is {status.value}; its mode cannot change"
+        )
+    # No dedupe key: a request can switch any number of times, and seq
+    # orders the switches.
+    await append_runtime_event(
+        self,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=self.app_id,
+            agent_id=self.app_id,
+            trace_id=next((e.trace_id for e in events if e.trace_id), None),
+            session_id=accepted.session_id,
+            event_type=RuntimeEventType.REQUEST_MODE_CHANGED.value,
+            payload={"mode": mode},
+        ),
+    )
+    return {"request_id": request_id, "agent_id": self.app_id, "mode": mode}
 
 
 async def stream_response_events(

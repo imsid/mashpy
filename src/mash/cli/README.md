@@ -98,6 +98,20 @@ Notes
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the shell's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
+- `/bg <message>`: submit the message with `mode: bg` and return to the prompt.
+- `/bg --list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child is indented under the request that started it.
+- `/bg --switch <id>`: switch a request to `fg`, replay its events from the start, then follow it live and answer its interactions. Switching to a child shows its events and leaves it `bg`.
+- `/bg --kill <id>`: cancel a request and its children.
+
+`/bg --switch` and `/bg --kill` take any unique prefix of the request id.
+Ctrl-Z while a request streams switches it to `bg` and returns to the prompt;
+at the prompt Ctrl-Z keeps its default behavior. While the prompt is idle, the
+shell follows each running `bg` request you started and prints
+`[a1b2c3d4] done` with the response, `failed: <error>`, `cancelled`, or
+`needs your input: /bg --switch a1b2c3d4`. It reads the session's `bg`
+requests when it starts and after each foreground request, so a restarted
+shell picks up the ones still running. Children are not announced; their
+results reach you through the request that started them.
 
 When a request waits on an interaction, the shell asks for the answer in place.
 For a `browser` handoff it prints the prompt and the live-view link, opens the
@@ -116,6 +130,7 @@ slow or unreachable.
 - `client.py`: HTTP client used to talk to hosted Mash agents.
 - `shell.py`: streamed remote shell UX, runtime-event rendering, and subagent event rendering.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in shell commands.
+- `background.py`: `/bg` parsing, id prefixes, the `--list` tree, the Ctrl-Z handler, and the threads that follow `bg` requests while the prompt is idle.
 - `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained/subagent output.
 - `config.py`, `repl.py`, and `types.py`: saved connection config and shell state types.
 

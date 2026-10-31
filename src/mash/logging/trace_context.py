@@ -36,8 +36,8 @@ _request_metadata: contextvars.ContextVar[dict[str, Any] | None] = (
         default=None,
     )
 )
-_subagent_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "mash_subagent_request_id",
+_subagent_id_prefix: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_subagent_id_prefix",
     default=None,
 )
 
@@ -92,24 +92,24 @@ def bound_request_id(request_id: Optional[str]) -> Iterator[None]:
         _request_id.reset(token)
 
 
-def get_subagent_request_id() -> Optional[str]:
-    """Get the request id the current InvokeSubagent call submits under.
+def get_subagent_id_prefix() -> Optional[str]:
+    """Get the prefix the current RunSubAgents call derives its child ids from.
 
-    The durable loop binds it from the primary request id and the call's
-    position, so a replayed or retried call resubmits the same id and
-    reattaches to the subagent request it already started.
+    The durable loop binds it from the calling request id and the call's
+    position, so a replayed or retried call derives the same ids and gets
+    back the children it already started.
     """
-    return _subagent_request_id.get()
+    return _subagent_id_prefix.get()
 
 
 @contextmanager
-def bound_subagent_request_id(request_id: Optional[str]) -> Iterator[None]:
-    """Bind the deterministic child request id for one subagent invocation."""
-    token = _subagent_request_id.set(request_id)
+def bound_subagent_id_prefix(prefix: Optional[str]) -> Iterator[None]:
+    """Bind the child id prefix for one RunSubAgents call."""
+    token = _subagent_id_prefix.set(prefix)
     try:
         yield
     finally:
-        _subagent_request_id.reset(token)
+        _subagent_id_prefix.reset(token)
 
 
 def get_session_id() -> Optional[str]:

@@ -9,6 +9,8 @@
   var AGENT = "assistant";
   var RID = "req-7f3a";
   var WFID = AGENT + ":" + RID;
+  // The child's id: uuid5 of the call's prefix and the item's index.
+  var CHILD = "9b2e51c0-…";
   var TRACE = "tr-91c2";
   var ITR = "itr_4be19c0a7d21";
 
@@ -454,39 +456,43 @@
       kind: "step",
       tag: "run_step_async",
       call:
-        'with bound_subagent_request_id("' + RID + '-sub-0-0"): ' +
+        'with bound_subagent_id_prefix("' + RID + '-sub-0-0"): ' +
         'retry_transient(lambda: DBOS.run_step_async({"name": "tool.call.0.0"}, run_step_tool_call, ...))',
       fn: link("_run_tool_call_for_workflow", "runtime/engine/workflow.py"),
       retry: RETRY,
       reattaches: true,
-      records: code("workflow_state") + " with the subagent's answer appended to " +
+      records: code("workflow_state") + " with the child's answer appended to " +
         code("result_payloads"),
       body:
-        "<p>" + code("InvokeSubagent") + " runs as an ordinary step. The workflow " +
-        "binds a request id built from the parent id, the loop index, and the " +
-        "call index: " + code(RID + "-sub-0-0") + ".</p>" +
+        "<p>" + code("RunSubAgents") + " runs as an ordinary step. The workflow " +
+        "binds a prefix built from the parent id, the loop index, and the " +
+        "call index: " + code(RID + "-sub-0-0") + ". The tool gives its first " +
+        "child the id " + code(CHILD) + ", a UUID5 of " + code(RID + "-sub-0-0-0") +
+        ".</p>" +
         "<p>The tool POSTs that id to the host's " + code("/h2a") + " relay with " +
-        "a " + code("parent") + " naming this request and the request's host " +
-        "snapshot. The host checks that " + code("research") + " is in the " +
-        "snapshot and forwards the call to research's process, which starts its " +
-        "own workflow " + code("research:" + RID + "-sub-0-0") +
+        code("mode: bg") + ", a " + code("parent") + " naming this request, and " +
+        "the request's host snapshot. The host checks that " + code("research") +
+        " is in the snapshot and forwards the call to research's process, which " +
+        "starts its own workflow " + code("research:" + CHILD) +
         " with its own steps:</p>" +
         '<ol class="mv-nested">' +
         child.map(function (n) { return "<li>" + code(n) + "</li>"; }).join("") +
         "</ol>" +
-        "<p>The subagent runs in the parent's session, and its turn is saved with " +
-        code("replayable = false") + ". The tool streams the subagent's events " +
+        "<p>The child runs in the parent's session, and its turn is saved with " +
+        code("replayable = false") + ". The tool streams the child's events " +
         "through the relay until a terminal event, and the answer becomes the " +
-        "tool result. The parent appends " + code("runtime.subagent.call.completed") +
+        "child's entry in the tool result. With several items, the tool submits " +
+        "all of them first and waits on their streams together. The parent " +
+        "appends " + code("runtime.subagent.call.completed") +
         " in place of " + code("runtime.tool.call.completed") + ".</p>" +
-        "<p>If this step runs again, it resubmits the same request id. Research's " +
+        "<p>If this step runs again, it resubmits the same child id. Research's " +
         "process returns the request it already started instead of starting a " +
         "second, and the stream replays from the first event.</p>",
       events: [
         ev("runtime.tool.call.started", "tool.call.started.0.call_s1"),
         ev("runtime.subagent.call.completed", "tool.call.0.call_s1"),
       ],
-      state: { result_payloads: "[InvokeSubagent: ok, research answer]" },
+      state: { result_payloads: "[RunSubAgents: ok, [research: completed, answer]]" },
       map: ["dbos", "wf", "agent", "tools", "pg-status", "pg-ops", "pg-events"],
     };
   }
@@ -659,10 +665,10 @@
           startFrame(),
           contextFrame(),
           planFrame(0, {
-            calls: [{ id: "call_s1", name: "InvokeSubagent" }],
+            calls: [{ id: "call_s1", name: "RunSubAgents" }],
             action:
-              '{type: "tool_call", tool_calls: [InvokeSubagent {agent_id: ' +
-              '"research", ...} (parallel_safe: false)]}',
+              '{type: "tool_call", tool_calls: [RunSubAgents {requests: ' +
+              '[{agent_id: "research", ...}]} (parallel_safe: false)]}',
             usage: USAGE0,
           }),
           subagentFrame(),
@@ -804,7 +810,7 @@
     } else if (f.reattaches) {
       note =
         "No recorded output, so the step runs again and resubmits " +
-        code(RID + "-sub-0-0") + ". Research's process already has that " +
+        code(CHILD) + ". Research's process already has that " +
         "request, so it returns it instead of starting a second; the subagent " +
         "continues from its own checkpoints and the stream replays from its " +
         "first event. The repeated " + code("tool.call.started") +

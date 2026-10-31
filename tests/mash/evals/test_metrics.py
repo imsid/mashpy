@@ -36,7 +36,7 @@ class ComputeRowMetricsTests(unittest.TestCase):
             _ev("pilot", "runtime.request.accepted", 100.0),
             _ev("pilot", "runtime.llm.think.started", 100.1),  # ignored
             _llm("pilot", 101.0, i=300, o=50, cr=1000),
-            _ev("pilot", "runtime.tool.call.started", 101.5, tool_name="InvokeSubagent"),
+            _ev("pilot", "runtime.tool.call.started", 101.5, tool_name="RunSubAgents"),
             _ev("helper", "runtime.request.accepted", 101.6),
             _llm("helper", 102.0, i=4000, o=200, finish="tool_use"),
             _ev("helper", "runtime.tool.call.started", 102.1, tool_name="bash"),
@@ -62,7 +62,7 @@ class ComputeRowMetricsTests(unittest.TestCase):
         self.assertEqual(m.tokens.input, 300 + 350 + 4000)
         self.assertEqual(m.tokens.output, 50 + 90 + 200)
         self.assertEqual(m.tokens.cache_read, 1000 + 1200)
-        self.assertEqual(m.tool_call_breakdown, {"InvokeSubagent": 1, "bash": 2})
+        self.assertEqual(m.tool_call_breakdown, {"RunSubAgents": 1, "bash": 2})
 
     def test_wall_clock_latency(self) -> None:
         m = compute_row_metrics(self._session(), primary_agent_id="pilot")

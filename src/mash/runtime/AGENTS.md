@@ -21,7 +21,7 @@
 - Keep host composition, transport, request coordination, and runtime lifecycle logic in this package.
 - If hosted request lifecycle, replay semantics, or `RuntimeEventType` changes, update runtime docs and tests together.
 - If storage contracts or store lifecycle ownership change, update `AgentSpec` docs and the runtime README Stores section.
-- Preserve `InvokeSubagent` integration and subagent prompt injection behavior used by the host.
+- Preserve `RunSubAgents` integration and subagent prompt injection behavior used by the host. A child request (a `subagent` parent) gets neither `RunSubAgents` nor `AskUser`.
 - If runtime control APIs or session semantics change, update downstream API and CLI tests together.
 - If interaction types or schemas change, update the H2A RFC (`docs/rfcs/host-to-agent-protocol.md`) and client/server together.
 

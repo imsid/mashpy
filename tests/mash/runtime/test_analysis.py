@@ -149,7 +149,7 @@ class TraceAnalysisTests(unittest.TestCase):
                 "duration_ms": 400, "action_type": "tool_call",
             }),
             _event(3, RuntimeEventType.SUBAGENT_CALL_COMPLETED.value, 3.0, loop_index=0, payload={
-                "duration_ms": 1200, "tool_name": "InvokeSubagent",
+                "duration_ms": 1200, "tool_name": "RunSubAgents",
                 "result": {"metadata": {"agent_id": "research", "subagent_session_id": "sub:research:abc", "request_id": "req-1"}},
             }),
             _event(4, RuntimeEventType.STEP_COMPLETED.value, 3.0, loop_index=0, payload={"duration_ms": 2000}),

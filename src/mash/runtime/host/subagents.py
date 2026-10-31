@@ -43,26 +43,48 @@ class SubagentAccess(Protocol):
     def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None: ...
 
 
+def _directory_entry(agent_id: str, meta: AgentMetadata | None, *, you: bool) -> list[str]:
+    label = f"{agent_id} (you)" if you else agent_id
+    if meta is None:
+        return [f"- {label}"]
+    return [
+        f"- {label} | {meta.display_name}: {meta.description}",
+        f"  Capabilities: {', '.join(meta.capabilities)}",
+        f"  Guidance: {meta.usage_guidance}",
+    ]
+
+
 def build_subagent_prompt_block(
     base_prompt: SystemPrompt,
     subagents: dict[str, AgentMetadata],
+    *,
+    own_agent_id: str | None = None,
+    own_metadata: AgentMetadata | None = None,
 ) -> SystemPrompt:
-    """Append subagent routing guidance to a system prompt."""
+    """Append the RunSubAgents directory to a system prompt.
+
+    The directory lists the agent itself first, marked ``(you)``, then the
+    host's subagents, so the model chooses among all the agents an item can
+    run on from one list.
+    """
     if not subagents:
         return base_prompt
 
     lines = [
         "SUBAGENTS",
-        "Delegate work using InvokeSubagent(agent_id, prompt, opts).",
+        "Delegate work using RunSubAgents(requests=[{agent_id, prompt}], timeout_seconds).",
+        "Each item runs as its own request, and all items run at the same time.",
+        "Split a task into several items when it has parts that do not depend on "
+        "each other, so they run at once. Answer directly when the task is small, "
+        "or when each step needs the result of the one before.",
+        "An item can run on any agent below, including you:",
     ]
+    if own_agent_id:
+        lines.extend(_directory_entry(own_agent_id, own_metadata, you=True))
     for agent_id in sorted(subagents.keys()):
-        meta = subagents[agent_id]
-        capabilities = ", ".join(meta.capabilities)
-        lines.append(f"- {agent_id} | {meta.display_name}: {meta.description}")
-        lines.append(f"  Capabilities: {capabilities}")
-        lines.append(f"  Guidance: {meta.usage_guidance}")
+        lines.extend(_directory_entry(agent_id, subagents[agent_id], you=False))
     lines.append(
-        "When delegating, choose the best subagent id and pass a concise task prompt."
+        "Choose the best agent for each item and pass a concise task prompt."
     )
     guidance = "\n".join(lines)
 

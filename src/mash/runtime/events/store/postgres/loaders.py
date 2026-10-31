@@ -16,6 +16,7 @@ from ...types import (
     RequestStatus,
     RuntimeEvent,
     RuntimeEventType,
+    accepted_request,
     accepted_user_id,
 )
 
@@ -123,17 +124,29 @@ async def _project_lifecycle(
     if event.lifecycle is None or not event.request_id:
         return
     status = RequestStatus(event.lifecycle)
+    # Only the accepted event says how the request was started; the other
+    # lifecycle events leave those columns as the accepted event wrote them.
+    start = accepted_request(event)
     await cursor.execute(
         """
         INSERT INTO runtime_request
-            (request_id, status, terminal_seq, updated_at, agent_id, user_id)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (request_id, status, terminal_seq, updated_at, agent_id, user_id,
+             session_id, mode, started_by, started_at, parent_request_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s,
+                COALESCE(%s, 'fg'), COALESCE(%s, 'user'), %s, %s)
         ON CONFLICT (request_id) DO UPDATE
             SET status = EXCLUDED.status,
                 terminal_seq = EXCLUDED.terminal_seq,
                 updated_at = EXCLUDED.updated_at,
                 agent_id = COALESCE(runtime_request.agent_id, EXCLUDED.agent_id),
-                user_id = COALESCE(runtime_request.user_id, EXCLUDED.user_id)
+                user_id = COALESCE(runtime_request.user_id, EXCLUDED.user_id),
+                session_id = COALESCE(runtime_request.session_id, EXCLUDED.session_id),
+                mode = COALESCE(runtime_request.mode, EXCLUDED.mode),
+                started_by = COALESCE(runtime_request.started_by, EXCLUDED.started_by),
+                started_at = COALESCE(runtime_request.started_at, EXCLUDED.started_at),
+                parent_request_id = COALESCE(
+                    runtime_request.parent_request_id, EXCLUDED.parent_request_id
+                )
         """,
         (
             event.request_id,
@@ -142,6 +155,32 @@ async def _project_lifecycle(
             float(event.created_at),
             event.agent_id,
             accepted_user_id(event),
+            start.session_id if start else None,
+            start.mode if start else None,
+            start.started_by if start else None,
+            start.started_at if start else None,
+            start.parent_request_id if start else None,
+        ),
+    )
+
+
+async def _project_mode(cursor: Any, event: RuntimeEvent) -> None:
+    """Record a mode switch in the append transaction of its event."""
+    if (
+        event.event_type != RuntimeEventType.REQUEST_MODE_CHANGED.value
+        or not event.request_id
+    ):
+        return
+    await cursor.execute(
+        """
+        UPDATE runtime_request
+        SET mode = %s, updated_at = %s
+        WHERE request_id = %s
+        """,
+        (
+            str((event.payload or {}).get("mode")),
+            float(event.created_at),
+            event.request_id,
         ),
     )
 
@@ -228,6 +267,7 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                 if stored is None:
                     raise RuntimeError("failed to persist runtime event")
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
+                await _project_mode(cursor, event)
                 await cursor.execute(
                     "SELECT pg_notify('runtime_events', %s)",
                     (event.request_id or "",),
@@ -535,6 +575,99 @@ async def is_request_terminal(pool: Any, request_id: str) -> bool:
             )
             row = await cursor.fetchone()
     return row is not None and row["terminal_seq"] is not None
+
+
+def request_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_id": str(row["request_id"]),
+        "agent_id": str(row["agent_id"]) if row.get("agent_id") else None,
+        "user_id": str(row["user_id"]) if row.get("user_id") else None,
+        "session_id": str(row["session_id"]) if row.get("session_id") else None,
+        "message": str(row["message"]) if row.get("message") is not None else "",
+        "mode": str(row["mode"]),
+        "status": str(row["status"]),
+        "started_by": str(row["started_by"]),
+        "parent_request_id": (
+            str(row["parent_request_id"]) if row.get("parent_request_id") else None
+        ),
+        "started_at": (
+            float(row["started_at"]) if row.get("started_at") is not None else None
+        ),
+    }
+
+
+_REQUEST_RECORD_SELECT = """
+    SELECT r.request_id, r.agent_id, r.user_id, r.session_id, r.mode, r.status,
+           r.started_by, r.parent_request_id, r.started_at,
+           (
+               SELECT e.payload ->> 'message'
+               FROM runtime_event_log AS e
+               WHERE e.request_id = r.request_id
+                 AND e.event_type = 'runtime.request.accepted'
+               ORDER BY e.seq ASC
+               LIMIT 1
+           ) AS message
+    FROM runtime_request AS r
+"""
+
+
+async def list_session_requests(
+    pool: Any,
+    session_id: str,
+    *,
+    mode: str | None = None,
+    status: str | None = None,
+    started_by: str | None = None,
+) -> list[dict[str, Any]]:
+    """A session's requests, newest first, optionally filtered."""
+    clauses = ["r.session_id = %s"]
+    params: list[Any] = [session_id]
+    for column, value in (
+        ("mode", mode),
+        ("status", status),
+        ("started_by", started_by),
+    ):
+        if value is not None:
+            clauses.append(f"r.{column} = %s")
+            params.append(value)
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                f"""
+                {_REQUEST_RECORD_SELECT}
+                WHERE {' AND '.join(clauses)}
+                ORDER BY r.started_at DESC NULLS LAST, r.request_id ASC
+                """,
+                tuple(params),
+            )
+            rows = await cursor.fetchall()
+    return [request_row_to_record(row) for row in rows]
+
+
+async def list_child_requests(
+    pool: Any,
+    parent_request_id: str,
+    *,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """The requests a request's RunSubAgents calls started, oldest first."""
+    clauses = ["r.parent_request_id = %s"]
+    params: list[Any] = [parent_request_id]
+    if status is not None:
+        clauses.append("r.status = %s")
+        params.append(status)
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                f"""
+                {_REQUEST_RECORD_SELECT}
+                WHERE {' AND '.join(clauses)}
+                ORDER BY r.started_at ASC NULLS LAST, r.request_id ASC
+                """,
+                tuple(params),
+            )
+            rows = await cursor.fetchall()
+    return [request_row_to_record(row) for row in rows]
 
 
 async def list_feedback(

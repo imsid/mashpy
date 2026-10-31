@@ -23,7 +23,7 @@ from mash.core.llm.types import (
     LLMResponse,
     LLMTokenUsage,
 )
-from mash.logging import bound_request_id, bound_subagent_request_id, get_request_metadata
+from mash.logging import bound_request_id, bound_subagent_id_prefix, get_request_metadata
 from mash.runtime.client import AgentClientError
 from mash.runtime.engine.dbos import register_runtime, require_runtime, unregister_runtime
 from mash.runtime.engine.workflow import execute_request_workflow
@@ -34,9 +34,11 @@ from mash.testing.runtime_fixtures import (
     build_spec,
     metadata,
 )
+from mash.testing.runtime_fixtures import DeterministicAgentSpec
+from mash.tools.ask_user import AskUserTool
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
-from mash.tools.subagent import InvokeSubagentTool
+from mash.tools.subagent import RunSubAgentsTool, child_request_id
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows import dbos as workflow_dbos
 
@@ -58,6 +60,15 @@ class _ForUser:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+
+class _AskingSpec(DeterministicAgentSpec):
+    """A deterministic agent whose spec registers AskUser."""
+
+    def build_tools(self) -> ToolRegistry:
+        tools = ToolRegistry()
+        tools.register(AskUserTool())
+        return tools
 
 
 class _CodeInput(BaseModel):
@@ -1010,7 +1021,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_bare_agent_request_has_no_subagent_wiring(self) -> None:
+    async def test_bare_agent_request_runs_children_only_on_itself(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 pool = (
@@ -1040,8 +1051,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    # Bare submit: same agent, no host snapshot, so the
-                    # InvokeSubagent call must fail as an unknown tool.
+                    # Bare submit: same agent, no host snapshot, so RunSubAgents
+                    # may run children only on the calling agent.
                     client = pool.get_client("primary-app")
                     request_id = await client.post_request("delegate", session_id="s-2", user_id="u-1")
                     await _collect_events(client, request_id, timeout=5)
@@ -1050,13 +1061,15 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     request_events = await primary.runtime_store.list_request_events(
                         request_id
                     )
-                    subagent_completions = [
+                    [completion] = [
                         event
                         for event in request_events
                         if event.event_type == "runtime.subagent.call.completed"
                     ]
-                    for event in subagent_completions:
-                        self.assertTrue(event.payload["result"]["is_error"])
+                    [entry] = json.loads(completion.payload["result"]["content"])
+                    self.assertEqual(entry["status"], "failed")
+                    self.assertIsNone(entry["request_id"])
+                    self.assertIn("RunSubAgents runs only on 'primary-app'", entry["error"])
 
                     # Bare requests carry no host_id on their events.
                     for event in request_events:
@@ -1072,32 +1085,130 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_only_the_host_primary_gets_subagent_wiring(self) -> None:
+    async def test_a_child_gets_neither_run_subagents_nor_ask_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 pool = (
                     HostBuilder()
-                    .agent(build_spec(agent_id="primary-app", response_text="p"), metadata=metadata())
-                    .agent(build_spec(agent_id="research", response_text="r"), metadata=metadata())
+                    .agent(
+                        _AskingSpec(agent_id="primary-app", response_text="p"),
+                        metadata=metadata(),
+                    )
+                    .agent(
+                        _AskingSpec(agent_id="research", response_text="r"),
+                        metadata=metadata(),
+                    )
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    # A subagent request carries the primary's host snapshot.
+                    # A child carries the primary's host snapshot.
                     host = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
-                    primary_agent = _agent_runtime(pool, "primary-app").build_turn_agent(
+                    primary = _agent_runtime(pool, "primary-app")
+                    primary_agent = primary.build_turn_agent(
                         session_id="s-1", trace_id="t-1", host=host
                     )
                     research_agent = _agent_runtime(pool, "research").build_turn_agent(
-                        session_id="s-1", trace_id="t-2", host=host
+                        session_id="s-1", trace_id="t-2", host=host, parent_kind="subagent"
+                    )
+                    own_child = primary.build_turn_agent(
+                        session_id="s-1", trace_id="t-3", host=host, parent_kind="subagent"
                     )
                     try:
-                        self.assertIn("InvokeSubagent", primary_agent.tools)
-                        self.assertNotIn("InvokeSubagent", research_agent.tools)
+                        self.assertIn("RunSubAgents", primary_agent.tools)
+                        self.assertIn("AskUser", primary_agent.tools)
+                        for child in (research_agent, own_child):
+                            self.assertNotIn("RunSubAgents", child.tools)
+                            self.assertNotIn("AskUser", child.tools)
+                            self.assertNotIn("SUBAGENTS", str(child.config.system_prompt))
+                        self.assertIn("SUBAGENTS", str(primary_agent.config.system_prompt))
+                        self.assertIn("- primary-app (you)", str(primary_agent.config.system_prompt))
                     finally:
                         await primary_agent.tools.shutdown()
                         await research_agent.tools.shutdown()
+                        await own_child.tools.shutdown()
+                finally:
+                    await pool.close()
+
+    async def _run_delegation(self, subagent_id: str) -> tuple[Any, str, dict[str, Any]]:
+        pool = (
+            HostBuilder()
+            .agent(
+                build_delegating_spec(
+                    agent_id="primary-app",
+                    final_text="delegated-ok",
+                    subagent_id=subagent_id,
+                    subagent_prompt="analyze",
+                ),
+                metadata=metadata(),
+            )
+            .agent(
+                build_spec(agent_id="research", response_text="research-ok"),
+                metadata=metadata(),
+            )
+            .host(Host(host_id="assistant", primary="primary-app", subagents=("research",)))
+            .build()
+        )
+        pool.configure_runtime_database_url("postgresql://test/runtime")
+        await pool.start()
+        accepted = await pool.submit_host_request(
+            "assistant", message="delegate", session_id="s-1", user_id="u-1"
+        )
+        request_id = accepted["request_id"]
+        result = await _collect_terminal_payload(
+            pool.get_client("primary-app"), request_id, timeout=10
+        )
+        return pool, request_id, result
+
+    async def test_children_are_bg_requests_started_by_the_caller(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool, request_id, result = await self._run_delegation("research")
+                try:
+                    self.assertEqual(result["response"]["text"], "delegated-ok")
+                    store = pool.get_runtime_store()
+                    [child] = await store.list_child_requests(request_id)
+                    self.assertEqual(
+                        {k: child[k] for k in ("agent_id", "mode", "started_by", "status", "user_id")},
+                        {
+                            "agent_id": "research",
+                            "mode": "bg",
+                            "started_by": "primary-app",
+                            "status": "completed",
+                            "user_id": "u-1",
+                        },
+                    )
+                    self.assertEqual(child["parent_request_id"], request_id)
+                    [parent] = [
+                        r for r in await store.list_session_requests("s-1")
+                        if r["request_id"] == request_id
+                    ]
+                    self.assertEqual((parent["mode"], parent["started_by"]), ("fg", "user"))
+                finally:
+                    await pool.close()
+
+    async def test_the_caller_can_run_a_child_on_itself_through_the_relay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool, request_id, result = await self._run_delegation("primary-app")
+                try:
+                    self.assertEqual(result["response"]["text"], "delegated-ok")
+                    store = pool.get_runtime_store()
+                    [child] = await store.list_child_requests(request_id)
+                    self.assertEqual(child["agent_id"], "primary-app")
+                    self.assertEqual(child["started_by"], "primary-app")
+                    self.assertEqual(child["status"], "completed")
+
+                    # The child's own model asked for RunSubAgents too, but a
+                    # child is built without it: splitting is one level deep.
+                    child_events = await store.list_request_events(child["request_id"])
+                    [call] = [
+                        e for e in child_events
+                        if e.event_type == "runtime.subagent.call.completed"
+                    ]
+                    self.assertTrue(call.payload["result"]["is_error"])
+                    self.assertEqual(await store.list_child_requests(child["request_id"]), [])
                 finally:
                     await pool.close()
 
@@ -1242,35 +1353,37 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     # Called directly rather than through the host relay, which
                     # would set the parent request's user.
-                    tool = InvokeSubagentTool(
+                    tool = RunSubAgentsTool(
                         client_resolver=lambda agent_id: _ForUser(
                             pool.get_client(agent_id), "u-1"
                         ),
-                        primary_app_id="primary-app",
-                        primary_session_id="s-1",
+                        caller_agent_id="primary-app",
+                        session_id="s-1",
                     )
 
                     async def _call() -> dict[str, Any]:
-                        # A replay re-runs the step under the same bound ids.
-                        with bound_request_id("req-1"), bound_subagent_request_id(
+                        # A replay re-runs the step under the same bound prefix.
+                        with bound_request_id("req-1"), bound_subagent_id_prefix(
                             "req-1-sub-0-0"
                         ):
                             result = await tool.execute(
-                                {"agent_id": "research", "prompt": "analyze"}
+                                {"requests": [{"agent_id": "research", "prompt": "analyze"}]}
                             )
                         self.assertFalse(result.is_error, result.content)
-                        return json.loads(result.content)
+                        [entry] = json.loads(result.content)
+                        return entry
 
                     first = await _call()
                     second = await _call()
 
-                    self.assertEqual(first["request_id"], "req-1-sub-0-0")
-                    self.assertEqual(second["request_id"], "req-1-sub-0-0")
-                    self.assertEqual(second["text"], "research-ok")
+                    child_id = child_request_id("req-1-sub-0-0", 0)
+                    self.assertEqual(first["request_id"], child_id)
+                    self.assertEqual(second["request_id"], child_id)
+                    self.assertEqual(second["response"], "research-ok")
                     research = _agent_runtime(pool, "research")
                     accepted = [
                         e
-                        for e in await research.runtime_store.list_request_events("req-1-sub-0-0")
+                        for e in await research.runtime_store.list_request_events(child_id)
                         if e.event_type == "runtime.request.accepted"
                     ]
                     self.assertEqual(len(accepted), 1)

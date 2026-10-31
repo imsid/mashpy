@@ -200,13 +200,29 @@ class BuildAgentServerTests(unittest.TestCase):
             build_agent_server(_build_pool(), "missing", token="tok", host_api_url="http://host")
 
 
+def _parent(request_id: str, agent_id: str = "primary-app") -> dict:
+    return {
+        "kind": "subagent",
+        "request_id": request_id,
+        "agent_id": agent_id,
+        "session_id": "s-1",
+        "started_by": agent_id,
+        "parent_request_id": request_id,
+    }
+
+
 class _RecordingClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.cancelled: list[str] = []
 
     async def post_request(self, message: str, **kwargs: Any) -> str:
         self.calls.append({"message": message, **kwargs})
         return "req-sub"
+
+    async def cancel_request(self, request_id: str) -> dict:
+        self.cancelled.append(request_id)
+        return {"request_id": request_id, "status": "cancelled"}
 
 
 class H2ARelayAuthTests(unittest.TestCase):
@@ -225,10 +241,19 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.http = TestClient(app)
         self._accept("req-1", agent_id="primary-app", user_id="u-1")
 
-    def _accept(self, request_id: str, *, agent_id: str, user_id: str | None = None) -> None:
+    def _accept(
+        self,
+        request_id: str,
+        *,
+        agent_id: str,
+        user_id: str | None = None,
+        parent: dict | None = None,
+    ) -> None:
         import asyncio
 
         request_metadata = {"user_id": user_id} if user_id else {}
+        if parent is not None:
+            request_metadata["parent"] = parent
         asyncio.run(
             self.store.append_event(
                 RuntimeEvent(
@@ -244,22 +269,19 @@ class H2ARelayAuthTests(unittest.TestCase):
             )
         )
 
-    def _submit(self, *, caller: str = "primary-app", **overrides: Any):
+    def _submit(
+        self, *, caller: str = "primary-app", target: str = "research", **overrides: Any
+    ):
         body = {
             "message": "analyze",
             "session_id": "s-1",
             "request_id": "req-1-sub-0-0",
             "host": HOST_SNAPSHOT,
-            "parent": {
-                "kind": "subagent",
-                "request_id": "req-1",
-                "agent_id": "primary-app",
-                "session_id": "s-1",
-            },
+            "parent": _parent("req-1"),
         }
         body.update(overrides)
         return self.http.post(
-            "/h2a/agent/research/request",
+            f"/h2a/agent/{target}/request",
             json=body,
             headers={"Authorization": f"Bearer {derive_agent_token(SECRET, caller)}"},
         )
@@ -290,19 +312,13 @@ class H2ARelayAuthTests(unittest.TestCase):
     def test_parent_without_a_user_forwards_none(self) -> None:
         self._accept("req-anon", agent_id="primary-app")
 
-        resp = self._submit(parent={
-            "kind": "subagent", "request_id": "req-anon",
-            "agent_id": "primary-app", "session_id": "s-1",
-        })
+        resp = self._submit(parent=_parent("req-anon"))
 
         self.assertEqual(resp.status_code, 202)
         self.assertIsNone(self.client_for_research.calls[0]["user_id"])
 
     def test_unknown_parent_request_is_400(self) -> None:
-        resp = self._submit(parent={
-            "kind": "subagent", "request_id": "req-missing",
-            "agent_id": "primary-app", "session_id": "s-1",
-        })
+        resp = self._submit(parent=_parent("req-missing"))
 
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"]["code"], "INVALID_PARENT")
@@ -310,10 +326,7 @@ class H2ARelayAuthTests(unittest.TestCase):
     def test_parent_request_of_another_agent_is_403(self) -> None:
         self._accept("req-other", agent_id="other", user_id="u-9")
 
-        resp = self._submit(parent={
-            "kind": "subagent", "request_id": "req-other",
-            "agent_id": "primary-app", "session_id": "s-1",
-        })
+        resp = self._submit(parent=_parent("req-other"))
 
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
@@ -338,6 +351,52 @@ class H2ARelayAuthTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
+
+    def test_the_caller_may_target_itself(self) -> None:
+        resp = self._submit(target="primary-app")
+
+        self.assertEqual(resp.status_code, 202, resp.text)
+        [call] = self.client_for_research.calls
+        self.assertEqual(call["parent"]["started_by"], "primary-app")
+
+    def test_without_a_host_only_the_caller_is_a_target(self) -> None:
+        self.assertEqual(self._submit(target="primary-app", host=None).status_code, 202)
+        resp = self._submit(target="research", host=None)
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(len(self.client_for_research.calls), 1)
+
+    def test_an_agent_outside_the_host_is_still_refused(self) -> None:
+        resp = self._submit(target="other")
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
+
+    def test_mode_is_forwarded(self) -> None:
+        resp = self._submit(mode="bg")
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(self.client_for_research.calls[0]["mode"], "bg")
+
+    def _cancel(self, request_id: str, *, caller: str = "primary-app"):
+        return self.http.post(
+            f"/h2a/agent/research/request/{request_id}/cancel",
+            headers={"Authorization": f"Bearer {derive_agent_token(SECRET, caller)}"},
+        )
+
+    def test_the_parent_agent_may_cancel_its_child(self) -> None:
+        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+
+        resp = self._cancel("child-1")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self.client_for_research.cancelled, ["child-1"])
+
+    def test_another_agent_may_not_cancel_the_child(self) -> None:
+        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+
+        self.assertEqual(self._cancel("child-1", caller="other").status_code, 403)
+        self.assertEqual(self._cancel("missing").status_code, 404)
+        self.assertEqual(self.client_for_research.cancelled, [])
 
     def test_workflow_parent_is_rejected(self) -> None:
         resp = self._submit(

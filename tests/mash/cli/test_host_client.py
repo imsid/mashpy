@@ -128,6 +128,61 @@ class MashHostClientTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
+    def _client(self, *payloads) -> tuple[MashHostClient, _RecordingSession]:
+        client = MashHostClient("http://localhost:8000", api_key="k")
+        session = _RecordingSession()
+        session.responses.extend(_FakeResponse(p) for p in payloads)
+        client._session = session  # type: ignore[assignment]
+        return client, session
+
+    def test_submit_sends_mode_only_when_given(self) -> None:
+        client, session = self._client()
+        client.submit_request("primary", message="hi", session_id="s-1", user_id="u-1")
+        client.submit_request("primary", message="hi", session_id="s-1", user_id="u-1", mode="bg")
+        self.assertNotIn("mode", session.calls[0]["json"])
+        self.assertEqual(session.calls[1]["json"]["mode"], "bg")
+
+        client, session = self._client({"data": {"request_id": "r", "agent_id": "primary"}})
+        client.submit_host_request(
+            "assistant", message="hi", session_id="s-1", user_id="u-1", mode="bg"
+        )
+        self.assertIn("/api/v1/hosts/assistant/request", session.calls[0]["url"])
+        self.assertEqual(session.calls[0]["json"]["mode"], "bg")
+
+    def test_set_request_mode_posts_to_the_mode_route(self) -> None:
+        client, session = self._client({"data": {"request_id": "r-1", "mode": "bg"}})
+        self.assertEqual(client.set_request_mode("primary", "r-1", "bg")["mode"], "bg")
+        call = session.calls[0]
+        self.assertEqual(call["method"], "POST")
+        self.assertTrue(call["url"].endswith("/api/v1/agent/primary/request/r-1/mode"))
+        self.assertEqual(call["json"], {"mode": "bg"})
+
+    def test_cancel_request_posts_to_the_cancel_route(self) -> None:
+        client, session = self._client({"data": {"status": "cancelled"}})
+        client.cancel_request("research", "r-2")
+        self.assertTrue(
+            session.calls[0]["url"].endswith("/api/v1/agent/research/request/r-2/cancel")
+        )
+
+    def test_list_session_requests_passes_its_filters(self) -> None:
+        client, session = self._client({"data": {"requests": [{"request_id": "r-1"}, "junk"]}})
+        records = client.list_session_requests(
+            "primary", "s-1", mode="bg", status="running", started_by="user"
+        )
+        self.assertEqual(records, [{"request_id": "r-1"}])
+        self.assertEqual(
+            session.calls[0]["url"],
+            "http://localhost:8000/api/v1/agent/primary/sessions/s-1/requests"
+            "?mode=bg&status=running&started_by=user",
+        )
+
+    def test_copy_keeps_the_host_and_key_with_a_new_session(self) -> None:
+        client = MashHostClient("http://localhost:8000/", api_key="k")
+        copy = client.copy()
+        self.assertEqual(copy.base_url, client.base_url)
+        self.assertEqual(copy._headers, client._headers)
+        self.assertIsNot(copy._session, client._session)
+
     def test_submit_feedback_posts_session_context(self) -> None:
         client = MashHostClient("http://localhost:8000")
         session = _RecordingSession()
