@@ -358,9 +358,7 @@ async def list_session_events(
                agent_id, session_id, host_id, event_type, loop_index, step_key,
                dedupe_key,
                CASE
-                   WHEN event_type IN (
-                       'runtime.request.completed', 'runtime.request.failed'
-                   ) THEN payload - 'response'
+                   WHEN event_type = 'invoke_agent.end' THEN payload - 'response'
                    ELSE payload
                END AS payload,
                created_at
@@ -488,6 +486,54 @@ async def get_request_id_for_trace(
     return str(row["request_id"]) if row is not None else None
 
 
+async def list_request_ends(
+    pool: Any, *, after_event_id: int = 0, limit: int = 500
+) -> list[RuntimeEvent]:
+    """Every agent's ``invoke_agent.end`` rows after ``after_event_id``, oldest first."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                       agent_id, session_id, host_id, workflow_id, workflow_run_id,
+                       event_type, loop_index, step_key, dedupe_key,
+                       payload - 'response' AS payload, created_at
+                FROM runtime_event_log
+                WHERE event_id > %s AND event_type = 'invoke_agent.end'
+                ORDER BY event_id ASC
+                LIMIT %s
+                """,
+                (int(after_event_id), max(1, int(limit))),
+            )
+            rows = await cursor.fetchall()
+    return [dict_to_event(row) for row in rows]
+
+
+async def get_export_cursor(pool: Any, name: str) -> int:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT event_id FROM otel_export_cursor WHERE name = %s", (name,)
+            )
+            row = await cursor.fetchone()
+    return int(row["event_id"]) if row is not None else 0
+
+
+async def set_export_cursor(pool: Any, name: str, event_id: int) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                INSERT INTO otel_export_cursor (name, event_id, updated_at)
+                VALUES (%s, %s, extract(epoch from now()))
+                ON CONFLICT (name) DO UPDATE
+                SET event_id = GREATEST(otel_export_cursor.event_id, EXCLUDED.event_id),
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (name, int(event_id)),
+            )
+
+
 async def get_request_identity(pool: Any, request_id: str) -> RequestIdentity | None:
     """The agent and user a request was accepted for, or None if unknown."""
     async with pool.connection() as conn:
@@ -603,7 +649,7 @@ _REQUEST_RECORD_SELECT = """
                SELECT e.payload ->> 'message'
                FROM runtime_event_log AS e
                WHERE e.request_id = r.request_id
-                 AND e.event_type = 'runtime.request.accepted'
+                 AND e.event_type = 'invoke_agent.start'
                ORDER BY e.seq ASC
                LIMIT 1
            ) AS message
@@ -755,10 +801,10 @@ async def list_recent_traces(
     params.append(max(1, int(limit)))
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
-            # status mirrors _extract_boundary_events in spans.py: the trace's
-            # latest lifecycle event wins, else it is still running. resumed is
-            # in the set and maps to in_progress, so a resumed request stops
-            # reporting the terminal state it was resumed out of.
+            # The trace's latest lifecycle event wins, else it is still
+            # running: an invoke_agent.end reports its status, and a resume
+            # maps to in_progress, so a resumed request stops reporting the
+            # terminal state it was resumed out of.
             await cursor.execute(
                 f"""
                 SELECT * FROM (
@@ -773,30 +819,32 @@ async def list_recent_traces(
                         MAX(created_at) AS latest_event_at,
                         MAX(event_id) AS latest_event_id,
                         COUNT(*) AS event_count,
-                        CASE (ARRAY_AGG(event_type ORDER BY created_at DESC, event_id DESC)
+                        CASE (ARRAY_AGG(
+                                  CASE WHEN event_type = 'invoke_agent.end'
+                                       THEN payload ->> 'status' ELSE 'resumed' END
+                                  ORDER BY created_at DESC, event_id DESC)
                               FILTER (WHERE event_type IN (
-                                  'runtime.request.completed', 'runtime.request.failed',
-                                  'runtime.request.cancelled', 'runtime.request.resumed'
+                                  'invoke_agent.end', 'mash.request.resumed'
                               )))[1]
-                            WHEN 'runtime.request.failed' THEN 'error'
-                            WHEN 'runtime.request.completed' THEN 'completed'
-                            WHEN 'runtime.request.cancelled' THEN 'cancelled'
+                            WHEN 'error' THEN 'error'
+                            WHEN 'ok' THEN 'completed'
+                            WHEN 'cancelled' THEN 'cancelled'
                             ELSE 'in_progress'
                         END AS status,
                         COALESCE(SUM(
-                            CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                                COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
-                                + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                            CASE WHEN event_type = 'chat.end' THEN
+                                COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.input_tokens', '')::numeric, 0)
+                                + COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.output_tokens', '')::numeric, 0)
                             ELSE 0 END
                         ), 0) AS total_tokens,
                         COALESCE(SUM(
-                            CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                                COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                            CASE WHEN event_type = 'chat.end' THEN
+                                COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_read.input_tokens', '')::numeric, 0)
                             ELSE 0 END
                         ), 0) AS cache_read_tokens,
                         COALESCE(SUM(
-                            CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                                COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                            CASE WHEN event_type = 'chat.end' THEN
+                                COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_creation.input_tokens', '')::numeric, 0)
                             ELSE 0 END
                         ), 0) AS cache_write_tokens
                     FROM runtime_event_log
@@ -830,7 +878,7 @@ async def list_thought_traces(
                            MAX(event_id) AS latest_event_id
                     FROM runtime_event_log
                     WHERE trace_id IS NOT NULL
-                      AND event_type = 'runtime.llm.think.completed'
+                      AND event_type = 'chat.end'
                       AND jsonb_typeof(payload -> 'thought_summary') = 'string'
                       AND payload ->> 'thought_summary' ~ '[^[:space:]]'
                       AND (%s::text IS NULL OR app_id = %s)
@@ -843,7 +891,7 @@ async def list_thought_traces(
                        t.request_id, t.created_at, t.payload ->> 'thought_summary' AS thought_summary,
                        r.latest_thought_at
                 FROM recent r JOIN runtime_event_log t USING (app_id, trace_id)
-                WHERE t.event_type = 'runtime.llm.think.completed'
+                WHERE t.event_type = 'chat.end'
                   AND jsonb_typeof(t.payload -> 'thought_summary') = 'string'
                   AND t.payload ->> 'thought_summary' ~ '[^[:space:]]'
                 ORDER BY r.latest_thought_at DESC, r.latest_event_id DESC,
@@ -898,19 +946,19 @@ async def list_sessions(
                 MAX(created_at) AS latest_event_at,
                 COUNT(DISTINCT trace_id) AS trace_count,
                 COALESCE(SUM(
-                    CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                        COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
-                        + COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                    CASE WHEN event_type = 'chat.end' THEN
+                        COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.input_tokens', '')::numeric, 0)
+                        + COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.output_tokens', '')::numeric, 0)
                     ELSE 0 END
                 ), 0) AS total_tokens,
                 COALESCE(SUM(
-                    CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                        COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                    CASE WHEN event_type = 'chat.end' THEN
+                        COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_read.input_tokens', '')::numeric, 0)
                     ELSE 0 END
                 ), 0) AS cache_read_tokens,
                 COALESCE(SUM(
-                    CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                        COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                    CASE WHEN event_type = 'chat.end' THEN
+                        COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_creation.input_tokens', '')::numeric, 0)
                     ELSE 0 END
                 ), 0) AS cache_write_tokens
             FROM runtime_event_log
@@ -960,19 +1008,14 @@ async def aggregate_usage(
     to_ts: float | None = None,
 ) -> list[dict[str, Any]]:
     bucket_seconds = 3600 if str(bucket).lower() == "hour" else 86400
-    tool_completed = (
-        RuntimeEventType.TOOL_CALL_COMPLETED.value,
-        RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
-    )
     # Placeholders are bound in SQL text order: the two bucket divisors and
-    # the two tool-completed event types live in the SELECT, ahead of the
-    # WHERE-clause filters.
+    # the tool-end event type live in the SELECT, ahead of the WHERE-clause
+    # filters.
     filters = ["app_id = %s"]
     params: list[Any] = [
         bucket_seconds,
         bucket_seconds,
-        tool_completed[0],
-        tool_completed[1],
+        RuntimeEventType.EXECUTE_TOOL_END.value,
         app_id,
     ]
     if host_id is not None:
@@ -992,29 +1035,29 @@ async def aggregate_usage(
             floor(created_at / %s) * %s AS bucket_start,
             COUNT(DISTINCT trace_id) AS request_count,
             COALESCE(SUM(
-                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'input', '')::numeric, 0)
+                CASE WHEN event_type = 'chat.end' THEN
+                    COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.input_tokens', '')::numeric, 0)
                 ELSE 0 END
             ), 0) AS input_tokens,
             COALESCE(SUM(
-                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'output', '')::numeric, 0)
+                CASE WHEN event_type = 'chat.end' THEN
+                    COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.output_tokens', '')::numeric, 0)
                 ELSE 0 END
             ), 0) AS output_tokens,
             COALESCE(SUM(
-                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_read', '')::numeric, 0)
+                CASE WHEN event_type = 'chat.end' THEN
+                    COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_read.input_tokens', '')::numeric, 0)
                 ELSE 0 END
             ), 0) AS cache_read_tokens,
             COALESCE(SUM(
-                CASE WHEN event_type = 'runtime.llm.think.completed' THEN
-                    COALESCE(NULLIF(payload -> 'token_usage' ->> 'cache_write', '')::numeric, 0)
+                CASE WHEN event_type = 'chat.end' THEN
+                    COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_creation.input_tokens', '')::numeric, 0)
                 ELSE 0 END
             ), 0) AS cache_write_tokens,
             COALESCE(SUM(
                 CASE
-                    WHEN event_type IN (%s, %s)
-                     AND (payload -> 'result' ->> 'is_error') = 'true'
+                    WHEN event_type = %s
+                     AND (payload ->> 'status') = 'error'
                     THEN 1 ELSE 0
                 END
             ), 0) AS tool_error_count
@@ -1039,8 +1082,8 @@ async def count_tool_invocations(
 ) -> list[dict[str, Any]]:
     filters = [
         "app_id = %s",
-        f"event_type = '{RuntimeEventType.TOOL_CALL_COMPLETED.value}'",
-        "payload->>'tool_name' IS NOT NULL",
+        f"event_type = '{RuntimeEventType.EXECUTE_TOOL_END.value}'",
+        "payload->'attributes'->>'gen_ai.tool.name' IS NOT NULL",
     ]
     params: list[Any] = [app_id]
     if from_ts is not None:
@@ -1050,10 +1093,10 @@ async def count_tool_invocations(
         filters.append("created_at < %s")
         params.append(float(to_ts))
     query = f"""
-        SELECT payload->>'tool_name' AS tool_name, COUNT(*) AS count
+        SELECT payload->'attributes'->>'gen_ai.tool.name' AS tool_name, COUNT(*) AS count
         FROM runtime_event_log
         WHERE {' AND '.join(filters)}
-        GROUP BY payload->>'tool_name'
+        GROUP BY payload->'attributes'->>'gen_ai.tool.name'
         ORDER BY count DESC
     """
     async with pool.connection() as conn:
@@ -1072,8 +1115,8 @@ async def count_skill_invocations(
 ) -> list[dict[str, Any]]:
     filters = [
         "app_id = %s",
-        f"event_type = '{RuntimeEventType.TOOL_CALL_COMPLETED.value}'",
-        "payload->>'tool_name' = 'Skill'",
+        f"event_type = '{RuntimeEventType.EXECUTE_TOOL_END.value}'",
+        "payload->'attributes'->>'gen_ai.tool.name' = 'Skill'",
         "payload->'result'->'metadata'->>'skill_name' IS NOT NULL",
     ]
     params: list[Any] = [app_id]

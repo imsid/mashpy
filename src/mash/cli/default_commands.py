@@ -76,11 +76,11 @@ def _render_trace(renderer, data: dict, *, depth: int = 0) -> None:
     _p("")
 
     segments = [
-        ("subagent_call", timing.get("total_subagent_ms", 0), timing.get("pct_subagent", 0)),
-        ("think", timing.get("total_think_ms", 0), timing.get("pct_think", 0)),
-        ("tool_call", timing.get("total_tool_ms", 0), timing.get("pct_tool", 0)),
-        ("cold_start", timing.get("cold_start_ms", 0), timing.get("pct_cold_start", 0)),
-        ("context_load", timing.get("context_load_ms", 0), 0),
+        ("execute_tool RunSubAgents", timing.get("total_subagent_ms", 0), timing.get("pct_subagent", 0)),
+        ("chat", timing.get("total_think_ms", 0), timing.get("pct_think", 0)),
+        ("execute_tool", timing.get("total_tool_ms", 0), timing.get("pct_tool", 0)),
+        ("mash.cold_start", timing.get("cold_start_ms", 0), timing.get("pct_cold_start", 0)),
+        ("mash.context_load", timing.get("context_load_ms", 0), 0),
         ("idle", timing.get("idle_ms", 0), 0),
     ]
     visible = [(label, ms, pct) for label, ms, pct in segments if ms > 0]
@@ -133,12 +133,12 @@ def _render_trace(renderer, data: dict, *, depth: int = 0) -> None:
                 "analysis": child,
                 "status": "completed",
             }
-            _p(f"  ┌─ subagent_call: {agent_id} " + "─" * max(0, 32 - len(agent_id)))
+            _p(f"  ┌─ invoke_agent {agent_id} " + "─" * max(0, 32 - len(agent_id)))
             _render_trace(renderer, child_data, depth=depth + 1)
             renderer.print(f"{'│  ' * depth}  └" + "─" * 51)
         else:
             dur = _fmt_ms(sub.get("duration_ms", 0))
-            _p(f"  subagent_call: {agent_id}  {dur}  (trace data unavailable)")
+            _p(f"  invoke_agent {agent_id}  {dur}  (trace data unavailable)")
 
 
 def register_default_commands(shell) -> None:

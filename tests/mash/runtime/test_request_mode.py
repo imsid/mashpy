@@ -63,8 +63,8 @@ class RequestModeTests(unittest.IsolatedAsyncioTestCase):
                 app_id=runtime.app_id,
                 agent_id=runtime.app_id,
                 session_id="s-1",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
                 payload={"message": "hi", "mode": "fg", "started_by": "user"},
             )
@@ -108,7 +108,7 @@ class RequestModeTests(unittest.IsolatedAsyncioTestCase):
             for e in await runtime.runtime_store.list_request_events("req-1")
             if e.event_type == RuntimeEventType.REQUEST_MODE_CHANGED.value
         ]
-        self.assertEqual(switches, [{"mode": "bg"}, {"mode": "fg"}])
+        self.assertEqual([s["mode"] for s in switches], ["bg", "fg"])
 
     async def test_set_request_mode_refuses_a_terminal_request(self) -> None:
         runtime = await self._runtime()
@@ -119,8 +119,8 @@ class RequestModeTests(unittest.IsolatedAsyncioTestCase):
                 app_id=runtime.app_id,
                 agent_id=runtime.app_id,
                 session_id="s-1",
-                event_type=RuntimeEventType.REQUEST_COMPLETED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_COMPLETED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_END.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, "ok"),
                 dedupe_key="request.completed.0",
             )
         )
@@ -181,20 +181,20 @@ class RequestModeRouteTests(unittest.TestCase):
         )
 
     def test_switches_both_ways_then_409_once_terminal(self) -> None:
-        self._seed(RuntimeEventType.REQUEST_ACCEPTED.value)
+        self._seed(RuntimeEventType.INVOKE_AGENT_START.value)
         for mode in ("bg", "fg"):
             resp = self._mode(mode)
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json()["mode"], mode)
 
-        self._seed(RuntimeEventType.REQUEST_COMPLETED.value)
+        self._seed(RuntimeEventType.INVOKE_AGENT_END.value)
         resp = self._mode("bg")
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.json()["error"]["code"], "REQUEST_TERMINAL")
 
     def test_unknown_request_is_404_and_bad_mode_is_400(self) -> None:
         self.assertEqual(self._mode("bg", request_id="missing").status_code, 404)
-        self._seed(RuntimeEventType.REQUEST_ACCEPTED.value)
+        self._seed(RuntimeEventType.INVOKE_AGENT_START.value)
         resp = self._mode("sideways")
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")

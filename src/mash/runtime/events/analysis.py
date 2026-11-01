@@ -1,12 +1,16 @@
-"""Deterministic trace analysis from span trees."""
+"""Deterministic trace analysis over the OpenTelemetry projection."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from .protocol import RuntimeStore
-from .spans import Span, SpanKind, TraceSpanTree, build_span_tree
+from ...otel import semconv
+
+if TYPE_CHECKING:
+    from ...otel.projection import Projection, Span
+
+_RUN_SUBAGENTS = "RunSubAgents"
 
 
 @dataclass(frozen=True)
@@ -142,59 +146,50 @@ class TraceAnalysis:
         }
 
 
-def analyze_trace(tree: TraceSpanTree) -> TraceAnalysis:
-    all_spans = _collect_all_spans(tree.root)
+def analyze_projection(
+    projection: "Projection", root_span_id: str | None = None
+) -> TraceAnalysis:
+    """Timing, tokens and counts for one ``invoke_agent`` span and its own spans.
 
-    cold_start_ms = 0.0
-    context_load_ms = 0.0
-    total_think_ms = 0.0
-    total_tool_ms = 0.0
-    total_subagent_ms = 0.0
-    tool_call_count = 0
-    tool_error_count = 0
-    input_tokens = 0
-    output_tokens = 0
-    cache_read_tokens = 0
-    cache_write_tokens = 0
+    A RunSubAgents child's spans belong to the child: they are analysed on
+    their own and attached as ``subagent_details``.
+    """
+    root = projection.span(root_span_id or projection.root_span_id)
+    if root is None:
+        raise ValueError("projection has no root span")
+    now = projection.observed_at
+    own = _own_spans(projection, root)
 
-    tool_call_spans: list[Span] = []
-    subagent_spans: list[Span] = []
+    cold_start_ms = context_load_ms = 0.0
+    total_think_ms = total_tool_ms = total_subagent_ms = 0.0
+    tool_call_count = tool_error_count = 0
+    tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    tool_spans: list["Span"] = []
+    subagent_details: list[SubagentDetail] = []
 
-    for span in all_spans:
-        if span.kind == SpanKind.COLD_START:
-            cold_start_ms += span.duration_ms
-        elif span.kind == SpanKind.CONTEXT_LOAD:
-            context_load_ms += span.duration_ms
-        elif span.kind == SpanKind.THINK:
-            total_think_ms += span.duration_ms
-            usage = span.attributes.get("token_usage")
-            if isinstance(usage, dict):
-                input_tokens += _safe_int(
-                    usage.get("input") or usage.get("input_tokens")
-                )
-                output_tokens += _safe_int(
-                    usage.get("output") or usage.get("output_tokens")
-                )
-                cache_read_tokens += _safe_int(
-                    usage.get("cache_read") or usage.get("cache_read_tokens")
-                )
-                cache_write_tokens += _safe_int(
-                    usage.get("cache_write") or usage.get("cache_write_tokens")
-                )
-        elif span.kind == SpanKind.TOOL_CALL:
-            total_tool_ms += span.duration_ms
+    for span in own:
+        duration = span.duration_ms(now)
+        if span.name == "mash.cold_start":
+            cold_start_ms += duration
+        elif span.name == "mash.context_load":
+            context_load_ms += duration
+        elif span.operation == semconv.OP_CHAT:
+            total_think_ms += duration
+            usage = semconv.token_usage(span.attributes)
+            for key in tokens:
+                tokens[key] += usage[key]
+        elif span.operation == semconv.OP_EXECUTE_TOOL:
             tool_call_count += 1
-            if span.status == "error":
+            if span.status == "ERROR":
                 tool_error_count += 1
-            tool_call_spans.append(span)
-        elif span.kind == SpanKind.SUBAGENT_CALL:
-            total_subagent_ms += span.duration_ms
-            tool_call_count += 1
-            if span.status == "error":
-                tool_error_count += 1
-            subagent_spans.append(span)
+            tool_spans.append(span)
+            if _tool_name(span) == _RUN_SUBAGENTS:
+                total_subagent_ms += duration
+                subagent_details.extend(_subagent_details(projection, span))
+            else:
+                total_tool_ms += duration
 
-    total_duration_ms = tree.root.duration_ms
+    total_duration_ms = root.duration_ms(now)
     idle_ms = max(
         0.0,
         total_duration_ms
@@ -204,18 +199,14 @@ def analyze_trace(tree: TraceSpanTree) -> TraceAnalysis:
         - total_tool_ms
         - total_subagent_ms,
     )
-
-    tool_stats = _compute_tool_stats(tool_call_spans + subagent_spans)
-    step_breakdown = _compute_step_breakdown(tree.root)
-    slowest_spans = _compute_slowest_spans(all_spans)
-    subagent_details = _extract_subagent_details(subagent_spans)
-    step_count = sum(1 for s in all_spans if s.kind == SpanKind.STEP)
-
+    steps = [
+        child for child in projection.children(root.span_id) if child.name.startswith("mash.step")
+    ]
     return TraceAnalysis(
-        trace_id=tree.trace_id,
-        target_agent_id=tree.target_agent_id,
-        session_id=tree.session_id,
-        status=tree.root.status,
+        trace_id=root.trace_id,
+        target_agent_id=root.agent_id or "",
+        session_id=str(root.attributes.get(semconv.GEN_AI_CONVERSATION_ID) or ""),
+        status=root_status(root),
         total_duration_ms=total_duration_ms,
         cold_start_ms=cold_start_ms,
         context_load_ms=context_load_ms,
@@ -223,38 +214,76 @@ def analyze_trace(tree: TraceSpanTree) -> TraceAnalysis:
         total_tool_ms=total_tool_ms,
         total_subagent_ms=total_subagent_ms,
         idle_ms=idle_ms,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-        step_count=step_count,
+        input_tokens=tokens["input"],
+        output_tokens=tokens["output"],
+        cache_read_tokens=tokens["cache_read"],
+        cache_write_tokens=tokens["cache_write"],
+        step_count=len(steps),
         tool_call_count=tool_call_count,
         tool_error_count=tool_error_count,
-        tool_stats=tool_stats,
-        step_breakdown=step_breakdown,
-        slowest_spans=slowest_spans,
+        tool_stats=_compute_tool_stats(tool_spans, now),
+        step_breakdown=[_step_breakdown(projection, step, now) for step in steps],
+        slowest_spans=_compute_slowest_spans(own, now),
         subagent_details=subagent_details,
     )
 
 
-def _collect_all_spans(span: Span) -> list[Span]:
-    result = [span]
-    for child in span.children:
-        result.extend(_collect_all_spans(child))
+def root_status(root: "Span") -> str:
+    """``in_progress``, ``completed``, ``error`` or ``cancelled`` for an agent run."""
+    if root.end_time is None:
+        return "in_progress"
+    if root.status == "ERROR":
+        return "error"
+    if root.attributes.get(semconv.MASH_REQUEST_STATUS) == "cancelled":
+        return "cancelled"
+    return "completed"
+
+
+def _own_spans(projection: "Projection", root: "Span") -> list["Span"]:
+    """The root's descendants, stopping at nested ``invoke_agent`` spans."""
+    result: list["Span"] = []
+    pending = list(projection.children(root.span_id))
+    while pending:
+        span = pending.pop(0)
+        if span.operation == semconv.OP_INVOKE_AGENT:
+            continue
+        result.append(span)
+        pending.extend(projection.children(span.span_id))
     return result
 
 
-def _compute_tool_stats(tool_spans: list[Span]) -> list[ToolCallStats]:
-    by_name: dict[str, list[Span]] = {}
+def _tool_name(span: "Span") -> str:
+    return str(span.attributes.get(semconv.GEN_AI_TOOL_NAME) or span.name)
+
+
+def _subagent_details(projection: "Projection", tool_span: "Span") -> list[SubagentDetail]:
+    details: list[SubagentDetail] = []
+    for child in projection.children(tool_span.span_id):
+        if child.operation != semconv.OP_INVOKE_AGENT:
+            continue
+        details.append(
+            SubagentDetail(
+                agent_id=child.agent_id or "",
+                subagent_session_id=str(
+                    child.attributes.get(semconv.GEN_AI_CONVERSATION_ID) or ""
+                ),
+                request_id=child.request_id,
+                duration_ms=child.duration_ms(projection.observed_at),
+                child_analysis=analyze_projection(projection, child.span_id),
+            )
+        )
+    return details
+
+
+def _compute_tool_stats(tool_spans: list["Span"], now: float) -> list[ToolCallStats]:
+    by_name: dict[str, list["Span"]] = {}
     for span in tool_spans:
-        name = span.attributes.get("tool_name", span.name)
-        by_name.setdefault(name, []).append(span)
+        by_name.setdefault(_tool_name(span), []).append(span)
 
     stats: list[ToolCallStats] = []
     for name, spans in by_name.items():
-        durations = [s.duration_ms for s in spans]
+        durations = [s.duration_ms(now) for s in spans]
         total = sum(durations)
-        error_count = sum(1 for s in spans if s.status == "error")
         stats.append(
             ToolCallStats(
                 tool_name=name,
@@ -263,159 +292,68 @@ def _compute_tool_stats(tool_spans: list[Span]) -> list[ToolCallStats]:
                 avg_ms=total / len(spans),
                 max_ms=max(durations),
                 min_ms=min(durations),
-                error_count=error_count,
+                error_count=sum(1 for s in spans if s.status == "ERROR"),
             )
         )
     stats.sort(key=lambda s: s.total_ms, reverse=True)
     return stats
 
 
-def _compute_step_breakdown(root: Span) -> list[StepBreakdown]:
-    steps: list[StepBreakdown] = []
-    for child in root.children:
-        if child.kind != SpanKind.STEP or child.loop_index is None:
-            continue
-
-        think_ms = 0.0
-        tool_ms = 0.0
-        subagent_ms = 0.0
-        tool_calls: list[str] = []
-        token_usage: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-
-        for grandchild in child.children:
-            if grandchild.kind == SpanKind.THINK:
-                think_ms += grandchild.duration_ms
-                usage = grandchild.attributes.get("token_usage")
-                if isinstance(usage, dict):
-                    token_usage["input"] += _safe_int(
-                        usage.get("input") or usage.get("input_tokens")
-                    )
-                    token_usage["output"] += _safe_int(
-                        usage.get("output") or usage.get("output_tokens")
-                    )
-                    token_usage["cache_read"] += _safe_int(
-                        usage.get("cache_read") or usage.get("cache_read_tokens")
-                    )
-                    token_usage["cache_write"] += _safe_int(
-                        usage.get("cache_write") or usage.get("cache_write_tokens")
-                    )
-            elif grandchild.kind == SpanKind.TOOL_CALL:
-                tool_ms += grandchild.duration_ms
-                tool_calls.append(
-                    grandchild.attributes.get("tool_name", grandchild.name)
-                )
-            elif grandchild.kind == SpanKind.SUBAGENT_CALL:
-                subagent_ms += grandchild.duration_ms
-                tool_calls.append(
-                    grandchild.attributes.get("tool_name", grandchild.name)
-                )
-
-        total_ms = child.duration_ms
-        overhead_ms = max(0.0, total_ms - think_ms - tool_ms - subagent_ms)
-
-        steps.append(
-            StepBreakdown(
-                step_index=child.loop_index,
-                think_ms=think_ms,
-                tool_ms=tool_ms,
-                subagent_ms=subagent_ms,
-                overhead_ms=overhead_ms,
-                total_ms=total_ms,
-                tool_calls=tool_calls,
-                token_usage=token_usage,
-            )
-        )
-    return steps
+def _step_breakdown(projection: "Projection", step: "Span", now: float) -> StepBreakdown:
+    think_ms = tool_ms = subagent_ms = 0.0
+    tool_calls: list[str] = []
+    token_usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    for child in projection.children(step.span_id):
+        duration = child.duration_ms(now)
+        if child.operation == semconv.OP_CHAT:
+            think_ms += duration
+            usage = semconv.token_usage(child.attributes)
+            for key in token_usage:
+                token_usage[key] += usage[key]
+        elif child.operation == semconv.OP_EXECUTE_TOOL:
+            name = _tool_name(child)
+            tool_calls.append(name)
+            if name == _RUN_SUBAGENTS:
+                subagent_ms += duration
+            else:
+                tool_ms += duration
+    total_ms = step.duration_ms(now)
+    return StepBreakdown(
+        step_index=int(step.attributes.get(semconv.MASH_LOOP_INDEX) or 0),
+        think_ms=think_ms,
+        tool_ms=tool_ms,
+        subagent_ms=subagent_ms,
+        overhead_ms=max(0.0, total_ms - think_ms - tool_ms - subagent_ms),
+        total_ms=total_ms,
+        tool_calls=tool_calls,
+        token_usage=token_usage,
+    )
 
 
 def _compute_slowest_spans(
-    all_spans: list[Span], limit: int = 10
+    spans: list["Span"], now: float, limit: int = 10
 ) -> list[dict[str, Any]]:
-    leaf_spans = [
+    leaves = [
         s
-        for s in all_spans
-        if s.kind
-        in {
-            SpanKind.THINK,
-            SpanKind.TOOL_CALL,
-            SpanKind.SUBAGENT_CALL,
-            SpanKind.COLD_START,
-            SpanKind.CONTEXT_LOAD,
-        }
+        for s in spans
+        if s.operation in {semconv.OP_CHAT, semconv.OP_EXECUTE_TOOL}
+        or s.name in {"mash.cold_start", "mash.context_load"}
     ]
-    leaf_spans.sort(key=lambda s: s.duration_ms, reverse=True)
-    return [
-        {
-            "kind": span.kind.value,
-            "name": span.name,
-            "duration_ms": round(span.duration_ms, 3),
-            "step_index": span.loop_index,
-        }
-        for span in leaf_spans[:limit]
-    ]
-
-
-async def stitch_subagent_traces(
-    store: RuntimeStore,
-    analysis: TraceAnalysis,
-    *,
-    max_depth: int = 3,
-    _depth: int = 0,
-) -> TraceAnalysis:
-    """Attach each subagent call's own analysis, read from the store, up to
-    ``max_depth`` levels."""
-    if not analysis.subagent_details or _depth >= max_depth:
-        return analysis
-
-    updated_details: list[SubagentDetail] = []
-    for detail in analysis.subagent_details:
-        if not detail.agent_id or not detail.subagent_session_id:
-            updated_details.append(detail)
-            continue
-        try:
-            child_events = await store.list_events(
-                app_id=detail.agent_id,
-                session_id=detail.subagent_session_id,
-                limit=None,
-            )
-        except Exception:
-            updated_details.append(detail)
-            continue
-
-        if not child_events:
-            updated_details.append(detail)
-            continue
-
-        try:
-            child_tree = build_span_tree(child_events)
-            child_analysis = analyze_trace(child_tree)
-            child_analysis = await stitch_subagent_traces(
-                store, child_analysis, max_depth=max_depth, _depth=_depth + 1,
-            )
-            updated_details.append(replace(detail, child_analysis=child_analysis))
-        except Exception:
-            updated_details.append(detail)
-
-    return replace(analysis, subagent_details=updated_details)
-
-
-def _extract_subagent_details(subagent_spans: list[Span]) -> list[SubagentDetail]:
-    details: list[SubagentDetail] = []
-    for span in subagent_spans:
-        attrs = span.attributes
-        details.append(
-            SubagentDetail(
-                agent_id=str(attrs.get("agent_id", "")),
-                subagent_session_id=str(attrs.get("subagent_session_id", "")),
-                request_id=attrs.get("request_id"),
-                duration_ms=span.duration_ms,
-            )
+    leaves.sort(key=lambda s: s.duration_ms(now), reverse=True)
+    result: list[dict[str, Any]] = []
+    for span in leaves[:limit]:
+        loop_index = None
+        if span.key.startswith(("chat.", "tool.")):
+            try:
+                loop_index = int(span.key.split(".")[1])
+            except (IndexError, ValueError):
+                loop_index = None
+        result.append(
+            {
+                "kind": span.operation or span.name,
+                "name": span.name,
+                "duration_ms": round(span.duration_ms(now), 3),
+                "step_index": loop_index,
+            }
         )
-    return details
-
-
-def _safe_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+    return result

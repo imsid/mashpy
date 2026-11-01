@@ -312,6 +312,34 @@ mash sandbox stop u-42                        # stop now; the volume is kept
 - A host restart restarts every agent process, and each recovers its pending
   requests. Running sandboxes count as active from the restart.
 
+## Exporting traces
+
+The host can send every request's trace to an OpenTelemetry backend over OTLP.
+Install mashpy with the `otel` extra in the host image and point it at a
+collector:
+
+```bash
+uv add 'mashpy[otel]'
+```
+
+```yaml
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: assistant
+```
+
+The exporter runs in the host and is off until an endpoint is set. It exports a
+request when it ends: its spans (`invoke_agent`, `chat`, `execute_tool`,
+`mash.*`), its log records (`exception`, `mash.request.resumed`,
+`mash.request.mode_changed`), and the two GenAI client metrics. A workflow run
+exports as one trace when it finishes, with each agent step's request under its
+step. The exporter keeps its position in `otel_export_cursor`, so a restart
+picks up where it stopped.
+
+Headers, protocol and timeouts come from the standard `OTEL_EXPORTER_OTLP_*`
+variables. Prompts, completions and tool arguments and results stay out of the
+export unless `MASH_OTEL_CAPTURE_CONTENT=1` is set. The admin UI shows the
+same spans whether or not export is on.
+
 ## Accessing the host from applications
 
 The Mash host exposes a REST + SSE API under `/api/v1`. Any HTTP client can
@@ -467,3 +495,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `GEMINI_API_KEY` | host | none | Google Gemini API key; agent processes inherit it |
 | `DBOS_CONDUCTOR_KEY` | host | none | DBOS Conductor key; agent processes inherit it |
 | `CORTEX_AGENT_<PROVIDER>_MODEL` | host | the provider's default | Model for `cortex-agent` in a pool with Cortex enabled (`ANTHROPIC`, `OPENAI`, `GEMINI`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | host | none | OTLP/HTTP collector address; setting it (or a per-signal `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT`) turns the exporter on. Needs `mashpy[otel]` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | host | none | Headers for the collector, such as an API key |
+| `OTEL_SERVICE_NAME` | host | `mash` | `service.name` on every exported span, log record and metric |
+| `MASH_OTEL_CAPTURE_CONTENT` | host | off | `1` adds prompts, completions and tool arguments and results to the export |

@@ -111,7 +111,7 @@ Notes:
 
 ## Thoughts
 
-The feed reads existing `runtime.llm.think.completed` events; opening it never
+The feed reads existing `chat.end` events; opening it never
 calls a model. `components/thoughts/ThoughtTrace.jsx` renders original Markdown
 with `lib/thoughts.js` applying exact-substring accents only to prose (not code
 or links). The local phrase rules are presentation heuristics, not rewritten

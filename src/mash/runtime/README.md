@@ -166,7 +166,7 @@ The `RuntimeStore` boundary is intentionally small:
 
 This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened.
 
-A request's lifecycle state is one such record, not an inference: the five events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a subagent call's parent and copy its user. The accepted event also writes `session_id`, `mode` (`fg` or `bg`), `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`, and `runtime.request.mode_changed` updates `mode` in the same transaction as its append. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log and is rebuildable from it. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
+A request's lifecycle state is one such record, not an inference: the events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a subagent call's parent and copy its user. The accepted event also writes `session_id`, `mode` (`fg` or `bg`), `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`, and `mash.request.mode_changed` updates `mode` in the same transaction as its append. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log, written in the same transaction as each lifecycle event. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
 
 ### Runtime Durability
 
@@ -355,24 +355,28 @@ lifecycle.
 ### `events/`
 
 - [`events/types.py`](./events/types.py)
-  - runtime event schema
+  - runtime event schema and the event set: each name is the span it bounds
+    (`invoke_agent.start`/`.end`, `chat.start`/`.delta`/`.end`, `execute_tool.start`/`.end`,
+    `mash.context_load.*`, `mash.step.end`, `mash.interaction.*`) or a log record name
+    (`mash.request.resumed`, `mash.request.mode_changed`)
+  - every `.end` carries `status` (`ok`, `error`, `cancelled`); OpenTelemetry attributes
+    live under `payload["attributes"]` with their GenAI convention names
 
 - [`events/store.py`](./events/store.py)
   - event store protocol and Postgres implementation
 
-- [`events/spans.py`](./events/spans.py)
-  - span model (`Span`, `SpanKind`, `TraceSpanTree`) and tree builder
-  - `build_span_tree(events)` transforms a flat `RuntimeEvent` list into a hierarchical span tree
-  - `serialize_span(span)` converts a span tree to a JSON-serializable dict
-  - span kinds: `TRACE`, `COLD_START`, `CONTEXT_LOAD`, `STEP`, `THINK`, `TOOL_CALL`, `SUBAGENT_CALL`
-  - deterministic span IDs, payload-preferred durations, handles missing start events
+- [`../otel/projection.py`](../otel/projection.py)
+  - the OpenTelemetry projection: `project_request(events, children=...)` pairs each
+    start with its end and returns spans and log records with GenAI names and
+    attributes; the admin UI reads it and the exporter sends it
+  - open spans come back with `end_time` None, so running requests show
+  - RunSubAgents children nest under the call that started them
 
 - [`events/analysis.py`](./events/analysis.py)
-  - deterministic trace analysis from span trees
-  - `analyze_trace(tree)` computes timing breakdown, token aggregation, per-tool stats, per-step breakdown, and slowest operations
-  - `stitch_subagent_traces(store, analysis)` attaches each subagent call's own analysis from the store, up to three levels deep
-  - `TraceAnalysis` includes: timing (cold start, context load, think, tool, subagent, idle), token counts, tool stats, step breakdown, subagent details with recursive child analysis support
-  - all computation is pure — no DB access, no LLM inference
+  - deterministic trace analysis over the projection
+  - `analyze_projection(projection)` computes timing breakdown, token aggregation, per-tool stats, per-step breakdown, and slowest operations
+  - `TraceAnalysis` includes: timing (cold start, context load, chat, tool, subagent, idle), token counts, tool stats, step breakdown, and each child's own analysis
+  - all computation is pure: no DB access, no LLM inference
 
 ### `host/`
 
@@ -545,10 +549,10 @@ Interactions allow an agent to pause mid-execution and request information or ap
 ### How Interactions Work
 
 1. During the workflow loop, after `plan_request_step`, if the action payload contains an `interaction` field, the workflow initiates an interaction.
-2. The workflow emits a `runtime.interaction.create` event (visible on SSE as `request.interaction.create`).
+2. The workflow emits a `mash.interaction.start` event (visible on SSE as `request.interaction.create`).
 3. The workflow calls `DBOS.recv(interaction_id, timeout_seconds=...)` — this durably blocks execution.
 4. The host delivers the user's response via `post_interaction` on the client, which calls `DBOS.send(workflow_id, response, topic=interaction_id)`.
-5. The workflow resumes, emits `runtime.interaction.ack`, and continues to tool execution.
+5. The workflow resumes, emits `mash.interaction.end`, and continues to tool execution.
 
 ### Durability
 
@@ -627,7 +631,7 @@ There are three layers of failure handling, each covering a different scenario:
 
   A `failed` request cannot be resumed: `DBOS.resume_workflows` updates only workflows whose status is outside `SUCCESS` and `ERROR`, so the call would be a silent no-op. The method reports the failed status and points at rerun. Resuming a failed request from its last checkpoint would need `DBOS.fork_workflow`, which mints a new workflow id and so breaks the request/workflow/trace 1:1 mapping that `workflow_id_for` assumes.
 
-- `set_request_mode(request_id, mode)` switches a running request between `fg` and `bg` by appending `runtime.request.mode_changed`. It raises `RequestTerminalError` once the request is terminal. The mode tells clients whether the conversation waits on the request; it does not change how the request runs.
+- `set_request_mode(request_id, mode)` switches a running request between `fg` and `bg` by appending `mash.request.mode_changed`. It raises `RequestTerminalError` once the request is terminal. The mode tells clients whether the conversation waits on the request; it does not change how the request runs.
 
 - `rerun_request(request_id)` — submits a new request built from the original's `request.accepted` payload (message plus full request metadata, including the host snapshot), with `rerun_of` stamped into the metadata. New request id, new trace, and `context.load` runs fresh against the session's current history. Works regardless of the original's terminal state.
 
@@ -720,7 +724,7 @@ That separation is the point of this package layout.
 The runtime always enables textual thought summaries on its planning providers,
 including request-scoped ones. Only Gemini currently implements enablement;
 unsupported providers use a no-op default. No agent configuration is required.
-The summaries remain in `runtime.llm.think.completed`; answers and tool behavior
+The summaries remain in `chat.end`; answers and tool behavior
 are unchanged. No interpreter lifecycle is involved.
 
 `RuntimeStore.list_thought_traces(app_id=None, limit=50, trace_id=None)` reads the latest

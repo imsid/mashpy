@@ -136,7 +136,7 @@ slow or unreachable.
 
 ### Live token streaming
 
-When the host streams a response (`llm.response.delta` events), the chain
+When the host streams a response (`chat.delta` events), the chain
 renderer shows the answer live and formatted, then renders it exactly once:
 
 - `chain_renderer._on_runtime_response_delta` buffers incoming chunks and flushes

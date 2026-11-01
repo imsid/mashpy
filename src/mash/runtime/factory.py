@@ -230,7 +230,6 @@ def configure_runtime_tools(
         app_id=self.app_id,
         session_id=session_id,
         user_id=user_id,
-        event_logger=self.event_logger,
     )
     for tool in builder.build_tools():
         agent.tools.register(tool)
@@ -391,7 +390,6 @@ def configure_run_subagents(
             caller_agent_id=self.app_id,
             session_id=session_id,
             host=host,
-            event_logger=self.get_event_logger(),
         )
     )
 

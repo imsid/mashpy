@@ -391,40 +391,43 @@ pipeline first.
 
 ### Spans and Trace Analysis
 
-Every request produces an ordered stream of `RuntimeEvent` records. Mash
-transforms those flat events into a hierarchical **span tree** and computes a
-deterministic **trace analysis** from that tree. No LLM inference is involved;
-all metrics are derived directly from event timestamps and payloads.
+Every request produces an ordered stream of `RuntimeEvent` records, each named
+after the OpenTelemetry span it starts or ends. Mash projects those flat events
+onto **OpenTelemetry spans and log records**, with GenAI names and attributes,
+and computes a deterministic **trace analysis** from them. No LLM inference is
+involved; all metrics are derived directly from event timestamps and payloads.
+The same projection is what the host exports over OTLP.
 
-The span tree models the full request lifecycle:
+The projection models the full request lifecycle:
 
 ```
-TRACE
-├── COLD_START        (request accepted → trace started)
-├── CONTEXT_LOAD      (trace started → context loaded)
-├── STEP 0
-│   ├── THINK         (LLM inference, with token usage)
-│   ├── TOOL_CALL     (bash, 200ms)
-│   └── TOOL_CALL     (read_file, 150ms)
-├── STEP 1
-│   ├── THINK
-│   └── SUBAGENT_CALL (research agent, 3.2s)
-└── STEP 2
-    └── THINK         (final response)
+invoke_agent assistant
+├── mash.cold_start              (accepted → context load starts)
+├── mash.context_load            (history and summary loaded)
+├── mash.step 0
+│   ├── chat claude-sonnet-4-6   (model call, with token usage)
+│   ├── execute_tool run_code    (200ms)
+│   └── execute_tool read_file   (150ms)
+├── mash.step 1
+│   ├── chat claude-sonnet-4-6
+│   └── execute_tool RunSubAgents
+│       └── invoke_agent research   (3.2s, the child in this trace)
+└── mash.step 2
+    └── chat claude-sonnet-4-6   (final response)
 ```
 
-The trace analysis computed from this tree includes:
+The trace analysis computed from these spans includes:
 
-- **Timing breakdown**: total duration, cold start, context load, LLM think,
+- **Timing breakdown**: total duration, cold start, context load, model calls,
   tool execution, subagent calls, and idle time, each with absolute and
   percentage values
 - **Per-tool stats**: call count, total/avg/max/min latency, error count,
   sorted by total time so the most expensive tool surfaces first
-- **Per-step breakdown**: think, tool, and overhead time for each agent loop
+- **Per-step breakdown**: model call, tool, and overhead time for each agent loop
   iteration
 - **Slowest operations**: top 10 spans ranked by duration
-- **Subagent trace stitching**: child agent traces are linked and analyzed
-  recursively up to 3 levels deep
+- **Subagent traces**: each `RunSubAgents` child is nested under the call that
+  started it and analyzed on its own
 
 ### Telemetry API
 
@@ -433,7 +436,7 @@ The telemetry API exposes both raw events and structured analysis:
 ```
 GET /telemetry/events                  # flat runtime events
 GET /telemetry/traces                  # list recent traces (lightweight)
-GET /telemetry/trace/analysis          # span tree + latency analysis
+GET /telemetry/trace/analysis          # OpenTelemetry projection + latency analysis
 GET /telemetry/api/events              # backend API request logs
 GET /telemetry/memory/search           # search agent memory
 ```

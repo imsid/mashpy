@@ -300,9 +300,7 @@ class _LoggingFinishLLMProvider(BaseLLMProvider):
         super().__init__(app_id="test", model="test-model")
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-        started_at = time.time()
-        await self._emit_request_start(request)
-        response = LLMResponse(
+        return LLMResponse(
             thought_summary="",
             text="Done immediately.",
             tool_calls=[],
@@ -310,12 +308,6 @@ class _LoggingFinishLLMProvider(BaseLLMProvider):
             stop_reason="end_turn",
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
-        await self._emit_request_complete(
-            request,
-            started_at=started_at,
-            response=response,
-        )
-        return response
 
 
 class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -355,7 +347,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(caught.exception.retryable)
         self.assertIn("max step limit", str(caught.exception))
 
-    async def test_tool_result_trace_preserves_structured_metadata(self) -> None:
+    async def test_tool_result_preserves_structured_metadata(self) -> None:
         async def noop(_args) -> ToolResult:
             return ToolResult.success(
                 "ok",
@@ -381,20 +373,9 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 max_steps=1,
             ),
         )
-        logger = _RecordingEventLogger()
-        agent.set_event_logger(logger, session_id="s-1")
-        context = Context(system_prompt="You are a test agent.")
-        context.add_user_message("do the thing")
+        result = await agent.execute_tool_call(ToolCall(id="c1", name="noop", arguments={}))
 
-        with self.assertRaises(MaxStepsExhaustedError):
-            await agent.run(context)
-
-        result_events = [event for event in logger.events if event.event_type == "agent.tool.result"]
-        self.assertEqual(len(result_events), 1)
-        self.assertEqual(
-            result_events[0].payload["metadata"]["subagent_session_id"],
-            "subagent:research:abc123",
-        )
+        self.assertEqual(result.metadata["subagent_session_id"], "subagent:research:abc123")
 
     async def test_run_collects_unused_tool_signals_for_trace(self) -> None:
         provider = _ToolThenFinishLLMProvider()
@@ -597,8 +578,8 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         # A stop_reason="tool_use" response whose only tool call fails validation
         # must not drop the call and continue into an assistant-terminated
-        # (prefill) request. The failure is surfaced to the model as a tool error
-        # and logged; the model then finishes.
+        # (prefill) request. The failure is surfaced to the model as a tool error;
+        # the model then finishes.
         async def save(_args) -> ToolResult:
             raise AssertionError("invalid tool call must not execute")
 
@@ -642,18 +623,10 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("assistant", llm.last_message_roles)
         # The follow-up request ended with the tool-result message.
         self.assertEqual(llm.last_message_roles[-1], "tool")
-        # The invalidation was logged, naming the missing argument.
-        invalid_events = [
-            event
-            for event in logger.events
-            if getattr(event, "event_type", None) == "agent.tool.invalid"
-        ]
-        self.assertEqual(len(invalid_events), 1)
-        self.assertEqual(invalid_events[0].payload["missing_arguments"], ["data"])
 
-    async def test_run_emits_llm_and_agent_trace_events_without_removed_debug_events(
-        self,
-    ) -> None:
+    async def test_an_unstreamed_run_writes_no_events(self) -> None:
+        # The durable runtime writes a request's events; the loop itself and the
+        # provider write only chat.delta, and only while streaming.
         agent = Agent(
             llm=_LoggingFinishLLMProvider(),
             tools=ToolRegistry(),
@@ -672,13 +645,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
 
         await agent.run(context)
 
-        event_types = [event.event_type for event in logger.events]
-        self.assertIn("llm.request.start", event_types)
-        self.assertIn("llm.request.complete", event_types)
-        self.assertIn("agent.think.complete", event_types)
-        self.assertNotIn("agent.prompt.token_breakdown", event_types)
-        self.assertNotIn("agent.tools.token_breakdown", event_types)
-        self.assertNotIn("agent.llm.response", event_types)
+        self.assertEqual([event.event_type for event in logger.events], [])
 
 
 def _build_agent(tools: ToolRegistry, **config_kwargs) -> Agent:

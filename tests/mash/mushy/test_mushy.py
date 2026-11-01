@@ -42,7 +42,7 @@ def test_agent_spec_captures_summary_by_default_without_a_second_provider():
                     break
             assert done
             events = await runtime_store.list_request_events(accepted["request_id"])
-            thoughts = [e for e in events if e.event_type == "runtime.llm.think.completed"]
+            thoughts = [e for e in events if e.event_type == "chat.end"]
             assert thoughts[0].payload["thought_summary"] == "I am considering alternatives."
             primary.enable_thought_summaries.assert_called()
         finally:

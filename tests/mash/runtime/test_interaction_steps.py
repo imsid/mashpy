@@ -87,7 +87,7 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
         creates = [
             e
             for e in events
-            if e.event_type == RuntimeEventType.INTERACTION_CREATE.value
+            if e.event_type == RuntimeEventType.INTERACTION_START.value
         ]
         self.assertEqual(len(creates), 1)
         payload = creates[0].payload or {}
@@ -121,7 +121,7 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
         )
         events = await runtime.runtime_store.list_request_events("req-3")
         acks = [
-            e for e in events if e.event_type == RuntimeEventType.INTERACTION_ACK.value
+            e for e in events if e.event_type == RuntimeEventType.INTERACTION_END.value
         ]
         self.assertEqual(len(acks), 1)
         payload = acks[0].payload or {}
@@ -140,7 +140,7 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
         )
         events = await runtime.runtime_store.list_request_events("req-4")
         acks = [
-            e for e in events if e.event_type == RuntimeEventType.INTERACTION_ACK.value
+            e for e in events if e.event_type == RuntimeEventType.INTERACTION_END.value
         ]
         payload = acks[0].payload or {}
         self.assertNotIn("cancelled", payload)

@@ -5,15 +5,7 @@ from .analysis import (
     SubagentDetail,
     ToolCallStats,
     TraceAnalysis,
-    analyze_trace,
-    stitch_subagent_traces,
-)
-from .spans import (
-    Span,
-    SpanKind,
-    TraceSpanTree,
-    build_span_tree,
-    serialize_span,
+    analyze_projection,
 )
 from .protocol import RuntimeStore
 from .store import PostgresRuntimeStore
@@ -37,11 +29,8 @@ from .types import (
 
 __all__ = [
     "RequestIdentity",
-    "analyze_trace",
-    "stitch_subagent_traces",
     "build_reasoning_trace",
     "build_runtime_trace",
-    "build_span_tree",
     "FeedbackRecord",
     "FeedbackType",
     "PostgresRuntimeStore",
@@ -54,12 +43,9 @@ __all__ = [
     "RuntimeTrace",
     "RuntimeStore",
     "serialize_runtime_event",
-    "serialize_span",
-    "Span",
-    "SpanKind",
     "StepBreakdown",
     "SubagentDetail",
     "ToolCallStats",
     "TraceAnalysis",
-    "TraceSpanTree",
+    "analyze_projection",
 ]

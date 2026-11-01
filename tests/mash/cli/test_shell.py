@@ -155,44 +155,47 @@ class _FakeClient:
         return {"feedback": {"feedback_id": len(self.feedback)}}
 
     def stream_request(self, agent_id: str, request_id: str):
-        del agent_id, request_id
-        yield {
-            "event": "agent.trace",
-            "data": {
-                "event_type": "subagent.request.started",
-                "payload": {
-                    "agent_id": "research",
-                    "data": {"request_id": "sub-1"},
-                },
-            },
-        }
-        yield {
-            "event": "agent.trace",
-            "data": {
-                "event_type": "subagent.agent.trace",
-                "payload": {
-                    "agent_id": "research",
-                    "data": {
-                        "event_type": "runtime.llm.think.completed",
-                        "trace_id": "trace-sub-1",
-                        "session_id": "subagent:research:x",
-                        "loop_index": 0,
-                        "created_at": 10.0,
-                        "payload": {
-                            "duration_ms": 7,
-                            "action_type": "tool_call",
-                            "assistant_text": "checking cli flow",
-                            "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
-                            "token_usage": {"input": 1, "output": 1},
-                        },
+        if request_id == "sub-1":
+            # The RunSubAgents child's own stream.
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "chat.end",
+                    "trace_id": "trace-sub-1",
+                    "session_id": "s-1",
+                    "loop_index": 0,
+                    "created_at": 10.0,
+                    "payload": {
+                        "duration_ms": 7,
+                        "action_type": "tool_call",
+                        "assistant_text": "checking cli flow",
+                        "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
+                        "attributes": {"gen_ai.usage.input_tokens": 1, "gen_ai.usage.output_tokens": 1},
                     },
                 },
+            }
+            yield {"event": "request.completed", "data": {"status": "ok"}}
+            return
+        del agent_id
+        yield {
+            "event": "agent.trace",
+            "data": {
+                "event_type": "execute_tool.start",
+                "trace_id": "trace-1",
+                "session_id": "s-1",
+                "loop_index": 0,
+                "created_at": 99.0,
+                "payload": {
+                    "arguments": {"requests": [{"agent_id": "research", "prompt": "x"}]},
+                    "attributes": {"gen_ai.tool.name": "RunSubAgents", "gen_ai.tool.call.id": "c1"},
+                    "subagents": [{"agent_id": "research", "request_id": "sub-1"}],
+                },
             },
         }
         yield {
             "event": "agent.trace",
             "data": {
-                "event_type": "runtime.llm.think.completed",
+                "event_type": "chat.end",
                 "trace_id": "trace-1",
                 "session_id": "s-1",
                 "loop_index": 0,
@@ -202,14 +205,14 @@ class _FakeClient:
                     "action_type": "response",
                     "assistant_text": "draft",
                     "tool_calls": [],
-                    "token_usage": {"input": 2, "output": 1},
+                    "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                 },
             },
         }
         yield {
             "event": "agent.trace",
             "data": {
-                "event_type": "runtime.step.completed",
+                "event_type": "mash.step.end",
                 "trace_id": "trace-1",
                 "session_id": "s-1",
                 "loop_index": 0,
@@ -218,16 +221,6 @@ class _FakeClient:
                     "duration_ms": 15,
                     "action_type": "response",
                     "tool_calls": [],
-                },
-            },
-        }
-        yield {
-            "event": "agent.trace",
-            "data": {
-                "event_type": "subagent.request.completed",
-                "payload": {
-                    "agent_id": "research",
-                    "data": {"status": "completed"},
                 },
             },
         }
@@ -572,7 +565,7 @@ class MashRemoteShellTests(unittest.TestCase):
             yield {
                 "event": "agent.trace",
                 "data": {
-                    "event_type": "runtime.llm.think.completed",
+                    "event_type": "chat.end",
                     "trace_id": "trace-1",
                     "session_id": "s-1",
                     "loop_index": 0,
@@ -582,7 +575,7 @@ class MashRemoteShellTests(unittest.TestCase):
                         "action_type": "response",
                         "assistant_text": "echo: hello",
                         "tool_calls": [],
-                        "token_usage": {"input": 2, "output": 1},
+                        "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                     },
                 },
             }
@@ -604,14 +597,14 @@ class MashRemoteShellTests(unittest.TestCase):
             yield {
                 "event": "agent.trace",
                 "data": {
-                    "event_type": "runtime.llm.think.completed",
+                    "event_type": "chat.end",
                     "trace_id": "trace-1",
                     "loop_index": 0,
                     "payload": {
                         "action_type": "finish",
                         "assistant_text": "preview that should not render early",
                         "tool_calls": [],
-                        "token_usage": {"input": 2, "output": 1},
+                        "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                         "duration_ms": 123,
                     },
                 },
@@ -637,14 +630,14 @@ class MashRemoteShellTests(unittest.TestCase):
             yield {
                 "event": "agent.trace",
                 "data": {
-                    "event_type": "runtime.llm.think.completed",
+                    "event_type": "chat.end",
                     "trace_id": "trace-1",
                     "loop_index": 0,
                     "payload": {
                         "action_type": "response",
                         "assistant_text": "streamed from runtime",
                         "tool_calls": [],
-                        "token_usage": {"input": 2, "output": 1},
+                        "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                     },
                 },
             }
@@ -677,7 +670,7 @@ class MashRemoteShellTests(unittest.TestCase):
                 yield {
                     "event": "agent.trace",
                     "data": {
-                        "event_type": "llm.response.delta",
+                        "event_type": "chat.delta",
                         "trace_id": "trace-1",
                         "loop_index": 0,
                         "payload": {"payload": {"text": chunk, "index": 0}},
@@ -686,14 +679,14 @@ class MashRemoteShellTests(unittest.TestCase):
             yield {
                 "event": "agent.trace",
                 "data": {
-                    "event_type": "runtime.llm.think.completed",
+                    "event_type": "chat.end",
                     "trace_id": "trace-1",
                     "loop_index": 0,
                     "payload": {
                         "action_type": "finish",
                         "assistant_text": answer,
                         "tool_calls": [],
-                        "token_usage": {"input": 2, "output": 1},
+                        "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                         "duration_ms": 5,
                     },
                 },
@@ -727,7 +720,7 @@ class MashRemoteShellTests(unittest.TestCase):
             RuntimeEvent(
                 app_id="primary",
                 agent_id="primary",
-                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                event_type=RuntimeEventType.CHAT_END.value,
                 trace_id="trace-1",
                 session_id="s-1",
                 loop_index=2,
@@ -736,7 +729,7 @@ class MashRemoteShellTests(unittest.TestCase):
                     "action_type": "tool_call",
                     "assistant_text": "thinking",
                     "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
-                    "token_usage": {"input": 2, "output": 1},
+                    "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                     "duration_ms": 123,
                 },
             )
@@ -745,13 +738,13 @@ class MashRemoteShellTests(unittest.TestCase):
             RuntimeEvent(
                 app_id="primary",
                 agent_id="primary",
-                event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+                event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                 trace_id="trace-1",
                 session_id="s-1",
                 loop_index=2,
                 created_at=101.0,
                 payload={
-                    "tool_name": "bash",
+                    "attributes": {"gen_ai.tool.name": "bash"},
                     "duration_ms": 45,
                 },
             )
@@ -766,15 +759,15 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.chain_renderer, "on_runtime_event") as runtime_event:
             with patch.object(shell.chain_renderer, "finish_trace") as finish_trace:
                 shell.handle_repl_message(shell.context, "hello")
-        self.assertEqual(runtime_event.call_count, 2)
         self.assertEqual(
             [
                 call.args[0].event_type
                 for call in runtime_event.call_args_list
             ],
             [
-                RuntimeEventType.LLM_THINK_COMPLETED.value,
-                RuntimeEventType.STEP_COMPLETED.value,
+                RuntimeEventType.EXECUTE_TOOL_START.value,
+                RuntimeEventType.CHAT_END.value,
+                RuntimeEventType.STEP_END.value,
             ],
         )
         finish_trace.assert_called_once()
@@ -823,29 +816,23 @@ class MashRemoteShellTests(unittest.TestCase):
                 shell.handle_repl_message(shell.context, "hello")
         self.assertEqual(render_sub.call_count, 1)
         self.assertEqual(render_sub.call_args[1]["agent_id"], "research")
-        finish_sub.assert_called_once_with("research", 0)
+        finish_sub.assert_called_once()
+        self.assertEqual(finish_sub.call_args.args[0], "research")
 
-    def test_handle_repl_message_ignores_null_subagent_payloads(self) -> None:
+    def test_a_failed_child_prints_its_error(self) -> None:
         shell = self._build_shell()
+        parent_stream = shell.client.stream_request
 
-        def stream_with_null_subagent_payload(agent_id: str, request_id: str):
-            del agent_id, request_id
-            yield {
-                "event": "agent.trace",
-                "data": {
-                    "event_type": "subagent.request.error",
-                    "payload": None,
-                },
-            }
-            yield {
-                "event": "request.completed",
-                "data": {"session_id": "s-1", "response": {"text": "echo: hello"}},
-            }
+        def stream(agent_id: str, request_id: str):
+            if request_id == "sub-1":
+                yield {"event": "request.error", "data": {"error": "boom"}}
+                return
+            yield from parent_stream(agent_id, request_id)
 
-        _fake(shell).stream_request = stream_with_null_subagent_payload
+        _fake(shell).stream_request = stream
         with patch.object(shell.renderer, "error") as error:
             shell.handle_repl_message(shell.context, "hello")
-        error.assert_called_once_with("    Subagent subagent error: request failed")
+        error.assert_called_once_with("    Subagent research error: boom")
 
     def test_handle_repl_message_renders_text_blocks_without_thinking(self) -> None:
         shell = self._build_shell()
@@ -882,7 +869,7 @@ class MashRemoteShellTests(unittest.TestCase):
             yield {
                 "event": "agent.trace",
                 "data": {
-                    "event_type": "llm.response.delta",
+                    "event_type": "chat.delta",
                     "trace_id": "trace-1",
                     "payload": {"payload": {"text": answer, "index": 0}},
                 },
@@ -912,7 +899,7 @@ def _think_event(loop_index: int, thinking: str, *, action_type: str) -> Runtime
     return RuntimeEvent(
         app_id="primary",
         agent_id="primary",
-        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+        event_type=RuntimeEventType.CHAT_END.value,
         session_id="s-1",
         trace_id="trace-1",
         loop_index=loop_index,
@@ -921,7 +908,7 @@ def _think_event(loop_index: int, thinking: str, *, action_type: str) -> Runtime
             "action_type": action_type,
             "tool_calls": [],
             "assistant_blocks": [{"type": "thinking", "thinking": thinking}],
-            "token_usage": {"input": 1, "output": 1},
+            "attributes": {"gen_ai.usage.input_tokens": 1, "gen_ai.usage.output_tokens": 1},
         },
     )
 
@@ -962,7 +949,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
             RuntimeEvent(
                 app_id="primary",
                 agent_id="primary",
-                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                event_type=RuntimeEventType.CHAT_END.value,
                 session_id="s-1",
                 trace_id="trace-1",
                 loop_index=0,
@@ -970,7 +957,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
                     "duration_ms": 10,
                     "action_type": "tool_call",
                     "tool_calls": [{"name": "bash", "arguments": {}}],
-                    "token_usage": {"input": 10, "output": 1},
+                    "attributes": {"gen_ai.usage.input_tokens": 10, "gen_ai.usage.output_tokens": 1},
                 },
             )
         )
@@ -978,7 +965,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
             RuntimeEvent(
                 app_id="primary",
                 agent_id="primary",
-                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                event_type=RuntimeEventType.CHAT_END.value,
                 session_id="s-1",
                 trace_id="trace-1",
                 loop_index=1,
@@ -986,7 +973,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
                     "duration_ms": 12,
                     "action_type": "tool_call",
                     "tool_calls": [{"name": "bash", "arguments": {}}],
-                    "token_usage": {"input": 12, "output": 1},
+                    "attributes": {"gen_ai.usage.input_tokens": 12, "gen_ai.usage.output_tokens": 1},
                 },
             )
         )
@@ -1002,7 +989,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
             RuntimeEvent(
                 app_id="primary",
                 agent_id="primary",
-                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                event_type=RuntimeEventType.CHAT_END.value,
                 session_id="s-1",
                 trace_id="trace-1",
                 loop_index=0,
@@ -1010,7 +997,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
                     "duration_ms": 13447,
                     "action_type": "finish",
                     "tool_calls": [],
-                    "token_usage": {"input": 1320, "output": 1406},
+                    "attributes": {"gen_ai.usage.input_tokens": 1320, "gen_ai.usage.output_tokens": 1406},
                 },
             )
         )
@@ -1030,7 +1017,7 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
                 RuntimeEvent(
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    event_type=RuntimeEventType.CHAT_END.value,
                     session_id="s-1",
                     trace_id="trace-1",
                     loop_index=0,
@@ -1038,13 +1025,13 @@ class ChainOfThoughtRendererTests(unittest.TestCase):
                         "duration_ms": 10,
                         "action_type": "tool_call",
                         "tool_calls": [{"name": "run_code", "arguments": {"language": "shell", "code": "pwd"}}],
-                        "token_usage": {"input": 3, "output": 2},
+                        "attributes": {"gen_ai.usage.input_tokens": 3, "gen_ai.usage.output_tokens": 2},
                     },
                 ),
                 RuntimeEvent(
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.STEP_COMPLETED.value,
+                    event_type=RuntimeEventType.STEP_END.value,
                     session_id="s-1",
                     trace_id="trace-1",
                     loop_index=0,

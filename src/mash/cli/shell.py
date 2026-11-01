@@ -5,16 +5,17 @@ from __future__ import annotations
 import contextlib
 import json
 import threading
+import time
 import uuid
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from rich.markup import escape
 
 from mash.runtime.events import (
+    RuntimeEventType,
     runtime_event_from_stream_payload,
     runtime_event_response_preview,
 )
@@ -202,23 +203,6 @@ class MashRemoteShell:
                 f"```json\n{json.dumps(data, indent=2)}\n```"
             )
 
-    @staticmethod
-    def _build_llm_event(payload: dict[str, Any]) -> SimpleNamespace:
-        return SimpleNamespace(
-            event_type=payload.get("event_type"),
-            trace_id=payload.get("trace_id"),
-            provider=payload.get("provider"),
-            model=payload.get("model"),
-            duration_ms=payload.get("duration_ms"),
-            input_tokens=payload.get("input_tokens"),
-            output_tokens=payload.get("output_tokens"),
-            total_tokens=payload.get("total_tokens"),
-            finish_reason=payload.get("finish_reason"),
-            error=payload.get("error"),
-            tools=payload.get("tools"),
-            betas=payload.get("betas"),
-        )
-
     def _render_runtime_trace_payload(
         self,
         payload: dict[str, Any],
@@ -250,12 +234,12 @@ class MashRemoteShell:
 
     def _render_trace_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type") or "")
-        if event_type.startswith("subagent."):
-            self._render_subagent_event(payload)
-            return
         self._render_runtime_trace_payload(payload)
-        if event_type == "llm.request.complete":
-            self.chain_renderer.on_llm_request_complete(self._build_llm_event(payload))
+        if event_type == RuntimeEventType.EXECUTE_TOOL_START.value:
+            nested = payload.get("payload")
+            subagents = nested.get("subagents") if isinstance(nested, dict) else None
+            if isinstance(subagents, list):
+                self._follow_subagents(subagents)
 
     @staticmethod
     def _extract_streamed_response_text(
@@ -283,41 +267,52 @@ class MashRemoteShell:
             agent_id=agent_id,
         )
 
-    def _render_subagent_event(self, payload: dict[str, Any]) -> None:
-        event_type = str(payload.get("event_type") or "")
-        outer_payload = payload.get("payload")
-        if not isinstance(outer_payload, dict):
-            outer_payload = {}
-        inner = outer_payload.get("payload")
-        if isinstance(inner, dict) and "agent_id" in inner:
-            outer_payload = inner
-        agent_id = str(outer_payload.get("agent_id") or "subagent")
-        nested = outer_payload.get("data")
+    def _follow_subagents(self, subagents: list[Any]) -> None:
+        """Show each RunSubAgents child's steps from its own stream.
 
-        if event_type == "subagent.agent.trace" and isinstance(nested, dict):
-            event = runtime_event_from_stream_payload(
-                nested,
-                app_id=agent_id,
-                agent_id=agent_id,
-            )
-            if event is not None:
-                self.chain_renderer.render_subagent_event(event, agent_id=agent_id)
+        The parent is blocked on the call while its children run, so the
+        children are read one after another, each from its first event; a
+        child that finished while an earlier one was shown replays in full.
+        """
+        for item in subagents:
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(item.get("agent_id") or "").strip()
+            request_id = str(item.get("request_id") or "").strip()
+            if agent_id and request_id:
+                self._follow_subagent(agent_id, request_id)
+
+    def _follow_subagent(self, agent_id: str, request_id: str) -> None:
+        started_at = time.monotonic()
+        try:
+            for event in self.client.stream_request(agent_id, request_id):
+                event_name = str(event.get("event") or "")
+                data = event.get("data")
+                if not isinstance(data, dict):
+                    continue
+                if event_name == "agent.trace":
+                    child_event = runtime_event_from_stream_payload(
+                        data, app_id=agent_id, agent_id=agent_id
+                    )
+                    if child_event is not None:
+                        self.chain_renderer.render_subagent_event(
+                            child_event, agent_id=agent_id
+                        )
+                    continue
+                if event_name == "request.error":
+                    error = data.get("error")
+                    self.renderer.error(
+                        f"    Subagent {agent_id} error: {error or 'request failed'}"
+                    )
+                    return
+                if event_name in {"request.completed", "request.cancelled"}:
+                    break
+        except MashHostClientError as exc:
+            self.renderer.error(f"    Subagent {agent_id}: {exc}")
             return
-
-        if event_type == "subagent.request.started":
-            return
-
-        if event_type == "subagent.request.completed":
-            duration_ms = 0
-            if isinstance(nested, dict):
-                duration_ms = int(nested.get("duration_ms") or 0)
-            self.chain_renderer.finish_subagent(agent_id, duration_ms)
-            return
-
-        if event_type == "subagent.request.error":
-            error_data = nested if isinstance(nested, dict) else {}
-            error = error_data.get("error")
-            self.renderer.error(f"    Subagent {agent_id} error: {error or 'request failed'}")
+        self.chain_renderer.finish_subagent(
+            agent_id, int((time.monotonic() - started_at) * 1000)
+        )
 
     def handle_interaction(
         self,

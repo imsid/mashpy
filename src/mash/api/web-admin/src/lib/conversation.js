@@ -2,20 +2,30 @@
 //
 // The literal prompt sent to the model is not persisted, so we rebuild the
 // turn-by-turn conversation from what the runtime does record:
-//   - runtime.trace.started        -> the user message
-//   - runtime.llm.think.completed  -> an assistant turn (text + tool calls,
-//                                     with that LLM call's token usage)
-//   - runtime.(subagent.)tool.call.completed -> a tool result
+//   - invoke_agent.start  -> the user message
+//   - chat.end            -> an assistant turn (text + tool calls, with that
+//                            model call's token usage from its attributes)
+//   - execute_tool.end    -> a tool result
 //
 // The system prompt is intentionally absent: no endpoint exposes it, and we
 // don't want to fake it. Callers should surface that gap to the user.
 
 const EV = {
-  TRACE_STARTED: 'runtime.trace.started',
-  THINK_COMPLETED: 'runtime.llm.think.completed',
-  TOOL_COMPLETED: 'runtime.tool.call.completed',
-  SUBAGENT_COMPLETED: 'runtime.subagent.call.completed',
+  INVOKE_AGENT_START: 'invoke_agent.start',
+  CHAT_END: 'chat.end',
+  EXECUTE_TOOL_END: 'execute_tool.end',
 };
+
+// The model call's token usage, from its OpenTelemetry usage attributes.
+function tokenUsage(attributes) {
+  if (!attributes || attributes['gen_ai.usage.input_tokens'] == null) return null;
+  return {
+    input: attributes['gen_ai.usage.input_tokens'],
+    output: attributes['gen_ai.usage.output_tokens'],
+    cache_read: attributes['gen_ai.usage.cache_read.input_tokens'],
+    cache_write: attributes['gen_ai.usage.cache_creation.input_tokens'],
+  };
+}
 
 function assistantText(payload) {
   if (typeof payload.assistant_text === 'string' && payload.assistant_text) {
@@ -38,13 +48,13 @@ export function reconstructMessages(events) {
   for (const event of sorted) {
     const payload = event.payload || {};
     switch (event.event_type) {
-      case EV.TRACE_STARTED: {
+      case EV.INVOKE_AGENT_START: {
         if (typeof payload.message === 'string' && payload.message) {
           messages.push({ role: 'user', text: payload.message });
         }
         break;
       }
-      case EV.THINK_COMPLETED: {
+      case EV.CHAT_END: {
         const text = assistantText(payload);
         const toolCalls = (payload.tool_calls || [])
           .filter((tc) => tc && typeof tc === 'object')
@@ -58,18 +68,18 @@ export function reconstructMessages(events) {
             role: 'assistant',
             text,
             toolCalls,
-            tokenUsage: payload.token_usage || null,
+            tokenUsage: tokenUsage(payload.attributes),
           });
         }
         break;
       }
-      case EV.TOOL_COMPLETED:
-      case EV.SUBAGENT_COMPLETED: {
+      case EV.EXECUTE_TOOL_END: {
         const result = payload.result || {};
+        const attributes = payload.attributes || {};
         messages.push({
           role: 'tool',
-          toolName: payload.tool_name,
-          toolCallId: payload.tool_call_id,
+          toolName: attributes['gen_ai.tool.name'],
+          toolCallId: attributes['gen_ai.tool.call.id'],
           content: result.content,
           isError: Boolean(result.is_error),
         });

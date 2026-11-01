@@ -370,7 +370,7 @@ class MashHostClient:
         response = self._request(
             "GET",
             "/api/v1/telemetry/trace/analysis",
-            query={"agent_id": agent_id, "session_id": session_id, "trace_id": trace_id, "stitch": "true"},
+            query={"agent_id": agent_id, "session_id": session_id, "trace_id": trace_id},
         )
         return response.json()["data"]
 

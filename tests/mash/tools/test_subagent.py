@@ -127,13 +127,11 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         clear_trace_id()
         self.children = _Children()
-        self.event_logger = _RecordingEventLogger()
         self.tool = RunSubAgentsTool(
             caller_agent_id="planner",
             client_resolver=self.children.client,
             session_id="s1",
             host={"host_id": "assistant", "primary": "planner", "subagents": ["research"]},
-            event_logger=self.event_logger,
         )
 
     def tearDown(self) -> None:
@@ -294,31 +292,6 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
             [e["request_id"] for e in first], [e["request_id"] for e in second]
         )
         self.assertEqual(len(self.children.started), 2)
-
-    async def test_child_events_stream_into_the_callers_trace(self) -> None:
-        set_trace_id("trace-primary")
-        _, entries = await self._run(
-            {
-                "requests": [
-                    {"agent_id": "research", "prompt": "a"},
-                    {"agent_id": "planner", "prompt": "b"},
-                ]
-            }
-        )
-
-        events = self.event_logger.events
-        self.assertTrue(all(e.event_type.startswith("subagent.") for e in events))
-        self.assertTrue(all(e.trace_id == "trace-primary" for e in events))
-        by_child = {e.payload["request_id"] for e in events}
-        self.assertEqual(by_child, {entry["request_id"] for entry in entries})
-        self.assertIn(
-            ("planner", "subagent.request.completed"),
-            {(e.payload["agent_id"], e.event_type) for e in events},
-        )
-
-    async def test_without_a_trace_nothing_is_forwarded(self) -> None:
-        await self._run({"requests": [{"agent_id": "research", "prompt": "a"}]})
-        self.assertEqual(self.event_logger.events, [])
 
     async def test_forwards_the_bound_request_metadata(self) -> None:
         with bound_request_metadata({"tenant": "acme"}):

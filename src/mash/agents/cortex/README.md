@@ -59,8 +59,7 @@ on demand: `POST /api/v1/workflow/cortex-build/run` with
 - **collect** loads the user's Cortex and their turns after `built_through`
   from `MemoryStore.list_user_turns`: across agents, oldest first, without
   workflow or subagent turns. Each turn carries the tools it ran (arguments
-  from `runtime.llm.think.completed`, results from the tool and subagent
-  completion events); `search_cortex` results are left out. Messages are
+  from `execute_tool.start`, results from `execute_tool.end`); `search_cortex` results are left out. Messages are
   clipped to 4000 characters, arguments to 500, results to 1000, 20 tool
   calls per turn, and turns stop at 60000 characters of bundle.
 - **curate** passes through without calling the model when there are no new

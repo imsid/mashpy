@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
-from mash.logging import bound_host_id, bound_request_id, bound_request_metadata
+from mash.logging import (
+    bound_host_id,
+    bound_request_id,
+    bound_request_metadata,
+    bound_subagent_id_prefix,
+)
 from mash.runtime import context as context_helpers
 from mash.runtime.errors import classify_error
 from mash.runtime.requests import (
@@ -28,6 +33,7 @@ from mash.runtime.engine.steps import (
     run_step_tool_call,
     start_request_trace,
 )
+from mash.otel import semconv
 from mash.runtime.events.types import (
     FeedbackRecord,
     RequestIdentity,
@@ -36,55 +42,55 @@ from mash.runtime.events.types import (
     RuntimeEventType,
     accepted_request,
     accepted_user_id,
+    event_attributes,
 )
 from mash.workflows.store import WorkflowStepEventRecord
 
 
 def _trace_status(trace_events: list[RuntimeEvent]) -> str:
-    """Latest terminal lifecycle event wins, mirroring the Postgres rollup."""
-    terminal = {
-        RuntimeEventType.REQUEST_COMPLETED.value: "completed",
-        RuntimeEventType.REQUEST_FAILED.value: "error",
-    }
+    """Latest lifecycle event wins, mirroring the Postgres rollup."""
+    by_status = {"ok": "completed", "error": "error", "cancelled": "cancelled"}
     for event in sorted(
         trace_events,
         key=lambda item: (float(item.created_at), int(item.event_id)),
         reverse=True,
     ):
-        if event.event_type in terminal:
-            return terminal[event.event_type]
+        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
+            return "in_progress"
+        if event.event_type == RuntimeEventType.INVOKE_AGENT_END.value:
+            return by_status.get((event.payload or {}).get("status"), "in_progress")
     return "in_progress"
 
 
 def _event_tokens(event: RuntimeEvent) -> int:
-    """Input+output tokens on one event, mirroring the Postgres token SUM."""
-    payload = event.payload or {}
-    usage = payload.get("token_usage") or {}
-    inp = usage.get("input") or usage.get("input_tokens") or payload.get("input_tokens") or 0
-    out = usage.get("output") or usage.get("output_tokens") or payload.get("output_tokens") or 0
-    try:
-        return int(inp) + int(out)
-    except (TypeError, ValueError):
+    """Input+output tokens on one chat.end, mirroring the Postgres token SUM."""
+    if event.event_type != RuntimeEventType.CHAT_END.value:
         return 0
+    usage = semconv.token_usage(event_attributes(event.payload))
+    return usage["input"] + usage["output"]
 
 
 _SEED_LIFECYCLE = {
-    RuntimeEventType.REQUEST_ACCEPTED.value: RequestStatus.RUNNING,
+    RuntimeEventType.INVOKE_AGENT_START.value: RequestStatus.RUNNING,
     RuntimeEventType.REQUEST_RESUMED.value: RequestStatus.RUNNING,
-    RuntimeEventType.REQUEST_COMPLETED.value: RequestStatus.COMPLETED,
-    RuntimeEventType.REQUEST_FAILED.value: RequestStatus.FAILED,
-    RuntimeEventType.REQUEST_CANCELLED.value: RequestStatus.CANCELLED,
+}
+_END_LIFECYCLE = {
+    "ok": RequestStatus.COMPLETED,
+    "error": RequestStatus.FAILED,
+    "cancelled": RequestStatus.CANCELLED,
 }
 
 
-def seed_lifecycle(event_type: str) -> RequestStatus | None:
-    """Lifecycle marker for a hand-seeded event, by type.
+def seed_lifecycle(event_type: str, status: str | None = None) -> RequestStatus | None:
+    """Lifecycle marker for a hand-seeded event, by type (and an end's status).
 
     Production code sets ``RuntimeEvent.lifecycle`` explicitly at each emit
     site — that is the point of the field. Tests that fabricate lifecycle
     events directly need the same marker, so this maps it once for seeding
     rather than repeating the pairing in every test.
     """
+    if event_type == RuntimeEventType.INVOKE_AGENT_END.value:
+        return _END_LIFECYCLE.get(status or "ok")
     return _SEED_LIFECYCLE.get(event_type)
 
 
@@ -215,7 +221,7 @@ class _TestRuntimeStore:
             (
                 e
                 for e in self._events_by_request.get(request_id, ())
-                if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+                if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
             ),
             None,
         )
@@ -416,6 +422,27 @@ class _TestRuntimeStore:
             return filtered[: max(1, int(limit))]
         return filtered
 
+    async def list_request_ends(
+        self, *, after_event_id: int = 0, limit: int = 500
+    ) -> list[RuntimeEvent]:
+        async with self._lock:
+            ends = [
+                e
+                for e in self._events
+                if e.event_id > int(after_event_id)
+                and e.event_type == RuntimeEventType.INVOKE_AGENT_END.value
+            ]
+        return sorted(ends, key=lambda e: e.event_id)[: max(1, int(limit))]
+
+    async def get_export_cursor(self, name: str) -> int:
+        return int(getattr(self, "_export_cursors", {}).get(name, 0))
+
+    async def set_export_cursor(self, name: str, event_id: int) -> None:
+        cursors = getattr(self, "_export_cursors", None)
+        if cursors is None:
+            cursors = self._export_cursors = {}
+        cursors[name] = max(int(cursors.get(name, 0)), int(event_id))
+
     async def get_latest_trace(
         self,
         app_id: str,
@@ -591,19 +618,28 @@ async def _execute_request_inline(
                 event_payload = dict(workflow_state.get("action") or {})
                 tool_calls = context_helpers.tool_calls_from_action_payload(event_payload)
 
-                for tool_call in tool_calls:
-                    workflow_state = await run_step_tool_call(
-                        runtime.app_id,
-                        request_id,
-                        session_id,
-                        trace_id,
-                        workflow_state,
-                        {
-                            "id": tool_call.id,
-                            "name": tool_call.name,
-                            "arguments": dict(tool_call.arguments or {}),
-                        },
+                loop_index = int(workflow_state.get("loop_index") or 0)
+                for call_index, tool_call in enumerate(tool_calls):
+                    # As the durable loop does: a RunSubAgents call derives its
+                    # child ids from its position.
+                    prefix = (
+                        f"{request_id}-sub-{loop_index}-{call_index}"
+                        if tool_call.name == "RunSubAgents"
+                        else None
                     )
+                    with bound_subagent_id_prefix(prefix):
+                        workflow_state = await run_step_tool_call(
+                            runtime.app_id,
+                            request_id,
+                            session_id,
+                            trace_id,
+                            workflow_state,
+                            {
+                                "id": tool_call.id,
+                                "name": tool_call.name,
+                                "arguments": dict(tool_call.arguments or {}),
+                            },
+                        )
                 workflow_state = await commit_request_step(
                     runtime.app_id,
                     request_id,

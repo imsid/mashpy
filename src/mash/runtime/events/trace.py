@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .types import RuntimeEvent, RuntimeEventType
+from ...otel import semconv
+from .types import EndStatus, RuntimeEvent, RuntimeEventType, event_attributes
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,7 @@ def runtime_event_from_stream_payload(
 
 def runtime_event_response_preview(event: RuntimeEvent) -> str:
     """Return streamed assistant preview text for one runtime event."""
-    if event.event_type != RuntimeEventType.LLM_THINK_COMPLETED.value:
+    if event.event_type != RuntimeEventType.CHAT_END.value:
         return ""
     if str((event.payload or {}).get("action_type") or "") != "response":
         return ""
@@ -185,17 +186,14 @@ def _build_reasoning_steps(
     error: dict[str, Any] | None = None
 
     for event in events:
-        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+        if event.event_type == RuntimeEventType.CHAT_END.value:
             step = _reasoning_step_from_runtime_event(event, display_step=len(steps) + 1)
             steps.append(step)
             if event.loop_index is not None:
                 by_step_index[int(event.loop_index)] = step
             continue
 
-        if event.event_type in {
-            RuntimeEventType.TOOL_CALL_COMPLETED.value,
-            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
-        }:
+        if event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
             step = _resolve_reasoning_step(event.loop_index, steps, by_step_index)
             if step is None:
                 continue
@@ -205,7 +203,7 @@ def _build_reasoning_steps(
                 step["act_duration_ms"] = current + duration_ms
             continue
 
-        if event.event_type == RuntimeEventType.STEP_COMPLETED.value:
+        if event.event_type == RuntimeEventType.STEP_END.value:
             step = _resolve_reasoning_step(event.loop_index, steps, by_step_index)
             if step is None:
                 continue
@@ -214,16 +212,23 @@ def _build_reasoning_steps(
                 step["total_duration_ms"] = duration_ms
             continue
 
-        if event.event_type == RuntimeEventType.REQUEST_COMPLETED.value:
-            status = "completed"
+        if event.event_type == RuntimeEventType.INVOKE_AGENT_END.value:
+            end = (event.payload or {}).get("status")
+            if end == EndStatus.ERROR.value:
+                status = "error"
+                error = {
+                    "message": _clean_text((event.payload or {}).get("error")),
+                    "error_type": _clean_text((event.payload or {}).get("error_type")),
+                }
+            elif end == EndStatus.CANCELLED.value:
+                status = "cancelled"
+            else:
+                status = "completed"
             continue
 
-        if event.event_type == RuntimeEventType.REQUEST_FAILED.value:
-            status = "error"
-            error = {
-                "message": _clean_text((event.payload or {}).get("error")),
-                "error_type": _clean_text((event.payload or {}).get("error_type")),
-            }
+        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
+            status = "in_progress"
+            error = None
 
     return steps, status, error
 
@@ -249,7 +254,7 @@ def _reasoning_step_from_runtime_event(
         "assistant_text": _clean_text(payload.get("assistant_text")),
         "assistant_blocks": assistant_blocks,
         "tool_calls": tool_calls_detail,
-        "token_usage": _dict_value(payload.get("token_usage")),
+        "token_usage": semconv.token_usage(event_attributes(payload)),
         "think_duration_ms": _as_int(payload.get("duration_ms")),
         "act_duration_ms": None,
         "total_duration_ms": None,
@@ -333,22 +338,10 @@ def _tool_call_preview(tool_name: str, tool_args: Mapping[str, Any]) -> str:
 
 
 def _tool_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    runtime_tool_events = [
-        event
-        for event in events
-        if event.get("event_type")
-        in {
-            RuntimeEventType.TOOL_CALL_COMPLETED.value,
-            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
-        }
-    ]
-    if runtime_tool_events:
-        return runtime_tool_events
     return [
         event
         for event in events
-        if ".tool." in str(event.get("event_type") or "")
-        or str((event.get("payload") or {}).get("tool_name") or "")
+        if event.get("event_type") == RuntimeEventType.EXECUTE_TOOL_END.value
     ]
 
 
@@ -357,33 +350,21 @@ def _failed_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _is_failed_event(event: dict[str, Any]) -> bool:
-    event_type = str(event.get("event_type") or "")
-    if event_type in {
-        RuntimeEventType.REQUEST_FAILED.value,
-        RuntimeEventType.STEP_FAILED.value,
-    }:
-        return True
-    lowered = event_type.lower()
-    payload = event.get("payload") or {}
-    return (
-        "error" in lowered
-        or "fail" in lowered
-        or str(payload.get("status") or "").lower() in {"error", "failed"}
-    )
+    """An ``.end`` event whose span ended in error."""
+    if not str(event.get("event_type") or "").endswith(".end"):
+        return False
+    return (event.get("payload") or {}).get("status") == EndStatus.ERROR.value
 
 
 def _tools_called(events: list[dict[str, Any]]) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for event in _tool_events(events):
-        payload = event.get("payload") or {}
-        for key in ("tool_name", "tool", "name", "command_name"):
-            raw = payload.get(key)
-            if isinstance(raw, str):
-                name = raw.strip()
-                if name and name not in seen:
-                    seen.add(name)
-                    names.append(name)
+        raw = event_attributes(event.get("payload")).get(semconv.GEN_AI_TOOL_NAME)
+        name = raw.strip() if isinstance(raw, str) else ""
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
     return names
 
 
@@ -391,7 +372,7 @@ def _step_count(events: list[dict[str, Any]]) -> int:
     step_events = [
         event
         for event in events
-        if str(event.get("event_type") or "") == RuntimeEventType.STEP_COMPLETED.value
+        if str(event.get("event_type") or "") == RuntimeEventType.STEP_END.value
     ]
     indexes = {
         int(event["loop_index"])
@@ -405,80 +386,47 @@ def _step_count(events: list[dict[str, Any]]) -> int:
 
 def _extract_user_message(events: list[dict[str, Any]]) -> str:
     for event in events:
-        if event.get("event_type") != RuntimeEventType.TRACE_STARTED.value:
+        if event.get("event_type") != RuntimeEventType.INVOKE_AGENT_START.value:
             continue
-        raw = (event.get("payload") or {}).get("message")
-        if isinstance(raw, str) and raw:
-            return raw
-    for event in events:
-        if event.get("event_type") != "agent.run.start":
-            continue
-        raw = (event.get("payload") or {}).get("user_message")
-        if isinstance(raw, str) and raw:
-            return raw
-    for event in events:
         raw = (event.get("payload") or {}).get("message")
         if isinstance(raw, str) and raw:
             return raw
     return ""
+
+
+def _terminal_response(events: list[dict[str, Any]]) -> dict[str, Any]:
+    for event in reversed(events):
+        if event.get("event_type") != RuntimeEventType.INVOKE_AGENT_END.value:
+            continue
+        response = (event.get("payload") or {}).get("response")
+        if isinstance(response, dict):
+            return response
+    return {}
 
 
 def _extract_assistant_response(events: list[dict[str, Any]]) -> str:
-    for event in reversed(events):
-        if event.get("event_type") != RuntimeEventType.REQUEST_COMPLETED.value:
-            continue
-        response = (event.get("payload") or {}).get("response")
-        if isinstance(response, dict):
-            text = response.get("text")
-            if isinstance(text, str) and text:
-                return text
-    for event in reversed(events):
-        if event.get("event_type") != "agent.run.complete":
-            continue
-        raw = (event.get("payload") or {}).get("assistant_response")
-        if isinstance(raw, str) and raw:
-            return raw
-    for event in reversed(events):
-        payload = event.get("payload") or {}
-        raw = payload.get("agent_response") or payload.get("assistant_response")
-        if isinstance(raw, str) and raw:
-            return raw
-    return ""
+    text = _terminal_response(events).get("text")
+    return text if isinstance(text, str) else ""
 
 
 def _extract_assistant_blocks(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for event in reversed(events):
-        if event.get("event_type") != RuntimeEventType.REQUEST_COMPLETED.value:
-            continue
-        response = (event.get("payload") or {}).get("response")
-        if isinstance(response, dict):
-            blocks = response.get("assistant_blocks")
-            if isinstance(blocks, list) and blocks:
-                return list(blocks)
-    return []
+    blocks = _terminal_response(events).get("assistant_blocks")
+    return list(blocks) if isinstance(blocks, list) else []
 
 
 def _sum_token_usage(events: list[dict[str, Any]]) -> dict[str, int]:
-    input_tokens = 0
-    output_tokens = 0
-    cache_read_tokens = 0
-    cache_write_tokens = 0
+    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     for event in events:
-        if event.get("event_type") != RuntimeEventType.LLM_THINK_COMPLETED.value:
+        if event.get("event_type") != RuntimeEventType.CHAT_END.value:
             continue
-        payload = event.get("payload") or {}
-        usage = payload.get("token_usage")
-        if not isinstance(usage, dict):
-            continue
-        input_tokens += _safe_int(usage.get("input") or usage.get("input_tokens"))
-        output_tokens += _safe_int(usage.get("output") or usage.get("output_tokens"))
-        cache_read_tokens += _safe_int(usage.get("cache_read") or usage.get("cache_read_tokens"))
-        cache_write_tokens += _safe_int(usage.get("cache_write") or usage.get("cache_write_tokens"))
+        usage = semconv.token_usage(event_attributes(event.get("payload")))
+        for key in totals:
+            totals[key] += usage[key]
     return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_tokens": cache_read_tokens,
-        "cache_write_tokens": cache_write_tokens,
+        "input_tokens": totals["input"],
+        "output_tokens": totals["output"],
+        "cache_read_tokens": totals["cache_read"],
+        "cache_write_tokens": totals["cache_write"],
     }
 
 

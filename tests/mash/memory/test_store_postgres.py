@@ -8,7 +8,7 @@ import unittest
 import uuid
 from typing import Any
 
-from mash.logging import AgentTraceEvent
+from mash.logging import CommandEvent
 from mash.logging.events import normalize_log_event
 from mash.memory.store import PostgresStore
 
@@ -115,11 +115,12 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.save_logs(
             [
                 normalize_log_event(
-                    AgentTraceEvent(
-                        event_type="agent.run.start",
+                    CommandEvent(
+                        event_type="command.start",
                         app_id=self.app_id,
                         session_id="session-1",
                         trace_id="trace-1",
+                        command_name="/help",
                         payload={"user_message": "hello"},
                         ts=123.0,
                     )
@@ -131,12 +132,11 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(events), 1)
         event = events[0]
-        self.assertEqual(event["event_type"], "agent.run.start")
+        self.assertEqual(event["event_type"], "command.start")
         self.assertEqual(event["ts"], 123.0)
         self.assertEqual(event["trace_id"], "trace-1")
         self.assertEqual(event["payload"], {"user_message": "hello"})
-        self.assertIn("step_id", event)
-        self.assertIsNone(event["step_id"])
+        self.assertEqual(event["command_name"], "/help")
         self.assertIn("duration_ms", event)
         self.assertIsNone(event["duration_ms"])
         self.assertIn("log_id", event)

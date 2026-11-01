@@ -84,8 +84,8 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 agent_id=runtime.app_id,
                 session_id="s-1",
                 trace_id=trace_id,
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -96,16 +96,17 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 agent_id=runtime.app_id,
                 session_id="s-1",
                 trace_id=trace_id,
-                event_type=terminal,
-                lifecycle=seed_lifecycle(terminal),
+                event_type=RuntimeEventType.INVOKE_AGENT_END.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, terminal),
                 dedupe_key="terminal",
+                payload={"status": terminal},
             )
         )
 
     async def test_resume_cancelled_request_emits_resumed_and_reopens(self) -> None:
         runtime = await self._runtime()
         await self._seed(
-            runtime, "req-1", terminal=RuntimeEventType.REQUEST_CANCELLED.value
+            runtime, "req-1", terminal="cancelled"
         )
         self.assertTrue(await runtime.runtime_store.is_request_terminal("req-1"))
 
@@ -134,7 +135,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """
         runtime = await self._runtime()
         await self._seed(
-            runtime, "req-failed", terminal=RuntimeEventType.REQUEST_FAILED.value
+            runtime, "req-failed", terminal="error"
         )
 
         result = await runtime.resume_request("req-failed")
@@ -160,7 +161,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """
         runtime = await self._runtime()
         await self._seed(
-            runtime, "req-4", terminal=RuntimeEventType.REQUEST_COMPLETED.value
+            runtime, "req-4", terminal="ok"
         )
         time.sleep(0.01)
         await runtime.store.save_turn(
@@ -173,7 +174,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_resume_rejects_stale_session(self) -> None:
         runtime = await self._runtime()
         await self._seed(
-            runtime, "req-2", terminal=RuntimeEventType.REQUEST_CANCELLED.value
+            runtime, "req-2", terminal="cancelled"
         )
         # A newer replayable turn in the same session, from a different trace.
         time.sleep(0.01)
@@ -196,7 +197,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_resume_completed_request_is_idempotent(self) -> None:
         runtime = await self._runtime()
         await self._seed(
-            runtime, "req-3", terminal=RuntimeEventType.REQUEST_COMPLETED.value
+            runtime, "req-3", terminal="ok"
         )
         # The request's own completed turn (same trace) must not count as stale.
         await runtime.store.save_turn(

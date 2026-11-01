@@ -44,6 +44,8 @@ class AgentClientLike(Protocol):
         parent: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         mode: Optional[str] = None,
+        traceparent: Optional[str] = None,
+        tracestate: Optional[str] = None,
         timeout: float = 30.0,
     ) -> str: ...
 
@@ -300,6 +302,8 @@ class AgentClient:
         parent: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         mode: Optional[str] = None,
+        traceparent: Optional[str] = None,
+        tracestate: Optional[str] = None,
         timeout: float = 30.0,
     ) -> str:
         """Submit a request. Resubmitting a known ``request_id`` returns it again."""
@@ -325,6 +329,10 @@ class AgentClient:
             payload["user_id"] = user_id
         if mode is not None:
             payload["mode"] = mode
+        if traceparent is not None:
+            payload["traceparent"] = traceparent
+            if tracestate is not None:
+                payload["tracestate"] = tracestate
 
         try:
             async with self._session() as client:

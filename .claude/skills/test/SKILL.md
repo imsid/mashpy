@@ -72,8 +72,8 @@ Present, per case:
     the `dbos` schema when the case reaches them.
 - **Success criteria** — the concrete observation that decides pass or fail,
   written before you run it. "The request completes" is not a criterion; "the
-  last lifecycle event is `runtime.request.completed` and exactly one
-  `runtime.turn.persisted` row exists" is.
+  last lifecycle event is `invoke_agent.end` with `status` `ok`, and exactly
+  one `memory_turns` row exists for its trace" is.
 
 Wait for approval before running anything.
 
@@ -201,7 +201,7 @@ multi-call tool loops reliably.
 2. Verify, with criteria fixed before running:
    - **Tools** (event log): `run_code` calls only; no `sandbox_put`,
      `sandbox_get` or `bash` in the request's tools; the last lifecycle event
-     is `runtime.request.completed`.
+     is `invoke_agent.end` with `status` `ok`.
    - **Files** (sandbox): a `.db` file and an `.html` file in
      `/home/agent/workspaces/pilot` of `u-code-1`'s sandbox; `sqlite3` on the
      db returns the three totals.
@@ -238,7 +238,7 @@ needed. Use a fresh user, so the case also covers starting the browser.
      then typing into the search box (`browser_type`, `browser_fill_form` or
      `browser_press_key`), then `browser_snapshot` or a click on a result.
      There are no `run_code` calls, and the last lifecycle event is
-     `runtime.request.completed`.
+     `invoke_agent.end` with `status` `ok`.
    - **Browser** (CLI): `mash browser ls` shows a running browser for
      `u-web-1` and none for users that have not browsed.
    - **Answer**: it cites `https://imsid.github.io/mashpy/...` URLs that
@@ -279,7 +279,7 @@ psql ... -c "select request_id,agent_id,mode,status,started_by,parent_request_id
    has `mode=bg`, `started_by=user`, and the list route returns it with
    `agent_id=pilot`. `POST .../request/<id>/mode` with `fg`, then `bg`,
    returns 200 each, and the event log holds two
-   `runtime.request.mode_changed` rows in that order. After completion the
+   `mash.request.mode_changed` rows in that order. After completion the
    mode route returns `409 REQUEST_TERMINAL`, and `/status` (DBOS) agrees with
    the row's `completed`.
 2. **REPL** (CLI): `/bg` notices print from a background thread while the
@@ -305,17 +305,17 @@ psql ... -c "select request_id,agent_id,mode,status,started_by,parent_request_id
    combine the three facts into one short answer." Check:
    - exactly three rows with `parent_request_id` = the parent, agents
      {pilot, pilot, builder}, `mode=bg`, `started_by=pilot`;
-   - the parent's one `runtime.subagent.call.completed` holds three entries in
-     item order, each `completed`;
-   - the first `llm.request.start` of each child has neither `RunSubAgents`
-     nor `AskUser` in `payload->'tools'`, and the parent's has both;
+   - the parent's `execute_tool.start` for `RunSubAgents` lists the three
+     children under `payload->'subagents'`, in item order;
+   - the parent's one `execute_tool.end` for `RunSubAgents` holds three entries
+     in item order, each `completed`;
    - the children's `memory_turns` rows have `replayable = false`.
 4. **Kill** (API, tables, DBOS): the same split, with each item told to run
    `sleep 90` through `run_code` (timeout 120) and reply "slept". Once all
-   three children have a `runtime.tool.call.started` row, cancel the parent
+   three children have an `execute_tool.start` row, cancel the parent
    with `POST .../request/<parent>/cancel`. Within 30 seconds all four rows
-   are `cancelled`, each has one `runtime.request.cancelled` event and no
-   `runtime.request.completed`, and
+   are `cancelled`, each has one `invoke_agent.end` with `status` `cancelled`
+   and none with `ok`, and
    `select status from dbos.workflow_status where workflow_uuid='<agent_id>:<request_id>'`
    is `CANCELLED` for all four, read after the sleeps would have ended.
 

@@ -18,7 +18,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from mash.otel import semconv
 from mash.runtime.events import RuntimeEventType
+from mash.runtime.events.types import event_attributes
 from mash.runtime.structured_output import serialize_structured_output
 from mash.workflows import CodeStep, StepContext, WorkflowSpec
 from mash.workflows.dbos import collect_terminal_payload, post_inline_agent_request
@@ -36,12 +38,6 @@ _TOOL_RESULT_MAX_CHARS = 1_000
 _TOOL_CALLS_PER_TURN = 20
 # The whole bundle sent to the curator. Turns past it wait for the next run.
 _BUNDLE_MAX_CHARS = 60_000
-
-_TOOL_RESULT_EVENTS = {
-    RuntimeEventType.TOOL_CALL_COMPLETED.value,
-    RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
-}
-
 
 class CortexBuildInput(BaseModel):
     limit: int = Field(default=200, ge=1, le=1000)
@@ -133,11 +129,12 @@ async def _tool_calls(runtime_store: Any, turn: dict[str, Any]) -> list[BundleTo
         if event.workflow_id is not None:
             continue
         payload = event.payload or {}
-        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
-            for call in payload.get("tool_calls") or []:
-                arguments[str(call.get("id") or "")] = call.get("arguments") or {}
-        elif event.event_type in _TOOL_RESULT_EVENTS:
-            name = str(payload.get("tool_name") or "")
+        attributes = event_attributes(payload)
+        call_id = str(attributes.get(semconv.GEN_AI_TOOL_CALL_ID) or "")
+        if event.event_type == RuntimeEventType.EXECUTE_TOOL_START.value:
+            arguments[call_id] = payload.get("arguments") or {}
+        elif event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
+            name = str(attributes.get(semconv.GEN_AI_TOOL_NAME) or "")
             # Cortex's own reads would feed memory back into itself.
             if name == SEARCH_CORTEX_TOOL_NAME or len(calls) >= _TOOL_CALLS_PER_TURN:
                 continue
@@ -145,10 +142,7 @@ async def _tool_calls(runtime_store: Any, turn: dict[str, Any]) -> list[BundleTo
             calls.append(
                 BundleToolCall(
                     tool_name=name,
-                    arguments=_clip(
-                        arguments.get(str(payload.get("tool_call_id") or ""), {}),
-                        _TOOL_ARGUMENTS_MAX_CHARS,
-                    ),
+                    arguments=_clip(arguments.get(call_id, {}), _TOOL_ARGUMENTS_MAX_CHARS),
                     result=_clip(result.get("content") or "", _TOOL_RESULT_MAX_CHARS),
                 )
             )

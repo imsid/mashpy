@@ -1064,7 +1064,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     [completion] = [
                         event
                         for event in request_events
-                        if event.event_type == "runtime.subagent.call.completed"
+                        if event.event_type == "execute_tool.end"
                     ]
                     [entry] = json.loads(completion.payload["result"]["content"])
                     self.assertEqual(entry["status"], "failed")
@@ -1205,7 +1205,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     child_events = await store.list_request_events(child["request_id"])
                     [call] = [
                         e for e in child_events
-                        if e.event_type == "runtime.subagent.call.completed"
+                        if e.event_type == "execute_tool.end"
                     ]
                     self.assertTrue(call.payload["result"]["is_error"])
                     self.assertEqual(await store.list_child_requests(child["request_id"]), [])
@@ -1319,7 +1319,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         subagent_events = [
                             event
                             for event in request_events
-                            if event.event_type == "runtime.subagent.call.completed"
+                            if event.event_type == "execute_tool.end"
                         ]
                         self.assertEqual(len(subagent_events), 1)
                         self.assertTrue(
@@ -1384,7 +1384,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     accepted = [
                         e
                         for e in await research.runtime_store.list_request_events(child_id)
-                        if e.event_type == "runtime.request.accepted"
+                        if e.event_type == "invoke_agent.start"
                     ]
                     self.assertEqual(len(accepted), 1)
                     metadata_ = accepted[0].payload["request_metadata"]

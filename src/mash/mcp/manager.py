@@ -283,55 +283,7 @@ class MCPManager:
         if not server:
             raise ValueError(f"Server '{server_name}' not found")
 
-        call_start = time.time()
-
-        # Log tool call
-        if self._event_logger:
-            self._emit_event(
-                MCPEvent(
-                    event_type="mcp.tool.call",
-                    app_id=self._app_id,
-                    session_id=self._current_session_id(),
-                    server_name=server_name,
-                    tool_name=tool_name,
-                    trace_id=get_trace_id(),
-                )
-            )
-
-        try:
-            result = server.call_tool(tool_name, arguments)
-
-            # Log tool result
-            if self._event_logger:
-                self._emit_event(
-                    MCPEvent(
-                        event_type="mcp.tool.result",
-                        app_id=self._app_id,
-                        session_id=self._current_session_id(),
-                        server_name=server_name,
-                        tool_name=tool_name,
-                        duration_ms=int((time.time() - call_start) * 1000),
-                        trace_id=get_trace_id(),
-                    )
-                )
-
-            return result
-        except Exception as e:
-            # Log tool error
-            if self._event_logger:
-                self._emit_event(
-                    MCPEvent(
-                        event_type="mcp.tool.error",
-                        app_id=self._app_id,
-                        session_id=self._current_session_id(),
-                        server_name=server_name,
-                        tool_name=tool_name,
-                        error=str(e),
-                        duration_ms=int((time.time() - call_start) * 1000),
-                        trace_id=get_trace_id(),
-                    )
-                )
-            raise
+        return server.call_tool(tool_name, arguments)
 
     def disconnect_all(self) -> None:
         """Disconnect from all servers."""

@@ -232,6 +232,9 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Optionally accepts `mode`: `fg` (the default) when the conversation waits on
   the request, `bg` when the user keeps talking while it runs. The mode does
   not change how the request runs.
+- Reads a W3C `traceparent` header (and `tracestate`), here and on the host
+  route. A valid one is stored on the request's `invoke_agent.start`, and the
+  request's spans export inside the caller's trace; an invalid one is dropped.
 - A disabled agent returns `409 AGENT_DISABLED` here and on its other request routes.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
@@ -244,7 +247,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   - `event: <event_name>`
   - `data: <json payload>`
 - Streamed token output arrives as `event: agent.trace` frames whose
-  `data.event_type` is `llm.response.delta`, with the coalesced text chunk at
+  `data.event_type` is `chat.delta`, with the coalesced text chunk at
   `data.payload.payload.text`. Concatenate these in arrival order to render the
   answer live before the terminal event. The final, authoritative response is
   still delivered on `request.completed`.
@@ -297,7 +300,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   newer replayable turn (resume replays the original context snapshot, so it is
   unsafe once the session has moved on).
 - On a successful resume the runtime appends a non-terminal
-  `runtime.request.resumed` event (SSE `request.resumed`). Since terminality
+  `mash.request.resumed` event (SSE `request.resumed`). Since terminality
   reads the last event, this flips a previously failed/cancelled request back to
   non-terminal, so a client whose stream had ended re-opens it after resuming.
 
@@ -305,7 +308,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Cancels a running request. The in-flight step finishes and checkpoints;
   execution stops at the next step boundary. A request parked on an
   interaction has that prompt acked as cancelled, and the cancel path emits the
-  terminal `runtime.request.cancelled` event (visible as `request.cancelled` on
+  terminal `invoke_agent.end` with `status: cancelled` (visible as `request.cancelled` on
   the SSE stream) so streams terminate. The host then cancels the request's
   running `RunSubAgents` children, each through its own agent, skipping a child
   whose agent is disabled. Splitting is one level deep, so there is no further
@@ -324,7 +327,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 `POST /api/v1/agent/{agent_id}/request/{request_id}/mode`
 - Body: `{"mode": "fg" | "bg"}`. Switches a running request's mode and appends
-  `runtime.request.mode_changed`, which the SSE stream shows as `agent.trace`.
+  `mash.request.mode_changed`, which the SSE stream shows as `agent.trace`.
 - Returns `request_id`, `agent_id` and `mode`.
 - `409 REQUEST_TERMINAL` once the request is terminal; `404 REQUEST_NOT_FOUND`
   for an unknown request.
@@ -634,6 +637,16 @@ Present on every host; `503 BROWSER_UNAVAILABLE` when it has no browsers.
 
 Memory search uses the target agent's `memory_store`.
 
+The trace analysis route serves the OpenTelemetry projection from
+`mash/otel/projection.py`. When `OTEL_EXPORTER_OTLP_ENDPOINT` (or a per-signal
+traces, logs or metrics endpoint) is set and `mashpy[otel]` is installed, the
+host also runs `mash/otel/exporter.py`: it tails `runtime_event_log`, exports a
+request when its `invoke_agent.end` is stored (spans, log records, and the
+`gen_ai.client.token.usage` and `gen_ai.client.operation.duration` metrics),
+exports a workflow run when it finishes, and keeps its position in
+`otel_export_cursor`. `OTEL_SERVICE_NAME` sets `service.name`;
+`MASH_OTEL_CAPTURE_CONTENT=1` adds prompts, completions and tool I/O.
+
 Backend API request logs are persisted separately in `api_event_log` when `api_logging_enabled = True`.
 
 `GET /api/v1/telemetry/events`
@@ -746,14 +759,22 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `400 INVALID_BUCKET`: `bucket` is not `hour` or `day`
 
 `GET /api/v1/telemetry/trace/analysis`
-- Returns span tree and deterministic latency analysis for one trace.
+- Returns the trace's OpenTelemetry projection and the latency analysis built
+  on it. The projection is the same spans and log records the OTLP exporter
+  sends, with `RunSubAgents` children nested under the call that started them,
+  and spans still open while the request runs.
 - Query params:
   - `agent_id` required
   - `session_id` required
   - `trace_id` required
 - Returns:
   - `analysis`: timing breakdown, tool stats, step breakdown, slowest operations, subagent traces
-  - `span_tree`: hierarchical span tree with kind, name, duration, children, and attributes
+  - `projection`: `{ trace_id, resource, semconv_version, root, span_count, log_count }`;
+    `root` is the `invoke_agent` span, each span with `span_id`, `name`
+    (`chat <model>`, `execute_tool <tool>`, `mash.step <n>`), `kind`, `start_time`,
+    `end_time` (null while open), `duration_ms`, `status`, `attributes`, `logs`
+    and `children`
+  - `request_id`
   - `status`, `total_duration_ms`
   - `tokens`: `{ input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }`
   - `counts`: `{ step_count, tool_call_count, tool_error_count, event_count }`

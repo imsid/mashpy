@@ -57,7 +57,7 @@ Prompt caching is where the gap is widest. The developer-facing surface is one b
 
 `send()` stays the single generation entry point with the same return type whether or not the response streams.
 
-When `request.streaming` is set and the adapter supports it, the provider streams internally. As text arrives it emits coalesced `llm.response.delta` events, the frames you saw riding the SSE stream in [the request lifecycle post](request-lifecycle.md), and then returns the fully accumulated `LLMResponse`, identical in shape to the non-streaming case. Chunks are flushed by size or interval so event volume stays at tens of events per turn rather than hundreds. `llm.request.complete` remains the source of truth for duration and token counts; deltas are a progress channel.
+When `request.streaming` is set and the adapter supports it, the provider streams internally. As text arrives it emits coalesced `chat.delta` events, the frames you saw riding the SSE stream in [the request lifecycle post](request-lifecycle.md), and then returns the fully accumulated `LLMResponse`, identical in shape to the non-streaming case. Chunks are flushed by size or interval so event volume stays at tens of events per turn rather than hundreds. The request's `chat.end` remains the source of truth for duration and token counts; deltas are a progress channel.
 
 An adapter without streaming support ignores the hint and returns the same response shape. The answer just arrives all at once.
 
@@ -73,7 +73,7 @@ Two consequences show up elsewhere in the series.
 
 First, the durable loop serializes context between checkpoints, which is possible because messages and content blocks are normalized types with stable shapes. `coerce_content_blocks` even normalizes legacy forms (`tool_use` → `tool_call`) so stored context from older runs keeps deserializing.
 
-Second, observability gets provider-uniform events for free. Every adapter inherits `llm.request.start` / `llm.request.complete` / `llm.request.error` emission from `BaseLLMProvider`, with model, duration, and token fields in the same places, so the trace analysis at the end of this series sees uniform fields across vendors.
+Second, observability gets provider-uniform events for free. The runtime records every model call the same way whichever adapter made it: `chat.start` and `chat.end` around the call, with the provider, model and token counts as GenAI attributes on `chat.end`, so the trace analysis at the end of this series, and any OpenTelemetry backend it exports to, sees uniform fields across vendors.
 
 The same two types absorb more than three vendors. An open-source model served over a Chat Completions endpoint plugs into the identical `LLMRequest`/`LLMResponse` contract through a fourth adapter, so an agent can run on Qwen or Llama with the same one-line change in `build_llm()`.
 

@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from mash.skills.registry import SkillRegistry
 from mash.skills.tool import SkillTool
 
-from ..logging import AgentTraceEvent, clear_trace_id, set_session_id, set_trace_id
+from ..logging import clear_trace_id, set_session_id, set_trace_id
+from ..otel import semconv
 from ..runtime.events import RuntimeEvent, RuntimeEventType
 from .config import AgentConfig, SystemPrompt
 from .context import (
@@ -223,33 +224,6 @@ class Agent:
         if hasattr(self.llm, "set_trace_id"):
             self.llm.set_trace_id(self._trace_id)
 
-        # Log agent execution start with user message
-        if self._event_logger:
-            # Extract user message from context
-            user_message = ""
-            for msg in reversed(context.messages):
-                if msg.role == MessageRole.USER:
-                    content = msg.content
-                    if isinstance(content, str):
-                        user_message = content
-                    elif isinstance(content, list):
-                        # Extract text from content blocks
-                        text_parts = []
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                        user_message = " ".join(text_parts)
-                    break
-
-            start_event = AgentTraceEvent(
-                event_type="agent.run.start",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                trace_id=self._trace_id,
-                payload={"user_message": user_message},
-            )
-            await self._event_logger.emit(start_event)
-
         try:
             # Start chain rendering
             if self._chain_renderer:
@@ -268,7 +242,7 @@ class Agent:
                 context = commit.context
 
                 if plan.action.type != ActionType.FINISH:
-                    await self._emit_step_complete(
+                    self._render_step_complete(
                         plan.action,
                         step_index=step,
                         duration_ms=int((time.time() - step_start) * 1000),
@@ -280,35 +254,6 @@ class Agent:
             if self._chain_renderer:
                 self._chain_renderer.finish_trace()
 
-            # Log agent execution complete
-            if self._event_logger:
-                # Extract final assistant response
-                assistant_response = ""
-                for msg in reversed(context.messages):
-                    if msg.role == MessageRole.ASSISTANT:
-                        content = msg.content
-                        if isinstance(content, str):
-                            assistant_response = content
-                        elif isinstance(content, list):
-                            # Extract text from content blocks
-                            text_parts = []
-                            for block in content:
-                                if (
-                                    isinstance(block, dict)
-                                    and block.get("type") == "text"
-                                ):
-                                    text_parts.append(block.get("text", ""))
-                            assistant_response = " ".join(text_parts)
-                        break
-
-                complete_event = AgentTraceEvent(
-                    event_type="agent.run.complete",
-                    app_id=self.config.app_id,
-                    session_id=self._session_id,
-                    trace_id=self._trace_id,
-                    payload={"assistant_response": assistant_response},
-                )
-                await self._event_logger.emit(complete_event)
 
             context.metadata["trace_id"] = self._trace_id
             context.metadata["token_usage"] = dict(self._run_token_usage)
@@ -382,15 +327,6 @@ class Agent:
         # Get messages for the provider-neutral request
         messages = context.get_messages_for_llm()
 
-        # Log think start
-        if self._event_logger:
-            think_start_event = AgentTraceEvent(
-                event_type="agent.think.start",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                trace_id=self._trace_id,
-            )
-            await self._event_logger.emit(think_start_event)
 
         system_prompt = context.system_prompt
 
@@ -434,9 +370,8 @@ class Agent:
         if self._trace_id:
             action.metadata["trace_id"] = self._trace_id
 
-        # Log think completion
-        if self._event_logger:
-            # Prepare tool calls detail for renderer
+        # Render thinking
+        if self._chain_renderer:
             tool_calls_detail = None
             if action.tool_calls:
                 tool_calls_detail = [
@@ -446,46 +381,22 @@ class Agent:
             assistant_text = action.metadata.get("assistant_text")
             if assistant_text:
                 assistant_text = self._truncate_assistant_text(assistant_text)
-
-            payload: Dict[str, Any] = {}
-            if tool_calls_detail:
-                payload["tool_calls_detail"] = tool_calls_detail
-            if assistant_text:
-                payload["assistant_text"] = assistant_text
-
-            think_event = AgentTraceEvent(
-                event_type="agent.think.complete",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                trace_id=self._trace_id,
-                duration_ms=int((time.time() - think_start) * 1000),
-                action_type=action.type.value if action.type else None,
-                tool_calls=(
-                    [tc.name for tc in action.tool_calls] if action.tool_calls else None
-                ),
-                token_usage=token_usage,
-                payload=payload,
-            )
-            await self._event_logger.emit(think_event)
-
-            # Render thinking
-            if self._chain_renderer:
-                self._chain_renderer.on_runtime_event(
-                    RuntimeEvent(
-                        app_id=self.config.app_id,
-                        agent_id=self.config.app_id,
-                        session_id=self._session_id,
-                        trace_id=self._trace_id,
-                        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
-                        payload={
-                            "duration_ms": think_event.duration_ms,
-                            "action_type": think_event.action_type,
-                            "tool_calls": tool_calls_detail,
-                            "assistant_text": assistant_text,
-                            "token_usage": token_usage,
-                        },
-                    )
+            self._chain_renderer.on_runtime_event(
+                RuntimeEvent(
+                    app_id=self.config.app_id,
+                    agent_id=self.config.app_id,
+                    session_id=self._session_id,
+                    trace_id=self._trace_id,
+                    event_type=RuntimeEventType.CHAT_END.value,
+                    payload={
+                        "duration_ms": int((time.time() - think_start) * 1000),
+                        "action_type": action.type.value if action.type else None,
+                        "tool_calls": tool_calls_detail,
+                        "assistant_text": assistant_text,
+                        "attributes": semconv.usage_attributes(token_usage),
+                    },
                 )
+            )
 
         return action
 
@@ -504,37 +415,20 @@ class Agent:
         act_start = time.time()
         results = await self._execute_tool_calls(list(action.tool_calls))
 
-        # Log act completion
-        if self._event_logger:
-            act_event = AgentTraceEvent(
-                event_type="agent.act.complete",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                trace_id=self._trace_id,
-                duration_ms=int((time.time() - act_start) * 1000),
-                action_type=action.type.value if action.type else None,
-                tool_calls=(
-                    [tc.name for tc in action.tool_calls] if action.tool_calls else None
-                ),
-            )
-            await self._event_logger.emit(act_event)
-
-            # Render action
-            if self._chain_renderer:
-                self._chain_renderer.on_runtime_event(
-                    RuntimeEvent(
-                        app_id=self.config.app_id,
-                        agent_id=self.config.app_id,
-                        session_id=self._session_id,
-                        trace_id=self._trace_id,
-                        event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
-                        payload={
-                            "duration_ms": act_event.duration_ms,
-                            "action_type": act_event.action_type,
-                            "tool_calls": act_event.tool_calls,
-                        },
-                    )
+        if self._chain_renderer:
+            self._chain_renderer.on_runtime_event(
+                RuntimeEvent(
+                    app_id=self.config.app_id,
+                    agent_id=self.config.app_id,
+                    session_id=self._session_id,
+                    trace_id=self._trace_id,
+                    event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
+                    payload={
+                        "duration_ms": int((time.time() - act_start) * 1000),
+                        "tool_calls": [tc.name for tc in action.tool_calls],
+                    },
                 )
+            )
 
         return results
 
@@ -622,27 +516,6 @@ class Agent:
         """Execute one tool call as a durable sub-boundary within a step."""
         return await self.execute_tool_call(tool_call)
 
-    async def _emit_tool_call_invalid(
-        self, tool_call: Any, missing: List[str]
-    ) -> None:
-        """Record that a tool call failed validation and was not executed."""
-        if not self._event_logger:
-            return
-        await self._event_logger.emit(
-            AgentTraceEvent(
-                event_type="agent.tool.invalid",
-                app_id=self.config.app_id,
-                session_id=self._session_id,
-                trace_id=self._trace_id,
-                payload={
-                    "tool_name": tool_call.name,
-                    "tool_call_id": tool_call.id,
-                    "missing_arguments": list(missing),
-                    "tool_arguments": getattr(tool_call, "arguments", None),
-                },
-            )
-        )
-
     async def execute_tool_call(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call with error handling.
 
@@ -662,13 +535,12 @@ class Agent:
                 )
 
             # Validate required arguments before executing. A call missing a
-            # required field is not silently dropped — that loses the action and
+            # required field is not silently dropped: that loses the action and
             # can leave the conversation ending on an assistant message. Instead
             # the failure is surfaced to the model as a tool error so it can
-            # retry, and logged so a skipped side effect is diagnosable.
+            # retry, and its execute_tool span ends as an error.
             missing = self._missing_required_args(tool, tool_call)
             if missing:
-                await self._emit_tool_call_invalid(tool_call, missing)
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     content=(
@@ -679,47 +551,10 @@ class Agent:
                     is_error=True,
                 )
 
-            # Log tool call with arguments before execution
-            if self._event_logger:
-
-                tool_call_event = AgentTraceEvent(
-                    event_type="agent.tool.call",
-                    app_id=self.config.app_id,
-                    session_id=self._session_id,
-                    trace_id=self._trace_id,
-                    payload={
-                        "tool_name": tool_call.name,
-                        "tool_call_id": tool_call.id,
-                        "tool_arguments": tool_call.arguments,
-                    },
-                )
-                await self._event_logger.emit(tool_call_event)
-
             self._increment_trace_tool_invocation(tool_call.name)
 
             # Execute the tool
             result = await tool.execute(tool_call.arguments)
-
-            # Log tool result
-            if self._event_logger:
-
-                result_event = AgentTraceEvent(
-                    event_type="agent.tool.result",
-                    app_id=self.config.app_id,
-                    session_id=self._session_id,
-                    trace_id=self._trace_id,
-                    payload={
-                        "tool_name": tool_call.name,
-                        "tool_call_id": tool_call.id,
-                        "is_error": result.is_error,
-                        "content_length": len(result.content) if result.content else 0,
-                        "content_preview": (
-                            result.content[:200] if result.content else None
-                        ),
-                        "metadata": dict(result.metadata or {}),
-                    },
-                )
-                await self._event_logger.emit(result_event)
 
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -934,43 +769,34 @@ class Agent:
 
         return self._signal_collector.collect(event)
 
-    async def _emit_step_complete(
+    def _render_step_complete(
         self,
         action: Action,
         *,
         step_index: int,
         duration_ms: int,
     ) -> None:
-        """Emit one step-complete event using the canonical agent step contract."""
-        if not self._event_logger:
+        """Show one finished step in the chain renderer."""
+        if not self._chain_renderer:
             return
-        step_event = AgentTraceEvent(
-            event_type="agent.step.complete",
-            app_id=self.config.app_id,
-            session_id=self._session_id,
-            trace_id=self._trace_id,
-            step_id=step_index,
-            duration_ms=int(duration_ms),
-            action_type=action.type.value if action.type else None,
-            tool_calls=[tc.name for tc in action.tool_calls] if action.tool_calls else None,
-        )
-        await self._event_logger.emit(step_event)
-        if self._chain_renderer:
-            self._chain_renderer.on_runtime_event(
-                RuntimeEvent(
-                    app_id=self.config.app_id,
-                    agent_id=self.config.app_id,
-                    session_id=self._session_id,
-                    trace_id=self._trace_id,
-                    event_type=RuntimeEventType.STEP_COMPLETED.value,
-                    loop_index=step_index,
-                    payload={
-                        "duration_ms": step_event.duration_ms,
-                        "action_type": step_event.action_type,
-                        "tool_calls": step_event.tool_calls,
-                    },
-                )
+        self._chain_renderer.on_runtime_event(
+            RuntimeEvent(
+                app_id=self.config.app_id,
+                agent_id=self.config.app_id,
+                session_id=self._session_id,
+                trace_id=self._trace_id,
+                event_type=RuntimeEventType.STEP_END.value,
+                loop_index=step_index,
+                payload={
+                    "status": "ok",
+                    "duration_ms": int(duration_ms),
+                    "action_type": action.type.value if action.type else None,
+                    "tool_calls": (
+                        [tc.name for tc in action.tool_calls] if action.tool_calls else None
+                    ),
+                },
             )
+        )
 
     def _normalized_tool_usage(
         self,

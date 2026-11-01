@@ -6,21 +6,13 @@ Hybrid memory search pipeline for `turns`: query parsing, retrieval orchestratio
 ## Pipeline Contracts
 - Keep the pipeline split into three stages with simple boundaries: parser, retrieval, reranking.
 - `MemorySearchService.search()` returns ranked `SearchResult` items with `trace_id`, `similarity_score`, and `preview`.
-- `MemorySearchService.__init__()` requires an `EventLogger` for structured search telemetry.
-- `MemorySearchService.search()` requires `app_id` and generates a per-call `query_id` for event correlation.
+- `MemorySearchService.search()` requires `app_id`.
 - Retrieval methods must access storage only through `MemoryStore.keyword_search()` and `MemoryStore.semantic_search()`.
 
-## Structured Event Logging
-- Memory search emits `MemorySearchEvent` entries via `src/mash/logging`.
-- Logging ownership is split by layer:
-  - `MemorySearchService.search()` logs only service-level lifecycle events (`memory.search.start`, `memory.search.complete`).
-  - `QueryParser.parse()` logs parse-stage events (`memory.search.parse.complete`, `memory.search.parse.error`).
-  - `HybridRetrievalOrchestrator.retrieve()` logs retrieval-stage events (`memory.search.retrieval.complete`, `memory.search.retrieval.error`).
-  - `WeightedFusionReranker.rerank()` logs rerank-stage events (`memory.search.rerank.complete`, `memory.search.rerank.error`).
-- The service must pass `event_logger` and `query_id` into parser/retrieval/rerank so stage logs share the same correlation ID.
-- `memory.search.start` should include the parsed `query_term` (not `query_length`) and other concise request context.
-- Keep payloads concise and stable: counts, booleans, selected column, durations, and short error strings only.
-- Preserve the current short-circuit behavior for non-positive limits; service logs a concise `memory.search.complete` event with a short-circuit reason.
+## Events
+- Memory search writes no events. A search the model runs is the request's
+  `execute_tool` span for `search_conversations`.
+- Preserve the short-circuit behavior for non-positive limits: return no results without touching the store.
 
 ## Query DSL
 - Supported prefixes are `@user:` and `@agent:` only.

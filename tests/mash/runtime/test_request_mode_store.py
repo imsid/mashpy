@@ -107,7 +107,7 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         await self._append(
             request_id,
-            RuntimeEventType.REQUEST_ACCEPTED.value,
+            RuntimeEventType.INVOKE_AGENT_START.value,
             dedupe_key="request.accepted",
             created_at=created_at,
             agent_id=agent_id,
@@ -143,7 +143,7 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
         await self._accept(request_id, created_at=100.0, mode="bg")
         await self._append(
             request_id,
-            RuntimeEventType.REQUEST_COMPLETED.value,
+            RuntimeEventType.INVOKE_AGENT_END.value,
             dedupe_key="request.completed.0",
             created_at=200.0,
         )
@@ -200,7 +200,7 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
         await self._accept(foreground, created_at=400.0, message="fg")
         await self._append(
             older,
-            RuntimeEventType.REQUEST_COMPLETED.value,
+            RuntimeEventType.INVOKE_AGENT_END.value,
             dedupe_key="request.completed.0",
             created_at=500.0,
         )
@@ -248,7 +248,7 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
             )
         await self._append(
             first,
-            RuntimeEventType.REQUEST_COMPLETED.value,
+            RuntimeEventType.INVOKE_AGENT_END.value,
             dedupe_key="request.completed.0",
             created_at=130.0,
         )

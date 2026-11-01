@@ -164,10 +164,16 @@ This is the same SSE stream every Mash request has, host-routed or not:
 | `request.completed` | terminal; `data.response.text` holds the answer |
 | `request.error` | terminal; `data.error` holds the failure |
 
-While the concierge delegates, the child requests run in the subagents' own
-sessions, and their lifecycle is mirrored into this stream as
-`subagent.request.*` and `subagent.agent.trace` events, so one SSE
-connection shows the whole team working.
+While the concierge delegates, each child request runs on its subagent with
+its own stream. The concierge's `agent.trace` frame for the `RunSubAgents`
+call (`event_type: execute_tool.start`) lists each child's `agent_id` and
+`request_id` under `payload.subagents`; open
+`GET /v1/agent/{agent_id}/request/{request_id}/events` for each one to show
+the whole team working.
+
+A submit can carry a W3C `traceparent` header (and `tracestate`). The request
+then exports inside the caller's trace when the host sends traces over OTLP;
+see the [trace post](reading-a-trace.md).
 
 If a tool on the primary requires approval, the stream emits
 `request.interaction.create` with an `interaction_id` and the request
@@ -196,7 +202,7 @@ sequenceDiagram
     App->>API: GET /v1/agent/concierge/request/{id}/events
     C->>H: RunSubAgents via /h2a relay
     H->>E: checked against snapshot, forwarded
-    API-->>App: SSE: agent.trace, subagent.*, request.completed
+    API-->>App: SSE: agent.trace, request.completed
 ```
 
 ## What the snapshot means for your application

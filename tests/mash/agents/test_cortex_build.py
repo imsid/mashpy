@@ -144,20 +144,22 @@ class CortexBuildTests(_CortexBuildFixture):
         await self._turn("t-wf", created_at=3.0, workflow_id="wf")
         await self._turn("t-sub", created_at=4.0, metadata={"subagent_id": "research"})
         await self._turn("t-other", user_id="u-2", created_at=5.0)
+        convert = {"gen_ai.tool.name": "convert", "gen_ai.tool.call.id": "c1"}
+        search = {"gen_ai.tool.name": "search_cortex", "gen_ai.tool.call.id": "c2"}
         await self._event(
             "t-1",
-            RuntimeEventType.LLM_THINK_COMPLETED.value,
-            {"tool_calls": [{"id": "c1", "name": "convert", "arguments": {"to": "km"}}]},
+            RuntimeEventType.EXECUTE_TOOL_START.value,
+            {"arguments": {"to": "km"}, "attributes": convert},
         )
         await self._event(
             "t-1",
-            RuntimeEventType.TOOL_CALL_COMPLETED.value,
-            {"tool_call_id": "c1", "tool_name": "convert", "result": {"content": "12 km"}},
+            RuntimeEventType.EXECUTE_TOOL_END.value,
+            {"status": "ok", "attributes": convert, "result": {"content": "12 km"}},
         )
         await self._event(
             "t-1",
-            RuntimeEventType.TOOL_CALL_COMPLETED.value,
-            {"tool_call_id": "c2", "tool_name": "search_cortex", "result": {"content": "x"}},
+            RuntimeEventType.EXECUTE_TOOL_END.value,
+            {"status": "ok", "attributes": search, "result": {"content": "x"}},
         )
 
         await self._run()

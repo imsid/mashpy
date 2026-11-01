@@ -17,6 +17,7 @@ from starlette.routing import Route
 from .engine.workflow import workflow_id_for
 from .errors import RequestStaleError, RequestTerminalError
 from .events import PostgresRuntimeStore
+from ..otel.context import normalize_trace_context
 from .requests import (
     RequestIdConflictError,
     parent_request_metadata,
@@ -274,6 +275,11 @@ class AgentServer:
             if existing is not None:
                 return JSONResponse(existing, status_code=200)
 
+        traceparent, tracestate = normalize_trace_context(
+            payload.get("traceparent") if isinstance(payload.get("traceparent"), str) else None,
+            payload.get("tracestate") if isinstance(payload.get("tracestate"), str) else None,
+        )
+
         try:
             accepted = await self.runtime.submit_request(
                 message=message,
@@ -286,6 +292,8 @@ class AgentServer:
                 parent=parent,
                 user_id=user_id,
                 mode=mode,
+                traceparent=traceparent,
+                tracestate=tracestate,
             )
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))

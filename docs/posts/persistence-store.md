@@ -44,7 +44,7 @@ Key columns:
 | `request_id` | Groups all events for one request |
 | `trace_id` | Links these events to the memory turn |
 | `seq` | Per-request sequence position |
-| `event_type` | Namespaced string: `request.accepted`, `llm.response.delta`, etc. |
+| `event_type` | The span it bounds: `invoke_agent.start`, `chat.delta`, `execute_tool.end`, etc. |
 | `loop_index` | Which agent step emitted this event |
 | `payload` | JSONB event body |
 

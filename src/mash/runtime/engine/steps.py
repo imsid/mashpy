@@ -14,11 +14,17 @@ import httpx
 from ...core.context import Context, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
-from ...logging.events import AgentTraceEvent
-from ...logging.trace_context import get_workflow_id
+from ...logging.trace_context import (
+    bound_loop_index,
+    get_subagent_id_prefix,
+    get_workflow_id,
+)
+from ...otel import semconv
+from ...tools.subagent import child_request_id
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
+from ..events.types import EndStatus
 from ..host.subagents import append_context_block
 from ..requests import (
     append_runtime_event,
@@ -94,6 +100,87 @@ def _step_tool_result_payload(
     return payload
 
 
+def _tool_attributes(tool_call: ToolCall) -> dict[str, Any]:
+    return {
+        semconv.GEN_AI_OPERATION_NAME: semconv.OP_EXECUTE_TOOL,
+        semconv.GEN_AI_TOOL_NAME: tool_call.name,
+        semconv.GEN_AI_TOOL_CALL_ID: tool_call.id,
+        semconv.GEN_AI_TOOL_TYPE: "function",
+    }
+
+
+def _tool_start_payload(tool_call: ToolCall) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "arguments": dict(tool_call.arguments or {}),
+        "attributes": _tool_attributes(tool_call),
+    }
+    if tool_call.name == "RunSubAgents":
+        # The children's ids are fixed by this call's position, so a reader
+        # (the CLI, the projection) can follow each child's own log while the
+        # call runs.
+        prefix = get_subagent_id_prefix()
+        items = (tool_call.arguments or {}).get("requests")
+        if prefix and isinstance(items, list):
+            payload["subagents"] = [
+                {
+                    "agent_id": str(item.get("agent_id") or "")
+                    if isinstance(item, dict)
+                    else "",
+                    "request_id": child_request_id(prefix, index),
+                }
+                for index, item in enumerate(items)
+            ]
+    return payload
+
+
+def _tool_end_payload(
+    tool_call: ToolCall, result_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """The stored ``execute_tool.end``: the result, its status, its attributes."""
+    result = dict(result_payload.get("result") or {})
+    is_error = bool(result.get("is_error"))
+    attributes = _tool_attributes(tool_call)
+    if is_error:
+        attributes[semconv.ERROR_TYPE] = "tool_error"
+    payload: dict[str, Any] = {
+        "status": EndStatus.ERROR.value if is_error else EndStatus.OK.value,
+        "duration_ms": result_payload.get("duration_ms"),
+        "result": result,
+        "attributes": attributes,
+    }
+    if "structured_output" in result_payload:
+        payload["structured_output"] = result_payload["structured_output"]
+    return payload
+
+
+def _chat_attributes(runtime: "AgentRuntime") -> dict[str, Any]:
+    llm = runtime.agent.llm
+    return {
+        semconv.GEN_AI_OPERATION_NAME: semconv.OP_CHAT,
+        semconv.GEN_AI_PROVIDER_NAME: str(getattr(llm, "provider_name", "unknown")),
+        semconv.GEN_AI_REQUEST_MODEL: str(llm.model),
+    }
+
+
+def _chat_end_payload(
+    runtime: "AgentRuntime", action_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """The stored ``chat.end``: the model's turn, with usage as attributes."""
+    attributes = _chat_attributes(runtime)
+    attributes.update(semconv.usage_attributes(action_payload.get("token_usage")))
+    stop_reason = action_payload.get("stop_reason")
+    if stop_reason:
+        attributes[semconv.GEN_AI_RESPONSE_FINISH_REASONS] = [str(stop_reason)]
+    payload = {
+        key: value
+        for key, value in action_payload.items()
+        if key not in {"token_usage", "trace_id"}
+    }
+    payload["status"] = EndStatus.OK.value
+    payload["attributes"] = attributes
+    return payload
+
+
 def _extract_tool_structured_output(
     result_payloads: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -145,6 +232,7 @@ def _step_completed_payload(
         if name:
             tool_calls.append(name)
     return {
+        "status": EndStatus.OK.value,
         "action_type": action_payload.get("action_type"),
         "tool_calls": tool_calls,
         "duration_ms": int(duration_ms),
@@ -357,7 +445,23 @@ async def start_request_trace(
     session_id: str,
     message: str,
 ) -> str:
+    """Open the request's context load and return its trace id.
+
+    The trace id was minted on ``invoke_agent.start`` when the request was
+    accepted; reading it from that row gives a replay the same id.
+    """
+    del message
     runtime = _require_runtime(agent_id)
+    events = await runtime.runtime_store.list_request_events(request_id)
+    accepted_trace_id = next(
+        (
+            event.trace_id
+            for event in events
+            if event.event_type == RuntimeEventType.INVOKE_AGENT_START.value
+            and event.trace_id
+        ),
+        None,
+    )
     # workflow_id / workflow_run_id are stamped by append_runtime_event from the
     # bound workflow context when the request was issued by a workflow task.
     started = await append_runtime_event(
@@ -366,28 +470,14 @@ async def start_request_trace(
             request_id=request_id,
             app_id=runtime.app_id,
             agent_id=runtime.app_id,
-            trace_id=str(uuid.uuid4()),
+            trace_id=accepted_trace_id or str(uuid.uuid4()),
             session_id=session_id,
-            event_type=RuntimeEventType.TRACE_STARTED.value,
+            event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
             dedupe_key="request.started",
-            payload={"message": message},
+            payload={},
         ),
     )
-    # On a replay after the append committed but before DBOS recorded this
-    # step, the dedupe hit returns the original row. Taking the id from that
-    # row keeps one trace_id for the whole request.
-    trace_id = str(started.trace_id)
-    await runtime.event_logger.emit(
-        AgentTraceEvent(
-            event_type="agent.run.start",
-            app_id=runtime.app_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            step_id=0,
-            payload={"user_message": message},
-        )
-    )
-    return trace_id
+    return str(started.trace_id)
 
 
 async def load_request_context(
@@ -432,9 +522,9 @@ async def load_request_context(
             agent_id=runtime.app_id,
             trace_id=trace_id,
             session_id=session_id,
-            event_type=RuntimeEventType.CONTEXT_LOADED.value,
+            event_type=RuntimeEventType.CONTEXT_LOAD_END.value,
             dedupe_key="context.loaded",
-            payload={"message": message},
+            payload={"status": EndStatus.OK.value},
         ),
     )
     return {
@@ -473,24 +563,26 @@ async def plan_request_step(
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
-            step_key=f"llm.think.started.{loop_index}",
-            event_type=RuntimeEventType.LLM_THINK_STARTED.value,
+            step_key=f"chat.start.{loop_index}",
+            event_type=RuntimeEventType.CHAT_START.value,
             dedupe_key=f"llm.think.started.{loop_index}",
-            payload={"loop_index": loop_index},
+            payload={"attributes": _chat_attributes(runtime)},
         ),
     )
     context = context_helpers.deserialize_context(
         runtime, workflow_state.get("context") or {}
     )
-    plan_payload = await _plan_step_payload(
-        runtime,
-        context=context,
-        session_id=session_id,
-        trace_id=trace_id,
-        host=workflow_state.get("host") or None,
-        user_id=workflow_state.get("user_id"),
-        parent_kind=workflow_state.get("parent_kind"),
-    )
+    # Bound for the model call, so its chat.delta rows key by this step.
+    with bound_loop_index(loop_index):
+        plan_payload = await _plan_step_payload(
+            runtime,
+            context=context,
+            session_id=session_id,
+            trace_id=trace_id,
+            host=workflow_state.get("host") or None,
+            user_id=workflow_state.get("user_id"),
+            parent_kind=workflow_state.get("parent_kind"),
+        )
     action_payload = {
         key: value
         for key, value in dict(plan_payload or {}).items()
@@ -505,10 +597,10 @@ async def plan_request_step(
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
-            step_key=f"llm.think.{loop_index}",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            step_key=f"chat.end.{loop_index}",
+            event_type=RuntimeEventType.CHAT_END.value,
             dedupe_key=f"llm.think.{loop_index}",
-            payload=action_payload,
+            payload=_chat_end_payload(runtime, action_payload),
         ),
     )
     tool_call_names = [
@@ -575,13 +667,10 @@ async def _execute_and_record_tool_call(
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
-            step_key=f"tool.call.started.{loop_index}.{tool_call.id}",
-            event_type=RuntimeEventType.TOOL_CALL_STARTED.value,
+            step_key=f"execute_tool.start.{loop_index}.{tool_call.id}",
+            event_type=RuntimeEventType.EXECUTE_TOOL_START.value,
             dedupe_key=f"tool.call.started.{loop_index}.{tool_call.id}",
-            payload={
-                "tool_call_id": tool_call.id,
-                "tool_name": tool_call.name,
-            },
+            payload=_tool_start_payload(tool_call),
         ),
     )
     result, duration_ms = await _run_tool_call_payload(
@@ -598,11 +687,6 @@ async def _execute_and_record_tool_call(
         result,
         duration_ms=duration_ms,
     )
-    event_type = (
-        RuntimeEventType.SUBAGENT_CALL_COMPLETED.value
-        if tool_call.name == "RunSubAgents"
-        else RuntimeEventType.TOOL_CALL_COMPLETED.value
-    )
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -612,10 +696,10 @@ async def _execute_and_record_tool_call(
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
-            step_key=f"tool.call.{loop_index}.{tool_call.id}",
-            event_type=event_type,
+            step_key=f"execute_tool.end.{loop_index}.{tool_call.id}",
+            event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
             dedupe_key=f"tool.call.{loop_index}.{tool_call.id}",
-            payload=result_payload,
+            payload=_tool_end_payload(tool_call, result_payload),
         ),
     )
     return result_payload
@@ -794,13 +878,13 @@ async def commit_request_step(
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
-            step_key=f"step.completed.{loop_index}",
-            event_type=RuntimeEventType.STEP_COMPLETED.value,
+            step_key=f"mash.step.end.{loop_index}",
+            event_type=RuntimeEventType.STEP_END.value,
             dedupe_key=f"step.completed.{loop_index}",
-            payload=_step_completed_payload(
-                action_payload,
-                duration_ms=step_duration_ms,
-            ),
+            payload={
+                **_step_completed_payload(action_payload, duration_ms=step_duration_ms),
+                "attributes": {semconv.MASH_LOOP_INDEX: loop_index},
+            },
         ),
     )
     updated: dict[str, Any] = {
@@ -851,19 +935,6 @@ async def persist_completed_turn(
         signals=dict(workflow_state.get("signals") or {}),
         compaction_payload=dict(workflow_state.get("compaction") or {}),
         extra_metadata=request_metadata,
-    )
-    await append_runtime_event(
-        runtime,
-        RuntimeEvent(
-            request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
-            trace_id=trace_id,
-            session_id=session_id,
-            event_type=RuntimeEventType.TURN_PERSISTED.value,
-            dedupe_key="turn.persisted",
-            payload=turn_payload,
-        ),
     )
     return turn_payload
 
@@ -1015,7 +1086,7 @@ async def emit_interaction_create(
             agent_id=runtime.app_id,
             trace_id=trace_id,
             session_id=session_id,
-            event_type=RuntimeEventType.INTERACTION_CREATE.value,
+            event_type=RuntimeEventType.INTERACTION_START.value,
             dedupe_key=f"interaction.create.{interaction_id}",
             payload={
                 # Type-specific fields, e.g. a browser handoff's url and expires_at.
@@ -1025,6 +1096,7 @@ async def emit_interaction_create(
                 "prompt": prompt,
                 "schema": schema,
                 "timeout_seconds": timeout_seconds,
+                "attributes": {semconv.MASH_INTERACTION_TYPE: interaction_type},
             },
         ),
     )
@@ -1043,6 +1115,7 @@ async def emit_interaction_ack(
 ) -> None:
     runtime = _require_runtime(agent_id)
     payload: dict[str, Any] = {
+        "status": EndStatus.CANCELLED.value if cancelled else EndStatus.OK.value,
         "interaction_id": interaction_id,
         "response": response,
     }
@@ -1058,7 +1131,7 @@ async def emit_interaction_ack(
             agent_id=runtime.app_id,
             trace_id=trace_id,
             session_id=session_id,
-            event_type=RuntimeEventType.INTERACTION_ACK.value,
+            event_type=RuntimeEventType.INTERACTION_END.value,
             dedupe_key=f"interaction.ack.{interaction_id}",
             payload=payload,
         ),
@@ -1123,17 +1196,6 @@ async def complete_request(
     turn_payload: dict[str, Any],
 ) -> None:
     runtime = _require_runtime(agent_id)
-    response_payload = dict(turn_payload.get("response") or {})
-    assistant_response = str(response_payload.get("text") or "")
-    await runtime.event_logger.emit(
-        AgentTraceEvent(
-            event_type="agent.run.complete",
-            app_id=runtime.app_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            payload={"assistant_response": assistant_response},
-        )
-    )
     attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
@@ -1143,16 +1205,16 @@ async def complete_request(
             agent_id=runtime.app_id,
             trace_id=trace_id,
             session_id=session_id,
-            event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+            event_type=RuntimeEventType.INVOKE_AGENT_END.value,
             dedupe_key=f"request.completed.{attempt}",
             lifecycle=RequestStatus.COMPLETED,
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
                 "session_id": session_id,
-                "status": "completed",
                 "trace_id": trace_id,
                 **dict(turn_payload or {}),
+                "status": EndStatus.OK.value,
             },
         ),
     )
@@ -1164,7 +1226,7 @@ async def emit_request_cancelled(
     session_id: str | None,
     trace_id: str | None,
 ) -> None:
-    """Append the terminal ``request.cancelled`` event.
+    """Append the cancelled ``invoke_agent.end``.
 
     The cancel path owns this: ``DBOSWorkflowCancelledError`` derives from
     ``BaseException``, so it bypasses the workflow's ``except Exception``
@@ -1181,14 +1243,15 @@ async def emit_request_cancelled(
             agent_id=runtime.app_id,
             trace_id=trace_id,
             session_id=session_id,
-            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            event_type=RuntimeEventType.INVOKE_AGENT_END.value,
             dedupe_key=f"request.cancelled.{attempt}",
             lifecycle=RequestStatus.CANCELLED,
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
                 "session_id": session_id,
-                "status": "cancelled",
+                "status": EndStatus.CANCELLED.value,
+                "attributes": {semconv.MASH_REQUEST_STATUS: EndStatus.CANCELLED.value},
             },
         ),
     )
@@ -1211,15 +1274,20 @@ async def fail_request(
             agent_id=runtime.app_id,
             trace_id=trace_id,
             session_id=session_id,
-            event_type=RuntimeEventType.REQUEST_FAILED.value,
+            event_type=RuntimeEventType.INVOKE_AGENT_END.value,
             dedupe_key=f"request.failed.{attempt}",
             lifecycle=RequestStatus.FAILED,
             payload={
                 "request_id": request_id,
                 "agent_id": runtime.app_id,
                 "session_id": session_id,
-                "status": "error",
                 **dict(error_payload or {}),
+                "status": EndStatus.ERROR.value,
+                "attributes": {
+                    semconv.ERROR_TYPE: str(
+                        (error_payload or {}).get("error_type") or "error"
+                    ),
+                },
             },
         ),
     )

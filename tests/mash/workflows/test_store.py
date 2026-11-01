@@ -81,6 +81,32 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         return replace(record, **overrides) if overrides else record
 
+    async def test_finished_runs_list_in_finish_order(self) -> None:
+        await self.store.create_run(self._run())
+        before = await self.store.list_finished_runs(after_seq=0, limit=100000)
+        cursor = max((item["finished_seq"] for item in before), default=0)
+
+        await self.store.finish_run(
+            self.run_id, status="completed", result={"ok": True}, finished_at=time.time()
+        )
+        [finished] = [
+            item
+            for item in await self.store.list_finished_runs(after_seq=cursor, limit=100)
+            if item["run"].run_id == self.run_id
+        ]
+        self.assertEqual(finished["run"].status, "completed")
+        self.assertGreater(finished["finished_seq"], cursor)
+        self.assertEqual(
+            [
+                item
+                for item in await self.store.list_finished_runs(
+                    after_seq=finished["finished_seq"], limit=100
+                )
+                if item["run"].run_id == self.run_id
+            ],
+            [],
+        )
+
     async def test_run_lifecycle(self) -> None:
         await self.store.create_run(self._run())
         fetched = await self.store.get_run(self.run_id)

@@ -130,7 +130,7 @@ class BrowserRelayTests(unittest.TestCase):
                     app_id=agent_id,
                     agent_id=agent_id,
                     session_id="s-1",
-                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     dedupe_key="request.accepted",
                     lifecycle=RequestStatus.RUNNING,
                     payload={"request_metadata": {"user_id": user_id}},

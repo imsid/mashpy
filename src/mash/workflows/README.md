@@ -157,6 +157,12 @@ workflow layer:
 
 `WorkflowStore` ([`store.py`](./store.py)) is opened and shared by `Pool`.
 
+A run that finishes takes a `finished_seq` (`010_otel_export.sql`), and the
+host's OTLP exporter, when one is configured, exports runs in that order: a
+`mash.workflow <workflow_id>` root span with one `mash.workflow.step <step_id>`
+span per step, and each agent step's request nested under its step. See
+[`../otel/workflows.py`](../otel/workflows.py).
+
 ## Service and API
 
 `WorkflowService`:

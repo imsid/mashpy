@@ -10,7 +10,6 @@ from fastapi import Request
 from pydantic import BaseModel, Field
 
 from mash.api.logging import build_api_event_filter
-from mash.logging.logger import EventLogger
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import Pool
@@ -53,6 +52,8 @@ class AppRuntimeState:
     host_secret: Optional[str] = None
     # Where users reach the host; the base of sandbox links.
     public_url: str = ""
+    # The OTLP exporter, when an endpoint is set and mashpy[otel] is installed.
+    otel_exporter: Any = None
 
 
 RequestModeValue = Literal["fg", "bg"]
@@ -252,12 +253,9 @@ def api_event_source() -> str:
     return "api_event_log"
 
 
-def build_memory_search_service(
-    memory_store: MemoryStore, runtime_store: RuntimeStore
-) -> MemorySearchService:
+def build_memory_search_service(memory_store: MemoryStore) -> MemorySearchService:
     return MemorySearchService(
         memory_store,
-        event_logger=EventLogger(runtime_store),
         retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
     )

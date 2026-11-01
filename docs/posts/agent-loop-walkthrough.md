@@ -66,6 +66,6 @@ These are all the step names `execute_request_workflow` can record. `{loop}` is 
 | `request.complete` | `complete_request` | No |
 | `request.fail` | `fail_request` | No |
 
-`retry_transient` retries errors that `classify_error` marks transient (rate limits, timeouts, network errors, overloaded providers) up to 3 times, with backoff starting at 1 second, capped at 30 seconds, with jitter. `structured_output.finalize` runs only when the caller asked for structured output and no tool produced it. `request.fail` runs when any exception escapes the loop: it appends `runtime.request.failed`, which the stream sends as `request.error`, and re-raises so DBOS marks the workflow `ERROR`.
+`retry_transient` retries errors that `classify_error` marks transient (rate limits, timeouts, network errors, overloaded providers) up to 3 times, with backoff starting at 1 second, capped at 30 seconds, with jitter. `structured_output.finalize` runs only when the caller asked for structured output and no tool produced it. `request.fail` runs when any exception escapes the loop: it appends `invoke_agent.end` with `status: error`, which the stream sends as `request.error`, and re-raises so DBOS marks the workflow `ERROR`.
 
 The [H2A envelope walkthrough](h2a-envelope-walkthrough.md) covers how a request reaches this workflow and how its events get back to the caller. [The Durable Agent Loop](durable-agent-loop.md) covers cancel, resume, and rerun.

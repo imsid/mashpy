@@ -40,7 +40,7 @@ def test_feed_selection_order_isolation_and_fresh_schema():
                 cur = await conn.execute("SELECT to_regclass('idx_runtime_thought_traces') AS index_name")
                 assert (await cur.fetchone())['index_name'] is not None
 
-                async def insert(agent, trace, summary, ts, event='runtime.llm.think.completed'):
+                async def insert(agent, trace, summary, ts, event='chat.end'):
                     await conn.execute('''INSERT INTO runtime_event_log
                         (app_id, agent_id, trace_id, session_id, event_type, payload, created_at)
                         VALUES (%s,%s,%s,%s,%s,%s,%s)''',

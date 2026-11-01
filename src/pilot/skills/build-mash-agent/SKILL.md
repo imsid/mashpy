@@ -293,7 +293,7 @@ AgentConfig(
     temperature=1.0,                      # sampling temperature
     skills_enabled=True,                  # set False to disable the Skill meta-tool
     prompt_caching_enabled=True,          # cache the system prompt + tools with the provider
-    streaming_enabled=True,               # stream tokens and emit llm.response.delta events
+    streaming_enabled=True,               # stream tokens and emit chat.delta events
     conversation_history_turns=3,         # prior turns replayed into context
     max_parallel_tools=8,                 # cap on parallel-safe tool calls run concurrently per turn
     compaction_token_threshold=0,         # summarize history past this token count (0 = off)
@@ -423,6 +423,30 @@ response = await runtime.submit_request(
 | `MASH_PUBLIC_URL` | Where users reach the host, for sandbox links (default: the bind address) |
 | `MASH_DATA_DIR` | Persistent data directory (default: `/var/lib/mash`) |
 | `MASH_API_KEY` | API key for the hosted server |
+
+## Traces
+
+Every request is recorded as OpenTelemetry spans: `invoke_agent <agent>` for
+the run, `chat <model>` for each model call (token usage under `gen_ai.usage.*`),
+`execute_tool <tool>` for each tool call, and `mash.step <n>`,
+`mash.context_load` and `mash.interaction <type>` for the rest. `RunSubAgents`
+children nest under the call that started them. The admin UI's trace drawer
+and `GET /api/v1/telemetry/trace/analysis` show these spans, and `/trace` in
+the REPL summarizes them.
+
+To send them to Grafana, Datadog, Honeycomb or any OTLP backend, install the
+extra and set an endpoint on the host:
+
+```bash
+uv add 'mashpy[otel]'
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+export OTEL_SERVICE_NAME=my-agent
+```
+
+A request is exported when it ends, with its log records (`exception` on
+failures) and the GenAI client metrics. Send a W3C `traceparent` header on
+submit to put the request inside your service's trace. Prompts, completions
+and tool I/O are left out unless `MASH_OTEL_CAPTURE_CONTENT=1`.
 
 ## Deployment
 

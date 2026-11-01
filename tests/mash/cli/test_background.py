@@ -389,7 +389,7 @@ class CtrlZTests(unittest.TestCase):
         del agent_id, request_id
         yield {
             "event": "agent.trace",
-            "data": {"event_type": "runtime.context.loaded", "payload": {}},
+            "data": {"event_type": "mash.context_load.end", "payload": {}},
         }
         os.kill(os.getpid(), signal.SIGTSTP)
         time.sleep(5)

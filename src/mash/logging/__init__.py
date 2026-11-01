@@ -1,12 +1,9 @@
 """Structured event logging for Mash framework."""
 
 from .events import (
-    AgentTraceEvent,
     CommandEvent,
-    DebugEvent,
     LLMEvent,
     LogEvent,
-    MemorySearchEvent,
     MCPEvent,
 )
 from .logger import EventLogger
@@ -33,11 +30,8 @@ from .trace_context import (
 __all__ = [
     "LogEvent",
     "CommandEvent",
-    "AgentTraceEvent",
     "MCPEvent",
     "LLMEvent",
-    "MemorySearchEvent",
-    "DebugEvent",
     "EventLogger",
     "bound_host_id",
     "bound_request_id",

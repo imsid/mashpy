@@ -62,29 +62,31 @@ sequenceDiagram
 
     Client->>API: POST /agent/pilot/request
     API->>Runtime: submit_request(...)
-    Runtime->>Log: append request.accepted
+    Runtime->>Log: append invoke_agent.start
     Runtime->>Engine: start_request(...)
     API-->>Client: {request_id}
     Note over Engine: durable execution begins
-    Engine->>Log: trace.started, context.loaded
+    Engine->>Log: mash.context_load.start, .end
     loop agent steps
-        Engine->>Log: llm.think.completed
-        Engine->>Log: tool.call.completed
+        Engine->>Log: chat.start, chat.end
+        Engine->>Log: execute_tool.start, execute_tool.end
+        Engine->>Log: mash.step.end
     end
-    Engine->>Log: turn.persisted, request.completed
+    Engine->>Log: invoke_agent.end
     Client->>API: GET .../events (SSE)
     API->>Log: replay from cursor
     Log-->>Client: frames … request.completed
 ```
 
-One ordering detail: `request.accepted` is appended to the log before execution starts. The order in `submit_request` is append first, start second:
+One ordering detail: `invoke_agent.start` is appended to the log before execution starts, with the request's trace id already on it. The order in `submit_request` is append first, start second:
 
 ```python
 # src/mash/runtime/requests.py (trimmed)
 request_id = str(uuid.uuid4())
 accepted_event = await append_runtime_event(self, RuntimeEvent(
     request_id=request_id,
-    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+    trace_id=str(uuid.uuid4()),
+    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
     ...
 ))
 await self.engine.start_request(request_id=request_id, ...)
@@ -94,26 +96,30 @@ By the time you hold a `request_id`, the request already exists durably, even if
 
 ## Everything is an event
 
-Internally, every request is an ordered stream of `RuntimeEvent` records. The full vocabulary is one enum:
+Internally, every request is an ordered stream of `RuntimeEvent` records. The full vocabulary is one enum, and each name is the OpenTelemetry span the event starts or ends:
 
 ```python
 # src/mash/runtime/events/types.py
 class RuntimeEventType(str, Enum):
-    REQUEST_ACCEPTED        = "runtime.request.accepted"
-    TRACE_STARTED           = "runtime.trace.started"
-    CONTEXT_LOADED          = "runtime.context.loaded"
-    LLM_THINK_COMPLETED     = "runtime.llm.think.completed"
-    TOOL_CALL_COMPLETED     = "runtime.tool.call.completed"
-    SUBAGENT_CALL_COMPLETED = "runtime.subagent.call.completed"
-    TURN_PERSISTED          = "runtime.turn.persisted"
-    INTERACTION_CREATE      = "runtime.interaction.create"
-    INTERACTION_ACK         = "runtime.interaction.ack"
-    REQUEST_COMPLETED       = "runtime.request.completed"
-    REQUEST_FAILED          = "runtime.request.failed"
-    # ... plus started/failed variants for steps and tool calls
+    INVOKE_AGENT_START   = "invoke_agent.start"
+    INVOKE_AGENT_END     = "invoke_agent.end"
+    CONTEXT_LOAD_START   = "mash.context_load.start"
+    CONTEXT_LOAD_END     = "mash.context_load.end"
+    CHAT_START           = "chat.start"
+    CHAT_DELTA           = "chat.delta"
+    CHAT_END             = "chat.end"
+    EXECUTE_TOOL_START   = "execute_tool.start"
+    EXECUTE_TOOL_END     = "execute_tool.end"
+    STEP_END             = "mash.step.end"
+    INTERACTION_START    = "mash.interaction.start"
+    INTERACTION_END      = "mash.interaction.end"
+    REQUEST_RESUMED      = "mash.request.resumed"
+    REQUEST_MODE_CHANGED = "mash.request.mode_changed"
 ```
 
-`to_public_event` in `requests.py` maps each internal record to one of a small set of public frames before it reaches your SSE client. Lifecycle events get first-class names (`request.accepted`, `request.started`, `request.completed`, `request.error`, `request.interaction.*`), and everything that happened inside execution arrives as an `agent.trace` frame carrying the internal `event_type` in its data. Keeping two vocabularies lets the internal one grow without breaking client code, which only ever matches on the public names.
+A span ends once, so each one has a single `.end` event, and how it ended is its `status`: `ok`, `error` or `cancelled`. A request that completes, fails or is cancelled writes the same `invoke_agent.end` with a different status. The [trace post](reading-a-trace.md) shows how these pair up into spans.
+
+`to_public_event` in `requests.py` maps each internal record to one of a small set of public frames before it reaches your SSE client. Lifecycle events get first-class names (`request.accepted`, `request.started`, `request.completed`, `request.error`, `request.cancelled`, `request.interaction.*`), with the three terminal frames picked by the `status` on `invoke_agent.end`, and everything that happened inside execution arrives as an `agent.trace` frame carrying the internal `event_type` in its data. Keeping two vocabularies lets the internal one grow without breaking client code, which only ever matches on the public names.
 
 Each record also carries identity fields: `app_id`, `agent_id`, `session_id`, the `request_id`, and, for host-routed requests, the `host_id` of the composition the request ran under. Bare-agent requests leave `host_id` null, which is what lets the telemetry API filter one agent's events by the composition they served.
 
@@ -123,49 +129,48 @@ Here's the stream for the commit-summary request above, against a Pilot host wit
 
 ```text
 event: request.accepted          ← the request exists; execution may not have started yet
-event: request.started           ← a trace_id was created; durable execution began
+event: request.started           ← durable execution began; context load starts
 
-event: agent.trace               ← event_type: runtime.context.loaded
+event: agent.trace               ← event_type: mash.context_load.end
                                    session history was loaded (and compacted, if due)
                                    into the model context
 
-event: agent.trace               ← event_type: runtime.llm.think.started
-                                   think phase began; loop_index=0
+event: agent.trace               ← event_type: chat.start
+                                   model call began; loop_index=0
 
-event: agent.trace               ← event_type: runtime.llm.think.completed
-                                   the model decided to call bash("git log --oneline -5"),
-                                   with token usage
+event: agent.trace               ← event_type: chat.end
+                                   the model decided to call bash("git log --oneline -5");
+                                   token usage, model and provider under attributes
 
-event: agent.trace               ← event_type: runtime.tool.call.started
-                                   tool execution began
+event: agent.trace               ← event_type: execute_tool.start
+                                   tool execution began, with its arguments
 
-event: agent.trace               ← event_type: runtime.tool.call.completed
-                                   the tool ran; duration and result preview in payload
+event: agent.trace               ← event_type: execute_tool.end
+                                   the tool ran; status, duration and result in payload
 
-event: agent.trace               ← event_type: runtime.step.completed
-                                   the full agent step (think + tool calls) is done;
-                                   loop advances
+event: agent.trace               ← event_type: mash.step.end
+                                   the full agent step (model call + tool calls) is
+                                   done; loop advances
 
-event: agent.trace               ← event_type: runtime.llm.think.started
-                                   second think phase began; loop_index=1
+event: agent.trace               ← event_type: chat.start
+                                   second model call began; loop_index=1
 
-event: agent.trace               ← event_type: runtime.llm.think.completed
+event: agent.trace               ← event_type: chat.end
                                    model read the tool output, produced the final answer
 
-event: agent.trace               ← event_type: runtime.step.completed
+event: agent.trace               ← event_type: mash.step.end
                                    final step done; loop exits
 
-event: agent.trace               ← event_type: runtime.turn.persisted
-                                   the completed turn was written to conversation
-                                   memory; this is the only thing the next request
-                                   in this session will see
-
-event: request.completed         ← terminal; payload carries the response text
+event: request.completed         ← terminal (invoke_agent.end, status ok); payload
+                                   carries the response text. The turn was written
+                                   to conversation memory just before; that turn is
+                                   the only thing the next request in this session
+                                   will see
 ```
 
-The stream already answers the questions you would normally add instrumentation for. Each think and tool frame carries its own duration, so if a request felt slow, you can see whether the model or the tool was responsible. The tool frames record names, arguments, and result previews, the actual sequence as it ran. And `turn.persisted` appears exactly once, at the end: the intermediate steps are visible here, but they never become conversation history. That distinction gets its own post.
+The stream already answers the questions you would normally add instrumentation for. Each think and tool frame carries its own duration, so if a request felt slow, you can see whether the model or the tool was responsible. The tool frames record names, arguments, and results, the actual sequence as it ran. And only the final turn is persisted, once, at the end: the intermediate steps are visible here, but they never become conversation history. That distinction gets its own post.
 
-If the agent streams text (`streaming_enabled`, on by default), you'll also see `agent.trace` frames with `event_type: llm.response.delta` between think start and completion. These carry coalesced text chunks you can concatenate to render the answer live. The final, authoritative text still arrives on `request.completed`; deltas are a progress channel.
+If the agent streams text (`streaming_enabled`, on by default), you'll also see `agent.trace` frames with `event_type: chat.delta` between `chat.start` and `chat.end`. These carry coalesced text chunks you can concatenate to render the answer live. The final, authoritative text still arrives on `request.completed`; deltas are a progress channel.
 
 Two terminal frames exist, and exactly one of them always arrives. `request.completed` carries the response. `request.error` carries an `error_code` and a `retryable` flag, which tell you whether retrying is sensible. More on that in the next post.
 
