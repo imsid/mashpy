@@ -414,6 +414,9 @@ class AgentClient:
                     timeout=timeout_config,
                 ) as response:
                     if response.status_code != 200:
+                        # A streamed body is not loaded until read; the error
+                        # message comes from it.
+                        await response.aread()
                         raise AgentClientError(
                             f"GET stream failed (status={response.status_code}): {self._extract_message(response)}"
                         )

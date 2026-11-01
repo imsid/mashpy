@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import requests
 from rich.markup import escape
 
 from mash.runtime.events import (
@@ -37,6 +38,10 @@ from .default_commands import register_default_commands
 from .repl import REPL
 from .render import RichRenderer
 from .types import CLIContext
+
+
+# How long the REPL waits for a RunSubAgents child to be submitted.
+CHILD_SUBMIT_WAIT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -282,8 +287,24 @@ class MashRemoteShell:
             if agent_id and request_id:
                 self._follow_subagent(agent_id, request_id)
 
+    def _wait_for_child(self, agent_id: str, request_id: str) -> bool:
+        """Wait until the child exists: its id is listed before it is submitted."""
+        deadline = time.monotonic() + CHILD_SUBMIT_WAIT_SECONDS
+        while True:
+            try:
+                self.client.get_request_status(agent_id, request_id)
+                return True
+            except MashHostClientError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.25)
+
     def _follow_subagent(self, agent_id: str, request_id: str) -> None:
         started_at = time.monotonic()
+        if not self._wait_for_child(agent_id, request_id):
+            self.renderer.error(f"    Subagent {agent_id}: request {request_id} never started")
+            return
+        self.chain_renderer.begin_subagent(agent_id)
         try:
             for event in self.client.stream_request(agent_id, request_id):
                 event_name = str(event.get("event") or "")
@@ -307,7 +328,8 @@ class MashRemoteShell:
                     return
                 if event_name in {"request.completed", "request.cancelled"}:
                     break
-        except MashHostClientError as exc:
+        except (MashHostClientError, requests.RequestException) as exc:
+            # One child's broken stream must not end the parent's.
             self.renderer.error(f"    Subagent {agent_id}: {exc}")
             return
         self.chain_renderer.finish_subagent(

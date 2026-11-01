@@ -505,6 +505,12 @@ class ChainOfThoughtRenderer:
                 f"    [magenta]│[/magenta]   [dim]✓ Executed in {act_duration}ms[/dim]"
             )
 
+    def begin_subagent(self, agent_id: str) -> None:
+        """Start a fresh block for one child; two children may share an agent."""
+        self._subagent_headers_shown.discard(agent_id)
+        self._subagent_step_counters.pop(agent_id, None)
+        self._subagent_steps.pop(agent_id, None)
+
     def finish_subagent(self, agent_id: str, duration_ms: int) -> None:
         """Render subagent completion."""
         if not self._enabled:

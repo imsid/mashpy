@@ -9,6 +9,7 @@ from unittest.mock import patch
 from rich.console import Console
 
 from mash.cli.chain_renderer import ChainOfThoughtRenderer
+from mash.cli.client import MashHostClientError
 from mash.cli.shell import MashRemoteShell, ShellTarget
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, build_runtime_trace
 
@@ -153,6 +154,9 @@ class _FakeClient:
     def submit_feedback(self, agent_id: str, **kwargs: Any):
         self.feedback.append({"agent_id": agent_id, **kwargs})
         return {"feedback": {"feedback_id": len(self.feedback)}}
+
+    def get_request_status(self, agent_id: str, request_id: str):
+        return {"request_id": request_id, "agent_id": agent_id, "status": "running"}
 
     def stream_request(self, agent_id: str, request_id: str):
         if request_id == "sub-1":
@@ -818,6 +822,61 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertEqual(render_sub.call_args[1]["agent_id"], "research")
         finish_sub.assert_called_once()
         self.assertEqual(finish_sub.call_args.args[0], "research")
+
+    def test_a_child_listed_before_it_is_submitted_is_waited_for(self) -> None:
+        shell = self._build_shell()
+        checks = {"n": 0}
+
+        def get_request_status(agent_id: str, request_id: str):
+            checks["n"] += 1
+            if checks["n"] < 3:
+                raise MashHostClientError("GET .../status failed (404): Request not found")
+            return {"request_id": request_id, "status": "running"}
+
+        _fake(shell).get_request_status = get_request_status
+        with patch("mash.cli.shell.time.sleep"), patch.object(
+            shell.chain_renderer, "render_subagent_event"
+        ) as render_sub, patch.object(shell.renderer, "error") as error:
+            shell.handle_repl_message(shell.context, "hello")
+        self.assertEqual(checks["n"], 3)
+        self.assertEqual(render_sub.call_count, 1)
+        error.assert_not_called()
+
+    def test_a_childs_dropped_stream_does_not_end_the_parent(self) -> None:
+        import requests
+
+        shell = self._build_shell()
+        parent_stream = shell.client.stream_request
+
+        def stream(agent_id: str, request_id: str):
+            if request_id == "sub-1":
+                raise requests.exceptions.ChunkedEncodingError("Response ended prematurely")
+            yield from parent_stream(agent_id, request_id)
+
+        _fake(shell).stream_request = stream
+        with patch.object(shell.renderer, "error") as error, patch.object(
+            shell, "render_final_response"
+        ) as final:
+            shell.handle_repl_message(shell.context, "hello")
+        self.assertIn("Response ended prematurely", error.call_args.args[0])
+        final.assert_called_once()
+
+    def test_two_children_of_one_agent_each_get_their_own_block(self) -> None:
+        from rich.console import Console
+
+        console = Console(record=True, width=120)
+        renderer = ChainOfThoughtRenderer(console)
+        child_step = RuntimeEvent(
+            app_id="pilot", agent_id="pilot", event_type=RuntimeEventType.CHAT_END.value,
+            payload={"action_type": "response", "duration_ms": 5},
+        )
+        for _ in range(2):
+            renderer.begin_subagent("pilot")
+            renderer.render_subagent_event(child_step, agent_id="pilot")
+            renderer.finish_subagent("pilot", 5)
+        output = console.export_text()
+        self.assertEqual(output.count("┌ pilot"), 2)
+        self.assertNotIn("Step 2", output)
 
     def test_a_failed_child_prints_its_error(self) -> None:
         shell = self._build_shell()
