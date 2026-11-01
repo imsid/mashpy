@@ -12,13 +12,13 @@ tags:
 
 A 19-row eval run through the experiment workflow took four minutes of wall clock. The Claude platform dashboard reported 1.97M input tokens for the day. Both numbers are correct, and the gap between "four minutes of work" and "two million tokens" is entirely explained by prompt caching. This post walks through the accounting, using the runtime event log from two real scoring runs.
 
-The runtime logs one `llm.request.complete` event per LLM call, and its payload carries the provider's usage block. Summing them across the first run:
+The runtime logs one `chat.end` event per LLM call, and its `attributes` carry the provider's usage block under the OpenTelemetry GenAI names. Summing them across the first run:
 
-| usage field | tokens | billed at |
+| usage attribute | tokens | billed at |
 |---|---|---|
-| `input_tokens` (uncached) | 166,860 | 1.0x |
-| `cache_read_input_tokens` | 1,525,989 | 0.1x |
-| `cache_creation_input_tokens` | 338,681 | 1.25x |
+| `gen_ai.usage.input_tokens` (uncached) | 166,860 | 1.0x |
+| `gen_ai.usage.cache_read.input_tokens` | 1,525,989 | 0.1x |
+| `gen_ai.usage.cache_creation.input_tokens` | 338,681 | 1.25x |
 | `output_tokens` | 28,001 | output rate |
 
 The dashboard's "input" number is the sum of the first three: about 2.03M raw tokens. At claude-sonnet-4-6 rates the whole run cost about $2.65, and $1.27 of that was the cache writes. The interesting parts are where the 1.5M reads come from, why the writes happened 8 times over, and what the scoring runner now does differently.
@@ -81,7 +81,7 @@ The dashboard counts raw tokens, so a token served from cache counts the same as
 
 For a run like this one, reads dominate the raw count and writes dominate the bill. 1.5M reads cost $0.46. 339k writes cost $1.27. Reading the dashboard without the split is how a $2.65 run looks like a two-million-token problem.
 
-The raw payload of the very first Pilot call of the run shows a cold cache in one line:
+The usage of the very first Pilot call of the run, as the provider reported it, shows a cold cache in one line:
 
 ```json
 {"model": "claude-sonnet-4-6", "input_tokens": 341, "output_tokens": 130,
@@ -172,10 +172,10 @@ The cost of serializing is one row of wall clock before the parallel phase start
 
 Two checks against `runtime_event_log` tell you whether a scoring run behaved:
 
-- **Writes**: `cache_creation_input_tokens` summed per session should be nonzero for row 0 and near zero everywhere else. A cluster of equal-sized writes in the first seconds of a run means the fan-out beat the cache.
+- **Writes**: `gen_ai.usage.cache_creation.input_tokens` summed per session should be nonzero for row 0 and near zero everywhere else. A cluster of equal-sized writes in the first seconds of a run means the fan-out beat the cache.
 - **Reads**: flat per-call `cache_read` values with a growing `input` column is a healthy agentic loop. Reads scale with loop count and are the baseline cost of running agents on a stateless API, at a tenth of the input rate.
 
-Both checks read straight off the `llm.request.complete` payloads, which are the same numbers the platform dashboard is summing into one figure.
+Both checks read straight off the `chat.end` attributes, which are the same numbers the platform dashboard is summing into one figure.
 
 ## Takeaways
 

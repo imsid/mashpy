@@ -153,7 +153,8 @@ async def finish_run(
         await cursor.execute(
             """
             UPDATE workflow_runs
-            SET status = %s, result = %s, error = %s, finished_at = %s
+            SET status = %s, result = %s, error = %s, finished_at = %s,
+                finished_seq = nextval('workflow_run_finished_seq')
             WHERE run_id = %s
             """,
             (status, _json(result), error, finished_at, run_id),
@@ -485,6 +486,42 @@ class WorkflowStore:
                 await cursor.execute(query, tuple(params))
                 rows = await cursor.fetchall()
         return [_run_from_row(row) for row in rows]
+
+    async def list_finished_runs(
+        self, *, after_seq: int = 0, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Runs that finished after ``after_seq``, in finish order.
+
+        Each item is ``{"run": WorkflowRunRecord, "finished_seq": int}``.
+        """
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM workflow_runs
+                    WHERE finished_seq > %s
+                    ORDER BY finished_seq ASC
+                    LIMIT %s
+                    """,
+                    (int(after_seq), max(1, int(limit))),
+                )
+                rows = await cursor.fetchall()
+        return [
+            {"run": _run_from_row(row), "finished_seq": int(row["finished_seq"])}
+            for row in rows
+        ]
+
+    async def latest_finished_seq(self) -> int:
+        """The highest ``finished_seq`` of any run; 0 before a run finishes."""
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT COALESCE(MAX(finished_seq), 0) AS seq FROM workflow_runs"
+                )
+                row = await cursor.fetchone()
+        return int(row["seq"])
 
     async def get_run_steps(self, run_id: str) -> list[WorkflowStepRecord]:
         await self.open()

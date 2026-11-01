@@ -51,7 +51,7 @@ def _append(client: TestClient, request_id: str, agent_id: str, event_type: str,
             session_id="s-1",
             trace_id=f"trace-{request_id}",
             event_type=event_type,
-            lifecycle=seed_lifecycle(event_type),
+            lifecycle=seed_lifecycle(event_type, payload.get("status")),
             dedupe_key=event_type,
             payload=payload,
         ),
@@ -63,7 +63,7 @@ def _accept(client: TestClient, request_id: str, agent_id: str, parent: str | No
         client,
         request_id,
         agent_id,
-        RuntimeEventType.REQUEST_ACCEPTED.value,
+        RuntimeEventType.INVOKE_AGENT_START.value,
         message=request_id,
         mode="bg" if parent else "fg",
         started_by="primary" if parent else "user",
@@ -81,7 +81,7 @@ def _seed_family(client: TestClient) -> None:
     _accept(client, "child-a", "research", parent="parent")
     _accept(client, "child-b", "primary", parent="parent")
     _accept(client, "child-done", "research", parent="parent")
-    _append(client, "child-done", "research", RuntimeEventType.REQUEST_COMPLETED.value)
+    _append(client, "child-done", "research", RuntimeEventType.INVOKE_AGENT_END.value, status="ok")
     _accept(client, "stranger", "research", parent="someone-else")
 
 

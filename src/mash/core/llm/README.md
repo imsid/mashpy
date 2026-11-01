@@ -33,7 +33,7 @@ Behavior:
   Messages API `output_config` json_schema format.
 - When `request.streaming` is set, uses the Messages streaming helper
   (`messages.stream()` / `beta.messages.stream()`), emits coalesced
-  `llm.response.delta` events as text arrives, then returns the fully
+  `chat.delta` events as text arrives, then returns the fully
   accumulated message via `get_final_message()` (response shape and final
   `usage` unchanged).
 - Returns capability flags:
@@ -57,7 +57,7 @@ Behavior:
 - Stateless by default: every request carries the full history. `stateful=True` chains turns with `previous_interaction_id` and sends only new steps.
 - `web_search=True` adds Gemini's native `google_search` grounding tool to every request and drops any registered `web_search` / `web_fetch` tool in favor of it.
 - Disables the SDK's internal retry loop (`HttpRetryOptions(attempts=1)`) so retry decisions go through `retry_transient`, where they are logged.
-- Honors `request.streaming`, emitting coalesced `llm.response.delta` events and assembling the stream into the same response shape as a non-streamed call.
+- Honors `request.streaming`, emitting coalesced `chat.delta` events and assembling the stream into the same response shape as a non-streamed call.
 - Translates structured output into the Interactions `response_format` parameter.
 - Reads thinking controls from `provider_options["thinking_level"]` and `provider_options["thinking_summaries"]`; thought tokens land in `usage.metadata["thought_tokens"]`.
 - Returns capability flags:
@@ -72,7 +72,7 @@ Prompt caching:
 - Caching applies to the repeated prefix, which for a Mash agent is the system instruction plus the tool definitions. It is not a property of the session: a first request on a brand new session hits the cache as long as another request shared its prefix recently.
 - The prefix must clear a per-model minimum, 4,096 tokens on the Gemini 3.x line and 2,048 on Gemini 2.5. Total request size does not substitute for it. A measured probe sending 46,811 input tokens behind a 1,801-token system prompt cached nothing across three calls, while a 10,971-token request behind a 10.9k-token prompt cached 8,159 tokens per call. An agent with a small system prompt and no tools gets no caching however large its inputs are.
 - Matching is block-quantized and rounds down, so the cached count runs below the full stable prefix (roughly 75% to 85% in the runs above). Treat the minimum as the point below which caching is impossible rather than the point where it starts paying.
-- Hits arrive as `usage.total_cached_tokens`, mapped to `LLMTokenUsage.cache_read_tokens` and logged as `cache_read_input_tokens` on `llm.request.complete`. A miss reads 0 with no error, and nothing distinguishes a prefix below the minimum from a prefix that failed to match or an entry that expired. `cache_write_tokens` stays unset, since implicit caching has no write step to bill.
+- Hits arrive as `usage.total_cached_tokens`, mapped to `LLMTokenUsage.cache_read_tokens` and stored as `gen_ai.usage.cache_read.input_tokens` on the request's `chat.end`. A miss reads 0 with no error, and nothing distinguishes a prefix below the minimum from a prefix that failed to match or an entry that expired. `cache_write_tokens` stays unset, since implicit caching has no write step to bill.
 
 ### `OpenAIProvider`
 - Provider name: `openai`
@@ -92,7 +92,7 @@ Behavior:
   Responses API `text.format` json_schema entry; honors
   `request.provider_options["structured_output_strict"]` (default `True`).
 - When `request.streaming` is set, uses the Responses streaming helper
-  (`responses.stream()`), emits coalesced `llm.response.delta` events from
+  (`responses.stream()`), emits coalesced `chat.delta` events from
   `response.output_text.delta` chunks, then returns the fully accumulated
   response via `get_final_response()` (response shape and final `usage`
   unchanged).
@@ -131,7 +131,7 @@ Behavior:
   JSON is parsed tolerantly (malformed args degrade to `{}`).
 - When `request.streaming` is set, streams via `chat.completions.create(
   stream=True, stream_options={"include_usage": True})`, emits coalesced
-  `llm.response.delta` events from content deltas, reassembles fragmented
+  `chat.delta` events from content deltas, reassembles fragmented
   tool-call deltas by index, and returns a response-shaped object so the parse
   path is identical to the non-streamed call.
 
@@ -211,13 +211,13 @@ Required members:
 - Returns a normalized response regardless of provider-specific wire format.
 - Remains the single generation entry point even when streaming: if
   `request.streaming` is set and the adapter supports it, the provider streams
-  internally (emitting `llm.response.delta` events) but still returns the fully
+  internally (emitting `chat.delta` events) but still returns the fully
   accumulated `LLMResponse`. The return contract is identical whether or not
   streaming is used.
 
 `set_event_logger(logger, session_id, app_id) -> None`
 - Binds structured LLM logging to the provider.
-- Used so provider calls emit `llm.request.start`, `llm.request.complete`, and `llm.request.error`.
+- Used so a streamed call's `chat.delta` chunks are written with the request's session.
 
 `set_trace_id(trace_id) -> None`
 - Binds the current agent trace id so provider events can be correlated with agent execution.
@@ -263,7 +263,7 @@ Field notes:
 - `temperature`: provider sampling control when supported
 - `use_prompt_caching`: hint for providers that support caching
 - `streaming`: hint to stream the response and emit incremental
-  `llm.response.delta` events; adapters that don't support streaming ignore it
+  `chat.delta` events; adapters that don't support streaming ignore it
   and the response is identical. Set by the agent loop from
   `AgentConfig.streaming_enabled` (default `True`); the structured-output
   finalizer and compaction leave it `False`.
@@ -462,25 +462,21 @@ response shape, HTTP API), see
 
 ## Logging Behavior
 
-Concrete providers built on `BaseLLMProvider` automatically emit:
-- `llm.request.start`
-- `llm.response.delta` (only on streaming requests; see below)
-- `llm.request.complete`
-- `llm.request.error`
+Concrete providers built on `BaseLLMProvider` emit one event: `chat.delta`,
+only on streaming requests (see below). A failed call is logged as a warning.
 
-Logged fields include:
-- provider name
-- model
-- duration
-- token counts
-- trace id
-- tool names
-- beta flags when applicable
+The model call itself is recorded by the durable runtime, not the provider:
+`chat.start` and `chat.end` bound its span, and `chat.end` carries the provider
+name, model, token counts and finish reason under `attributes`, with their GenAI
+convention names (`gen_ai.provider.name`, `gen_ai.request.model`,
+`gen_ai.usage.input_tokens`, and so on).
 
-### Streaming deltas (`llm.response.delta`)
+### Streaming deltas (`chat.delta`)
 
-When a request streams, the provider emits incremental `llm.response.delta`
-events between `llm.request.start` and `llm.request.complete`. Helpers on
+When a request streams, the provider emits incremental `chat.delta` events
+while the call runs. Inside a request each one is keyed by the bound loop step
+and its index (`chat.delta.{loop_index}.{index}`), so a replayed call keeps the
+first attempt's chunks. Helpers on
 `BaseLLMProvider` standardize this so every adapter behaves the same:
 - `_emit_response_delta(request, *, text, index)` emits one delta `LLMEvent`
   (chunk text + ordinal in `payload`), correlated via the provider's bound
@@ -491,8 +487,7 @@ events between `llm.request.start` and `llm.request.complete`. Helpers on
   event volume stays bounded (~tens per turn) while the visible stream stays
   responsive.
 
-`llm.request.complete` still carries the final, authoritative `duration_ms` and
-token counts (measured over the whole stream). Deltas are a live-progress
+`chat.end` carries the final token counts. Deltas are a live-progress
 channel, not the source of truth for usage.
 
 ## Source Of Truth

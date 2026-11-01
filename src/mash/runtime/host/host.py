@@ -306,6 +306,8 @@ class Pool:
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
         mode: str = "fg",
+        traceparent: str | None = None,
+        tracestate: str | None = None,
     ) -> dict[str, Any]:
         host = self.get_host(host_id)
         request_id = await self.get_client(host.primary).post_request(
@@ -317,6 +319,8 @@ class Pool:
             host=self.snapshot_for(host),
             user_id=user_id,
             mode=mode,
+            traceparent=traceparent,
+            tracestate=tracestate,
         )
         return {
             "request_id": request_id,

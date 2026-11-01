@@ -38,6 +38,7 @@ from mash.api.routes.telemetry import build_telemetry_router
 from mash.api.routes.workflow import build_workflow_router
 from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
+from mash.otel.exporter import build_exporter
 from mash.runtime import AgentClientError, Pool
 from mash.runtime.client import AgentUnavailableError
 from mash.runtime.host.host import AgentDisabledError
@@ -198,6 +199,15 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             eval_agent_spec = pool.get_registered_agent_spec(EVAL_AGENT_ID)
             if eval_agent_spec is not None and hasattr(eval_agent_spec, "runtime_context"):
                 eval_agent_spec.runtime_context.bind_eval_service(eval_service)
+        otel_exporter = None
+        runtime_store = pool.get_runtime_store()
+        if runtime_store is not None:
+            otel_exporter = build_exporter(
+                runtime_store, workflow_store=pool.get_workflow_store()
+            )
+            if otel_exporter is not None:
+                await otel_exporter.start()
+                logger.info("Exporting traces and logs over OTLP")
         application.state.runtime_state = AppRuntimeState(
             pool=pool,
             api_event_store=api_event_store,
@@ -207,12 +217,15 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             public_url=resolved_config.resolved_public_url(),
             default_events_limit=max(1, int(resolved_config.default_events_limit)),
             default_search_limit=max(1, int(resolved_config.default_search_limit)),
+            otel_exporter=otel_exporter,
         )
         try:
             yield
         finally:
             state = getattr(application.state, "runtime_state", None)
             if state is not None:
+                if state.otel_exporter is not None:
+                    await state.otel_exporter.stop()
                 if state.eval_service is not None:
                     await state.eval_service._store.close()
                 await state.api_event_store.close()

@@ -22,35 +22,45 @@ def _ev(agent_id: str, event_type: str, ts: float, **payload: object) -> Runtime
 def _llm(agent_id: str, ts: float, *, i: int, o: int, cr: int = 0, cc: int = 0,
          finish: str = "end_turn") -> RuntimeEvent:
     return _ev(
-        agent_id, "llm.request.complete", ts,
-        input_tokens=i, output_tokens=o,
-        cache_read_input_tokens=cr, cache_creation_input_tokens=cc,
-        finish_reason=finish,
+        agent_id, "chat.end", ts,
+        status="ok",
+        attributes={
+            "gen_ai.operation.name": "chat",
+            "gen_ai.usage.input_tokens": i,
+            "gen_ai.usage.output_tokens": o,
+            "gen_ai.usage.cache_read.input_tokens": cr,
+            "gen_ai.usage.cache_creation.input_tokens": cc,
+            "gen_ai.response.finish_reasons": [finish],
+        },
     )
+
+
+def _tool(agent_id: str, ts: float, name: str) -> RuntimeEvent:
+    return _ev(agent_id, "execute_tool.start", ts, attributes={"gen_ai.tool.name": name})
 
 
 class ComputeRowMetricsTests(unittest.TestCase):
     def _session(self) -> list[RuntimeEvent]:
         # Primary "pilot" invokes subagent "helper"; helper hits its step limit.
         return [
-            _ev("pilot", "runtime.request.accepted", 100.0),
-            _ev("pilot", "runtime.llm.think.started", 100.1),  # ignored
+            _ev("pilot", "invoke_agent.start", 100.0),
+            _ev("pilot", "chat.start", 100.1),  # ignored
             _llm("pilot", 101.0, i=300, o=50, cr=1000),
-            _ev("pilot", "runtime.tool.call.started", 101.5, tool_name="RunSubAgents"),
-            _ev("helper", "runtime.request.accepted", 101.6),
+            _tool("pilot", 101.5, "RunSubAgents"),
+            _ev("helper", "invoke_agent.start", 101.6),
             _llm("helper", 102.0, i=4000, o=200, finish="tool_use"),
-            _ev("helper", "runtime.tool.call.started", 102.1, tool_name="bash"),
-            _ev("helper", "runtime.tool.call.started", 102.2, tool_name="bash"),
-            _ev("helper", "runtime.step.completed", 102.3),
+            _tool("helper", 102.1, "bash"),
+            _tool("helper", 102.2, "bash"),
+            _ev("helper", "mash.step.end", 102.3),
             # Budget exhaustion fails the request and names its own reason.
-            _ev("helper", "runtime.request.failed", 102.4,
+            _ev("helper", "invoke_agent.end", 102.4, status="error",
                 error="Stopped after reaching the max step limit (1) before finishing.",
                 error_code="max_steps_exhausted",
                 stop_reason="max_steps"),
-            _ev("pilot", "runtime.step.completed", 103.0),
+            _ev("pilot", "mash.step.end", 103.0),
             _llm("pilot", 103.5, i=350, o=90, cr=1200),
-            _ev("pilot", "runtime.step.completed", 104.0),
-            _ev("pilot", "runtime.request.completed", 105.0,
+            _ev("pilot", "mash.step.end", 104.0),
+            _ev("pilot", "invoke_agent.end", 105.0, status="ok",
                 response_metadata={"host": {}}),
         ]
 
@@ -82,9 +92,9 @@ class ComputeRowMetricsTests(unittest.TestCase):
 
     def test_failed_primary_reports_error_and_partial_tokens(self) -> None:
         events = [
-            _ev("pilot", "runtime.request.accepted", 200.0),
+            _ev("pilot", "invoke_agent.start", 200.0),
             _llm("pilot", 201.0, i=100, o=10),
-            _ev("pilot", "runtime.request.failed", 202.0, error="boom"),
+            _ev("pilot", "invoke_agent.end", 202.0, status="error", error="boom"),
         ]
         m = compute_row_metrics(events, primary_agent_id="pilot")
         self.assertEqual(m.stop_reason, "error")
@@ -94,9 +104,9 @@ class ComputeRowMetricsTests(unittest.TestCase):
     def test_failure_that_names_a_stop_reason_keeps_it(self) -> None:
         """An exhausted step budget must stay distinguishable from any error."""
         events = [
-            _ev("pilot", "runtime.request.accepted", 200.0),
+            _ev("pilot", "invoke_agent.start", 200.0),
             _llm("pilot", 201.0, i=100, o=10, finish="tool_use"),
-            _ev("pilot", "runtime.request.failed", 202.0,
+            _ev("pilot", "invoke_agent.end", 202.0, status="error",
                 error="Stopped after reaching the max step limit (1) before finishing.",
                 error_code="max_steps_exhausted",
                 stop_reason="max_steps"),
@@ -107,14 +117,14 @@ class ComputeRowMetricsTests(unittest.TestCase):
     def test_cancelled_primary_reports_cancelled_not_a_finish_reason(self) -> None:
         """A cancelled run must not report the last LLM finish reason.
 
-        request.cancelled was in neither the loader filter nor the terminal
-        set, so a cancelled row fell through to ``end_turn`` — indistinguishable
-        from a run that ended on its own.
+        A cancelled request's end must decide the stop reason; otherwise the
+        row falls through to ``end_turn``, indistinguishable from a run that
+        ended on its own.
         """
         events = [
-            _ev("pilot", "runtime.request.accepted", 200.0),
+            _ev("pilot", "invoke_agent.start", 200.0),
             _llm("pilot", 201.0, i=100, o=10, finish="end_turn"),
-            _ev("pilot", "runtime.request.cancelled", 202.0, status="cancelled"),
+            _ev("pilot", "invoke_agent.end", 202.0, status="cancelled"),
         ]
         m = compute_row_metrics(events, primary_agent_id="pilot")
         self.assertEqual(m.stop_reason, "cancelled")
@@ -123,10 +133,10 @@ class ComputeRowMetricsTests(unittest.TestCase):
     def test_cancelled_then_resumed_to_completion_reports_the_outcome(self) -> None:
         """Latest terminal event wins, and by timestamp rather than list order."""
         events = [
-            _ev("pilot", "runtime.request.accepted", 300.0),
-            _ev("pilot", "runtime.request.cancelled", 301.0, status="cancelled"),
+            _ev("pilot", "invoke_agent.start", 300.0),
+            _ev("pilot", "invoke_agent.end", 301.0, status="cancelled"),
             _llm("pilot", 302.0, i=100, o=10, finish="tool_use"),
-            _ev("pilot", "runtime.request.completed", 303.0,
+            _ev("pilot", "invoke_agent.end", 303.0, status="ok",
                 response_metadata={"stop_reason": "end_turn"}),
         ]
         self.assertEqual(
@@ -142,7 +152,7 @@ class ComputeRowMetricsTests(unittest.TestCase):
         )
 
     def test_cancelled_events_are_loaded_for_metrics(self) -> None:
-        self.assertIn("runtime.request.cancelled", METRIC_EVENT_TYPES)
+        self.assertIn("invoke_agent.end", METRIC_EVENT_TYPES)
 
     def test_empty_events(self) -> None:
         m = compute_row_metrics([], primary_agent_id="pilot")

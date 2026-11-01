@@ -40,6 +40,10 @@ _subagent_id_prefix: contextvars.ContextVar[str | None] = contextvars.ContextVar
     "mash_subagent_id_prefix",
     default=None,
 )
+_loop_index: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "mash_loop_index",
+    default=None,
+)
 
 
 def set_trace_id(trace_id: Optional[str]) -> None:
@@ -110,6 +114,21 @@ def bound_subagent_id_prefix(prefix: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _subagent_id_prefix.reset(token)
+
+
+def get_loop_index() -> Optional[int]:
+    """The agent loop step the current model call belongs to, if any."""
+    return _loop_index.get()
+
+
+@contextmanager
+def bound_loop_index(loop_index: Optional[int]) -> Iterator[None]:
+    """Bind the loop step for one model call, so its stream deltas key by it."""
+    token = _loop_index.set(loop_index)
+    try:
+        yield
+    finally:
+        _loop_index.reset(token)
 
 
 def get_session_id() -> Optional[str]:

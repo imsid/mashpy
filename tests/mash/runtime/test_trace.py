@@ -19,7 +19,7 @@ class RuntimeTraceTests(unittest.TestCase):
         response_event = RuntimeEvent(
             app_id="primary",
             agent_id="primary",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             payload={
                 "action_type": "response",
                 "assistant_text": "preview text",
@@ -28,7 +28,7 @@ class RuntimeTraceTests(unittest.TestCase):
         finish_event = RuntimeEvent(
             app_id="primary",
             agent_id="primary",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             payload={
                 "action_type": "finish",
                 "assistant_text": "no preview",
@@ -37,7 +37,7 @@ class RuntimeTraceTests(unittest.TestCase):
         tool_event = RuntimeEvent(
             app_id="primary",
             agent_id="primary",
-            event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+            event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
             payload={"assistant_text": "no preview"},
         )
 
@@ -48,7 +48,7 @@ class RuntimeTraceTests(unittest.TestCase):
     def test_stream_payload_hydrates_runtime_event(self) -> None:
         event = runtime_event_from_stream_payload(
             {
-                "event_type": RuntimeEventType.LLM_THINK_COMPLETED.value,
+                "event_type": RuntimeEventType.CHAT_END.value,
                 "trace_id": "trace-1",
                 "session_id": "s-1",
                 "loop_index": 2,
@@ -57,7 +57,7 @@ class RuntimeTraceTests(unittest.TestCase):
                     "action_type": "tool_call",
                     "assistant_text": "thinking",
                     "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
-                    "token_usage": {"input": 2, "output": 1},
+                    "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                     "duration_ms": 123,
                 },
             },
@@ -65,7 +65,7 @@ class RuntimeTraceTests(unittest.TestCase):
         )
 
         assert event is not None
-        self.assertEqual(event.event_type, RuntimeEventType.LLM_THINK_COMPLETED.value)
+        self.assertEqual(event.event_type, RuntimeEventType.CHAT_END.value)
         self.assertEqual(event.app_id, "primary")
         self.assertEqual(event.agent_id, "primary")
         self.assertEqual(event.trace_id, "trace-1")
@@ -80,7 +80,7 @@ class RuntimeTraceTests(unittest.TestCase):
                 RuntimeEvent(
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
@@ -88,23 +88,23 @@ class RuntimeTraceTests(unittest.TestCase):
                         "action_type": "tool_call",
                         "assistant_text": "thinking",
                         "tool_calls": [{"name": "run_code", "arguments": {"language": "shell", "code": "pwd"}}],
-                        "token_usage": {"input": 2, "output": 1},
+                        "attributes": {"gen_ai.usage.input_tokens": 2, "gen_ai.usage.output_tokens": 1},
                         "duration_ms": 123,
                     },
                 ),
                 RuntimeEvent(
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+                    event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
-                    payload={"tool_name": "bash", "duration_ms": 45},
+                    payload={"attributes": {"gen_ai.tool.name": "bash"}, "duration_ms": 45},
                 ),
                 RuntimeEvent(
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.STEP_COMPLETED.value,
+                    event_type=RuntimeEventType.STEP_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
@@ -117,10 +117,10 @@ class RuntimeTraceTests(unittest.TestCase):
                 RuntimeEvent(
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
-                    payload={},
+                    payload={"status": "ok"},
                 ),
             ]
         )
@@ -137,7 +137,7 @@ class RuntimeTraceTests(unittest.TestCase):
                     event_id=1,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.TRACE_STARTED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     created_at=1.0,
@@ -147,7 +147,7 @@ class RuntimeTraceTests(unittest.TestCase):
                     event_id=2,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
@@ -155,25 +155,25 @@ class RuntimeTraceTests(unittest.TestCase):
                     payload={
                         "action_type": "tool_call",
                         "tool_calls": [{"name": "bash", "arguments": {"command": "pwd"}}],
-                        "token_usage": {"input": 8, "output": 3},
+                        "attributes": {"gen_ai.usage.input_tokens": 8, "gen_ai.usage.output_tokens": 3},
                     },
                 ),
                 RuntimeEvent(
                     event_id=3,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+                    event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
                     created_at=3.0,
-                    payload={"tool_name": "bash"},
+                    payload={"attributes": {"gen_ai.tool.name": "bash"}},
                 ),
                 RuntimeEvent(
                     event_id=4,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.STEP_COMPLETED.value,
+                    event_type=RuntimeEventType.STEP_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
@@ -184,11 +184,11 @@ class RuntimeTraceTests(unittest.TestCase):
                     event_id=5,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     created_at=5.0,
-                    payload={"response": {"text": "runtime answer"}},
+                    payload={"status": "ok", "response": {"text": "runtime answer"}},
                 ),
             ]
         )
@@ -213,39 +213,39 @@ class RuntimeTraceTests(unittest.TestCase):
                     event_id=1,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
                     created_at=1.0,
                     payload={
                         "action_type": "tool_call",
-                        "token_usage": {"input": 10, "output": 5, "cache_read": 200, "cache_write": 50},
+                        "attributes": {"gen_ai.usage.input_tokens": 10, "gen_ai.usage.output_tokens": 5, "gen_ai.usage.cache_read.input_tokens": 200, "gen_ai.usage.cache_creation.input_tokens": 50},
                     },
                 ),
                 RuntimeEvent(
                     event_id=2,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=1,
                     created_at=2.0,
                     payload={
                         "action_type": "response",
-                        "token_usage": {"input": 12, "output": 8, "cache_read": 150},
+                        "attributes": {"gen_ai.usage.input_tokens": 12, "gen_ai.usage.output_tokens": 8, "gen_ai.usage.cache_read.input_tokens": 150},
                     },
                 ),
                 RuntimeEvent(
                     event_id=3,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     created_at=3.0,
-                    payload={},
+                    payload={"status": "ok"},
                 ),
             ]
         )
@@ -262,25 +262,25 @@ class RuntimeTraceTests(unittest.TestCase):
                     event_id=1,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                    event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     loop_index=0,
                     created_at=1.0,
                     payload={
                         "action_type": "response",
-                        "token_usage": {"input": 5, "output": 2, "cache_read": 100, "cache_write": 30},
+                        "attributes": {"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 2, "gen_ai.usage.cache_read.input_tokens": 100, "gen_ai.usage.cache_creation.input_tokens": 30},
                     },
                 ),
                 RuntimeEvent(
                     event_id=2,
                     app_id="primary",
                     agent_id="primary",
-                    event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     created_at=2.0,
-                    payload={},
+                    payload={"status": "ok"},
                 ),
             ]
         )
@@ -289,60 +289,29 @@ class RuntimeTraceTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["cache_read_tokens"], 100)
         self.assertEqual(payload["summary"]["cache_write_tokens"], 30)
 
-    def test_build_runtime_trace_extracts_token_fields(self) -> None:
+    def test_failed_tool_end_counts_as_a_tool_error(self) -> None:
         trace = build_runtime_trace(
             [
                 RuntimeEvent(
                     event_id=1,
                     app_id="primary",
                     agent_id="primary",
-                    event_type="agent.run.start",
-                    trace_id="trace-1",
-                    session_id="s-1",
-                    created_at=1.0,
-                    payload={"user_message": "legacy user"},
-                ),
-                RuntimeEvent(
-                    event_id=2,
-                    app_id="primary",
-                    agent_id="primary",
-                    event_type="agent.tool.error",
+                    event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                     trace_id="trace-1",
                     session_id="s-1",
                     created_at=2.0,
-                    payload={"tool_name": "search", "status": "failed"},
-                ),
-                RuntimeEvent(
-                    event_id=3,
-                    app_id="primary",
-                    agent_id="primary",
-                    event_type="runtime.llm.think.completed",
-                    trace_id="trace-1",
-                    session_id="s-1",
-                    created_at=3.0,
-                    payload={"token_usage": {"input": 5, "output": 2}},
-                ),
-                RuntimeEvent(
-                    event_id=4,
-                    app_id="primary",
-                    agent_id="primary",
-                    event_type="agent.run.complete",
-                    trace_id="trace-1",
-                    session_id="s-1",
-                    created_at=4.0,
-                    payload={"assistant_response": "legacy answer"},
+                    payload={
+                        "status": "error",
+                        "attributes": {"gen_ai.tool.name": "search", "error.type": "tool_error"},
+                    },
                 ),
             ]
         )
 
-        self.assertEqual(trace.user_message, "legacy user")
-        self.assertEqual(trace.assistant_response, "legacy answer")
         self.assertEqual(trace.tools_called, ["search"])
         self.assertEqual(trace.tool_call_count, 1)
         self.assertEqual(trace.tool_error_count, 1)
         self.assertEqual(len(trace.failed_events), 1)
-        self.assertEqual(trace.input_tokens, 5)
-        self.assertEqual(trace.output_tokens, 2)
 
 
 if __name__ == "__main__":

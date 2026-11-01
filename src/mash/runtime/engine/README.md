@@ -52,13 +52,13 @@ There is no separate runtime adapter file anymore. The engine implementation liv
 
 One boundary stays explicit:
 
-- `runtime.request.accepted` is appended **before** the DBOS workflow starts
+- `invoke_agent.start` is appended **before** the DBOS workflow starts, with the request's trace id
 - durable execution begins only when the engine starts the workflow
 
 The sequence is:
 
 1. [`../requests.py`](../requests.py) creates `request_id`.
-2. [`../requests.py`](../requests.py) appends `runtime.request.accepted`.
+2. [`../requests.py`](../requests.py) mints the trace id and appends `invoke_agent.start`.
 3. [`../requests.py`](../requests.py) calls `self.engine.start_request(...)`.
 4. [`DBOSRequestEngine.start_request(...)`](./dbos.py) ensures DBOS is initialized and the workflow is registered.
 5. [`DBOSRequestEngine.start_request(...)`](./dbos.py) sets the workflow id with `SetWorkflowID(...)`.
@@ -164,9 +164,8 @@ Implemented by `start_request_trace(...)`.
 
 This step:
 
-- creates `trace_id`
-- appends `runtime.trace.started`
-- emits `agent.run.start`
+- reads the `trace_id` minted on `invoke_agent.start`, so a replay returns the same id
+- appends `mash.context_load.start`
 
 ### 2. `context.load`
 
@@ -178,7 +177,7 @@ This step:
 - may compact the session first
 - builds the initial serialized `Context`
 - initializes durable workflow state
-- appends `runtime.context.loaded`
+- appends `mash.context_load.end`
 
 ### 3. `step.plan.<loop_index>`
 
@@ -186,6 +185,7 @@ Implemented by `plan_request_step(...)`.
 
 This step:
 
+- appends `chat.start`
 - deserializes the current context
 - builds a request-scoped agent
 - calls `Agent.plan_step(...)`
@@ -194,7 +194,9 @@ This step:
   - the current action payload
   - token usage deltas
   - merged tool usage
-- appends `runtime.llm.think.completed`
+- appends `chat.end`, with the provider, model, token counts and finish reason
+  under `attributes`
+- binds the loop index for the model call, so its `chat.delta` rows key by it
 
 Important behavior:
 
@@ -207,9 +209,9 @@ Driven by `_run_interaction(...)`, using the `open_interaction(...)` and `emit_i
 
 These steps run only when the action payload from `plan_request_step` contains an `interaction` field (or the plan calls `AskUser`). Per attempt, the workflow:
 
-- runs `open_interaction`, a **checkpointed** step that mints the `interaction_id` *inside the step* and appends `runtime.interaction.create` (visible as `request.interaction.create` on SSE). Because the id is the step's return value, DBOS replay hands the same id back to both the UI and the `recv` listener — without this, a recovered workflow would mint a fresh id and `recv` on a topic no sender ever targets.
+- runs `open_interaction`, a **checkpointed** step that mints the `interaction_id` *inside the step* and appends `mash.interaction.start` (visible as `request.interaction.create` on SSE). Because the id is the step's return value, DBOS replay hands the same id back to both the UI and the `recv` listener — without this, a recovered workflow would mint a fresh id and `recv` on a topic no sender ever targets.
 - calls `DBOS.recv(interaction_id, timeout_seconds=...)` — durable block
-- on a real response (or timeout): appends `runtime.interaction.ack` and injects the response into `workflow_state["interaction_response"]`
+- on a real response (or timeout): appends `mash.interaction.end` and injects the response into `workflow_state["interaction_response"]`
 - on the **cancel sentinel** (`INTERACTION_CANCEL_SENTINEL`, sent by the cancel path to a parked interaction's topic): acks the attempt as cancelled and loops to a new attempt — a fresh `open` step, a fresh id, a fresh create event — which is what a later resume replays into.
 
 This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async` for the wait. The host delivers responses via `DBOS.send(workflow_id, response, topic=interaction_id)`.
@@ -218,17 +220,16 @@ This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async` 
 
 Implemented by `run_step_tool_call(...)`, with special handling for:
 
-- **`AskUser`**: Intercepted by `_handle_ask_user_interaction()`. Instead of executing the tool, the workflow emits `runtime.interaction.create`, durably blocks via `DBOS.recv()`, and returns the user's response as a normal tool result. This enables agent-initiated user interaction.
-- **`RunSubAgents`**: Runs as an ordinary step under a bound prefix, `{request_id}-sub-{loop_index}-{call_index}`. The tool gives its `n`-th child the id `uuid5(namespace, f"{prefix}-{n}")`, so a replay or retry of the step resubmits the same ids and idempotent submission returns the children already running. The step returns once every child has ended or the call's timeout has cancelled the rest.
+- **`AskUser`**: Intercepted by `_handle_ask_user_interaction()`. Instead of executing the tool, the workflow emits `mash.interaction.start`, durably blocks via `DBOS.recv()`, and returns the user's response as a normal tool result. This enables agent-initiated user interaction.
+- **`RunSubAgents`**: Runs as an ordinary step under a bound prefix, `{request_id}-sub-{loop_index}-{call_index}`. The tool gives its `n`-th child the id `uuid5(namespace, f"{prefix}-{n}")`, so a replay or retry of the step resubmits the same ids and idempotent submission returns the children already running. The step returns once every child has ended or the call's timeout has cancelled the rest. Its `execute_tool.start` lists each child's `agent_id` and `request_id` under `subagents`, so the CLI and the trace projection read the children's own logs.
 
 For all other tools, this step:
 
+- appends `execute_tool.start` with the call's arguments
 - runs exactly one tool call through `Agent.execute_step_tool_call(...)`
 - appends the result payload to workflow state
 - updates tool usage in workflow state
-- appends:
-  - `runtime.tool.call.completed`, or
-  - `runtime.subagent.call.completed`
+- appends `execute_tool.end` with `status` `ok` or `error`
 
 Important behavior:
 
@@ -257,6 +258,8 @@ It returns the next workflow state with:
 - cleared `action` and `result_payloads`
 - `done`
 
+It appends `mash.step.end`.
+
 This is the only place in the workflow that decides whether execution should continue.
 
 ### 7. `turn.persist`
@@ -270,7 +273,6 @@ It:
 - reconstructs the final response from the completed context
 - attaches aggregate token usage and trace metadata
 - persists the final turn to the memory store
-- appends `runtime.turn.persisted`
 
 Important nuance:
 
@@ -283,8 +285,7 @@ Implemented by `complete_request(...)`.
 
 This step:
 
-- emits `agent.run.complete`
-- appends `runtime.request.completed`
+- appends `invoke_agent.end` with `status: ok` and the turn payload
 
 ### 9. `request.fail`
 
@@ -292,7 +293,7 @@ Implemented by `fail_request(...)`.
 
 This step:
 
-- records terminal failure as `runtime.request.failed`
+- records terminal failure as `invoke_agent.end` with `status: error` and `error.type`
 - preserves the request error contract
 - the payload includes `error_code` and `retryable` fields from `classify_error()`
 
@@ -317,45 +318,45 @@ sequenceDiagram
     participant Store as "runtime_store"
     participant Memory as "memory_store"
 
-    Req->>Store: append runtime.request.accepted
+    Req->>Store: append invoke_agent.start
     Req->>Eng: start_request(request_id, message, session_id)
     Eng->>WF: DBOS.start_workflow_async(...)
     WF->>Step: start_request_trace(...)
-    Step->>Store: append runtime.trace.started
-    Step->>Agent: emit agent.run.start
+    Step->>Store: append mash.context_load.start
     WF->>Step: load_request_context(...)
-    Step->>Store: append runtime.context.loaded
+    Step->>Store: append mash.context_load.end
 
     loop "until workflow_state.done"
         WF->>Step: plan_request_step(workflow_state)
+        Step->>Store: append chat.start
         Step->>Agent: Agent.plan_step(...)
-        Step->>Store: append runtime.llm.think.completed
+        Step->>Store: append chat.end
 
         opt "if action contains interaction"
             WF->>Step: emit_interaction_create(...)
-            Step->>Store: append runtime.interaction.create
+            Step->>Store: append mash.interaction.start
             WF->>WF: DBOS.recv(interaction_id) — durable block
             Note over WF: Host calls DBOS.send() via post_interaction
             WF->>Step: emit_interaction_ack(...)
-            Step->>Store: append runtime.interaction.ack
+            Step->>Store: append mash.interaction.end
         end
 
         loop "for each tool call in action"
             WF->>Step: run_step_tool_call(workflow_state, tool_call)
+            Step->>Store: append execute_tool.start
             Step->>Agent: Agent.execute_step_tool_call(...)
-            Step->>Store: append runtime.tool.call.completed / runtime.subagent.call.completed
+            Step->>Store: append execute_tool.end
         end
 
         WF->>Step: commit_request_step(workflow_state)
         Step->>Agent: Agent.commit_step(...)
+        Step->>Store: append mash.step.end
     end
 
     WF->>Step: persist_completed_turn(workflow_state)
     Step->>Memory: save final turn
-    Step->>Store: append runtime.turn.persisted
     WF->>Step: complete_request(turn_payload)
-    Step->>Agent: emit agent.run.complete
-    Step->>Store: append runtime.request.completed
+    Step->>Store: append invoke_agent.end
 ```
 
 ## Main Loop
@@ -365,7 +366,7 @@ At a high level, the workflow runs:
 1. start request
 2. load context
 3. plan one canonical agent step
-4. if the plan requires interaction: emit `interaction.create`, durably block via `DBOS.recv`, emit `interaction.ack`
+4. if the plan requires interaction: emit `mash.interaction.start`, durably block via `DBOS.recv`, emit `mash.interaction.end`
 5. run each tool call for that step durably, in order
 6. commit that step
 7. if not done, repeat
@@ -382,21 +383,24 @@ The DBOS workflow is not the user-facing event stream.
 - `runtime_store` records the observable request timeline
 - workflow steps append `RuntimeEvent` records as execution proceeds
 
-Typical successful event order:
+Each event is named after the span it bounds, so the order reads as a span tree
+(see [`../../otel/`](../../otel) for the projection). Typical successful order:
 
-1. `runtime.request.accepted`
-2. `runtime.trace.started`
-3. `runtime.context.loaded`
-4. one or more `runtime.llm.think.completed`
-5. zero or more `runtime.interaction.create` / `runtime.interaction.ack` pairs
-6. zero or more `runtime.tool.call.completed` / `runtime.subagent.call.completed`
-7. `runtime.turn.persisted`
-8. `runtime.request.completed`
+1. `invoke_agent.start`
+2. `mash.context_load.start`, `mash.context_load.end`
+3. per loop step: `chat.start`, `chat.end`, zero or more `mash.interaction.start` /
+   `mash.interaction.end` pairs, zero or more `execute_tool.start` / `execute_tool.end`
+   pairs, then `mash.step.end`
+4. `invoke_agent.end` with `status: ok`
+
+`chat.delta` rows sit between `chat.start` and `chat.end` when streaming is on.
 
 On failure (after step-level retries are exhausted for transient errors, or immediately for terminal errors):
 
-1. events 1–6 as above (partial)
-2. `runtime.request.failed` (terminal — stream ends, payload includes `error_code` and `retryable`)
+1. events 1 to 3 as above (partial)
+2. `invoke_agent.end` with `status: error` (terminal; the stream ends, and the payload
+   includes `error_code` and `retryable`). The projection closes the spans still open
+   at that point and marks the innermost one as the error.
 
 ## Design Rules For Future Edits
 

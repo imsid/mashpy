@@ -133,7 +133,7 @@ class DeterministicIdSubmitTests(unittest.IsolatedAsyncioTestCase):
         accepted = [
             e
             for e in await runtime.runtime_store.list_request_events(child_id)
-            if e.event_type == "runtime.request.accepted"
+            if e.event_type == "invoke_agent.start"
         ]
         self.assertEqual(len(accepted), 1)
 

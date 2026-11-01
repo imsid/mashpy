@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import uuid
 import warnings
 from types import SimpleNamespace
@@ -408,7 +407,7 @@ class GeminiProvider(BaseLLMProvider):
     ) -> Any:
         """Stream an interaction and return a plain object shaped like a completed Interaction.
 
-        Emits ``llm.response.delta`` events as text arrives. Thought summary
+        Emits ``chat.delta`` events as text arrives. Thought summary
         deltas are accumulated and returned as a synthetic ``thought`` step
         alongside any function_call steps so ``_parse_interaction_response``
         can handle the assembled result uniformly.
@@ -534,7 +533,6 @@ class GeminiProvider(BaseLLMProvider):
         pass
 
     async def send(self, request: LLMRequest) -> LLMResponse:  # pylint: disable=too-many-locals
-        request_start = time.time()
 
         session_key = self._session_id or ""
         prev_id = self._interaction_ids.get(session_key)
@@ -552,15 +550,6 @@ class GeminiProvider(BaseLLMProvider):
 
         interaction_tools = self._build_interaction_tools(request.tools)
         system_instruction = self._gemini_instructions(request.system)
-
-        await self._emit_request_start(
-            request,
-            payload={
-                "input_steps": len(input_steps),
-                "chained": use_chain,
-                "previous_interaction_id": prev_id if use_chain else None,
-            },
-        )
 
         try:
             generation_config: Dict[str, Any] = {
@@ -610,13 +599,8 @@ class GeminiProvider(BaseLLMProvider):
 
             response = self._parse_interaction_response(raw)
 
-            await self._emit_request_complete(
-                request,
-                started_at=request_start,
-                response=response,
-            )
             return response
 
         except Exception as exc:
-            await self._emit_request_error(request, started_at=request_start, error=exc)
+            self._log_request_error(exc)
             raise

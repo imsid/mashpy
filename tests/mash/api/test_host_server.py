@@ -733,8 +733,79 @@ def test_telemetry_events_filter_by_agent() -> None:
             events = client.get("/api/v1/telemetry/events?agent_id=primary")
             assert events.status_code == 200
             payload = events.json()["data"]
-            assert any(event["event_type"] == "agent.run.start" for event in payload["events"])
+            assert any(event["event_type"] == "invoke_agent.start" for event in payload["events"])
             assert payload["source"] == "runtime_event_log"
+
+
+def _accepted_payload(client, request_id: str) -> dict[str, Any]:
+    store = client.app.state.runtime_state.pool.get_runtime_store()
+    events = client.portal.call(store.list_request_events, request_id)
+    return next(e.payload for e in events if e.event_type == "invoke_agent.start")
+
+
+def test_submit_routes_store_a_callers_traceparent() -> None:
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    with tempfile.TemporaryDirectory() as tmp:
+        with _build_test_client(Path(tmp)) as client:
+            agent = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-tp", "user_id": "u-1"},
+                headers={"traceparent": traceparent, "tracestate": "vendor=1"},
+            )
+            request_id = agent.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", request_id)
+            payload = _accepted_payload(client, request_id)
+            assert payload["traceparent"] == traceparent
+            assert payload["tracestate"] == "vendor=1"
+
+            hosted = client.post(
+                "/api/v1/hosts/assistant/request",
+                json={"message": "hello", "session_id": "s-tp2", "user_id": "u-1"},
+                headers={"traceparent": traceparent},
+            )
+            hosted_id = hosted.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", hosted_id)
+            assert _accepted_payload(client, hosted_id)["traceparent"] == traceparent
+
+            # An invalid header is dropped; the request starts its own trace.
+            invalid = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-tp3", "user_id": "u-1"},
+                headers={"traceparent": "not-a-traceparent", "tracestate": "vendor=1"},
+            )
+            invalid_id = invalid.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", invalid_id)
+            payload = _accepted_payload(client, invalid_id)
+            assert "traceparent" not in payload
+            assert "tracestate" not in payload
+
+
+def test_trace_analysis_returns_the_projection() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        with _build_test_client(Path(tmp)) as client:
+            submitted = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "hello", "session_id": "s-proj", "user_id": "u-1"},
+            )
+            request_id = submitted.json()["data"]["request_id"]
+            _collect_terminal_response(client, "primary", request_id)
+            store = client.app.state.runtime_state.pool.get_runtime_store()
+            events = client.portal.call(store.list_request_events, request_id)
+            trace_id = events[0].trace_id
+
+            response = client.get(
+                "/api/v1/telemetry/trace/analysis",
+                params={"agent_id": "primary", "session_id": "s-proj", "trace_id": trace_id},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()["data"]
+            root = data["projection"]["root"]
+            assert root["name"] == "invoke_agent primary"
+            assert root["attributes"]["gen_ai.agent.id"] == "primary"
+            assert data["status"] == "completed"
+            assert data["request_id"] == request_id
+            names = {child["name"] for child in root["children"]}
+            assert {"mash.cold_start", "mash.context_load", "mash.step 0"} <= names
 
 
 def test_telemetry_sessions_rollup_from_events() -> None:
@@ -824,7 +895,7 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
                         host_id="assistant",
                         workflow_id="changelog",
                         workflow_run_id="run-1",
-                        event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                        event_type=RuntimeEventType.CHAT_END.value,
                         loop_index=None,
                         step_key=None,
                         dedupe_key=None,

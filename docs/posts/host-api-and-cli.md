@@ -107,7 +107,7 @@ Two parts of the shell do more than print frames.
 
 Interactions render as prompts. When a `request.interaction.create` frame arrives, the shell prompts for an approval decision, a choice, or free-form input, and POSTs the answer back through the interaction endpoint, so the [human-in-the-loop flow](human-in-the-loop.md) works end to end at the terminal.
 
-Streaming renders as formatted markdown. The chain renderer buffers `llm.response.delta` chunks and flushes each completed markdown block as it finishes, so answers stream in with headings and highlighted code instead of raw text, and unterminated code fences stay buffered until they close. The shell then suppresses the end-of-turn re-render when tokens already streamed, so the response appears exactly once.
+Streaming renders as formatted markdown. The chain renderer buffers `chat.delta` chunks and flushes each completed markdown block as it finishes, so answers stream in with headings and highlighted code instead of raw text, and unterminated code fences stay buffered until they close. The shell then suppresses the end-of-turn re-render when tokens already streamed, so the response appears exactly once.
 
 ## Building on it
 

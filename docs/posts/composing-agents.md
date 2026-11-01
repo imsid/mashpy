@@ -1,6 +1,6 @@
 ---
 title: Composing Agents Under One Host
-description: How a flat pool of agents gets composed into hosts, with delegation through RunSubAgents, per-request role wiring, mirrored traces, and shared infrastructure.
+description: How a flat pool of agents gets composed into hosts, with delegation through RunSubAgents, per-request role wiring, connected traces, and shared infrastructure.
 date: 2026-06-10
 author: imsid
 tags:
@@ -91,7 +91,7 @@ Two details keep this delegation well-behaved:
 
 **One session, separate memory.** The child runs under the *primary's* `session_id`: the delegation is a trace within the caller's session, executed by the subagent. There's no per-agent or per-delegation session. The specialist still keeps its own [memory](memory-and-compaction.md) scope (memory is keyed by `app_id`), and its turns are recorded but marked non-replayable, so they never enter the primary's replayed conversation.
 
-**Traces stay connected.** While the child executes, its lifecycle events are mirrored into the parent's trace as `subagent.request.*` and `subagent.agent.trace` events. Because it shares the session, the child's own trace is recorded there too, tagged with the subagent as the executing agent. A client streaming the primary's request watches the delegation happen live, and trace analysis can stitch child traces into the parent's timing breakdown.
+**Traces stay connected.** The child's events stay in its own log, under its own request id. The parent's `execute_tool.start` for `RunSubAgents` names each child's agent and request id, so a client streaming the primary's request can open each child's stream and watch the delegation happen live, which is what the REPL does. The [trace projection](reading-a-trace.md) uses the same ids to nest each child's `invoke_agent` span under the call that started it, so the admin UI, trace analysis and an OTLP export all show the whole delegation as one trace.
 
 ```mermaid
 flowchart TD

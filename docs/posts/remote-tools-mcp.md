@@ -88,7 +88,7 @@ The package boundary in `src/mash/mcp` keeps protocol details in one place: `typ
 
 ## The same observability
 
-MCP activity emits structured events alongside everything else in the [event stream](request-lifecycle.md): `mcp.client.connect` / `connected` / `disconnect` / `error` for lifecycle, and `mcp.tool.call` / `result` / `error` for execution, each carrying `server_name`, `tool_name`, `duration_ms`, and the current `trace_id`. In [trace analysis](reading-a-trace.md), remote calls show up as tool spans under their `mcp_`-prefixed names, so a slow remote server surfaces in the per-tool stats table like any other expensive tool.
+MCP activity shows up alongside everything else in the [event stream](request-lifecycle.md): the manager writes `mcp.client.connect` / `connected` / `disconnect` / `error` for its connection lifecycle, each carrying `server_name` and the current `trace_id`, and a remote tool call is the request's `execute_tool` span like any local one. In [trace analysis](reading-a-trace.md), remote calls show up as `execute_tool` spans under their `mcp_`-prefixed names, so a slow remote server surfaces in the per-tool stats table like any other expensive tool.
 
 Every registered tool, local or remote, is serialized into the `tools` list on each LLM request. The contract that carries that list across three different provider APIs is the subject of the next post.
 

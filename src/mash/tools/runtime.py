@@ -6,7 +6,6 @@ import json
 from dataclasses import asdict
 from typing import Any, Callable, Dict, List
 
-from ..logging import EventLogger
 from ..memory.search.service import MemorySearchService
 from ..memory.search.types import SearchResult
 from ..memory.store import MemoryStore
@@ -24,7 +23,6 @@ class RuntimeToolBuilder:
         self,
         store: MemoryStore,
         app_id: str,
-        event_logger: EventLogger,
         session_id: str | None = None,
         session_id_provider: Callable[[], str] | None = None,
         user_id: str | None = None,
@@ -38,7 +36,7 @@ class RuntimeToolBuilder:
             self._session_id_provider = lambda: session_id
         else:
             raise ValueError("session_id or session_id_provider is required")
-        self._search_service = MemorySearchService(store=store, event_logger=event_logger)
+        self._search_service = MemorySearchService(store=store)
 
     def _session_id(self) -> str:
         session_id = str(self._session_id_provider() or "").strip()

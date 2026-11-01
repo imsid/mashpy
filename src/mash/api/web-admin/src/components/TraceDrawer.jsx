@@ -19,25 +19,47 @@ import { traceActions, traceStatusFromRequest, traceStatusMeta } from '../lib/tr
 
 const ROLE_TONE = { user: 'emerald', assistant: 'indigo', tool: 'amber', system: 'slate' };
 
+// One OpenTelemetry span from the trace projection: its name, kind and
+// duration, with its attributes and log records behind a click.
 function SpanNode({ node, depth = 0 }) {
-  const duration = node.duration_ms ?? node.duration ?? 0;
+  const [openDetail, setOpenDetail] = useState(false);
   const children = node.children || [];
+  const logs = node.logs || [];
+  const running = node.end_time == null;
+  const failed = node.status === 'ERROR';
   return (
     <div>
-      <div
-        className="flex items-center justify-between gap-2 py-0.5 text-xs"
+      <button
+        type="button"
+        onClick={() => setOpenDetail((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-xs hover:bg-slate-50"
         style={{ paddingLeft: `${depth * 14}px` }}
       >
         <span className="truncate">
-          <span className="text-slate-400">{node.kind ? `${node.kind} ` : ''}</span>
-          <span className="text-slate-700">{node.name}</span>
+          <span className={failed ? 'text-rose-700' : 'text-slate-700'}>{node.name}</span>
+          <span className="text-slate-400"> {node.kind}</span>
+          {logs.length ? <span className="text-slate-400"> · {logs.length} event{logs.length > 1 ? 's' : ''}</span> : null}
         </span>
         <span className="shrink-0 tabular-nums text-slate-400">
-          {formatDuration(duration)}
+          {running ? 'running' : formatDuration(node.duration_ms ?? 0)}
         </span>
-      </div>
-      {children.map((child, idx) => (
-        <SpanNode key={idx} node={child} depth={depth + 1} />
+      </button>
+      {openDetail ? (
+        <div className="space-y-1 pb-1" style={{ paddingLeft: `${depth * 14 + 14}px` }}>
+          {failed && node.status_message ? (
+            <div className="text-xs text-rose-700">{node.status_message}</div>
+          ) : null}
+          <JsonBlock value={node.attributes || {}} />
+          {logs.map((record, idx) => (
+            <div key={idx} className="text-xs">
+              <span className="font-medium text-slate-700">{record.event_name}</span>
+              <JsonBlock value={record.attributes || {}} />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {children.map((child) => (
+        <SpanNode key={child.span_id} node={child} depth={depth + 1} />
       ))}
     </div>
   );
@@ -539,10 +561,10 @@ export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
             )}
           </section>
 
-          {analysis.span_tree ? (
-            <Disclosure label="Span tree">
+          {analysis.projection?.root ? (
+            <Disclosure label="Spans" hint={`${analysis.projection.span_count}`}>
               <div className="space-y-0.5">
-                <SpanNode node={analysis.span_tree} />
+                <SpanNode node={analysis.projection.root} />
               </div>
             </Disclosure>
           ) : null}

@@ -134,7 +134,7 @@ class _FakeRuntimeStore:
             RuntimeEvent(
                 app_id="pilot",
                 agent_id="pilot",
-                event_type="runtime.step.completed",
+                event_type="mash.step.end",
                 session_id=session_id,
                 created_at=1.0,
             ),

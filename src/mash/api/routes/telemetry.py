@@ -12,13 +12,9 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.api.logging import serialize_api_event
-from mash.runtime.events import (
-    analyze_trace,
-    build_span_tree,
-    serialize_runtime_event,
-    serialize_span,
-    stitch_subagent_traces,
-)
+from mash.otel.loading import load_request_tree
+from mash.otel.projection import project_request, serialize_projection
+from mash.runtime.events import analyze_projection, serialize_runtime_event
 from mash.runtime.events.types import RuntimeEvent
 
 from .common import (
@@ -202,7 +198,6 @@ def build_telemetry_router() -> APIRouter:
                 details={"param": "app_id"},
             )
 
-        runtime_store = get_runtime_store(request, app_id_value)
         memory_store = state.pool.get_memory_store(app_id_value)
         if memory_store is None:
             raise APIError(
@@ -211,7 +206,7 @@ def build_telemetry_router() -> APIRouter:
                 status_code=503,
             )
 
-        search_service = build_memory_search_service(memory_store, runtime_store)
+        search_service = build_memory_search_service(memory_store)
         resolved_limit = parse_limit(limit, default=state.default_search_limit, max_value=50)
         normalized_session_id = normalize_optional_text(session_id)
         try:
@@ -469,29 +464,29 @@ def build_telemetry_router() -> APIRouter:
         agent_id: str,
         session_id: str,
         trace_id: str,
-        stitch: bool = False,
     ) -> dict[str, Any]:
-        store = get_runtime_store(request, agent_id)
+        """A trace's OpenTelemetry projection and the analysis built on it.
 
-        events = await store.list_events(
-            app_id=agent_id,
-            session_id=session_id,
-            trace_id=trace_id,
-        )
+        The projection is the same spans and log records the exporter sends;
+        RunSubAgents children are nested under the call that started them.
+        """
+        store = get_runtime_store(request, agent_id)
+        request_id = await store.get_request_id_for_trace(trace_id, app_id=agent_id)
+        if request_id is None:
+            raise APIError(code="TRACE_NOT_FOUND", message=f"no events for trace {trace_id}", status_code=404)
+        events, children = await load_request_tree(store, request_id)
         if not events:
             raise APIError(code="TRACE_NOT_FOUND", message=f"no events for trace {trace_id}", status_code=404)
 
-        tree = build_span_tree(events)
-        analysis = analyze_trace(tree)
-
-        if stitch and analysis.subagent_details:
-            analysis = await stitch_subagent_traces(store, analysis)
+        projection = project_request(events, children=children)
+        analysis = analyze_projection(projection)
 
         return success(
             {
                 "analysis": analysis.to_digest_dict(),
-                "span_tree": serialize_span(tree.root),
+                "projection": serialize_projection(projection),
                 "trace_id": trace_id,
+                "request_id": request_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
                 "status": analysis.status,

@@ -22,7 +22,7 @@ The runtime always enables exposed thought summaries on its planning providers,
 including request-scoped providers. No agent configuration or `Mushy` object is
 needed. Gemini currently supports capture; other providers leave their settings
 unchanged. `LLMResponse.thought_summary` is required; use `""` when absent.
-Only exposed textual summaries are recorded in `runtime.llm.think.completed`.
+Only exposed textual summaries are recorded in `chat.end`.
 Answers, tool results, signatures, and encrypted reasoning never substitute for
 missing summaries.
 

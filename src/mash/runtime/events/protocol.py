@@ -68,6 +68,22 @@ class RuntimeStore(Protocol):
         app_id: str | None = None,
     ) -> str | None: ...
 
+    async def list_request_ends(
+        self, *, after_event_id: int = 0, limit: int = 500
+    ) -> list[RuntimeEvent]:
+        """``invoke_agent.end`` events of every agent after ``after_event_id``."""
+        ...
+
+    async def get_export_cursor(self, name: str) -> int | None:
+        """The last position the exporter ``name`` handed off; None before its first run."""
+        ...
+
+    async def latest_event_id(self) -> int:
+        """The highest event id in the log; 0 when it is empty."""
+        ...
+
+    async def set_export_cursor(self, name: str, event_id: int) -> None: ...
+
     async def list_session_requests(
         self,
         session_id: str,

@@ -73,3 +73,32 @@ class AgentClientSubmitTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_stream_for_an_unknown_request_raises_its_error(self) -> None:
+        from mash.runtime.client import AgentClientError
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # A streamed body, as the agent server sends one: unread until read.
+            return httpx.Response(
+                404,
+                headers={"content-type": "application/json"},
+                stream=httpx.ByteStream(
+                    b'{"error": {"code": "REQUEST_NOT_FOUND", "message": "Request not found"}}'
+                ),
+            )
+
+        client_patch = patch(
+            "mash.runtime.client.httpx.AsyncClient",
+            functools.partial(httpx.AsyncClient, transport=httpx.MockTransport(handler)),
+        )
+        client_patch.start()
+        self.addCleanup(client_patch.stop)
+        client = AgentClient("http://agent", "agent-a", token="tok-1")
+
+        with self.assertRaises(AgentClientError) as raised:
+            async for _ in client.stream_response("req-missing"):
+                pass
+        self.assertIn("status=404", str(raised.exception))
+        self.assertIn("Request not found", str(raised.exception))

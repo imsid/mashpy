@@ -20,7 +20,6 @@ import logging
 import os
 import re
 from types import SimpleNamespace
-import time
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
@@ -132,7 +131,6 @@ class OSSCompatibleProvider(BaseLLMProvider):
         return LLMCapabilities(streaming=True, native_tool_calling=True)
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-        request_start = time.time()
         caps = self.capabilities()
 
         # Construction-time defaults merge under request-level options, so a
@@ -191,22 +189,15 @@ class OSSCompatibleProvider(BaseLLMProvider):
                 continue
             params[key] = value
 
-        await self._emit_request_start(
-            request,
-            payload={"messages": messages, "tools": params.get("tools", [])},
-        )
         try:
             if request.streaming and caps.streaming:
                 raw_response = await self._stream(request, params)
             else:
                 raw_response = await self._client.chat.completions.create(**params)
             response = self._parse(raw_response, caps, request)
-            await self._emit_request_complete(
-                request, started_at=request_start, response=response
-            )
             return response
         except Exception as exc:
-            await self._emit_request_error(request, started_at=request_start, error=exc)
+            self._log_request_error(exc)
             raise
 
     # -- request translation -------------------------------------------------
@@ -562,7 +553,7 @@ class OSSCompatibleProvider(BaseLLMProvider):
         """Stream chat-completion chunks and accumulate a full response.
 
         Pushes content deltas to the coalescing delta stream (emitting
-        ``llm.response.delta`` events) and reassembles fragmented tool-call
+        ``chat.delta`` events) and reassembles fragmented tool-call
         deltas by index, then returns a response-shaped object so :meth:`_parse`
         handles the streamed and non-streamed paths identically.
         """

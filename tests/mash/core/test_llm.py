@@ -69,9 +69,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(text="", tool_calls=[], provider_metadata={})
         )
@@ -96,9 +93,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(text="", tool_calls=[], provider_metadata={})
         )
@@ -123,9 +117,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(text="{}", tool_calls=[], provider_metadata={})
         )
@@ -171,9 +162,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
             stream=Mock(return_value=stream_obj),
         )
         provider._client = SimpleNamespace(responses=responses)
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._emit_response_delta = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(text="streamed", tool_calls=[], provider_metadata={})
@@ -201,7 +189,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         )
         # The accumulated final response is parsed into the same response shape.
         provider._parse_openai_response.assert_called_once_with(final_response)
-        provider._emit_request_complete.assert_awaited_once()
 
     def test_openai_parser_normalizes_text_and_tool_calls(self) -> None:
         provider = object.__new__(OpenAIProvider)
@@ -345,9 +332,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._model = "claude-sonnet-4-5"
         provider._app_id = "test"
         provider._client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock()))
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="{}", tool_calls=[], provider_metadata={})
         )
@@ -388,9 +372,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
             stream=Mock(return_value=stream_obj),
         )
         provider._client = SimpleNamespace(messages=messages)
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._emit_response_delta = AsyncMock()
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="streamed", tool_calls=[], provider_metadata={})
@@ -417,7 +398,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         )
         # The accumulated final message is parsed into the same response shape.
         provider._parse_anthropic_response.assert_called_once_with(final_message)
-        provider._emit_request_complete.assert_awaited_once()
 
     async def test_anthropic_streamed_send_preserves_stop_reason(self) -> None:
         # The streamed path accumulates a final message and parses it with the
@@ -442,9 +422,6 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
                         stream=Mock(return_value=stream_obj),
                     )
                 )
-                provider._emit_request_start = AsyncMock()
-                provider._emit_request_complete = AsyncMock()
-                provider._emit_request_error = AsyncMock()
                 provider._emit_response_delta = AsyncMock()
                 request = LLMRequest(
                     model="claude-sonnet-4-5",
@@ -491,9 +468,6 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider._trace_id = None
         provider._interaction_ids: dict = {}
         provider._sent_message_counts: dict = {}
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         return provider
 
     def _make_interaction(self, text=None, tool_calls=None, status="completed", usage=None):
@@ -1221,9 +1195,6 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(**client))
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._emit_response_delta = AsyncMock()
         return provider
 
@@ -1989,71 +1960,26 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._client.chat.completions.create.assert_not_called()
 
 
-class EmitRequestErrorTests(unittest.IsolatedAsyncioTestCase):
-    """_emit_request_error always logs and never replaces the caller's exception."""
+class LogRequestErrorTests(unittest.TestCase):
+    """A failed model call is logged; the call's span ends from the runtime's events."""
 
-    def _make_provider(self):
+    def test_logs_a_warning(self) -> None:
         from mash.core.llm.base import BaseLLMProvider
         from mash.core.llm.types import LLMCapabilities
 
         class _StubProvider(BaseLLMProvider):
             provider_name = "test"
+
             async def send(self, request):  # pragma: no cover
                 raise NotImplementedError
 
             def capabilities(self):  # pragma: no cover
                 return LLMCapabilities()
 
-        provider = _StubProvider.__new__(_StubProvider)
-        provider._event_logger = None
-        provider._app_id = "test"
-        provider._session_id = "s1"
-        provider._trace_id = None
-        return provider
-
-    async def test_emit_logs_warning_always(self) -> None:
-        provider = self._make_provider()
-        request = LLMRequest(
-            model="m", system="s", messages=[], tools=[], max_tokens=10
-        )
+        provider = _StubProvider(app_id="test", model="m")
         with self.assertLogs("mash.core.llm.base", level="WARNING") as log_ctx:
-            await provider._emit_request_error(request, started_at=0.0, error=ValueError("oops"))
+            provider._log_request_error(ValueError("oops"))
         self.assertTrue(any("oops" in line for line in log_ctx.output))
-
-    async def test_emit_does_not_raise_when_store_fails(self) -> None:
-        provider = self._make_provider()
-        provider._event_logger = SimpleNamespace(
-            emit=AsyncMock(side_effect=RuntimeError("db down"))
-        )
-        request = LLMRequest(
-            model="m", system="s", messages=[], tools=[], max_tokens=10
-        )
-        # Should complete without raising despite store failure
-        with self.assertLogs("mash.core.llm.base", level="WARNING"):
-            await provider._emit_request_error(request, started_at=0.0, error=ValueError("llm error"))
-
-    async def test_emit_store_failure_does_not_replace_original_exception(self) -> None:
-        """Verify the caller's raise is unaffected if _emit_request_error's store write fails."""
-        provider = self._make_provider()
-        provider._event_logger = SimpleNamespace(
-            emit=AsyncMock(side_effect=RuntimeError("db down"))
-        )
-        request = LLMRequest(
-            model="m", system="s", messages=[], tools=[], max_tokens=10
-        )
-        original = ValueError("429 rate limit")
-
-        async def simulate_send():
-            try:
-                raise original
-            except Exception as exc:
-                with self.assertLogs("mash.core.llm.base", level="WARNING"):
-                    await provider._emit_request_error(request, started_at=0.0, error=exc)
-                raise
-
-        with self.assertRaises(ValueError) as ctx:
-            await simulate_send()
-        self.assertIs(ctx.exception, original)
 
 
 class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
@@ -2224,9 +2150,6 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
                 messages=SimpleNamespace(create=beta_create, stream=Mock())
             ),
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="ok", tool_calls=[], provider_metadata={})
         )
@@ -2257,9 +2180,6 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
                 messages=SimpleNamespace(create=beta_create, stream=Mock())
             ),
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="ok", tool_calls=[], provider_metadata={})
         )
@@ -2292,9 +2212,6 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
             messages=SimpleNamespace(create=standard_create),
             beta=SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(), stream=Mock())),
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="ok", tool_calls=[], provider_metadata={})
         )
@@ -2652,9 +2569,6 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(
                 text="ok", tool_calls=[], provider_metadata={},
@@ -2685,9 +2599,6 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(
                 text="ok", tool_calls=[], provider_metadata={},
@@ -2712,9 +2623,6 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
-        provider._emit_request_start = AsyncMock()
-        provider._emit_request_complete = AsyncMock()
-        provider._emit_request_error = AsyncMock()
         provider._parse_openai_response = Mock(
             return_value=SimpleNamespace(
                 text="ok", tool_calls=[], provider_metadata={},

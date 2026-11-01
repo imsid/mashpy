@@ -7,6 +7,7 @@ from typing import Any
 from .events import LogEvent
 from .trace_context import (
     get_host_id,
+    get_loop_index,
     get_request_id,
     get_session_id,
     get_trace_id,
@@ -57,14 +58,18 @@ class EventLogger:
             if key not in {"event_type", "ts", "app_id", "session_id", "trace_id", "event_class"}
             and value is not None
         }
+        request_id = get_request_id()
         return RuntimeEvent(
             app_id=str(raw["app_id"]),
             agent_id=str(raw["app_id"]),
             event_type=str(raw["event_type"]),
-            request_id=get_request_id(),
+            request_id=request_id,
             host_id=get_host_id(),
             session_id=resolved_session_id,
             trace_id=resolved_trace_id,
+            loop_index=get_loop_index(),
+            # A dedupe key only means something inside a request.
+            dedupe_key=event.dedupe_key if request_id else None,
             payload=payload,
             created_at=float(raw["ts"]),
         )

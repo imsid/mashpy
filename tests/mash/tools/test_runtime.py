@@ -75,7 +75,6 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
             app_id="db",
             session_id="s1",
             user_id="u-1",
-            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         self.search_service = FakeSearchService()
         self.builder._search_service = self.search_service  # type: ignore[assignment]
@@ -127,7 +126,6 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
             store=self.store,  # type: ignore[arg-type]
             app_id="db",
             session_id="s1",
-            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         builder._search_service = self.search_service  # type: ignore[assignment]
         search_tool = next(
@@ -259,7 +257,6 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
             app_id="db",
             session_id="s1",
             user_id="u-1",
-            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         self.builder._search_service = FakeSearchService()  # type: ignore[assignment]
         self.turn_tool = next(
@@ -404,7 +401,6 @@ class RuntimeFullTurnWithoutUserTests(unittest.IsolatedAsyncioTestCase):
             store=self.store,  # type: ignore[arg-type]
             app_id="db",
             session_id="s1",
-            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         builder._search_service = FakeSearchService()  # type: ignore[assignment]
         self.turn_tool = next(
@@ -449,7 +445,6 @@ class RuntimeToolMetadataTests(unittest.TestCase):
             store=FakeStore(),  # type: ignore[arg-type]
             app_id="db",
             session_id="s1",
-            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         self.builder._search_service = FakeSearchService()  # type: ignore[assignment]
 
@@ -480,7 +475,6 @@ class RuntimeToolMetadataTests(unittest.TestCase):
             app_id="db",
             session_id="s1",
             user_id="u-1",
-            event_logger=FakeEventLogger(),  # type: ignore[arg-type]
         )
         user_search = next(
             tool for tool in user_builder.build_tools() if tool.name == "search_conversations"

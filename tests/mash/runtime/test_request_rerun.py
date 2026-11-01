@@ -54,7 +54,7 @@ class RerunRuntimeTests(unittest.IsolatedAsyncioTestCase):
         accepted = next(
             e
             for e in events
-            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
         )
         return dict((accepted.payload or {}).get("request_metadata") or {})
 

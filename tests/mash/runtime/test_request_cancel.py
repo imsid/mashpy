@@ -42,25 +42,25 @@ def _evt(event_type: str, interaction_id: str | None = None) -> RuntimeEvent:
 
 class FindPendingInteractionTests(unittest.TestCase):
     def test_none_when_no_interactions(self) -> None:
-        events = [_evt(RuntimeEventType.LLM_THINK_STARTED.value)]
+        events = [_evt(RuntimeEventType.CHAT_START.value)]
         self.assertIsNone(find_pending_interaction(events))
 
     def test_returns_unacked_create(self) -> None:
-        events = [_evt(RuntimeEventType.INTERACTION_CREATE.value, "itr_1")]
+        events = [_evt(RuntimeEventType.INTERACTION_START.value, "itr_1")]
         self.assertEqual(find_pending_interaction(events), "itr_1")
 
     def test_acked_interaction_is_not_pending(self) -> None:
         events = [
-            _evt(RuntimeEventType.INTERACTION_CREATE.value, "itr_1"),
-            _evt(RuntimeEventType.INTERACTION_ACK.value, "itr_1"),
+            _evt(RuntimeEventType.INTERACTION_START.value, "itr_1"),
+            _evt(RuntimeEventType.INTERACTION_END.value, "itr_1"),
         ]
         self.assertIsNone(find_pending_interaction(events))
 
     def test_last_open_create_wins(self) -> None:
         events = [
-            _evt(RuntimeEventType.INTERACTION_CREATE.value, "itr_1"),
-            _evt(RuntimeEventType.INTERACTION_ACK.value, "itr_1"),
-            _evt(RuntimeEventType.INTERACTION_CREATE.value, "itr_2"),
+            _evt(RuntimeEventType.INTERACTION_START.value, "itr_1"),
+            _evt(RuntimeEventType.INTERACTION_END.value, "itr_1"),
+            _evt(RuntimeEventType.INTERACTION_START.value, "itr_2"),
         ]
         self.assertEqual(find_pending_interaction(events), "itr_2")
 
@@ -70,8 +70,8 @@ class PublicEventTests(unittest.TestCase):
         event = RuntimeEvent(
             app_id="a",
             agent_id="a",
-            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
-            lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_CANCELLED.value),
+            event_type=RuntimeEventType.INVOKE_AGENT_END.value,
+            lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, "cancelled"),
             request_id="r",
             payload={"request_id": "r", "status": "cancelled"},
         )
@@ -84,7 +84,7 @@ class PublicEventTests(unittest.TestCase):
         event = RuntimeEvent(
             app_id="a",
             agent_id="a",
-            event_type=RuntimeEventType.INTERACTION_ACK.value,
+            event_type=RuntimeEventType.INTERACTION_END.value,
             request_id="r",
             session_id="s",
             payload={"interaction_id": "itr_1", **payload},
@@ -143,8 +143,8 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 agent_id=runtime.app_id,
                 session_id="s-1",
                 trace_id="trace-1",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -164,14 +164,14 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         acks = [
             e
             for e in events
-            if e.event_type == RuntimeEventType.INTERACTION_ACK.value
+            if e.event_type == RuntimeEventType.INTERACTION_END.value
         ]
         self.assertEqual(len(acks), 1)
         self.assertEqual(acks[0].payload.get("interaction_id"), interaction_id)
         self.assertTrue(acks[0].payload.get("cancelled"))
 
         self.assertEqual(
-            events[-1].event_type, RuntimeEventType.REQUEST_CANCELLED.value
+            events[-1].event_type, RuntimeEventType.INVOKE_AGENT_END.value
         )
         self.assertTrue(await runtime.runtime_store.is_request_terminal("req-1"))
 
@@ -191,8 +191,8 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 agent_id=runtime.app_id,
                 session_id="s-1",
                 trace_id="trace-3",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -220,7 +220,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cancelled = [
             e
             for e in events
-            if e.event_type == RuntimeEventType.REQUEST_CANCELLED.value
+            if e.event_type == RuntimeEventType.INVOKE_AGENT_END.value
         ]
         self.assertEqual(len(cancelled), 2)
         self.assertEqual(
@@ -239,8 +239,8 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 agent_id=runtime.app_id,
                 session_id="s-1",
                 trace_id="trace-4",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
             )
         )
@@ -251,7 +251,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cancelled = [
             e
             for e in events
-            if e.event_type == RuntimeEventType.REQUEST_CANCELLED.value
+            if e.event_type == RuntimeEventType.INVOKE_AGENT_END.value
         ]
         self.assertEqual(len(cancelled), 1)
 
@@ -264,8 +264,8 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 agent_id=runtime.app_id,
                 session_id="s-1",
                 trace_id="trace-2",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
             )
         )

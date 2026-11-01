@@ -9,24 +9,51 @@ from typing import Any, Dict, Optional
 
 
 class RuntimeEventType(str, Enum):
-    REQUEST_ACCEPTED = "runtime.request.accepted"
-    TRACE_STARTED = "runtime.trace.started"
-    CONTEXT_LOADED = "runtime.context.loaded"
-    LLM_THINK_STARTED = "runtime.llm.think.started"
-    LLM_THINK_COMPLETED = "runtime.llm.think.completed"
-    TOOL_CALL_STARTED = "runtime.tool.call.started"
-    TOOL_CALL_COMPLETED = "runtime.tool.call.completed"
-    SUBAGENT_CALL_COMPLETED = "runtime.subagent.call.completed"
-    STEP_COMPLETED = "runtime.step.completed"
-    TURN_PERSISTED = "runtime.turn.persisted"
-    INTERACTION_CREATE = "runtime.interaction.create"
-    INTERACTION_ACK = "runtime.interaction.ack"
-    REQUEST_COMPLETED = "runtime.request.completed"
-    REQUEST_FAILED = "runtime.request.failed"
-    REQUEST_CANCELLED = "runtime.request.cancelled"
-    REQUEST_RESUMED = "runtime.request.resumed"
-    REQUEST_MODE_CHANGED = "runtime.request.mode_changed"
-    STEP_FAILED = "runtime.step.failed"
+    """The events a request writes, named after the span each one bounds.
+
+    A GenAI operation's span uses the operation name (``invoke_agent``,
+    ``chat``, ``execute_tool``); a span with no GenAI equivalent uses its
+    ``mash.*`` name. Each span has one ``.start`` and one ``.end``; an end
+    carries ``status`` (see ``EndStatus``). Point-in-time events use their log
+    record name.
+    """
+
+    INVOKE_AGENT_START = "invoke_agent.start"
+    INVOKE_AGENT_END = "invoke_agent.end"
+    CONTEXT_LOAD_START = "mash.context_load.start"
+    CONTEXT_LOAD_END = "mash.context_load.end"
+    CHAT_START = "chat.start"
+    CHAT_DELTA = "chat.delta"
+    CHAT_END = "chat.end"
+    EXECUTE_TOOL_START = "execute_tool.start"
+    EXECUTE_TOOL_END = "execute_tool.end"
+    STEP_END = "mash.step.end"
+    INTERACTION_START = "mash.interaction.start"
+    INTERACTION_END = "mash.interaction.end"
+    REQUEST_RESUMED = "mash.request.resumed"
+    REQUEST_MODE_CHANGED = "mash.request.mode_changed"
+
+
+class EndStatus(str, Enum):
+    """How a span ended: the ``status`` field of every ``.end`` event."""
+
+    OK = "ok"
+    ERROR = "error"
+    CANCELLED = "cancelled"
+
+
+def end_status(event: "RuntimeEvent") -> Optional[str]:
+    """The ``status`` an ``.end`` event carries, or None for other events."""
+    if not event.event_type.endswith(".end"):
+        return None
+    status = (event.payload or {}).get("status")
+    return status if status in {s.value for s in EndStatus} else EndStatus.OK.value
+
+
+def event_attributes(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The OpenTelemetry attributes an event stores under ``attributes``."""
+    attributes = (payload or {}).get("attributes")
+    return dict(attributes) if isinstance(attributes, dict) else {}
 
 
 class RequestStatus(str, Enum):
@@ -107,7 +134,7 @@ class RuntimeEvent:
     loop_index: Optional[int] = None
     step_key: Optional[str] = None
     dedupe_key: Optional[str] = None
-    # Set only by the five events that move a request between lifecycle states;
+    # Set only by the events that move a request between lifecycle states;
     # None on everything else. The store projects it onto runtime_request.
     lifecycle: Optional[RequestStatus] = None
 
@@ -122,7 +149,7 @@ class RequestIdentity:
 
 def accepted_user_id(event: RuntimeEvent) -> Optional[str]:
     """The ``user_id`` an accepted event's request carries, or None."""
-    if event.event_type != RuntimeEventType.REQUEST_ACCEPTED.value:
+    if event.event_type != RuntimeEventType.INVOKE_AGENT_START.value:
         return None
     request_metadata = (event.payload or {}).get("request_metadata") or {}
     user_id = request_metadata.get("user_id")
@@ -142,7 +169,7 @@ class AcceptedRequest:
 
 def accepted_request(event: RuntimeEvent) -> Optional[AcceptedRequest]:
     """The start facts an accepted event carries, or None for other events."""
-    if event.event_type != RuntimeEventType.REQUEST_ACCEPTED.value:
+    if event.event_type != RuntimeEventType.INVOKE_AGENT_START.value:
         return None
     payload = event.payload or {}
     mode = payload.get("mode")

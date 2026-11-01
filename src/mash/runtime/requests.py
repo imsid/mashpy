@@ -9,7 +9,6 @@ from contextlib import nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
-from ..logging import AgentTraceEvent, CommandEvent, DebugEvent, LLMEvent
 from ..logging.trace_context import (
     bound_host_id,
     bound_workflow_ids,
@@ -18,8 +17,9 @@ from ..logging.trace_context import (
     get_workflow_run_id,
 )
 from .errors import RequestStaleError, RequestTerminalError, classify_error
+from ..otel import semconv
 from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
-from .events.types import STARTED_BY_USER
+from .events.types import STARTED_BY_USER, EndStatus, end_status
 from .structured_output import serialize_structured_output
 
 if TYPE_CHECKING:
@@ -131,7 +131,7 @@ async def get_accepted_request(
         (
             event
             for event in events
-            if event.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+            if event.event_type == RuntimeEventType.INVOKE_AGENT_START.value
         ),
         None,
     )
@@ -157,8 +157,14 @@ async def submit_request(
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
     mode: str = RequestMode.FG.value,
+    traceparent: str | None = None,
+    tracestate: str | None = None,
 ) -> dict[str, Any]:
-    """Submit one request. A known ``request_id`` returns the existing request."""
+    """Submit one request. A known ``request_id`` returns the existing request.
+
+    ``traceparent``/``tracestate`` are a caller's W3C trace context; the
+    request's spans export under that trace.
+    """
     if request_id is not None:
         validate_request_id(request_id)
     validate_user_id(user_id)
@@ -184,6 +190,8 @@ async def submit_request(
         request_metadata=request_metadata,
         request_id=request_id,
         mode=mode,
+        traceparent=traceparent,
+        tracestate=tracestate,
     )
 
 
@@ -195,6 +203,8 @@ async def _submit_request(
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
     mode: str = RequestMode.FG.value,
+    traceparent: str | None = None,
+    tracestate: str | None = None,
 ) -> dict[str, Any]:
     self.require_open()
     if not isinstance(session_id, str):
@@ -224,6 +234,8 @@ async def _submit_request(
             request_metadata=request_metadata,
             request_id=request_id,
             mode=mode,
+            traceparent=traceparent,
+            tracestate=tracestate,
         )
 
 
@@ -242,8 +254,8 @@ def request_attempt(events: list[RuntimeEvent]) -> int:
 
     Terminal dedupe keys are scoped by this. A fixed key would make the second
     attempt's terminal event dedupe onto the first attempt's row and append
-    nothing, leaving ``request.resumed`` as the last lifecycle event and the
-    request non-terminal forever.
+    nothing, leaving ``mash.request.resumed`` as the last lifecycle event and
+    the request non-terminal forever.
     """
     return sum(
         1
@@ -262,8 +274,8 @@ def find_pending_interaction(
 ) -> Optional[str]:
     """Return the interaction id of the request's last un-acked interaction.
 
-    An interaction is pending when its ``interaction.create`` has no matching
-    ``interaction.ack``. The cancel path uses this to clear a parked prompt and
+    An interaction is pending when its ``mash.interaction.start`` has no
+    matching ``mash.interaction.end``. The cancel path uses this to clear a parked prompt and
     unblock the workflow's ``recv`` with the cancel sentinel.
     """
     pending: dict[str, None] = {}
@@ -272,9 +284,9 @@ def find_pending_interaction(
         interaction_id = payload.get("interaction_id")
         if not interaction_id:
             continue
-        if event.event_type == RuntimeEventType.INTERACTION_CREATE.value:
+        if event.event_type == RuntimeEventType.INTERACTION_START.value:
             pending[str(interaction_id)] = None
-        elif event.event_type == RuntimeEventType.INTERACTION_ACK.value:
+        elif event.event_type == RuntimeEventType.INTERACTION_END.value:
             pending.pop(str(interaction_id), None)
     if not pending:
         return None
@@ -306,6 +318,8 @@ async def _submit_request_inner(
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
     mode: str = RequestMode.FG.value,
+    traceparent: str | None = None,
+    tracestate: str | None = None,
 ) -> dict[str, Any]:
     target_session_id = session_id
     request_id = request_id or str(uuid.uuid4())
@@ -316,25 +330,46 @@ async def _submit_request_inner(
     if isinstance(parent, dict) and parent.get("kind") == "subagent":
         started_by = str(parent.get("started_by") or parent.get("agent_id"))
         parent_request_id = parent.get("parent_request_id") or parent.get("request_id")
+    host_id = host_id_from_request_metadata(request_metadata)
+    attributes: dict[str, Any] = {
+        semconv.GEN_AI_OPERATION_NAME: semconv.OP_INVOKE_AGENT,
+        semconv.GEN_AI_AGENT_ID: self.app_id,
+        semconv.GEN_AI_AGENT_NAME: self.app_id,
+        semconv.GEN_AI_CONVERSATION_ID: target_session_id,
+        semconv.MASH_REQUEST_ID: request_id,
+        semconv.MASH_REQUEST_MODE: mode,
+    }
+    if host_id:
+        attributes[semconv.MASH_HOST_ID] = host_id
+    payload: dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "message": message,
+        "initial_session_id": target_session_id,
+        "request_metadata": dict(request_metadata or {}),
+        "mode": mode,
+        "started_by": started_by,
+        "parent_request_id": parent_request_id,
+        "attributes": attributes,
+    }
+    if traceparent:
+        payload["traceparent"] = traceparent
+        if tracestate:
+            payload["tracestate"] = tracestate
+    # The trace id is minted here, on the request's first event, so every
+    # event of the request (this one included) belongs to its trace. A replay
+    # of the accept dedupes onto this row and keeps the id.
     accepted_event = await append_runtime_event(
         self,
         RuntimeEvent(
             request_id=request_id,
             app_id=self.app_id,
             agent_id=self.app_id,
+            trace_id=str(uuid.uuid4()),
             session_id=target_session_id,
-            event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+            event_type=RuntimeEventType.INVOKE_AGENT_START.value,
             dedupe_key="request.accepted",
             lifecycle=RequestStatus.RUNNING,
-            payload={
-                "workflow_id": workflow_id,
-                "message": message,
-                "initial_session_id": target_session_id,
-                "request_metadata": dict(request_metadata or {}),
-                "mode": mode,
-                "started_by": started_by,
-                "parent_request_id": parent_request_id,
-            },
+            payload=payload,
         ),
     )
     try:
@@ -345,23 +380,28 @@ async def _submit_request_inner(
             request_metadata=dict(request_metadata or {}),
         )
     except Exception as exc:
+        error = classify_error(exc)
         await append_runtime_event(
             self,
             RuntimeEvent(
                 request_id=request_id,
                 app_id=self.app_id,
                 agent_id=self.app_id,
+                trace_id=accepted_event.trace_id,
                 session_id=target_session_id,
-                event_type=RuntimeEventType.REQUEST_FAILED.value,
+                event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                 # Submit-time failure: the request has never been resumed.
                 dedupe_key="request.failed.0",
                 lifecycle=RequestStatus.FAILED,
                 payload={
                     "request_id": request_id,
                     "agent_id": self.app_id,
-                    "status": "error",
+                    "status": EndStatus.ERROR.value,
                     "session_id": target_session_id,
-                    **classify_error(exc),
+                    **error,
+                    "attributes": {
+                        semconv.ERROR_TYPE: error.get("error_type") or "error",
+                    },
                 },
             ),
         )
@@ -386,7 +426,7 @@ async def set_request_mode(
         (
             e
             for e in events
-            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
         ),
         None,
     )
@@ -408,7 +448,7 @@ async def set_request_mode(
             trace_id=next((e.trace_id for e in events if e.trace_id), None),
             session_id=accepted.session_id,
             event_type=RuntimeEventType.REQUEST_MODE_CHANGED.value,
-            payload={"mode": mode},
+            payload={"mode": mode, "attributes": {semconv.MASH_REQUEST_MODE: mode}},
         ),
     )
     return {"request_id": request_id, "agent_id": self.app_id, "mode": mode}
@@ -492,7 +532,7 @@ async def resume_request(
         (
             e
             for e in events
-            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
         ),
         None,
     )
@@ -526,7 +566,7 @@ async def resume_request(
 
     if str(result.get("status")) == "resumed":
         # Non-terminal lifecycle event. Because terminality reads the last
-        # event, appending it after a request.failed / request.cancelled flips
+        # event, appending it after a failed or cancelled invoke_agent.end flips
         # the request back to non-terminal so closed streams re-open. A distinct
         # dedupe_key per resume (by prior resumed count) lets a request be
         # resumed more than once.
@@ -548,6 +588,7 @@ async def resume_request(
                     "session_id": session_id,
                     "status": "resumed",
                     "previous_status": result.get("previous_status"),
+                    "attributes": {semconv.MASH_REQUEST_ID: request_id},
                 },
             ),
         )
@@ -560,7 +601,7 @@ async def rerun_request(
 ) -> dict[str, Any]:
     """Start a previous request over as a brand-new request.
 
-    Rebuilds from the original ``request.accepted`` payload (message + full
+    Rebuilds from the original ``invoke_agent.start`` payload (message + full
     request metadata, including the host snapshot and structured-output
     request), stamps ``rerun_of`` provenance, and submits through the normal
     path — new request id, new trace, and a fresh ``context.load`` against the
@@ -573,7 +614,7 @@ async def rerun_request(
         (
             e
             for e in events
-            if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value
+            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
         ),
         None,
     )
@@ -613,8 +654,21 @@ async def append_runtime_event(
     return await self.runtime_store.append_event(event)
 
 
+_END_FRAMES = {
+    EndStatus.OK.value: "request.completed",
+    EndStatus.ERROR.value: "request.error",
+    EndStatus.CANCELLED.value: "request.cancelled",
+}
+
+
 def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
-    if event.event_type == RuntimeEventType.REQUEST_ACCEPTED.value:
+    """The SSE frame for one stored event.
+
+    Lifecycle events get ``request.*`` frames; a request's end is one
+    ``invoke_agent.end`` whose ``status`` picks the frame. Every other event
+    goes out as an ``agent.trace`` frame carrying its stored name and payload.
+    """
+    if event.event_type == RuntimeEventType.INVOKE_AGENT_START.value:
         data = {
             "request_id": event.request_id,
             "agent_id": event.agent_id,
@@ -627,7 +681,7 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
         if user_id is not None:
             data["user_id"] = user_id
         return {"event": "request.accepted", "data": data}
-    if event.event_type == RuntimeEventType.TRACE_STARTED.value:
+    if event.event_type == RuntimeEventType.CONTEXT_LOAD_START.value:
         return {
             "event": "request.started",
             "data": {
@@ -637,7 +691,7 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
                 "status": "started",
             },
         }
-    if event.event_type == RuntimeEventType.INTERACTION_CREATE.value:
+    if event.event_type == RuntimeEventType.INTERACTION_START.value:
         data = {
             "request_id": event.request_id,
             "agent_id": event.agent_id,
@@ -653,7 +707,7 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             if field_name in event.payload:
                 data[field_name] = event.payload[field_name]
         return {"event": "request.interaction.create", "data": data}
-    if event.event_type == RuntimeEventType.INTERACTION_ACK.value:
+    if event.event_type == RuntimeEventType.INTERACTION_END.value:
         data = {
             "request_id": event.request_id,
             "agent_id": event.agent_id,
@@ -667,12 +721,9 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             if event.payload.get(flag):
                 data[flag] = True
         return {"event": "request.interaction.ack", "data": data}
-    if event.event_type == RuntimeEventType.REQUEST_COMPLETED.value:
-        return {"event": "request.completed", "data": dict(event.payload or {})}
-    if event.event_type == RuntimeEventType.REQUEST_FAILED.value:
-        return {"event": "request.error", "data": dict(event.payload or {})}
-    if event.event_type == RuntimeEventType.REQUEST_CANCELLED.value:
-        return {"event": "request.cancelled", "data": dict(event.payload or {})}
+    if event.event_type == RuntimeEventType.INVOKE_AGENT_END.value:
+        frame = _END_FRAMES[end_status(event) or EndStatus.OK.value]
+        return {"event": frame, "data": dict(event.payload or {})}
     if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
         return {"event": "request.resumed", "data": dict(event.payload or {})}
     return {
@@ -687,49 +738,3 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             "payload": dict(event.payload or {}),
         },
     }
-
-
-def to_trace_payload(event: Any) -> Optional[dict[str, Any]]:
-    if isinstance(event, AgentTraceEvent):
-        return {
-            "event_type": event.event_type,
-            "trace_id": event.trace_id,
-            "step_id": event.step_id,
-            "duration_ms": event.duration_ms,
-            "action_type": event.action_type,
-            "tool_calls": event.tool_calls,
-            "token_usage": event.token_usage,
-            "payload": dict(event.payload or {}),
-        }
-
-    if isinstance(event, LLMEvent):
-        return {
-            "event_type": event.event_type,
-            "trace_id": event.trace_id,
-            "provider": event.provider,
-            "model": event.model,
-            "duration_ms": event.duration_ms,
-            "input_tokens": event.input_tokens,
-            "output_tokens": event.output_tokens,
-            "total_tokens": event.total_tokens,
-            "finish_reason": event.finish_reason,
-            "error": event.error,
-            "tools": event.tools,
-            "betas": event.betas,
-        }
-
-    if isinstance(event, CommandEvent):
-        return {
-            "event_type": event.event_type,
-            "trace_id": event.trace_id,
-            "duration_ms": event.duration_ms,
-            "payload": dict(event.payload or {}),
-        }
-
-    if isinstance(event, DebugEvent):
-        return {
-            "event_type": event.event_type,
-            "payload": dict(event.payload or {}),
-        }
-
-    return None

@@ -5,22 +5,21 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, List, Optional
 
 from ...logging import EventLogger, LLMEvent
+from ...logging.trace_context import get_loop_index
 from .types import (
     LLMCapabilities,
     LLMRequest,
     LLMResponse,
-    LLMTokenUsage,
-    LLMToolDefinition,
 )
 
 log = logging.getLogger(__name__)
 
 
 # Coalescing thresholds for streamed response deltas. Deltas are flushed into a
-# single ``llm.response.delta`` event when the buffer reaches this many
+# single ``chat.delta`` event when the buffer reaches this many
 # characters, or this many seconds elapse since the last flush (whichever comes
 # first). This bounds event volume (~tens per turn instead of one per token
 # chunk) while keeping the visible stream responsive.
@@ -29,7 +28,7 @@ DEFAULT_DELTA_MAX_INTERVAL = 0.5
 
 
 class _DeltaStream:
-    """Coalesces streamed text deltas into bounded ``llm.response.delta`` events.
+    """Coalesces streamed text deltas into bounded ``chat.delta`` events.
 
     Providers push raw text chunks via :meth:`push`; the stream flushes a
     coalesced delta event when the buffer crosses the size or time threshold,
@@ -143,67 +142,9 @@ class BaseLLMProvider(LLMProvider):
     def get_event_logger_session_id(self) -> Optional[str]:
         return self._session_id
 
-    def _tool_names(self, tools: List[LLMToolDefinition]) -> List[str]:
-        return [tool.name for tool in tools if tool.name]
-
     def _request_betas(self, request: LLMRequest) -> Optional[List[str]]:
         betas = request.provider_options.get("betas")
         return betas if isinstance(betas, list) else None
-
-    async def _emit_request_start(
-        self,
-        request: LLMRequest,
-        *,
-        payload: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if self._event_logger is None:
-            return
-
-        await self._event_logger.emit(
-            LLMEvent(
-                event_type="llm.request.start",
-                app_id=self._app_id,
-                session_id=self._session_id,
-                provider=self.provider_name,
-                model=request.model,
-                trace_id=self._trace_id,
-                tools=self._tool_names(request.tools),
-                payload=payload or {},
-                betas=self._request_betas(request),
-            )
-        )
-
-    async def _emit_request_complete(
-        self,
-        request: LLMRequest,
-        *,
-        started_at: float,
-        response: LLMResponse,
-    ) -> None:
-        if self._event_logger is None:
-            return
-
-        usage = response.usage or LLMTokenUsage()
-        await self._event_logger.emit(
-            LLMEvent(
-                event_type="llm.request.complete",
-                app_id=self._app_id,
-                session_id=self._session_id,
-                provider=self.provider_name,
-                model=request.model,
-                duration_ms=int((time.time() - started_at) * 1000),
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                total_tokens=usage.total_tokens,
-                cache_creation_input_tokens=usage.cache_write_tokens,
-                cache_read_input_tokens=usage.cache_read_tokens,
-                finish_reason=response.stop_reason,
-                metadata=response.provider_metadata or None,
-                trace_id=self._trace_id,
-                tools=self._tool_names(request.tools),
-                betas=self._request_betas(request),
-            )
-        )
 
     def _delta_stream(self, request: LLMRequest) -> _DeltaStream:
         """Create a coalescing delta stream for a streamed request."""
@@ -218,56 +159,36 @@ class BaseLLMProvider(LLMProvider):
         text: str,
         index: int,
     ) -> None:
-        """Emit one incremental ``llm.response.delta`` event.
+        """Emit one coalesced ``chat.delta`` chunk of a streamed model call.
 
-        Correlates with ``llm.request.start`` / ``llm.request.complete`` via the
-        provider's bound trace/session/app ids. The coalesced text chunk lives
-        in ``payload`` so consumers can render it live.
+        The chunk lives in ``payload`` as ``{"text", "index"}``. Inside a
+        request the row is keyed by the bound loop step and the chunk index,
+        so a replayed model call keeps the first attempt's chunks and writes
+        none of its own.
         """
         if self._event_logger is None:
             return
 
+        loop_index = get_loop_index()
         await self._event_logger.emit(
             LLMEvent(
-                event_type="llm.response.delta",
+                event_type="chat.delta",
                 app_id=self._app_id,
                 session_id=self._session_id,
                 provider=self.provider_name,
                 model=request.model,
                 trace_id=self._trace_id,
                 payload={"text": text, "index": index},
+                dedupe_key=(
+                    f"chat.delta.{loop_index}.{index}" if loop_index is not None else None
+                ),
             )
         )
 
-    async def _emit_request_error(
-        self,
-        request: LLMRequest,
-        *,
-        started_at: float,
-        error: Exception,
-    ) -> None:
+    def _log_request_error(self, error: Exception) -> None:
         log.warning(
             "llm request error [%s/%s]: %s",
             self.provider_name,
             self._app_id,
             error,
         )
-        if self._event_logger is None:
-            return
-        try:
-            await self._event_logger.emit(
-                LLMEvent(
-                    event_type="llm.request.error",
-                    app_id=self._app_id,
-                    session_id=self._session_id,
-                    provider=self.provider_name,
-                    model=request.model,
-                    error=str(error),
-                    duration_ms=int((time.time() - started_at) * 1000),
-                    trace_id=self._trace_id,
-                    tools=self._tool_names(request.tools),
-                    betas=self._request_betas(request),
-                )
-            )
-        except Exception as store_exc:  # pylint: disable=broad-except
-            log.warning("failed to store llm.request.error event: %s", store_exc)

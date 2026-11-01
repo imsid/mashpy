@@ -87,11 +87,11 @@ class ChainRendererTokenDisplayTests(unittest.TestCase):
         event = RuntimeEvent(
             app_id="test",
             agent_id="research",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             payload={
                 "action_type": "tool_call",
                 "tool_calls_detail": [],
-                "token_usage": {"input": 200, "output": 300, "reasoning": 260},
+                "attributes": {"gen_ai.usage.input_tokens": 200, "gen_ai.usage.output_tokens": 300, "mash.usage.reasoning_tokens": 260},
                 "duration_ms": 900,
             },
         )
@@ -109,11 +109,11 @@ class ChainRendererTokenDisplayTests(unittest.TestCase):
         event = RuntimeEvent(
             app_id="test",
             agent_id="assistant",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             payload={
                 "action_type": "response",
                 "tool_calls_detail": [],
-                "token_usage": {"input": 50, "output": 20},
+                "attributes": {"gen_ai.usage.input_tokens": 50, "gen_ai.usage.output_tokens": 20},
                 "duration_ms": 400,
             },
         )

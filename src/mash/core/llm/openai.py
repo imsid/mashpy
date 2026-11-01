@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
@@ -70,7 +69,7 @@ class OpenAIProvider(BaseLLMProvider):
 
         Uses the SDK's streaming helper so bytes start flowing immediately
         (avoiding request timeouts on long generations) and emits incremental
-        ``llm.response.delta`` events as text arrives, then returns the fully
+        ``chat.delta`` events as text arrives, then returns the fully
         accumulated response so the caller contract is unchanged: the result is
         shaped exactly like a ``responses.create()`` response, including final
         ``usage`` token counts.
@@ -84,7 +83,6 @@ class OpenAIProvider(BaseLLMProvider):
             return await stream.get_final_response()
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-        request_start = time.time()
         params: Dict[str, Any] = {
             "model": self.model,
             "instructions": self._openai_instructions(request.system),
@@ -138,24 +136,15 @@ class OpenAIProvider(BaseLLMProvider):
                     max_out,
                 )
 
-        await self._emit_request_start(
-            request,
-            payload={"input": params["input"], "tools": params.get("tools", [])},
-        )
         try:
             if request.streaming:
                 raw_response = await self._stream_response(request, params)
             else:
                 raw_response = await self._client.responses.create(**params)
             response = self._parse_openai_response(raw_response)
-            await self._emit_request_complete(
-                request,
-                started_at=request_start,
-                response=response,
-            )
             return response
         except Exception as exc:
-            await self._emit_request_error(request, started_at=request_start, error=exc)
+            self._log_request_error(exc)
             raise
 
     def _openai_prompt_cache_key(self, request: LLMRequest) -> str:

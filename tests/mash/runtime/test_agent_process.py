@@ -261,7 +261,7 @@ class H2ARelayAuthTests(unittest.TestCase):
                     app_id=agent_id,
                     agent_id=agent_id,
                     session_id="s-1",
-                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     dedupe_key="request.accepted",
                     lifecycle=RequestStatus.RUNNING,
                     payload={"request_metadata": request_metadata},
@@ -420,7 +420,7 @@ class H2ARelayAuthTests(unittest.TestCase):
                     app_id="research",
                     agent_id="research",
                     session_id="s-1",
-                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     dedupe_key="request.accepted",
                     payload={"request_metadata": {"parent": {"agent_id": "primary-app"}}},
                 )
@@ -511,13 +511,19 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events[-1]["event"], "request.completed")
         self.assertEqual(events[-1]["data"]["response"]["text"], "delegated-ok")
-        subagent_completed = [
-            event
+        # The parent's RunSubAgents call names its child, whose events stay in
+        # the child's own log.
+        call_starts = [
+            event["data"]["payload"]
             for event in events
             if event["event"] == "agent.trace"
-            and event["data"]["event_type"] == "subagent.request.completed"
+            and event["data"]["event_type"] == "execute_tool.start"
+            and event["data"]["payload"]["attributes"]["gen_ai.tool.name"] == "RunSubAgents"
         ]
-        self.assertEqual(len(subagent_completed), 1)
+        self.assertEqual(len(call_starts), 1)
+        self.assertEqual(
+            [child["agent_id"] for child in call_starts[0]["subagents"]], ["research"]
+        )
         self.assertEqual(turns[-1]["user_message"], "analyze")
         # The host copied the primary request's user onto the subagent call,
         # so both turns are stored for that user.

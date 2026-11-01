@@ -65,7 +65,7 @@ To make the spec concrete, here is what a Morning Brief agent looks like, one th
 
 ### Events
 
-Events let you observe the agent loop while it is running. Each event has a defined schema and is recorded in the database. Common events include tool calls, model invocations, and terminal states. Events are sequential and ordered, which underpins the durable execution model. Mash uses a taxonomy of 11 events, covered in [Everything is an event](request-lifecycle.md#everything-is-an-event).
+Events let you observe the agent loop while it is running. Each event has a defined schema and is recorded in the database. Common events include tool calls, model invocations, and terminal states. Events are sequential and ordered, which underpins the durable execution model. Mash names its 14 events after the OpenTelemetry spans they start and end, so a request's events read as a trace; see [Everything is an event](request-lifecycle.md#everything-is-an-event).
 
 ### Host
 

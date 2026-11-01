@@ -15,34 +15,31 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from ..runtime.events.types import RuntimeEvent, RuntimeEventType
-
-# Only these event types carry operational signal; the loader filters to them so
-# the huge per-turn payloads (subagent traces, full responses) never load.
-_LLM_REQUEST_COMPLETE = "llm.request.complete"
-METRIC_EVENT_TYPES: tuple[str, ...] = (
-    RuntimeEventType.REQUEST_ACCEPTED.value,
-    RuntimeEventType.REQUEST_COMPLETED.value,
-    RuntimeEventType.REQUEST_FAILED.value,
-    RuntimeEventType.REQUEST_CANCELLED.value,
-    RuntimeEventType.STEP_COMPLETED.value,
-    RuntimeEventType.TOOL_CALL_STARTED.value,
-    _LLM_REQUEST_COMPLETE,
+from ..otel import semconv
+from ..runtime.events.types import (
+    EndStatus,
+    RuntimeEvent,
+    RuntimeEventType,
+    end_status,
+    event_attributes,
 )
 
-# Terminal events whose stop reason is the outcome itself. A completed request
-# has no entry: its stop reason comes from the response, not from the fact that
-# it completed.
-_TERMINAL_STOP_REASONS = {
-    RuntimeEventType.REQUEST_FAILED.value: "error",
-    RuntimeEventType.REQUEST_CANCELLED.value: "cancelled",
-}
+# Only these event types carry operational signal; the loader filters to them so
+# the full responses on other events never load.
+METRIC_EVENT_TYPES: tuple[str, ...] = (
+    RuntimeEventType.INVOKE_AGENT_START.value,
+    RuntimeEventType.INVOKE_AGENT_END.value,
+    RuntimeEventType.STEP_END.value,
+    RuntimeEventType.EXECUTE_TOOL_START.value,
+    RuntimeEventType.CHAT_END.value,
+)
 
-# Derived, so the set of terminal events and their stop reasons cannot drift
-# apart: cancelled was previously missing from both this set and the loader
-# filter above, and a cancelled row reported its last LLM finish reason as
-# though the run had ended on its own.
-_TERMINAL = {RuntimeEventType.REQUEST_COMPLETED.value, *_TERMINAL_STOP_REASONS}
+# Request outcomes whose stop reason is the outcome itself. A request that
+# ended ok has no entry: its stop reason comes from the response.
+_TERMINAL_STOP_REASONS = {
+    EndStatus.ERROR.value: "error",
+    EndStatus.CANCELLED.value: "cancelled",
+}
 
 
 @dataclass
@@ -52,11 +49,12 @@ class TokenUsage:
     cache_read: int = 0
     cache_creation: int = 0
 
-    def add_llm_complete(self, payload: dict[str, Any]) -> None:
-        self.input += _as_int(payload.get("input_tokens"))
-        self.output += _as_int(payload.get("output_tokens"))
-        self.cache_read += _as_int(payload.get("cache_read_input_tokens"))
-        self.cache_creation += _as_int(payload.get("cache_creation_input_tokens"))
+    def add_chat(self, attributes: dict[str, Any]) -> None:
+        usage = semconv.token_usage(attributes)
+        self.input += usage["input"]
+        self.output += usage["output"]
+        self.cache_read += usage["cache_read"]
+        self.cache_creation += usage["cache_write"]
 
 
 @dataclass
@@ -97,7 +95,7 @@ class _AgentAccum:
         self.tokens = TokenUsage()
         self.tool_breakdown: dict[str, int] = {}
         self.last_finish_reason: str | None = None
-        self.terminal_type: str | None = None
+        self.terminal_status: str | None = None
         self.terminal_payload: dict[str, Any] = {}
         self.terminal_key: tuple[float, int] | None = None
 
@@ -114,11 +112,11 @@ class _AgentAccum:
         if self.terminal_key is not None and key < self.terminal_key:
             return
         self.terminal_key = key
-        self.terminal_type = event.event_type
+        self.terminal_status = end_status(event)
         self.terminal_payload = event.payload or {}
 
     def stop_reason(self) -> str | None:
-        outcome = _TERMINAL_STOP_REASONS.get(self.terminal_type or "")
+        outcome = _TERMINAL_STOP_REASONS.get(self.terminal_status or "")
         if outcome is not None:
             # A failure that names its own stop reason (an exhausted step
             # budget, say) keeps it rather than flattening to "error".
@@ -151,19 +149,20 @@ def compute_row_metrics(
         timestamps.append(float(event.created_at))
         payload = event.payload or {}
         etype = event.event_type
-        if etype == RuntimeEventType.STEP_COMPLETED.value:
+        attributes = event_attributes(payload)
+        if etype == RuntimeEventType.STEP_END.value:
             acc.steps += 1
-        elif etype == RuntimeEventType.TOOL_CALL_STARTED.value:
+        elif etype == RuntimeEventType.EXECUTE_TOOL_START.value:
             acc.tool_calls += 1
-            name = str(payload.get("tool_name") or "unknown")
+            name = str(attributes.get(semconv.GEN_AI_TOOL_NAME) or "unknown")
             acc.tool_breakdown[name] = acc.tool_breakdown.get(name, 0) + 1
-        elif etype == _LLM_REQUEST_COMPLETE:
+        elif etype == RuntimeEventType.CHAT_END.value:
             acc.llm_calls += 1
-            acc.tokens.add_llm_complete(payload)
-            finish = payload.get("finish_reason")
-            if finish:
-                acc.last_finish_reason = str(finish)
-        elif etype in _TERMINAL:
+            acc.tokens.add_chat(attributes)
+            finish = attributes.get(semconv.GEN_AI_RESPONSE_FINISH_REASONS)
+            if isinstance(finish, list) and finish:
+                acc.last_finish_reason = str(finish[-1])
+        elif etype == RuntimeEventType.INVOKE_AGENT_END.value:
             acc.observe_terminal(event)
 
     primary = per_agent.get(primary_agent_id, _AgentAccum())

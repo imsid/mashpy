@@ -213,6 +213,8 @@ class AgentRuntime:
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
         mode: str = "fg",
+        traceparent: str | None = None,
+        tracestate: str | None = None,
     ) -> dict[str, Any]:
         return await request_helpers.submit_request(
             self,
@@ -226,6 +228,8 @@ class AgentRuntime:
             request_id=request_id,
             parent=parent,
             mode=mode,
+            traceparent=traceparent,
+            tracestate=tracestate,
         )
 
     async def set_request_mode(self, request_id: str, mode: str) -> dict[str, Any]:

@@ -87,7 +87,7 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
     async def _accepted_events(self, request_id: str) -> list:
         events = await self.runtime_store.list_request_events(request_id)
-        return [e for e in events if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value]
+        return [e for e in events if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value]
 
     async def test_caller_request_id_is_used(self) -> None:
         runtime = await self._runtime("writer")

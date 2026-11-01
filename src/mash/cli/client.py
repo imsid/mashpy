@@ -289,6 +289,13 @@ class MashHostClient:
             return []
         return [item for item in requests_ if isinstance(item, dict)]
 
+    def get_request_status(self, agent_id: str, request_id: str) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/status",
+        )
+        return response.json()["data"]
+
     def stream_request(
         self, agent_id: str, request_id: str
     ) -> Iterator[dict[str, Any]]:
@@ -370,7 +377,7 @@ class MashHostClient:
         response = self._request(
             "GET",
             "/api/v1/telemetry/trace/analysis",
-            query={"agent_id": agent_id, "session_id": session_id, "trace_id": trace_id, "stitch": "true"},
+            query={"agent_id": agent_id, "session_id": session_id, "trace_id": trace_id},
         )
         return response.json()["data"]
 

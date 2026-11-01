@@ -158,7 +158,7 @@ def build_h2a_router() -> APIRouter:
         store = state.pool.get_runtime_store()
         events = await store.list_request_events(request_id) if store is not None else []
         accepted = next(
-            (e for e in events if e.event_type == RuntimeEventType.REQUEST_ACCEPTED.value),
+            (e for e in events if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value),
             None,
         )
         if accepted is None or accepted.agent_id != agent_id:

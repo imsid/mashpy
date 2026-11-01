@@ -9,11 +9,9 @@ import uuid
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
 from ..logging import (
-    AgentTraceEvent,
     get_request_id,
     get_request_metadata,
     get_subagent_id_prefix,
-    get_trace_id,
 )
 from ..runtime.errors import classify_error
 from .base import ToolResult
@@ -58,13 +56,6 @@ class SupportsChildClient(Protocol):
 
     async def cancel_request(self, request_id: str) -> Dict[str, Any]:
         """Cancel the child."""
-
-
-class SupportsEventEmit(Protocol):
-    """Event logger protocol used for forwarding child stream events."""
-
-    async def emit(self, event: AgentTraceEvent) -> None:
-        """Emit one trace event."""
 
 
 def _child_error(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,7 +119,6 @@ class RunSubAgentsTool:
         client_resolver: Callable[[str], SupportsChildClient],
         session_id: str,
         host: Optional[Dict[str, Any]] = None,
-        event_logger: Optional[SupportsEventEmit] = None,
     ) -> None:
         if client_resolver is None:
             raise ValueError("client_resolver is required")
@@ -142,41 +132,6 @@ class RunSubAgentsTool:
         self._client_resolver = client_resolver
         self._session_id = str(session_id).strip()
         self._host = dict(host) if host is not None else None
-        self._event_logger = event_logger
-
-    async def _emit_stream_event(
-        self,
-        *,
-        agent_id: str,
-        request_id: str,
-        event_name: str,
-        data: Dict[str, Any],
-    ) -> None:
-        if self._event_logger is None:
-            return
-        trace_id = get_trace_id()
-        if not trace_id:
-            return
-        try:
-            await self._event_logger.emit(
-                AgentTraceEvent(
-                    event_type=f"subagent.{event_name}",
-                    app_id=self._caller_agent_id,
-                    session_id=self._session_id,
-                    trace_id=trace_id,
-                    payload={
-                        "agent_id": agent_id,
-                        "primary_session_id": self._session_id,
-                        "subagent_session_id": self._session_id,
-                        "request_id": request_id,
-                        "event": event_name,
-                        "data": dict(data),
-                    },
-                )
-            )
-        except Exception:
-            # Child telemetry should never change tool behavior.
-            return
 
     @staticmethod
     def _parse(args: Dict[str, Any]) -> tuple[list[Dict[str, Any]], int] | str:
@@ -320,19 +275,11 @@ class RunSubAgentsTool:
             )
 
     async def _follow(self, entry: Dict[str, Any], client: Any, request_id: str) -> None:
-        agent_id = entry["agent_id"]
         async for event in client.stream_response(request_id):
             event_name = str(event.get("event") or "")
             data = event.get("data")
             if not isinstance(data, dict):
                 data = {}
-            if event_name:
-                await self._emit_stream_event(
-                    agent_id=agent_id,
-                    request_id=request_id,
-                    event_name=event_name,
-                    data=data,
-                )
             if event_name == "request.completed":
                 response = data.get("response")
                 response = response if isinstance(response, dict) else {}

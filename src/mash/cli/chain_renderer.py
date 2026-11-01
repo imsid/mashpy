@@ -11,19 +11,26 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+from mash.otel import semconv
 from mash.runtime.events import RuntimeEvent, RuntimeEventType, RuntimeTrace
+from mash.runtime.events.types import event_attributes
 from mash.runtime.events.trace import (
     _as_int,
     _clean_text,
-    _dict_value,
     _tool_call_names,
     _tool_calls_detail,
     run_code_preview,
 )
 
 
+def _token_usage(payload: Dict[str, Any]) -> Dict[str, int]:
+    """A ``chat.end`` payload's token counts, from its usage attributes."""
+    attributes = event_attributes(payload)
+    return semconv.token_usage(attributes) if attributes else {}
+
+
 def _thinking_text(payload: Dict[str, Any]) -> Optional[str]:
-    """Join the thinking blocks of one think-completed payload."""
+    """Join the thinking blocks of one ``chat.end`` payload."""
     parts = [
         str(block.get("thinking") or "").strip()
         for block in list(payload.get("assistant_blocks") or [])
@@ -52,7 +59,7 @@ class ChainOfThoughtRenderer:
         self._subagent_steps: Dict[str, List[Dict[str, Any]]] = {}
         self._subagent_step_counters: Dict[str, int] = {}
         self._subagent_headers_shown: set[str] = set()
-        # Live token streaming state for llm.response.delta events.
+        # Live token streaming state for chat.delta events.
         self._response_streaming = False
         self._response_streamed = False
         self._response_buffer = ""
@@ -104,28 +111,17 @@ class ChainOfThoughtRenderer:
         """Render one canonical runtime event."""
         if not self._enabled:
             return
-        if event.event_type in {
-            RuntimeEventType.LLM_THINK_STARTED.value,
-            RuntimeEventType.TOOL_CALL_STARTED.value,
-        }:
-            return
-        if event.event_type == "llm.response.delta":
+        if event.event_type == RuntimeEventType.CHAT_DELTA.value:
             self._on_runtime_response_delta(event, trace_label=trace_label)
             return
-        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+        if event.event_type == RuntimeEventType.CHAT_END.value:
             self._on_runtime_think_complete(event, trace_label=trace_label)
             return
-        if event.event_type in {
-            RuntimeEventType.TOOL_CALL_COMPLETED.value,
-            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
-        }:
+        if event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
             self._on_runtime_act_complete(event)
             return
-        if event.event_type == RuntimeEventType.STEP_COMPLETED.value:
+        if event.event_type == RuntimeEventType.STEP_END.value:
             self._on_runtime_step_complete(event)
-            return
-        if ".error" in event.event_type:
-            self._on_runtime_error_event(event)
 
     def render_runtime_trace(
         self,
@@ -154,24 +150,13 @@ class ChainOfThoughtRenderer:
             )
         self.finish_trace()
 
-    def _on_runtime_error_event(self, event: RuntimeEvent) -> None:
-        """Render a warning line for any event whose type contains '.error'."""
-        payload = event.payload or {}
-        error = payload.get("error") or payload.get("message") or ""
-        server = payload.get("server_name") or payload.get("tool_name") or ""
-        label = f"[{server}] " if server else ""
-        suffix = f": {error}" if error else ""
-        self._console.print(
-            f"  [bold yellow]⚠[/bold yellow]  {label}{event.event_type}{suffix}"
-        )
-
     def _on_runtime_response_delta(
         self,
         event: RuntimeEvent,
         *,
         trace_label: str | None = None,
     ) -> None:
-        """Render a coalesced llm.response.delta chunk live as it streams."""
+        """Render a coalesced chat.delta chunk live as it streams."""
         if event.trace_id != self._current_trace_id:
             self.start_trace(event.trace_id, label=trace_label)
         payload = event.payload or {}
@@ -277,7 +262,7 @@ class ChainOfThoughtRenderer:
             "tool_calls_detail": tool_calls_detail,
             "assistant_text": _clean_text(payload.get("assistant_text")),
             "thinking": _thinking_text(payload),
-            "token_usage": _dict_value(payload.get("token_usage")),
+            "token_usage": _token_usage(payload),
             "think_duration": _as_int(payload.get("duration_ms")) or 0,
         }
         if isinstance(event.loop_index, int) and event.loop_index >= 0:
@@ -290,7 +275,7 @@ class ChainOfThoughtRenderer:
             return
         payload = dict(event.payload or {})
         tool_calls = _tool_call_names(payload.get("tool_calls"))
-        tool_name = _clean_text(payload.get("tool_name"))
+        tool_name = _clean_text(event_attributes(payload).get(semconv.GEN_AI_TOOL_NAME))
         if not tool_calls and tool_name:
             tool_calls = [tool_name]
         if tool_calls:
@@ -308,12 +293,6 @@ class ChainOfThoughtRenderer:
             self._current_step = max(self._current_step, event.loop_index + 1)
         else:
             self._current_step += 1
-
-    def on_llm_request_start(self) -> None:
-        """Handle LLM request start."""
-
-    def on_llm_request_complete(self, event: Any) -> None:
-        """Handle LLM request complete."""
 
     def finish_trace(self) -> None:
         """Finish the current trace."""
@@ -432,18 +411,10 @@ class ChainOfThoughtRenderer:
         """Render a subagent trace event inline under the primary trace."""
         if not self._enabled:
             return
-        if event.event_type in {
-            RuntimeEventType.LLM_THINK_STARTED.value,
-            RuntimeEventType.TOOL_CALL_STARTED.value,
-        }:
-            return
-        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+        if event.event_type == RuntimeEventType.CHAT_END.value:
             self._render_subagent_think(event, agent_id)
             return
-        if event.event_type in {
-            RuntimeEventType.TOOL_CALL_COMPLETED.value,
-            RuntimeEventType.SUBAGENT_CALL_COMPLETED.value,
-        }:
+        if event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
             self._render_subagent_act(event, agent_id)
             return
 
@@ -459,7 +430,7 @@ class ChainOfThoughtRenderer:
             "tool_calls": _tool_call_names(tool_calls_detail),
             "tool_calls_detail": tool_calls_detail,
             "thinking": _thinking_text(payload),
-            "token_usage": _dict_value(payload.get("token_usage")),
+            "token_usage": _token_usage(payload),
             "think_duration": _as_int(payload.get("duration_ms")) or 0,
         }
         self._subagent_steps.setdefault(agent_id, []).append(step_info)
@@ -520,7 +491,7 @@ class ChainOfThoughtRenderer:
     def _render_subagent_act(self, event: RuntimeEvent, agent_id: str) -> None:
         payload = dict(event.payload or {})
         act_duration = _as_int(payload.get("duration_ms")) or 0
-        tool_name = _clean_text(payload.get("tool_name"))
+        tool_name = _clean_text(event_attributes(payload).get(semconv.GEN_AI_TOOL_NAME))
         steps = self._subagent_steps.get(agent_id)
         if steps:
             steps[-1]["act_duration"] = act_duration
@@ -533,6 +504,12 @@ class ChainOfThoughtRenderer:
             self._console.print(
                 f"    [magenta]│[/magenta]   [dim]✓ Executed in {act_duration}ms[/dim]"
             )
+
+    def begin_subagent(self, agent_id: str) -> None:
+        """Start a fresh block for one child; two children may share an agent."""
+        self._subagent_headers_shown.discard(agent_id)
+        self._subagent_step_counters.pop(agent_id, None)
+        self._subagent_steps.pop(agent_id, None)
 
     def finish_subagent(self, agent_id: str, duration_ms: int) -> None:
         """Render subagent completion."""
@@ -605,9 +582,6 @@ class CompactChainRenderer:
         """Disable rendering."""
         self._enabled = False
 
-    def on_llm_request_start(self) -> None:
-        """Handle LLM request start."""
-
     def start_trace(self, trace_id: Optional[str]) -> None:
         """Start trace."""
         if not self._enabled:
@@ -626,15 +600,10 @@ class CompactChainRenderer:
         del trace_label
         if not self._enabled:
             return
-        if event.event_type in {
-            RuntimeEventType.LLM_THINK_STARTED.value,
-            RuntimeEventType.TOOL_CALL_STARTED.value,
-        }:
-            return
-        if event.event_type == RuntimeEventType.LLM_THINK_COMPLETED.value:
+        if event.event_type == RuntimeEventType.CHAT_END.value:
             self._on_runtime_think_complete(event)
             return
-        if event.event_type == RuntimeEventType.STEP_COMPLETED.value:
+        if event.event_type == RuntimeEventType.STEP_END.value:
             self._on_runtime_step_complete()
 
     def _on_runtime_think_complete(self, event: RuntimeEvent) -> None:

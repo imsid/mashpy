@@ -716,10 +716,8 @@ class _CompactionLoggingLLMProvider(BaseLLMProvider):
         super().set_trace_id(trace_id)
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-        started_at = time.time()
         self.trace_id_during_send = self._trace_id
-        await self._emit_request_start(request)
-        response = LLMResponse(
+        return LLMResponse(
             thought_summary="",
             text="Summary:\n- compacted",
             tool_calls=[],
@@ -727,12 +725,6 @@ class _CompactionLoggingLLMProvider(BaseLLMProvider):
             stop_reason="end_turn",
             usage=LLMTokenUsage(input_tokens=5, output_tokens=2, total_tokens=7),
         )
-        await self._emit_request_complete(
-            request,
-            started_at=started_at,
-            response=response,
-        )
-        return response
 
 
 class _CompactionLoggingDefinition(_BaseDefinition):
@@ -1256,7 +1248,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         for event in events
                         if event.get("event") == "agent.trace"
                         and (event.get("data") or {}).get("event_type")
-                        == "runtime.llm.think.completed"
+                        == "chat.end"
                     ]
                     stored_events = await runtime.runtime_store.list_request_events(
                         str(accepted["request_id"])
@@ -1264,7 +1256,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     step_events = [
                         event
                         for event in stored_events
-                        if event.event_type == RuntimeEventType.STEP_COMPLETED.value
+                        if event.event_type == RuntimeEventType.STEP_END.value
                     ]
                     reasoning_trace = build_reasoning_trace(stored_events)
 
@@ -1297,7 +1289,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     step_events = [
                         event
                         for event in stored_events
-                        if event.event_type == RuntimeEventType.STEP_COMPLETED.value
+                        if event.event_type == RuntimeEventType.STEP_END.value
                     ]
                     self.assertEqual(len(step_events), 1)
                     self.assertGreaterEqual(step_events[0].payload["duration_ms"], 200)
@@ -1399,7 +1391,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await runtime.shutdown()
 
-    async def test_compact_session_assigns_trace_id_before_llm_events(self) -> None:
+    async def test_compact_session_assigns_trace_id_before_the_llm_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _CompactionLoggingDefinition(Path(tmp))
@@ -1428,30 +1420,6 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNotNone(llm.trace_id_during_send)
                     self.assertEqual(llm.trace_ids_set[0], llm.trace_id_during_send)
 
-                    logs = [
-                        {
-                            "event_type": event.event_type,
-                            "trace_id": event.trace_id,
-                            "payload": dict(event.payload or {}),
-                        }
-                        for event in await runtime.runtime_store.list_events(
-                            runtime.app_id,
-                            session_id="s-compact",
-                        )
-                    ]
-                    llm_logs = [
-                        event
-                        for event in logs
-                        if event["event_type"].startswith("llm.request.")
-                    ]
-                    self.assertEqual(
-                        [event["event_type"] for event in llm_logs],
-                        ["llm.request.start", "llm.request.complete"],
-                    )
-                    self.assertEqual(
-                        {event["trace_id"] for event in llm_logs},
-                        {llm.trace_id_during_send},
-                    )
                     self.assertEqual(trace_id, llm.trace_id_during_send)
                 finally:
                     await runtime.shutdown()
@@ -1849,7 +1817,6 @@ class RetryTransientLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RuntimeError):
             # No WARNING expected — terminal errors are not retried
-            import logging
             with self.assertLogs("mash.runtime.errors", level="WARNING") as log_ctx:
                 await retry_transient(bad, base_delay=0.0, max_retries=3)
         # assertLogs would fail if no records were emitted; if we got here the

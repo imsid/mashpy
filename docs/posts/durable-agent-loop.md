@@ -132,31 +132,25 @@ One request's event log across a cancel and a resume, cancelled while the LLM ca
 
 ```
 seq  event_type                     detail
-78   agent.tool.call                sleep 3 && echo step-7
-79   agent.tool.result
-80   runtime.tool.call.completed
-81   runtime.step.completed
-82   runtime.llm.think.started
-83   agent.think.start
-84   llm.request.start
-85   runtime.request.cancelled      cancelled
-86   llm.request.complete
-87   agent.think.complete
-88   runtime.llm.think.completed
-89   runtime.request.resumed        resumed
-90   runtime.tool.call.started
-91   agent.tool.call                sleep 3 && echo step-8
+40   execute_tool.start             sleep 3 && echo step-7
+41   execute_tool.end               ok
+42   mash.step.end
+43   chat.start
+44   invoke_agent.end               cancelled
+45   chat.end
+46   mash.request.resumed
+47   execute_tool.start             sleep 3 && echo step-8
 ```
 
-Seq 85 is where the cancel landed. The think step that was already running finished and checkpointed, which is why events 86 through 88 sit after the cancelled event. Resume at 89 replays the checkpoints and execution continues at the eighth tool call. No work between step-7 and step-8 ran twice.
+Seq 44 is where the cancel landed. The model call that was already running finished and checkpointed, which is why its `chat.end` sits after the cancelled `invoke_agent.end`. Resume at 46 replays the checkpoints and execution continues at the eighth tool call. No work between step-7 and step-8 ran twice.
 
-Because terminality reads the last lifecycle event for a request, `runtime.request.resumed` returns a cancelled request to non-terminal, and a client whose stream ended reopens it. Trace and request are one to one, so the admin UI hangs these three actions off the Logs trace view and addresses the request by its trace id.
+Because terminality reads the last lifecycle event for a request, `mash.request.resumed` returns a cancelled request to non-terminal, and a client whose stream ended reopens it. Trace and request are one to one, so the admin UI hangs these three actions off the Logs trace view and addresses the request by its trace id.
 
 ## Event sourcing
 
 Every plan, tool call, and commit emits structured events to the `runtime_event_log` table alongside the workflow state. Those events are how the streaming API works: a client polling `GET .../request/{id}/events` is reading from that log. They are also how the runtime provides observability into a run.
 
-The events are the same regardless of which LLM provider runs the think step. All providers — Anthropic, OpenAI, Gemini, and OSS models via `OSSCompatibleProvider` — implement the same `send(LLMRequest) -> LLMResponse` interface. The loop works only with `LLMResponse`, so `agent.think.complete` carries the same fields whether Claude or a self-hosted Qwen model produced the plan. Swapping providers is a change to `build_llm()`; the events, the tooling, and the loop are unaffected.
+The events are the same regardless of which LLM provider runs the think step. All providers (Anthropic, OpenAI, Gemini, and OSS models via `OSSCompatibleProvider`) implement the same `send(LLMRequest) -> LLMResponse` interface. The loop works only with `LLMResponse`, so `chat.end` carries the same fields whether Claude or a self-hosted Qwen model produced the plan, with the provider and model as its `gen_ai.provider.name` and `gen_ai.request.model` attributes. Swapping providers is a change to `build_llm()`; the events, the tooling, and the loop are unaffected.
 
 You can query the log after the fact to see exactly what happened in a session:
 

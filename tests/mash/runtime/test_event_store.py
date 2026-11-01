@@ -8,15 +8,12 @@ import unittest
 import uuid
 from typing import Any
 
-from pathlib import Path
 
-import mash.storage.migrations
 from conftest import seed_lifecycle
 from mash.runtime.events.store import PostgresRuntimeStore
 from mash.runtime.events.types import (
     FeedbackRecord,
     RequestIdentity,
-    RequestStatus,
     RuntimeEvent,
     RuntimeEventType,
 )
@@ -46,6 +43,18 @@ def _require_postgres_runtime_support() -> tuple[Any, str]:
     except Exception as exc:  # pragma: no cover - depends on local postgres
         raise unittest.SkipTest(f"Postgres runtime store unavailable: {exc}") from exc
     return psycopg, database_url
+
+
+END = RuntimeEventType.INVOKE_AGENT_END.value
+
+
+def _end_status(dedupe: str | None) -> str:
+    """The status a seeded ``invoke_agent.end`` carries, from its dedupe key."""
+    if dedupe and dedupe.startswith("request.cancelled"):
+        return "cancelled"
+    if dedupe and dedupe.startswith("request.failed"):
+        return "error"
+    return "ok"
 
 
 def _delete_request_rows(database_url: str, *request_ids: str) -> None:
@@ -136,8 +145,8 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
                 payload={"status": "accepted"},
             )
@@ -146,7 +155,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(int(accepted.event_id), 0)
         self.assertEqual(
             [row["event_type"] for row in _fetch_committed_rows(self.database_url, self.request_id)],
-            [RuntimeEventType.REQUEST_ACCEPTED.value],
+            [RuntimeEventType.INVOKE_AGENT_START.value],
         )
 
         listed = await self.store.list_request_events(self.request_id)
@@ -159,18 +168,18 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
-                event_type=RuntimeEventType.REQUEST_COMPLETED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_COMPLETED.value),
+                event_type=END,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, "ok"),
                 dedupe_key="request.completed",
-                payload={"status": "completed"},
+                payload={"status": "ok"},
             )
         )
         self.assertEqual(completed.request_seq, 2)
         self.assertEqual(
             [row["event_type"] for row in _fetch_committed_rows(self.database_url, self.request_id)],
             [
-                RuntimeEventType.REQUEST_ACCEPTED.value,
-                RuntimeEventType.REQUEST_COMPLETED.value,
+                RuntimeEventType.INVOKE_AGENT_START.value,
+                END,
             ],
         )
         self.assertTrue(await self.store.is_request_terminal(self.request_id))
@@ -184,10 +193,9 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         request; a later ``request.resumed`` still must.
         """
         for event_type, dedupe in (
-            (RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted"),
-            (RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled"),
-            ("llm.request.complete", None),
-            ("runtime.llm.think.completed", None),
+            (RuntimeEventType.INVOKE_AGENT_START.value, "request.accepted"),
+            (END, "request.cancelled"),
+            ("chat.end", None),
         ):
             await self.store.append_event(
                 RuntimeEvent(
@@ -196,7 +204,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                     request_id=self.request_id,
                     session_id="session-1",
                     event_type=event_type,
-                    lifecycle=seed_lifecycle(event_type),
+                    lifecycle=seed_lifecycle(event_type, _end_status(dedupe)),
                     dedupe_key=dedupe,
                 )
             )
@@ -216,6 +224,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.store.is_request_terminal(self.request_id))
 
     async def _append(self, event_type: str, dedupe: str | None = None) -> RuntimeEvent:
+        status = _end_status(dedupe)
         return await self.store.append_event(
             RuntimeEvent(
                 app_id="store-test",
@@ -223,74 +232,27 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 request_id=self.request_id,
                 session_id="session-1",
                 event_type=event_type,
-                lifecycle=seed_lifecycle(event_type),
+                lifecycle=seed_lifecycle(event_type, status),
                 dedupe_key=dedupe,
+                payload={"status": status} if event_type == END else {},
             )
         )
 
-    async def test_request_state_is_rebuildable_from_the_log(self) -> None:
-        """runtime_request is a projection, not a second source of truth.
-
-        This is also the migration's backfill path: databases predating the
-        table have log rows and no state, and the same statement reconstructs
-        them.
-        """
-        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
-        await self._append(
-            RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled.0"
-        )
-        await self._append(RuntimeEventType.REQUEST_RESUMED.value, "request.resumed.0")
-        await self._append(
-            RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.1"
-        )
-        self.assertTrue(await self.store.is_request_terminal(self.request_id))
-
-        backfill = (
-            Path(mash.storage.migrations.__file__).parent
-            / "002_runtime_request_state.sql"
-        ).read_text()
-        with psycopg.connect(self.database_url, autocommit=True) as conn:
-            conn.execute(
-                "DELETE FROM runtime_request WHERE request_id = %s",
-                (self.request_id,),
-            )
-            self.assertFalse(await self.store.is_request_terminal(self.request_id))
-            conn.execute(backfill)
-
-        self.assertTrue(await self.store.is_request_terminal(self.request_id))
-        self.assertIs(
-            await self.store.get_request_lifecycle(self.request_id),
-            RequestStatus.COMPLETED,
-        )
-
-    async def test_request_identity_is_recorded_and_rebuildable(self) -> None:
+    async def test_request_identity_is_recorded(self) -> None:
         await self.store.append_event(
             RuntimeEvent(
                 app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
                 payload={"request_metadata": {"user_id": "u-1"}},
             )
         )
-        await self._append(RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0")
+        await self._append(END, "request.completed.0")
         expected = RequestIdentity(agent_id="store-test", user_id="u-1")
-        self.assertEqual(await self.store.get_request_identity(self.request_id), expected)
-
-        backfill = (
-            Path(mash.storage.migrations.__file__).parent / "004_user_identity.sql"
-        ).read_text()
-        with psycopg.connect(self.database_url, autocommit=True) as conn:
-            conn.execute(
-                "UPDATE runtime_request SET agent_id = NULL, user_id = NULL WHERE request_id = %s",
-                (self.request_id,),
-            )
-            self.assertIsNone(await self.store.get_request_identity(self.request_id))
-            conn.execute(backfill)
-
         self.assertEqual(await self.store.get_request_identity(self.request_id), expected)
 
     async def test_read_request_stream_never_reports_undelivered_terminal(self) -> None:
@@ -302,8 +264,8 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         ``terminal`` already true. Consumers stopped on that and never saw the
         terminal frame.
         """
-        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
-        await self._append("runtime.llm.think.completed")
+        await self._append(RuntimeEventType.INVOKE_AGENT_START.value, "request.accepted")
+        await self._append("chat.end")
 
         cursor = 0
         seen_terminal = False
@@ -314,7 +276,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
             if events:
                 cursor = int(events[-1].request_seq or 0)
             seen_terminal = seen_terminal or any(
-                e.event_type == RuntimeEventType.REQUEST_COMPLETED.value
+                e.event_type == END
                 for e in events
             )
             if terminal:
@@ -323,7 +285,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 break
             # Land the terminal event mid-poll, the way a real request does.
             await self._append(
-                RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0"
+                END, "request.completed.0"
             )
         else:  # pragma: no cover - loop always terminates via the break
             self.fail("stream never reported terminal")
@@ -336,9 +298,9 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         (it was delivered on an earlier read), while a caller whose cursor sits
         before it gets the event and the flag together.
         """
-        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append(RuntimeEventType.INVOKE_AGENT_START.value, "request.accepted")
         completed = await self._append(
-            RuntimeEventType.REQUEST_COMPLETED.value, "request.completed.0"
+            END, "request.completed.0"
         )
         terminal_seq = int(completed.request_seq or 0)
 
@@ -347,7 +309,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [e.event_type for e in events],
-            [RuntimeEventType.REQUEST_COMPLETED.value],
+            [END],
         )
         self.assertTrue(terminal)
 
@@ -359,11 +321,11 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_read_request_stream_ignores_events_after_a_cancel(self) -> None:
         """The in-flight step's trailing events must not un-terminate."""
-        await self._append(RuntimeEventType.REQUEST_ACCEPTED.value, "request.accepted")
+        await self._append(RuntimeEventType.INVOKE_AGENT_START.value, "request.accepted")
         await self._append(
-            RuntimeEventType.REQUEST_CANCELLED.value, "request.cancelled.0"
+            END, "request.cancelled.0"
         )
-        await self._append("runtime.llm.think.completed")
+        await self._append("chat.end")
 
         events, terminal = await self.store.read_request_stream(self.request_id)
         self.assertEqual(len(events), 3)
@@ -376,8 +338,8 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="store-test",
                 session_id="session-1",
                 trace_id="trace-1",
-                event_type="llm.request.complete",
-                payload={"model": "test-model", "duration_ms": 12},
+                event_type="mcp.client.connected",
+                payload={"server_name": "demo"},
             )
         )
         self.assertIsNone(event.request_id)
@@ -418,8 +380,8 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key=f"waiter-test-{uuid.uuid4().hex[:8]}",
                 payload={"status": "accepted"},
             )
@@ -453,8 +415,8 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-recovery",
-                event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key=f"recovery-{uuid.uuid4().hex[:8]}",
                 payload={"status": "accepted"},
             )
@@ -472,8 +434,8 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                     agent_id="store-test",
                     request_id=self.request_id,
                     session_id="session-recovery",
-                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                    lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                    lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                     dedupe_key=f"listener-{uuid.uuid4().hex[:8]}",
                     payload={"status": "accepted"},
                 )
@@ -503,8 +465,8 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                     agent_id="store-test",
                     request_id=self.request_id,
                     session_id="session-recovery",
-                    event_type=RuntimeEventType.REQUEST_ACCEPTED.value,
-                    lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_ACCEPTED.value),
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                    lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                     dedupe_key=f"post-reconnect-{uuid.uuid4().hex[:8]}",
                     payload={"status": "accepted"},
                 )
@@ -538,8 +500,8 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
         waiter = self.store.register_request_waiter(self.request_id)
         try:
             for dedupe_key, event_type in (
-                ("request.accepted", RuntimeEventType.REQUEST_ACCEPTED.value),
-                ("request.completed", RuntimeEventType.REQUEST_COMPLETED.value),
+                ("request.accepted", RuntimeEventType.INVOKE_AGENT_START.value),
+                ("request.completed", END),
             ):
                 await self.store.append_event(
                     RuntimeEvent(
@@ -548,7 +510,7 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
                         request_id=self.request_id,
                         session_id="session-1",
                         event_type=event_type,
-                        lifecycle=seed_lifecycle(event_type),
+                        lifecycle=seed_lifecycle(event_type, _end_status(dedupe_key)),
                         dedupe_key=dedupe_key,
                         payload={},
                     )
@@ -559,8 +521,8 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
 
         committed = _fetch_committed_rows(self.database_url, self.request_id)
         event_types = [row["event_type"] for row in committed]
-        self.assertIn(RuntimeEventType.REQUEST_ACCEPTED.value, event_types)
-        self.assertIn(RuntimeEventType.REQUEST_COMPLETED.value, event_types)
+        self.assertIn(RuntimeEventType.INVOKE_AGENT_START.value, event_types)
+        self.assertIn(END, event_types)
 
 
 def _delete_feedback_rows(database_url: str, app_id: str) -> None:
@@ -662,7 +624,7 @@ class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session-1",
                 trace_id=trace_id,
                 host_id=host_id,
-                event_type=RuntimeEventType.TRACE_STARTED.value,
+                event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
                 created_at=created_at,
                 payload={"message": "hi"},
             )
@@ -700,7 +662,12 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         _delete_app_rows(self.database_url, self.app_id)
 
     async def _append(
-        self, *, trace_id: str, event_type: str, created_at: float
+        self,
+        *,
+        trace_id: str,
+        event_type: str,
+        created_at: float,
+        status: str | None = None,
     ) -> None:
         await self.store.append_event(
             RuntimeEvent(
@@ -710,25 +677,27 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
                 trace_id=trace_id,
                 host_id="assistant",
                 event_type=event_type,
-                lifecycle=seed_lifecycle(event_type),
+                lifecycle=seed_lifecycle(event_type, status),
                 created_at=created_at,
-                payload={},
+                payload={"status": status} if status else {},
             )
         )
 
     async def test_status_derived_from_latest_terminal_event(self) -> None:
-        started = RuntimeEventType.TRACE_STARTED.value
-        completed = RuntimeEventType.REQUEST_COMPLETED.value
-        failed = RuntimeEventType.REQUEST_FAILED.value
+        started = RuntimeEventType.CONTEXT_LOAD_START.value
 
         await self._append(trace_id="t-done", event_type=started, created_at=100.0)
-        await self._append(trace_id="t-done", event_type=completed, created_at=101.0)
+        await self._append(trace_id="t-done", event_type=END, created_at=101.0, status="ok")
         await self._append(trace_id="t-failed", event_type=started, created_at=200.0)
-        await self._append(trace_id="t-failed", event_type=failed, created_at=201.0)
+        await self._append(
+            trace_id="t-failed", event_type=END, created_at=201.0, status="error"
+        )
         await self._append(trace_id="t-open", event_type=started, created_at=300.0)
         # A failure followed by a completed retry: the latest terminal wins.
-        await self._append(trace_id="t-retried", event_type=failed, created_at=400.0)
-        await self._append(trace_id="t-retried", event_type=completed, created_at=401.0)
+        await self._append(
+            trace_id="t-retried", event_type=END, created_at=400.0, status="error"
+        )
+        await self._append(trace_id="t-retried", event_type=END, created_at=401.0, status="ok")
 
         traces = await self.store.list_recent_traces(self.app_id)
         by_trace = {item["trace_id"]: item["status"] for item in traces}
@@ -743,18 +712,20 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         A cancelled trace reports cancelled, and resuming it returns the trace
         to running rather than leaving the stale terminal state on the row.
         """
-        started = RuntimeEventType.TRACE_STARTED.value
+        started = RuntimeEventType.CONTEXT_LOAD_START.value
         await self._append(trace_id="t-cancel", event_type=started, created_at=100.0)
         await self._append(
             trace_id="t-cancel",
-            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            event_type=END,
             created_at=101.0,
+            status="cancelled",
         )
         await self._append(trace_id="t-resumed", event_type=started, created_at=200.0)
         await self._append(
             trace_id="t-resumed",
-            event_type=RuntimeEventType.REQUEST_CANCELLED.value,
+            event_type=END,
             created_at=201.0,
+            status="cancelled",
         )
         await self._append(
             trace_id="t-resumed",
@@ -776,7 +747,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session-1",
                 trace_id="t-req",
                 request_id="req-abc",
-                event_type=RuntimeEventType.TRACE_STARTED.value,
+                event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
                 created_at=100.0,
                 payload={},
             )
@@ -789,7 +760,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         # rather than guessing.
         await self._append(
             trace_id="t-bare",
-            event_type=RuntimeEventType.TRACE_STARTED.value,
+            event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
             created_at=200.0,
         )
         self.assertIsNone(
@@ -814,7 +785,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
                     session_id="session-1",
                     trace_id="t-dup",
                     request_id=request_id,
-                    event_type=RuntimeEventType.TRACE_STARTED.value,
+                    event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
                     created_at=created_at,
                     payload={},
                 )
@@ -828,12 +799,13 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_status_filter(self) -> None:
-        started = RuntimeEventType.TRACE_STARTED.value
+        started = RuntimeEventType.CONTEXT_LOAD_START.value
         await self._append(trace_id="t-done", event_type=started, created_at=100.0)
         await self._append(
             trace_id="t-done",
-            event_type=RuntimeEventType.REQUEST_COMPLETED.value,
+            event_type=END,
             created_at=101.0,
+            status="ok",
         )
         await self._append(trace_id="t-open", event_type=started, created_at=200.0)
 
@@ -896,35 +868,35 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
         # Day 1: one trace, two LLM steps, one failed tool call.
         await self._append(
             trace_id="t-1",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             created_at=day1,
-            payload={"token_usage": {"input": 100, "output": 10}},
+            payload={"attributes": {"gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 10}},
         )
         await self._append(
             trace_id="t-1",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             created_at=day1 + 1.0,
-            payload={"token_usage": {"input": 200, "output": 20}},
+            payload={"attributes": {"gen_ai.usage.input_tokens": 200, "gen_ai.usage.output_tokens": 20}},
         )
         await self._append(
             trace_id="t-1",
-            event_type=RuntimeEventType.TOOL_CALL_COMPLETED.value,
+            event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
             created_at=day1 + 2.0,
-            payload={"tool_name": "x", "result": {"is_error": True}},
+            payload={"status": "error", "attributes": {"gen_ai.tool.name": "x"}, "result": {"is_error": True}},
         )
 
         # Day 2: two distinct traces, one LLM step each.
         await self._append(
             trace_id="t-2",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             created_at=day2,
-            payload={"token_usage": {"input": 50, "output": 5}},
+            payload={"attributes": {"gen_ai.usage.input_tokens": 50, "gen_ai.usage.output_tokens": 5}},
         )
         await self._append(
             trace_id="t-3",
-            event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+            event_type=RuntimeEventType.CHAT_END.value,
             created_at=day2 + 1.0,
-            payload={"token_usage": {"input": 70, "output": 7}},
+            payload={"attributes": {"gen_ai.usage.input_tokens": 70, "gen_ai.usage.output_tokens": 7}},
         )
 
         buckets = await self.store.aggregate_usage(self.app_id, bucket="day")
@@ -949,9 +921,9 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
         for trace_id, created_at in (("t-1", day1), ("t-2", day2)):
             await self._append(
                 trace_id=trace_id,
-                event_type=RuntimeEventType.LLM_THINK_COMPLETED.value,
+                event_type=RuntimeEventType.CHAT_END.value,
                 created_at=created_at,
-                payload={"token_usage": {"input": 10, "output": 1}},
+                payload={"attributes": {"gen_ai.usage.input_tokens": 10, "gen_ai.usage.output_tokens": 1}},
             )
 
         windowed = await self.store.aggregate_usage(
@@ -961,3 +933,49 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
 
         wrong_host = await self.store.aggregate_usage(self.app_id, host_id="nope")
         self.assertEqual(wrong_host, [])
+
+
+class ExportStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.request_id = f"export-{uuid.uuid4()}"
+        self.cursor_name = f"test-{uuid.uuid4().hex[:8]}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_request_rows(self.database_url, self.request_id)
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute("DELETE FROM otel_export_cursor WHERE name = %s", (self.cursor_name,))
+
+    async def test_request_ends_after_a_cursor_and_the_cursor_round_trip(self) -> None:
+        self.assertIsNone(await self.store.get_export_cursor(self.cursor_name))
+        start = await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test", agent_id="store-test", request_id=self.request_id,
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
+            )
+        )
+        end = await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test", agent_id="store-test", request_id=self.request_id,
+                event_type=END, lifecycle=seed_lifecycle(END, "ok"),
+                dedupe_key="request.completed.0",
+                payload={"status": "ok", "response": {"text": "big"}},
+            )
+        )
+
+        ends = await self.store.list_request_ends(after_event_id=start.event_id, limit=10)
+        mine = [e for e in ends if e.request_id == self.request_id]
+        self.assertEqual([e.event_id for e in mine], [end.event_id])
+        self.assertNotIn("response", mine[0].payload)
+        self.assertGreaterEqual(await self.store.latest_event_id(), end.event_id)
+
+        await self.store.set_export_cursor(self.cursor_name, end.event_id)
+        # The cursor never moves backwards.
+        await self.store.set_export_cursor(self.cursor_name, start.event_id)
+        self.assertEqual(await self.store.get_export_cursor(self.cursor_name), end.event_id)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import unittest
 
-from mash.logging.events import MemorySearchEvent
 from mash.memory.search.parser import QueryParser
 from mash.memory.search.rerank import WeightedFusionReranker
 from mash.memory.search.retrieval import (
@@ -71,16 +70,6 @@ class FakeSearchStore:
         return self.semantic_hits
 
 
-class FakeEventLogger:
-    """In-memory logger test double."""
-
-    def __init__(self) -> None:
-        self.events: list[object] = []
-
-    async def emit(self, event: object) -> None:
-        self.events.append(event)
-
-
 class FailingKeywordStore(FakeSearchStore):
     """Store that raises during keyword retrieval."""
 
@@ -99,16 +88,9 @@ class FailingKeywordStore(FakeSearchStore):
 class QueryParserTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.parser = QueryParser()
-        self.event_logger = FakeEventLogger()
-        self.query_id = "q-query-parser"
 
     async def _parse(self, query: str):
-        return await self.parser.parse(
-            query,
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
-            app_id="app1",
-        )
+        return await self.parser.parse(query)
 
     async def test_parses_user_query(self) -> None:
         parsed = await self._parse("@user:hello")
@@ -146,16 +128,9 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.parser = QueryParser()
         self.keyword_retriever = KeywordRetriever(self.store)  # type: ignore[arg-type]
         self.semantic_retriever = SemanticRetriever(self.store)  # type: ignore[arg-type]
-        self.event_logger = FakeEventLogger()
-        self.query_id = "q-retrieval"
 
     async def _parse(self, query: str):
-        return await self.parser.parse(
-            query,
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
-            app_id="app1",
-        )
+        return await self.parser.parse(query)
 
     async def test_keyword_only_calls_only_keyword_search(self) -> None:
         self.store.keyword_hits = [
@@ -170,8 +145,6 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         parsed = await self._parse("@user:hello")
         outputs = await orchestrator.retrieve(
             parsed,
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             limit=5,
         )
 
@@ -197,8 +170,6 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         parsed = await self._parse("@agent:answer")
         outputs = await orchestrator.retrieve(
             parsed,
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             limit=3,
         )
 
@@ -232,8 +203,6 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         parsed = await self._parse("@user:x")
         outputs = await orchestrator.retrieve(
             parsed,
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             limit=2,
         )
         self.assertEqual(len(outputs.keyword_hits[0].preview), 200)
@@ -242,8 +211,6 @@ class RetrievalOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.reranker = WeightedFusionReranker()
-        self.event_logger = FakeEventLogger()
-        self.query_id = "q-rerank"
 
     async def test_fuses_overlapping_hits_with_weighted_scores(self) -> None:
         keyword_hits = [
@@ -270,8 +237,6 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         fused = await self.reranker.rerank(
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=keyword_hits,
             semantic_hits=semantic_hits,
         )
@@ -285,8 +250,6 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handles_missing_method_scores(self) -> None:
         fused = await self.reranker.rerank(
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
                     trace_id="t1",
@@ -317,8 +280,6 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tie_breaks_by_trace_id(self) -> None:
         fused = await self.reranker.rerank(
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
                     trace_id="b",
@@ -345,8 +306,6 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_caps_preview_length(self) -> None:
         fused = await self.reranker.rerank(
-            query_id=self.query_id,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             keyword_hits=[
                 RetrievalHit(
                     trace_id="t1",
@@ -366,7 +325,6 @@ class WeightedFusionRerankerTests(unittest.IsolatedAsyncioTestCase):
 class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = FakeSearchStore()
-        self.event_logger = FakeEventLogger()
 
     async def test_returns_search_results_with_scores_and_preview(self) -> None:
         self.store.keyword_hits = [
@@ -378,7 +336,6 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         service = MemorySearchService(  # type: ignore[arg-type]
             self.store,
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
         )
 
@@ -412,7 +369,6 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         )
 
@@ -431,7 +387,6 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
-            event_logger=self.event_logger,  # type: ignore[arg-type]
             retrieval_config=RetrievalConfig(enable_keyword=False, enable_semantic=True),
         )
 
@@ -445,161 +400,27 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_search_requires_app_id(self) -> None:
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
-            event_logger=self.event_logger,  # type: ignore[arg-type]
         )
         with self.assertRaises(TypeError):
             service.search("@user:test")  # type: ignore[call-arg]
 
-    async def test_emits_per_stage_memory_search_events_on_success(self) -> None:
-        self.store.keyword_hits = [
-            {"trace_id": "t1", "session_id": "s1", "score": 0.6, "preview": "keyword hit"},
-        ]
-        self.store.semantic_hits = [
-            {"trace_id": "t2", "session_id": "s1", "score": 0.8, "preview": "semantic hit"},
-        ]
-        event_logger = FakeEventLogger()
+    async def test_parse_failure_raises(self) -> None:
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
-            event_logger=event_logger,  # type: ignore[arg-type]
             retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
         )
-
-        results = await service.search(
-            "@user:hello world",
-            app_id="app1",
-            session_id="s1",
-        )
-
-        self.assertEqual(len(results), 2)
-        self.assertEqual(
-            [getattr(event, "event_type") for event in event_logger.events],
-            [
-                "memory.search.parse.complete",
-                "memory.search.start",
-                "memory.search.retrieval.complete",
-                "memory.search.rerank.complete",
-                "memory.search.complete",
-            ],
-        )
-        self.assertTrue(
-            all(isinstance(event, MemorySearchEvent) for event in event_logger.events)
-        )
-        query_ids = {getattr(event, "query_id") for event in event_logger.events}
-        self.assertEqual(len(query_ids), 1)
-        query_id = next(iter(query_ids))
-        self.assertIsInstance(query_id, str)
-        self.assertTrue(query_id)
-
-        parse_event = event_logger.events[0]
-        self.assertEqual(getattr(parse_event, "stage"), "parse")
-        self.assertEqual(getattr(parse_event, "level"), "INFO")
-        self.assertEqual(getattr(parse_event, "metadata")["query_term"], "hello world")
-
-        start_event = event_logger.events[1]
-        start_metadata = getattr(start_event, "metadata")
-        self.assertEqual(start_metadata["query_term"], "hello world")
-        self.assertEqual(start_metadata["column"], "user_message")
-        self.assertEqual(start_metadata["limit_requested"], 10)
-        self.assertEqual(start_metadata["limit_normalized"], 10)
-        self.assertTrue(start_metadata["has_session_id"])
-        self.assertNotIn("query_length", start_metadata)
-        self.assertEqual(start_event.to_dict()["event_class"], "MemorySearchEvent")
-
-    async def test_parse_failure_emits_error_event_without_start(self) -> None:
-        event_logger = FakeEventLogger()
-        service = MemorySearchService(
-            self.store,  # type: ignore[arg-type]
-            event_logger=event_logger,  # type: ignore[arg-type]
-            retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
-        )
-
         with self.assertRaises(ValueError):
             await service.search("hello", app_id="app1")
 
-        self.assertEqual(len(event_logger.events), 1)
-        error_event = event_logger.events[0]
-        self.assertEqual(getattr(error_event, "event_type"), "memory.search.parse.error")
-        self.assertEqual(getattr(error_event, "stage"), "parse")
-        self.assertEqual(getattr(error_event, "level"), "ERROR")
-        self.assertIn("must start", getattr(error_event, "error"))
-
-    async def test_retrieval_failure_emits_error_event(self) -> None:
-        store = FailingKeywordStore()
-        event_logger = FakeEventLogger()
-        service = MemorySearchService(
-            store,  # type: ignore[arg-type]
-            event_logger=event_logger,  # type: ignore[arg-type]
-        )
-
+    async def test_retrieval_failure_raises(self) -> None:
+        service = MemorySearchService(FailingKeywordStore())  # type: ignore[arg-type]
         with self.assertRaises(RuntimeError):
             await service.search("@user:boom", app_id="app1")
 
-        self.assertEqual(
-            [getattr(event, "event_type") for event in event_logger.events],
-            [
-                "memory.search.parse.complete",
-                "memory.search.start",
-                "memory.search.retrieval.error",
-            ],
-        )
-        error_event = event_logger.events[-1]
-        self.assertEqual(getattr(error_event, "stage"), "retrieval")
-        self.assertEqual(getattr(error_event, "error"), "keyword retrieval failed")
-
-    async def test_rerank_failure_emits_error_event(self) -> None:
-        self.store.keyword_hits = [
-            {"trace_id": "t1", "session_id": "s1", "score": 0.5, "preview": "hit"},
-        ]
-        self.store.semantic_hits = [
-            {"trace_id": "t1", "session_id": "s2", "score": 0.6, "preview": "other"},
-        ]
-        event_logger = FakeEventLogger()
-        service = MemorySearchService(
-            self.store,  # type: ignore[arg-type]
-            event_logger=event_logger,  # type: ignore[arg-type]
-            retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
-        )
-
-        with self.assertRaises(ValueError):
-            await service.search("@user:boom", app_id="app1")
-
-        self.assertEqual(
-            [getattr(event, "event_type") for event in event_logger.events],
-            [
-                "memory.search.parse.complete",
-                "memory.search.start",
-                "memory.search.retrieval.complete",
-                "memory.search.rerank.error",
-            ],
-        )
-        error_event = event_logger.events[-1]
-        self.assertEqual(getattr(error_event, "stage"), "rerank")
-        self.assertIn("Conflicting session_id", getattr(error_event, "error"))
-
-    async def test_non_positive_limit_short_circuit_emits_complete_event(self) -> None:
-        event_logger = FakeEventLogger()
-        service = MemorySearchService(
-            self.store,  # type: ignore[arg-type]
-            event_logger=event_logger,  # type: ignore[arg-type]
-        )
-
-        results = await service.search("@user:hello", app_id="app1", limit=0)
-
-        self.assertEqual(results, [])
-        self.assertEqual(len(self.store.calls), 0)
-        self.assertEqual(len(event_logger.events), 1)
-        complete_event = event_logger.events[0]
-        self.assertEqual(getattr(complete_event, "event_type"), "memory.search.complete")
-        self.assertEqual(getattr(complete_event, "stage"), "service")
-        self.assertEqual(getattr(complete_event, "level"), "INFO")
-        self.assertEqual(
-            getattr(complete_event, "metadata"),
-            {
-                "result_count": 0,
-                "limit_applied": 0,
-                "short_circuit": "non_positive_limit",
-            },
-        )
+    async def test_non_positive_limit_returns_nothing(self) -> None:
+        service = MemorySearchService(self.store)  # type: ignore[arg-type]
+        self.assertEqual(await service.search("@user:x", limit=0, app_id="app1"), [])
+        self.assertEqual(self.store.calls, [])
 
 
 if __name__ == "__main__":

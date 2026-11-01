@@ -31,7 +31,7 @@ class _CollectingStore:
 
 def _llm_event(*, trace_id: str | None, session_id: str = "session-1") -> LLMEvent:
     return LLMEvent(
-        event_type="llm.request.complete",
+        event_type="chat.delta",
         app_id="agent-1",
         session_id=session_id,
         provider="test",
@@ -167,3 +167,48 @@ class AgentSessionBindingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChatDeltaDedupeTests(unittest.IsolatedAsyncioTestCase):
+    """A replayed model call keeps the first attempt's chunks."""
+
+    async def test_a_delta_keys_by_request_loop_step_and_index(self) -> None:
+        from conftest import build_test_stores
+        from mash.logging.trace_context import bound_loop_index, bound_request_id
+
+        store, _ = build_test_stores()
+        logger = EventLogger(store)
+
+        def delta(text: str, index: int) -> LLMEvent:
+            return LLMEvent(
+                event_type="chat.delta",
+                app_id="agent-1",
+                session_id="s-1",
+                provider="test",
+                model="m",
+                trace_id="t-1",
+                payload={"text": text, "index": index},
+                dedupe_key=f"chat.delta.2.{index}",
+            )
+
+        with bound_request_id("req-1"), bound_loop_index(2):
+            await logger.emit(delta("first ", 0))
+            await logger.emit(delta("attempt", 1))
+            # The step is replayed: the same chunks again, with new text.
+            await logger.emit(delta("second ", 0))
+            await logger.emit(delta("attempt", 1))
+
+        events = await store.list_request_events("req-1")
+        self.assertEqual([e.payload["payload"]["text"] for e in events], ["first ", "attempt"])
+        self.assertEqual([e.loop_index for e in events], [2, 2])
+        self.assertEqual([e.dedupe_key for e in events], ["chat.delta.2.0", "chat.delta.2.1"])
+
+    async def test_outside_a_request_a_delta_has_no_dedupe_key(self) -> None:
+        store = _CollectingStore()
+        await EventLogger(store).emit(
+            LLMEvent(
+                event_type="chat.delta", app_id="a", session_id=None, provider="p",
+                model="m", trace_id="t", dedupe_key="chat.delta.0.0",
+            )
+        )
+        self.assertIsNone(store.events[0].dedupe_key)
