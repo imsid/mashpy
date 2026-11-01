@@ -235,9 +235,13 @@ class PostgresRuntimeStore(RuntimeStore):
             self._pool, after_event_id=after_event_id, limit=limit
         )
 
-    async def get_export_cursor(self, name: str) -> int:
+    async def get_export_cursor(self, name: str) -> int | None:
         await self.open()
         return await loaders.get_export_cursor(self._pool, name)
+
+    async def latest_event_id(self) -> int:
+        await self.open()
+        return await loaders.latest_event_id(self._pool)
 
     async def set_export_cursor(self, name: str, event_id: int) -> None:
         await self.open()

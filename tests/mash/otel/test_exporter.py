@@ -27,6 +27,8 @@ class OtlpExporterTests(unittest.IsolatedAsyncioTestCase):
         self.logs = InMemoryLogRecordExporter()
         self.metrics = InMemoryMetricReader()
         self.exporter = self._exporter()
+        # The first run sets the cursor at the end of the (empty) log.
+        await self.exporter.run_once()
 
     def _exporter(self, metric_reader=None) -> OtlpExporter:
         return OtlpExporter(
@@ -61,6 +63,28 @@ class OtlpExporterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.attributes["gen_ai.usage.input_tokens"], 100)
         self.assertEqual(list(chat.attributes["gen_ai.response.finish_reasons"]), ["end_turn"])
         self.assertEqual(chat.start_time, int(101.0 * 1e9))
+
+    async def test_the_first_run_skips_requests_that_ended_before_it(self) -> None:
+        store, _ = build_test_stores()
+        for event in completed_request().events:
+            await store.append_event(event)
+        exporter = OtlpExporter(
+            store,
+            span_exporter=self.spans,
+            log_exporter=self.logs,
+            metric_reader=InMemoryMetricReader(),
+            batch=False,
+        )
+
+        self.assertEqual(await exporter.run_once(), 0)
+        self.assertEqual(self.spans.get_finished_spans(), ())
+
+        await self._seed_into(store, completed_request("req-2", trace_id="22222222-2222-2222-2222-222222222222"))
+        self.assertEqual(await exporter.run_once(), 1)
+
+    async def _seed_into(self, store, request: RequestEvents) -> None:
+        for event in request.events:
+            await store.append_event(event)
 
     async def test_a_running_request_is_not_exported(self) -> None:
         await self._seed(RequestEvents().accepted(100.0).chat_start(0, 100.1))
@@ -149,6 +173,9 @@ class _WorkflowStore:
         self._finished = finished
         self._steps = steps
 
+    async def latest_finished_seq(self) -> int:
+        return max((item["finished_seq"] for item in self._finished), default=0)
+
     async def list_finished_runs(self, *, after_seq: int = 0, limit: int = 200):
         return [item for item in self._finished if item["finished_seq"] > after_seq][:limit]
 
@@ -175,14 +202,18 @@ class WorkflowExportTests(unittest.IsolatedAsyncioTestCase):
             started_at=100.0, finished_at=105.0,
         )
         spans = InMemorySpanExporter()
+        workflow_store = _WorkflowStore([{"run": run, "finished_seq": 1}], [step])
         exporter = OtlpExporter(
             store,
-            workflow_store=_WorkflowStore([{"run": run, "finished_seq": 1}], [step]),
+            workflow_store=workflow_store,
             span_exporter=spans,
             log_exporter=InMemoryLogRecordExporter(),
             metric_reader=InMemoryMetricReader(),
             batch=False,
         )
+        # Started before the run finished, so the run is past its cursor.
+        await store.set_export_cursor("requests", 0)
+        await store.set_export_cursor("workflows", 0)
 
         # The request belongs to the run, so it goes out with the run only.
         self.assertEqual(await exporter.run_once(), 1)
@@ -197,6 +228,28 @@ class WorkflowExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(root.parent)
         self.assertEqual(agent.parent.span_id, step_span.context.span_id)
         self.assertEqual({s.context.trace_id for s in finished}, {root.context.trace_id})
+
+    async def test_the_first_run_skips_runs_that_finished_before_it(self) -> None:
+        from mash.workflows.store import WorkflowRunRecord
+
+        store, _ = build_test_stores()
+        run = WorkflowRunRecord(
+            run_id="run-0", workflow_id="changelog", status="completed",
+            created_at=1.0, started_at=1.0, finished_at=2.0,
+        )
+        spans = InMemorySpanExporter()
+        exporter = OtlpExporter(
+            store,
+            workflow_store=_WorkflowStore([{"run": run, "finished_seq": 7}], []),
+            span_exporter=spans,
+            log_exporter=InMemoryLogRecordExporter(),
+            metric_reader=InMemoryMetricReader(),
+            batch=False,
+        )
+
+        self.assertEqual(await exporter.run_once(), 0)
+        self.assertEqual(spans.get_finished_spans(), ())
+        self.assertEqual(await store.get_export_cursor("workflows"), 7)
 
 
 class EndpointTests(unittest.TestCase):

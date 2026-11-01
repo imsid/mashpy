@@ -509,14 +509,24 @@ async def list_request_ends(
     return [dict_to_event(row) for row in rows]
 
 
-async def get_export_cursor(pool: Any, name: str) -> int:
+async def get_export_cursor(pool: Any, name: str) -> int | None:
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
                 "SELECT event_id FROM otel_export_cursor WHERE name = %s", (name,)
             )
             row = await cursor.fetchone()
-    return int(row["event_id"]) if row is not None else 0
+    return int(row["event_id"]) if row is not None else None
+
+
+async def latest_event_id(pool: Any) -> int:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT COALESCE(MAX(event_id), 0) AS event_id FROM runtime_event_log"
+            )
+            row = await cursor.fetchone()
+    return int(row["event_id"])
 
 
 async def set_export_cursor(pool: Any, name: str, event_id: int) -> None:

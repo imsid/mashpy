@@ -434,8 +434,12 @@ class _TestRuntimeStore:
             ]
         return sorted(ends, key=lambda e: e.event_id)[: max(1, int(limit))]
 
-    async def get_export_cursor(self, name: str) -> int:
-        return int(getattr(self, "_export_cursors", {}).get(name, 0))
+    async def get_export_cursor(self, name: str) -> int | None:
+        return getattr(self, "_export_cursors", {}).get(name)
+
+    async def latest_event_id(self) -> int:
+        async with self._lock:
+            return max((e.event_id for e in self._events), default=0)
 
     async def set_export_cursor(self, name: str, event_id: int) -> None:
         cursors = getattr(self, "_export_cursors", None)

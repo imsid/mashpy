@@ -333,7 +333,9 @@ request when it ends: its spans (`invoke_agent`, `chat`, `execute_tool`,
 `mash.request.mode_changed`), and the two GenAI client metrics. A workflow run
 exports as one trace when it finishes, with each agent step's request under its
 step. The exporter keeps its position in `otel_export_cursor`, so a restart
-picks up where it stopped.
+picks up where it stopped. The first time it runs it starts at the end of the
+log, so requests and runs that finished before you set the endpoint are not
+exported.
 
 Headers, protocol and timeouts come from the standard `OTEL_EXPORTER_OTLP_*`
 variables. Prompts, completions and tool arguments and results stay out of the

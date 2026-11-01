@@ -85,7 +85,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
 export OTEL_SERVICE_NAME=assistant
 ```
 
-The exporter runs in the host. It tails the event log and, when a request's `invoke_agent.end` is stored, projects the request and sends its spans and log records over OTLP, along with the two GenAI client metrics, `gen_ai.client.token.usage` and `gen_ai.client.operation.duration`. Its position lives in a one-row table, so a restart picks up where it stopped. A `RunSubAgents` child goes out with its root, and a request a workflow step submitted goes out with the run, as a child of that step's span in a `mash.workflow <workflow_id>` trace.
+The exporter runs in the host. It tails the event log and, when a request's `invoke_agent.end` is stored, projects the request and sends its spans and log records over OTLP, along with the two GenAI client metrics, `gen_ai.client.token.usage` and `gen_ai.client.operation.duration`. Its position lives in a one-row table, so a restart picks up where it stopped, and the first run starts at the end of the log, so turning the export on doesn't send the history. A `RunSubAgents` child goes out with its root, and a request a workflow step submitted goes out with the run, as a child of that step's span in a `mash.workflow <workflow_id>` trace.
 
 A caller that sends a W3C `traceparent` header on submit gets the request inside its own trace: the root `invoke_agent` span takes the caller's span as its parent.
 

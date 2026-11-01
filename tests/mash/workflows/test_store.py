@@ -83,8 +83,7 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_finished_runs_list_in_finish_order(self) -> None:
         await self.store.create_run(self._run())
-        before = await self.store.list_finished_runs(after_seq=0, limit=100000)
-        cursor = max((item["finished_seq"] for item in before), default=0)
+        cursor = await self.store.latest_finished_seq()
 
         await self.store.finish_run(
             self.run_id, status="completed", result={"ok": True}, finished_at=time.time()
@@ -96,6 +95,7 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(finished["run"].status, "completed")
         self.assertGreater(finished["finished_seq"], cursor)
+        self.assertGreaterEqual(await self.store.latest_finished_seq(), finished["finished_seq"])
         self.assertEqual(
             [
                 item

@@ -512,6 +512,17 @@ class WorkflowStore:
             for row in rows
         ]
 
+    async def latest_finished_seq(self) -> int:
+        """The highest ``finished_seq`` of any run; 0 before a run finishes."""
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT COALESCE(MAX(finished_seq), 0) AS seq FROM workflow_runs"
+                )
+                row = await cursor.fetchone()
+        return int(row["seq"])
+
     async def get_run_steps(self, run_id: str) -> list[WorkflowStepRecord]:
         await self.open()
         async with self._pool.connection() as conn:

@@ -951,7 +951,7 @@ class ExportStoreTests(unittest.IsolatedAsyncioTestCase):
             conn.execute("DELETE FROM otel_export_cursor WHERE name = %s", (self.cursor_name,))
 
     async def test_request_ends_after_a_cursor_and_the_cursor_round_trip(self) -> None:
-        self.assertEqual(await self.store.get_export_cursor(self.cursor_name), 0)
+        self.assertIsNone(await self.store.get_export_cursor(self.cursor_name))
         start = await self.store.append_event(
             RuntimeEvent(
                 app_id="store-test", agent_id="store-test", request_id=self.request_id,
@@ -973,6 +973,7 @@ class ExportStoreTests(unittest.IsolatedAsyncioTestCase):
         mine = [e for e in ends if e.request_id == self.request_id]
         self.assertEqual([e.event_id for e in mine], [end.event_id])
         self.assertNotIn("response", mine[0].payload)
+        self.assertGreaterEqual(await self.store.latest_event_id(), end.event_id)
 
         await self.store.set_export_cursor(self.cursor_name, end.event_id)
         # The cursor never moves backwards.

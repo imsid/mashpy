@@ -5,7 +5,9 @@ The exporter runs in the host process. It tails ``runtime_event_log`` by
 the request (its RunSubAgents children nested) and hands the ended spans to a
 ``BatchSpanProcessor`` and the log records to a ``BatchLogRecordProcessor``.
 Its position is kept in ``otel_export_cursor``, so a restart picks up where
-it stopped.
+it stopped. On its first run there is no position yet, and it starts at the
+end of the log: requests and workflow runs that finished before the exporter
+was enabled are not exported.
 
 A child request is exported with its root, and a request that belongs to a
 workflow run is exported with the run. The export happens after the fact, so
@@ -186,8 +188,16 @@ class OtlpExporter:
         if self._meter_provider is not None:
             await asyncio.to_thread(self._meter_provider.force_flush)
 
+    async def _cursor(self, name: str, head: Any) -> int:
+        """The cursor ``name``; on the first run, set to the current ``head()``."""
+        cursor = await self._store.get_export_cursor(name)
+        if cursor is None:
+            cursor = int(await head())
+            await self._store.set_export_cursor(name, cursor)
+        return cursor
+
     async def _export_requests(self) -> int:
-        cursor = await self._store.get_export_cursor(REQUESTS_CURSOR)
+        cursor = await self._cursor(REQUESTS_CURSOR, self._store.latest_event_id)
         ends = await self._store.list_request_ends(
             after_event_id=cursor, limit=self._batch_size
         )
@@ -207,7 +217,9 @@ class OtlpExporter:
     async def _export_workflows(self) -> int:
         from .workflows import load_workflow_projection
 
-        cursor = await self._store.get_export_cursor(WORKFLOWS_CURSOR)
+        cursor = await self._cursor(
+            WORKFLOWS_CURSOR, self._workflow_store.latest_finished_seq
+        )
         runs = await self._workflow_store.list_finished_runs(
             after_seq=cursor, limit=self._batch_size
         )

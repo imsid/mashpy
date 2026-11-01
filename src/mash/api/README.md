@@ -644,7 +644,8 @@ host also runs `mash/otel/exporter.py`: it tails `runtime_event_log`, exports a
 request when its `invoke_agent.end` is stored (spans, log records, and the
 `gen_ai.client.token.usage` and `gen_ai.client.operation.duration` metrics),
 exports a workflow run when it finishes, and keeps its position in
-`otel_export_cursor`. `OTEL_SERVICE_NAME` sets `service.name`;
+`otel_export_cursor`. Its first run starts at the end of the log, so what
+finished before the endpoint was set is not exported. `OTEL_SERVICE_NAME` sets `service.name`;
 `MASH_OTEL_CAPTURE_CONTENT=1` adds prompts, completions and tool I/O.
 
 Backend API request logs are persisted separately in `api_event_log` when `api_logging_enabled = True`.
