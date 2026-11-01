@@ -189,6 +189,24 @@ the agent that handles the hard reasoning runs on a frontier model, in the same
 deployment, behind the same API. You match the model to the task and the budget,
 and the harness underneath is identical.
 
+## Traces
+
+The runtime events a request writes are named after OpenTelemetry spans, so
+every request already reads as a trace in the GenAI conventions: an
+`invoke_agent` span for the run, a `chat` span for each model call with its
+token usage, an `execute_tool` span for each tool call, and subagent requests
+nested under the call that started them. The admin UI, the REPL's `/trace`
+and the trace analysis API all read that projection of the event log, with no
+second store to keep in sync.
+
+The same spans go to Grafana, Datadog, Honeycomb or any OTLP backend when you
+install `mashpy[otel]` and set `OTEL_EXPORTER_OTLP_ENDPOINT` on the host. A
+request is exported when it ends, with its log records and the GenAI client
+metrics, and a workflow run goes out as one trace with each agent step's
+request under its step. A W3C `traceparent` on submit puts the request inside
+your own service's trace. Prompts, completions and tool I/O stay out of the
+export unless you turn content capture on.
+
 ## Evals
 
 The host is also the unit of evaluation. A user request lands on the
