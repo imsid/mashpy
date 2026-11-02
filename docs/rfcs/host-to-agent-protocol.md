@@ -2,9 +2,9 @@
 
 Status: Draft
 
-Version: 0.7.0
+Version: 0.8.0
 
-Last Updated: 2026-10-31
+Last Updated: 2026-11-02
 
 ## 1. Overview
 
@@ -148,7 +148,7 @@ Requests that share a `session_id` are not serialized. Each accepted request sta
 
 ### 5.4 Agent Execution And Streaming
 
-After acceptance, the runtime executes the request and records its lifecycle as an ordered, durable event sequence. The client consumes those events and the host relays them back to the user application.
+After acceptance, the runtime executes the request and records its lifecycle as an ordered, durable event sequence. Each stored event is named after the OpenTelemetry span it opens or closes (section 6.4). The agent server publishes each one under a frame name, the client consumes those frames, and the host relays them back to the user application.
 
 Illustrative request flow:
 
@@ -164,13 +164,13 @@ sequenceDiagram
     Host->>Host: Resolve agent_id to associated client
     Host->>Client: post_request(message, session_id)
     Client->>Agent: submit request
-    Agent->>Store: append request.accepted
+    Agent->>Store: append invoke_agent.start
     Agent-->>Client: request.accepted
     Client-->>Host: request_id
     Host-->>App: request_id
     App->>Host: stream_request_events(agent_id, request_id)
-    Agent->>Store: append request.started / agent.trace / request.completed
-    Store-->>Client: events after cursor
+    Agent->>Store: append mash.context_load.start / chat.* / execute_tool.* / invoke_agent.end
+    Store-->>Client: events after cursor, as request.* and agent.trace frames
     Client-->>Host: stream events
     Host-->>App: SSE request.started / agent.trace / request.completed
 ```
@@ -299,7 +299,8 @@ Inputs:
 Rules:
 
 - `interaction_id` MUST be a non-empty string.
-- The response is delivered to the waiting execution under the topic `interaction_id`. A response for an interaction that is no longer waiting (already answered, timed out, or cancelled) is accepted and has no effect on the request.
+- The response is recorded as the interaction's answer, which the agent publishes as `request.interaction.ack`, and the waiting execution continues with it.
+- An interaction takes one answer: the user's response, the timeout default (section 7.5), or the cancel ack (section 7.7), whichever is recorded first. A response for an interaction that already has one is rejected with `409 INTERACTION_CLOSED`, and one for an interaction the request never opened with `404 INTERACTION_NOT_FOUND`.
 
 The result is a JSON object containing:
 
@@ -321,12 +322,12 @@ Every recorded runtime event is published under one of these names:
 
 | Event | Terminal | Meaning |
 |---|---|---|
-| `request.accepted` | No | The request was recorded and execution was started |
-| `request.started` | No | Execution began and the request's `trace_id` was assigned |
-| `agent.trace` | No | A step in the agent loop: context loaded, model call, tool call, subagent call, step completed, turn persisted |
+| `request.accepted` | No | The request was recorded, its `trace_id` was assigned, and execution was started |
+| `request.started` | No | Execution began loading the request's context |
+| `agent.trace` | No | Any other recorded event: context loaded, a model call starting, streaming or ending, a tool call starting or ending, a step completed, a mode switch |
 | `request.interaction.create` | No | Execution is waiting for a response (section 7) |
 | `request.interaction.ack` | No | The waiting execution received a response, timed out, or was cancelled |
-| `request.resumed` | No | A cancelled request, or one whose automatic recovery ran out, was resumed (section 10.4) |
+| `request.resumed` | No | A cancelled or failed request was resumed (section 10.4) |
 | `request.completed` | Yes | The request finished and its turn was saved |
 | `request.error` | Yes | The request failed |
 | `request.cancelled` | Yes | The request was cancelled |
@@ -338,15 +339,29 @@ Rules:
 - `request.interaction.create` MUST be followed by exactly one `request.interaction.ack` with the same `interaction_id`.
 - `request.interaction.create` and `request.interaction.ack` MAY appear zero or more times between `request.started` and the terminal event.
 - Each execution attempt MUST end with exactly one terminal event.
-- `request.resumed` MAY follow `request.cancelled`, or appear for a request whose automatic recovery ran out, and starts a new attempt, which ends with its own terminal event. A request's lifecycle state is the state set by its latest lifecycle event.
+- `request.resumed` MAY follow `request.cancelled` or `request.error`, and starts a new attempt, which ends with its own terminal event. A request's lifecycle state is the state set by its latest lifecycle event.
+
+Stored events are named after the OpenTelemetry span they open or close, and the agent maps each to a frame:
+
+| Stored event | Frame |
+|---|---|
+| `invoke_agent.start` | `request.accepted` |
+| `mash.context_load.start` | `request.started` |
+| `mash.interaction.start` | `request.interaction.create` |
+| `mash.interaction.end` | `request.interaction.ack` |
+| `mash.request.resumed` | `request.resumed` |
+| `invoke_agent.end` | `request.completed`, `request.error` or `request.cancelled`, by its `status` |
+| `mash.context_load.end`, `chat.start`, `chat.delta`, `chat.end`, `execute_tool.start`, `execute_tool.end`, `mash.step.end`, `mash.request.mode_changed` | `agent.trace` |
+
+Every `.end` event carries `status`: `"ok"`, `"error"` or `"cancelled"`. OpenTelemetry attributes, such as `gen_ai.request.model`, `gen_ai.usage.input_tokens` and `gen_ai.tool.name`, are under `attributes` in the payload. A `RunSubAgents` call is an `execute_tool.start` / `execute_tool.end` pair; its start lists the children's `agent_id` and `request_id` under `subagents`.
 
 Payloads:
 
 - `request.accepted`, `request.started`: `request_id`, `agent_id`, `session_id`, `status` (`"accepted"` or `"started"`).
-- `agent.trace`: `event_type` (the stored runtime event type, such as `runtime.tool.call.completed`), `trace_id`, `session_id`, `loop_index`, `step_key`, `created_at`, and `payload`.
-- `request.completed`: `request_id`, `agent_id`, `session_id`, `status: "completed"`, `trace_id`, and the saved turn, including `response` with `text`, `signals`, and `metadata`, plus `structured_output` when one was requested.
-- `request.error`: `request_id`, `agent_id`, `session_id`, `status: "error"`, `error`, and when known `error_type`, `error_code`, `retryable`, and `stop_reason`.
-- `request.cancelled`: `request_id`, `agent_id`, `session_id`, `status: "cancelled"`.
+- `agent.trace`: `event_type` (the stored event, such as `execute_tool.end`), `trace_id`, `session_id`, `loop_index`, `step_key`, `created_at`, and `payload`.
+- `request.completed`: the `invoke_agent.end` payload: `request_id`, `agent_id`, `session_id`, `status: "ok"`, `trace_id`, `attributes`, and the saved turn, including `response` with `text`, `signals`, and `metadata`, plus `structured_output` when one was requested.
+- `request.error`: `request_id`, `agent_id`, `session_id`, `status: "error"`, `attributes`, `error`, and when known `error_type`, `error_code`, `retryable`, and `stop_reason`.
+- `request.cancelled`: `request_id`, `agent_id`, `session_id`, `status: "cancelled"`, `attributes`.
 - `request.resumed`: `request_id`, `agent_id`, `session_id`, `status: "resumed"`, `previous_status`.
 
 Transient errors (rate limits, timeouts, network errors, provider overload) in model calls and tool calls are retried automatically at the step level before `request.error` is emitted. `retryable` reports the original classification of the error that ended the request.
@@ -373,7 +388,7 @@ Request submission is idempotent on `request_id`. When `post_request` names a `r
 
 ### 6.6 Request Mode
 
-A running request switches mode with `set_request_mode(request_id, mode)`. The runtime appends a `runtime.request.mode_changed` event with payload `{"mode": "fg" | "bg"}`, which the stream publishes as `agent.trace`. A request can switch any number of times, and the event order gives the switches' order. A request that is terminal keeps its mode, and the switch fails with `409 REQUEST_TERMINAL`.
+A running request switches mode with `set_request_mode(request_id, mode)`. The runtime appends a `mash.request.mode_changed` event with payload `{"mode": "fg" | "bg"}`, which the stream publishes as `agent.trace`. A request can switch any number of times, and the event order gives the switches' order. A request that is terminal keeps its mode, and the switch fails with `409 REQUEST_TERMINAL`.
 
 ## 7. Interactions
 
@@ -442,7 +457,8 @@ sequenceDiagram
     Client-->>Host: request.interaction.create event
     Host->>Host: Present interaction to user
     Host->>Client: post_interaction(request_id, interaction_id, response)
-    Client->>Agent: deliver response on topic interaction_id
+    Client->>Agent: POST interaction {interaction_id, response}
+    Agent->>Agent: record the answer, wake the waiting execution
     Agent-->>Client: ok
     Agent-->>Client: request.interaction.ack
     Client-->>Host: request.interaction.ack event
@@ -537,8 +553,9 @@ For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
 2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`
 3. read the request body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
 4. validate that `interaction_id` is a non-empty string, returning `400 INVALID_REQUEST` otherwise
-5. deliver `response` to the request's execution on topic `interaction_id`
-6. return `200 OK` with `{"ok": true, "interaction_id": ...}`
+5. return `404 INTERACTION_NOT_FOUND` if the request never opened `interaction_id`
+6. record `response` as the interaction's answer, returning `409 INTERACTION_CLOSED` if it already has one (section 6.3), and wake the waiting execution
+7. return `200 OK` with `{"ok": true, "interaction_id": ...}`
 
 ### 8.5 Request Control Handling
 
@@ -559,7 +576,7 @@ For `POST /agent/{agent_id}/request/{request_id}/mode`, the server MUST:
 3. validate that `mode` is `fg` or `bg`, returning `400 INVALID_REQUEST` otherwise
 4. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`
 5. return `409 REQUEST_TERMINAL` if the request is terminal
-6. append `runtime.request.mode_changed` and return `200 OK` with `{"request_id", "agent_id", "mode"}`
+6. append `mash.request.mode_changed` and return `200 OK` with `{"request_id", "agent_id", "mode"}`
 
 ### 8.6 Authentication
 
@@ -598,7 +615,7 @@ The runtime execution model MAY vary internally. The reference behavior is:
 
 - every accepted request starts a durable execution immediately
 - requests that share a `session_id` run concurrently; they are not serialized
-- each step of the execution is checkpointed, so a runtime restart resumes the request from its last completed step
+- each step of the execution is checkpointed, so a runtime restart resumes the request from its last completed step; a request that does not finish after repeated restarts ends with `request.error` and `error_type: "recovery_limit"`
 
 ## 9. Per-Agent HTTP Binding
 
@@ -647,7 +664,7 @@ A body that fails schema validation, including an empty `message` or `session_id
 
 - `POST /agent/{agent_id}/request`: body `{message, session_id, user_id, structured_output?, metadata?, mode?}`. `mode` is `fg` (the default) or `bg`. Returns `200` with `{"data": {"request_id": ...}}`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`. A request to a disabled agent returns `409 AGENT_DISABLED`.
 - `GET /agent/{agent_id}/request/{request_id}/events`: the SSE stream for the request (section 6.2). The host closes the stream after writing `request.completed`, `request.error`, or `request.cancelled`.
-- `POST /agent/{agent_id}/request/{request_id}/interaction`: body `{interaction_id, response}`. Returns `200` with `{"data": {"ok": true, "interaction_id": ...}}`.
+- `POST /agent/{agent_id}/request/{request_id}/interaction`: body `{interaction_id, response}`. Returns `200` with `{"data": {"ok": true, "interaction_id": ...}}`, `404 INTERACTION_NOT_FOUND` for an interaction the request never opened, and `409 INTERACTION_CLOSED` for one that already has an answer.
 
 ### 10.3 Host Compositions
 
@@ -661,9 +678,9 @@ The caller streams and answers interactions through the agent routes using the r
 
 ### 10.4 Request Control
 
-- `GET /agent/{agent_id}/request/{request_id}/status` returns `request_id`, `workflow_id`, `status`, and the engine's raw `dbos_status`, plus `error` and `recovery_attempts` when present. `status` is one of `pending`, `queued`, `completed`, `failed`, `cancelled`. A request the engine does not know returns `404 REQUEST_NOT_FOUND`. This is useful when a stream goes silent after a process crash: `pending` means the request will continue once the runtime recovers it.
-- `POST /agent/{agent_id}/request/{request_id}/cancel` stops a running request at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`. The host then cancels the request's running children, each through its own agent; a child whose agent is disabled is skipped. Returns `request_id`, `workflow_id`, `status: "cancelled"`, and `message`. A request that is already terminal is left unchanged and its current status is returned.
-- `POST /agent/{agent_id}/request/{request_id}/resume` continues a cancelled request, or one whose automatic recovery attempts ran out, from its last recorded step, and appends `request.resumed`. Returns `request_id`, `workflow_id`, `status: "resumed"`, `previous_status`, and `message`. A completed or pending request returns its current status without changes. A failed request cannot be resumed; the response reports `status: "failed"` and the request must be rerun. If the request's session has a newer saved turn than the request, resume returns `409 REQUEST_STALE`, because resuming would replay context the session has moved past.
+- `GET /agent/{agent_id}/request/{request_id}/status` returns `request_id` and `status`, the request's recorded lifecycle state: `running`, `completed`, `failed` or `cancelled`. A request the runtime does not know returns `404 REQUEST_NOT_FOUND`. This is useful when a stream goes silent after a process crash: `running` means the request continues once the agent's runtime restarts.
+- `POST /agent/{agent_id}/request/{request_id}/cancel` stops a running request at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`. The host then cancels the request's running children, each through its own agent; a child whose agent is disabled is skipped. Returns `request_id`, `status: "cancelled"`, and `message`. A request that is already terminal is left unchanged and its current status is returned.
+- `POST /agent/{agent_id}/request/{request_id}/resume` continues a cancelled or failed request from its last recorded step, and appends `request.resumed`. A failed request runs its failed step again. Returns `request_id`, `status: "resumed"`, `previous_status`, and `message`. A completed or running request returns its current status without changes. If the request's session has a newer saved turn than the request, resume returns `409 REQUEST_STALE`, because resuming would replay context the session has moved past.
 - `POST /agent/{agent_id}/request/{request_id}/rerun` starts the request over as a new request with a new `request_id`, from the original message and request metadata, against the session's current history. It works for a request in any state. Returns the new request's accepted payload.
 - `POST /agent/{agent_id}/request/{request_id}/mode`: body `{"mode": "fg" | "bg"}`. Switches a running request (section 6.6) and returns `request_id`, `agent_id` and `mode`. A terminal request returns `409 REQUEST_TERMINAL`.
 
@@ -698,7 +715,7 @@ The host binding adds a `details` object (section 10.1).
 
 Request execution failures after acceptance MUST be emitted as `request.error` events rather than converted into a different HTTP response. Transient errors (rate limits, timeouts, network errors, provider overload) in model calls and tool calls are retried automatically at the step level before `request.error` is emitted. The `request.error` payload SHOULD include `error_code` and `retryable` fields so clients can distinguish transient failures (retries exhausted) from permanent ones.
 
-A failed request is started over with rerun (section 10.4).
+A failed request continues from its failed step with resume, or starts over with rerun (section 10.4).
 
 HTTP status codes used by the bindings:
 
@@ -708,7 +725,7 @@ HTTP status codes used by the bindings:
 - `401 Unauthorized` for a missing or invalid bearer token
 - `403 Forbidden` for an agent relay call the caller's token or the parent request does not permit (section 10.5)
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
-- `409 Conflict` for resuming a stale request, switching the mode of a terminal request, a `request_id` that belongs to another agent, or a request to a disabled agent
+- `409 Conflict` for resuming a stale request, switching the mode of a terminal request, answering an interaction that already has an answer, a `request_id` that belongs to another agent, or a request to a disabled agent
 - `422 Unprocessable Entity` for host request bodies that fail schema validation
 - `500 Internal Server Error` for unexpected failures
 
