@@ -23,7 +23,7 @@ Pick a view and an operation, then step through the hops. The lanes show which r
 
 <div data-mash-viz="h2a-flow"><noscript>This walkthrough needs JavaScript.</noscript></div>
 
-In a pool deploy the API routes live under `/api/v1` and wrap responses in `{"data": ...}`. `session_id` is required on every submit route. A submit returns as soon as the request's loop has started; the [agent loop walkthrough](agent-loop-walkthrough.md) picks up from there.
+In a pool deploy the API routes live under `/api/v1` and wrap responses in `{"data": ...}`. `session_id` is required on every submit route. A submit returns as soon as the request's loop has started; [The Durable Agent Loop](durable-agent-loop.md) picks up from there.
 
 ## Stored events and wire events
 
