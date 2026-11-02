@@ -945,16 +945,12 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await runtime.open()
 
-                # Drive the batch step directly on the test loop. (Routing a
-                # full request through DBOS under IsolatedAsyncioTestCase runs
-                # the gathered step on a loop the harness does not pump
-                # concurrently; the production server loop does — verified out
-                # of band. Calling the step here keeps the concurrency check on
-                # one loop and deterministic.)
+                # Drive the batch step directly, so the concurrency check
+                # stays on one loop and deterministic.
                 from mash.runtime.engine.steps import run_step_tool_batch
 
                 new_state = await run_step_tool_batch(
-                    definition.app_id,
+                    runtime,
                     "req-batch",
                     runtime.session_id,
                     "trace-batch",
@@ -1005,7 +1001,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     baseline = len(asyncio.all_tasks())
                     batch = asyncio.create_task(
                         run_step_tool_batch(
-                            definition.app_id,
+                            runtime,
                             "req-admission",
                             runtime.session_id,
                             "trace-admission",
@@ -1052,7 +1048,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.open()
 
                 new_state = await run_step_tool_batch(
-                    definition.app_id,
+                    runtime,
                     "req-cap",
                     runtime.session_id,
                     "trace-cap",

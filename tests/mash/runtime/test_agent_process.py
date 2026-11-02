@@ -27,7 +27,6 @@ from mash.api.config import MashHostConfig
 from mash.api.routes.h2a import build_h2a_router
 from mash.runtime import Host, HostBuilder
 from mash.runtime.agent_process import HostRelay, build_agent_server
-from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.processes import AgentEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
@@ -100,19 +99,12 @@ class TokenTests(unittest.TestCase):
 
 
 class BuildAgentServerTests(unittest.TestCase):
-    def setUp(self) -> None:
-        state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
-        state.start()
-        self.addCleanup(state.stop)
-
-    def test_configures_the_process_for_the_agent(self) -> None:
+    def test_serves_the_named_agent(self) -> None:
         server = build_agent_server(
             _build_pool(), "research", token="tok", host_api_url="http://host"
         )
 
         self.assertEqual(server.agent_id, "research")
-        self.assertEqual(engine_dbos.get_executor_id(), "agent:research")
-        self.assertFalse(engine_dbos._STATE.listen_queues)
 
     def test_subagents_resolve_to_the_host_relay(self) -> None:
         server = build_agent_server(
@@ -443,9 +435,6 @@ class H2ARelayAuthTests(unittest.TestCase):
 
 class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def test_primary_calls_subagent_through_the_host_relay(self) -> None:
-        state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
-        state.start()
-        self.addCleanup(state.stop)
         # One shared Postgres: every process's stores see the same rows.
         runtime_store, memory_store = build_test_stores()
         for target, store in (

@@ -1,22 +1,25 @@
-"""Durable runner identity: a persisted run must resolve after a restart."""
+"""Runner identity: a host recovers the unfinished runs of its own deployment."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import unittest
+from typing import Any
 from unittest.mock import patch
 
-from mash.runtime.host.host import Pool
-from mash.workflows.dbos import (
+from pydantic import BaseModel
+
+from conftest import _TestWorkflowStore
+from mash.workflows import CodeStep, StepContext, WorkflowRegistry, WorkflowSpec
+from mash.workflows.engine import MAX_RECOVERIES, WorkflowRunner
+from mash.workflows.runs import (
     DEFAULT_RUNNER_ID,
     MASH_RUNNER_ID_ENV,
     make_run_id,
-    register_runner,
-    require_runner,
     resolve_runner_id,
-    unregister_runner,
-    workflow_run_id_prefix,
 )
+from mash.workflows.store import RUN_COMPLETED, RUN_FAILED, RUN_QUEUED, WorkflowRunRecord
 
 
 class ResolveRunnerIdTests(unittest.TestCase):
@@ -43,75 +46,108 @@ class ResolveRunnerIdTests(unittest.TestCase):
             self.assertEqual(resolve_runner_id("  "), DEFAULT_RUNNER_ID)
 
 
-class RunnerRegistryTests(unittest.TestCase):
-    """The registry is how a durable run finds the pool that owns it."""
+class _In(BaseModel):
+    n: int
 
-    def setUp(self) -> None:
-        self.registered: list[tuple[str, Pool]] = []
 
-    def tearDown(self) -> None:
-        for runner_id, pool in self.registered:
-            unregister_runner(runner_id, pool)
+class _Out(BaseModel):
+    n: int
 
-    def _start(self, pool: Pool) -> Pool:
-        register_runner(pool.runner_id, pool)
-        self.registered.append((pool.runner_id, pool))
-        return pool
 
-    def test_a_persisted_run_resolves_after_a_restart(self) -> None:
-        # Issue #187: a run queued by one process carries its runner id in the
-        # durable workflow arguments. The process dies; a new one comes up
-        # against the same database and must be able to resolve that id.
-        old = self._start(Pool(runner_id="deploy-a"))
-        persisted_run_id = make_run_id(old.runner_id, "changelog")
-        unregister_runner(old.runner_id, old)
+class _Pool:
+    def __init__(self) -> None:
+        self.registry = WorkflowRegistry()
+        self.store = _TestWorkflowStore("postgresql://test/runtime")
+        self.ran: list[str] = []
 
-        new = self._start(Pool(runner_id="deploy-a"))
+        def _step(inp: _In, ctx: StepContext) -> _Out:
+            self.ran.append(ctx.run_id)
+            return _Out(n=inp.n)
 
-        self.assertIsNot(new, old)
-        self.assertEqual(new.runner_id, old.runner_id)
-        self.assertIs(require_runner("deploy-a"), new)
-        self.assertTrue(
-            persisted_run_id.startswith(
-                workflow_run_id_prefix(new.runner_id, "changelog")
+        self.registry.register(
+            WorkflowSpec(
+                workflow_id="wf",
+                input_model=_In,
+                steps=[CodeStep(step_id="only", run=_step, input=_In, output=_Out)],
             )
         )
 
-    def test_a_restart_with_the_configured_default_also_resolves(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(MASH_RUNNER_ID_ENV, None)
-            old = self._start(Pool())
-            unregister_runner(old.runner_id, old)
-            new = self._start(Pool())
-        self.assertIs(require_runner(DEFAULT_RUNNER_ID), new)
+    def get_workflow_registry(self) -> WorkflowRegistry:
+        return self.registry
 
-    def test_separate_deployments_stay_isolated(self) -> None:
-        # Recovery must not route one deployment's persisted runs into
-        # whichever pool happens to be up.
-        blue = self._start(Pool(runner_id="blue"))
-        green = self._start(Pool(runner_id="green"))
+    def get_workflow_store(self) -> Any:
+        return self.store
 
-        self.assertIs(require_runner("blue"), blue)
-        self.assertIs(require_runner("green"), green)
-        self.assertNotEqual(
-            workflow_run_id_prefix("blue", "wf"),
-            workflow_run_id_prefix("green", "wf"),
+
+class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def _queue(self, pool: _Pool, runner_id: str, *, status: str = RUN_QUEUED) -> str:
+        run_id = make_run_id(runner_id, "wf")
+        await pool.store.create_run(
+            WorkflowRunRecord(
+                run_id=run_id,
+                workflow_id="wf",
+                status=status,
+                workflow_input={"n": 1},
+                created_at=1.0,
+            )
+        )
+        return run_id
+
+    async def _recover(self, pool: _Pool, runner_id: str) -> None:
+        runner = WorkflowRunner(pool, runner_id=runner_id)  # type: ignore[arg-type]
+        await runner.recover()
+        for _ in range(50):
+            if not runner._tasks:
+                break
+            await asyncio.sleep(0.01)
+        await runner.close()
+
+    async def test_a_restarted_host_finishes_its_unfinished_runs(self) -> None:
+        pool = _Pool()
+        queued = await self._queue(pool, "deploy-a")
+        running = await self._queue(pool, "deploy-a", status="running")
+
+        await self._recover(pool, "deploy-a")
+
+        self.assertCountEqual(pool.ran, [queued, running])
+        for run_id in (queued, running):
+            run = await pool.store.get_run(run_id)
+            self.assertEqual(run.status, RUN_COMPLETED)
+
+    async def test_separate_deployments_stay_isolated(self) -> None:
+        pool = _Pool()
+        blue = await self._queue(pool, "blue")
+        green = await self._queue(pool, "green")
+
+        await self._recover(pool, "blue")
+
+        self.assertEqual(pool.ran, [blue])
+        self.assertEqual((await pool.store.get_run(green)).status, RUN_QUEUED)
+
+    async def test_a_run_past_the_recovery_limit_fails(self) -> None:
+        pool = _Pool()
+        run_id = await self._queue(pool, "blue")
+        pool.store._recoveries[run_id] = MAX_RECOVERIES
+
+        await self._recover(pool, "blue")
+
+        run = await pool.store.get_run(run_id)
+        self.assertEqual(pool.ran, [])
+        self.assertEqual(run.status, RUN_FAILED)
+        self.assertIn("recoveries", run.error)
+
+    async def test_a_run_of_an_unregistered_workflow_fails(self) -> None:
+        pool = _Pool()
+        run_id = make_run_id("blue", "gone")
+        await pool.store.create_run(
+            WorkflowRunRecord(run_id=run_id, workflow_id="gone", status=RUN_QUEUED, created_at=1.0)
         )
 
-    def test_an_unknown_runner_id_still_fails_loudly(self) -> None:
-        with self.assertRaises(RuntimeError):
-            require_runner("never-registered")
+        await self._recover(pool, "blue")
 
-    def test_two_pools_cannot_share_one_runner_id(self) -> None:
-        self._start(Pool(runner_id="blue"))
-        with self.assertRaises(ValueError) as caught:
-            self._start(Pool(runner_id="blue"))
-        self.assertIn(MASH_RUNNER_ID_ENV, str(caught.exception))
-
-    def test_re_registering_the_same_pool_is_idempotent(self) -> None:
-        pool = self._start(Pool(runner_id="blue"))
-        register_runner(pool.runner_id, pool)
-        self.assertIs(require_runner("blue"), pool)
+        run = await pool.store.get_run(run_id)
+        self.assertEqual(run.status, RUN_FAILED)
+        self.assertIn("no longer registered", run.error)
 
 
 if __name__ == "__main__":  # pragma: no cover

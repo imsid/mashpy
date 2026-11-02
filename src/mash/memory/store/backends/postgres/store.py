@@ -6,20 +6,12 @@ import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from mash.storage.migrations import run_migrations
+from mash.storage.pool import acquire_pool, release_pool
 
 from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
 from ...protocol import MemoryStore
 
-try:  # pragma: no cover - environment dependent
-    import psycopg
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-except ImportError:  # pragma: no cover - exercised only without optional deps
-    psycopg = None
-    dict_row = None
-    AsyncConnectionPool = None  # type: ignore[assignment]
 
 import asyncio
 
@@ -39,33 +31,17 @@ class PostgresStore(MemoryStore):
         """Open the connection pool and run pending migrations lazily."""
         if self._pool is not None:
             return
-        if psycopg is None or dict_row is None or AsyncConnectionPool is None:  # pragma: no cover - env dependent
-            raise RuntimeError(
-                "psycopg and psycopg_pool are required for PostgresStore. Install mashpy with PostgreSQL dependencies."
-            )
         async with self._open_lock:
             if self._pool is not None:
                 return
-            pool = AsyncConnectionPool(
-                self._database_url,
-                min_size=1,
-                max_size=5,
-                open=False,
-                # Managed Postgres closes idle connections server-side; validate
-                # at checkout so a stale connection is replaced, not handed out.
-                check=AsyncConnectionPool.check_connection,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-            )
-            await pool.open()
-            self._pool = pool
-            await run_migrations(pool)
+            self._pool = await acquire_pool(self._database_url)
 
     async def close(self) -> None:
         """Close the connection pool."""
         if self._pool is None:
             return
-        await self._pool.close()
         self._pool = None
+        await release_pool(self._database_url)
 
     async def save_logs(self, logs: List[Dict[str, Any]]) -> None:
         if not logs:

@@ -55,7 +55,7 @@ Agent processes
 - `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code` and `edit_file`, and `sandbox_put` and `sandbox_get` when its spec declares file roots.
 - `MASH_BROWSER_ENABLED=1`: the host has browsers, so the agent gets the browser tools when its spec lists sites.
 - `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
-- DBOS runs as executor `agent:<agent_id>` under an application name of its own and listens to no queues, so the process recovers only this agent's requests, no other process runs them, and it never runs the host's workflow runs.
+- On start the process continues this agent's requests that are `running`, from their checkpoints. Idle, it makes no database queries and its connection pool closes idle connections.
 
 Sandboxes
 

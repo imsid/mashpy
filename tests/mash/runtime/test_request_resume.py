@@ -1,4 +1,4 @@
-"""Tests for Phase 4 resume hardening: stale-session guard + resumed event."""
+"""Tests for resume: the stale-session guard and the resumed event."""
 
 from __future__ import annotations
 
@@ -125,33 +125,40 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(public[-1]["event"], "request.resumed")
 
-    async def test_resume_failed_request_is_refused(self) -> None:
-        """DBOS refuses to resume a workflow that ended in ERROR.
-
-        Its ``resume_workflows`` update excludes SUCCESS and ERROR, so calling
-        resume there is a silent no-op. Say so rather than reporting a resume
-        that never happened — and never emit ``request.resumed``, which would
-        strand the request as non-terminal with nothing executing it.
-        """
+    async def test_resume_failed_request_runs_it_again(self) -> None:
         runtime = await self._runtime()
-        await self._seed(
-            runtime, "req-failed", terminal="error"
-        )
+        await self._seed(runtime, "req-failed", terminal="error")
 
         result = await runtime.resume_request("req-failed")
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("rerun", result["message"])
+        self.assertEqual(result["status"], "resumed")
+        self.assertEqual(result["previous_status"], "failed")
 
         events = await runtime.runtime_store.list_request_events("req-failed")
-        self.assertFalse(
-            any(
-                e.event_type == RuntimeEventType.REQUEST_RESUMED.value
-                for e in events
+        self.assertIn(
+            RuntimeEventType.REQUEST_RESUMED.value, [e.event_type for e in events]
+        )
+
+    async def test_resume_running_request_is_a_no_op(self) -> None:
+        runtime = await self._runtime()
+        await runtime.runtime_store.append_event(
+            RuntimeEvent(
+                request_id="req-running",
+                app_id=runtime.app_id,
+                agent_id=runtime.app_id,
+                session_id="s-1",
+                trace_id="tr-r",
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
             )
         )
-        # Stays terminal, so streams do not re-open on a request nothing runs.
-        self.assertTrue(
-            await runtime.runtime_store.is_request_terminal("req-failed")
+
+        result = await runtime.resume_request("req-running")
+
+        self.assertEqual(result["status"], "running")
+        events = await runtime.runtime_store.list_request_events("req-running")
+        self.assertNotIn(
+            RuntimeEventType.REQUEST_RESUMED.value, [e.event_type for e in events]
         )
 
     async def test_completed_request_in_moved_on_session_is_not_stale(self) -> None:

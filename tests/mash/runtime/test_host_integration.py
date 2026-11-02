@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
-import inspect
 import json
 import os
 import tempfile
@@ -25,8 +23,6 @@ from mash.core.llm.types import (
 )
 from mash.logging import bound_request_id, bound_subagent_id_prefix, get_request_metadata
 from mash.runtime.client import AgentClientError
-from mash.runtime.engine.dbos import register_runtime, require_runtime, unregister_runtime
-from mash.runtime.engine.workflow import execute_request_workflow
 from mash.runtime import AgentSpec, Host, HostBuilder
 from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import (
@@ -40,13 +36,6 @@ from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
 from mash.tools.subagent import RunSubAgentsTool, child_request_id
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
-from mash.workflows import dbos as workflow_dbos
-
-_IN_FAKE_DBOS_STEP: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "in_fake_dbos_step",
-    default=False,
-)
-
 
 class _ForUser:
     """An agent client whose requests act for one user, as the relay's do."""
@@ -77,94 +66,6 @@ class _CodeInput(BaseModel):
 
 def _code_passthrough(inp: _CodeInput, _ctx: StepContext) -> _CodeInput:
     return inp
-
-
-class _FakeWorkflowDBOS:
-    @staticmethod
-    async def run_step_async(_config, func, *args, **kwargs):
-        token = _IN_FAKE_DBOS_STEP.set(True)
-        try:
-            result = func(*args, **kwargs)
-            if inspect.isawaitable(result):
-                return await result
-            return result
-        finally:
-            _IN_FAKE_DBOS_STEP.reset(token)
-
-    @staticmethod
-    async def list_workflows_async(**_kwargs):
-        return []
-
-
-class _FailureInspectingWorkflowDBOS:
-    fail_payload: dict[str, Any] | None = None
-
-    @classmethod
-    async def run_step_async(cls, config, func, *args, **kwargs):
-        if dict(config or {}).get("name") == "request.fail":
-            payload = args[-1]
-            if isinstance(payload, BaseException):
-                raise AssertionError("request.fail received a raw exception")
-            if not isinstance(payload, dict):
-                raise AssertionError("request.fail payload must be a dict")
-            cls.fail_payload = dict(payload)
-        token = _IN_FAKE_DBOS_STEP.set(True)
-        try:
-            result = func(*args, **kwargs)
-            if inspect.isawaitable(result):
-                return await result
-            return result
-        finally:
-            _IN_FAKE_DBOS_STEP.reset(token)
-
-    @staticmethod
-    async def list_workflows_async(**_kwargs):
-        return []
-
-
-class _StepRestrictedRequestEngine:
-    def __init__(self, runtime, *, database_url: str) -> None:
-        self._runtime = runtime
-        self._database_url = database_url
-        self._tasks: set[asyncio.Task[None]] = set()
-
-    async def open(self) -> None:
-        register_runtime(self._runtime)
-        return None
-
-    async def close(self) -> None:
-        if self._tasks:
-            tasks = list(self._tasks)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            self._tasks.clear()
-        unregister_runtime(self._runtime)
-
-    async def start_request(
-        self,
-        *,
-        request_id: str,
-        message: str,
-        session_id: str,
-        request_metadata: dict[str, Any],
-    ) -> None:
-        del self._database_url
-        if _IN_FAKE_DBOS_STEP.get():
-            raise AssertionError()
-        task = asyncio.create_task(
-            execute_request_workflow(
-                self._runtime.app_id,
-                request_id,
-                message,
-                session_id,
-                dict(request_metadata or {}),
-                require_runtime=require_runtime,
-            ),
-            name=f"StepRestrictedRequest-{self._runtime.app_id}-{request_id}",
-        )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
 
 class _MetadataReadingTool:
@@ -597,114 +498,93 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(listed), 1)
                     self.assertIn("changelog", {item["workflow_id"] for item in listed})
 
-                    async def start_workflow_run(**_kwargs):
-                        return f"mw:{pool.runner_id}:changelog:abc"
-
-                    async def get_workflow_status(_run_id):
-                        return None
-
-                    with patch.object(
-                        workflow_dbos,
-                        "start_workflow_run",
-                        start_workflow_run,
-                    ), patch.object(
-                        workflow_dbos,
-                        "get_workflow_status",
-                        get_workflow_status,
-                    ):
-                        run = await workflow_service.run_workflow("changelog", user_id="u-1")
+                    run = await workflow_service.run_workflow("changelog", user_id="u-1")
                     self.assertEqual(run.status, "queued")
+                    self.assertTrue(run.run_id.startswith(f"mw:{pool.runner_id}:changelog:"))
                 finally:
                     await pool.close()
 
     async def test_workflow_agent_step_submits_through_the_client(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                with patch(
-                    "mash.runtime.service.DBOSRequestEngine",
-                    _StepRestrictedRequestEngine,
-                ), patch("mash.runtime.engine.workflow.DBOS", _FakeWorkflowDBOS):
-                    worker_spec = build_spec(
-                        agent_id="worker",
-                        response_text='{"ok":true}',
+                worker_spec = build_spec(
+                    agent_id="worker",
+                    response_text='{"ok":true}',
+                )
+                pool = (
+                    HostBuilder()
+                    .agent(
+                        build_spec(agent_id="primary", response_text="primary-ok"),
+                        metadata=metadata(),
                     )
-                    pool = (
-                        HostBuilder()
-                        .agent(
-                            build_spec(agent_id="primary", response_text="primary-ok"),
-                            metadata=metadata(),
+                    .workflow(
+                        WorkflowSpec(
+                            workflow_id="wf",
+                            steps=[
+                                AgentStep(
+                                    step_id="task",
+                                    agent_spec=worker_spec,
+                                    output={"type": "object"},
+                                )
+                            ],
                         )
-                        .workflow(
-                            WorkflowSpec(
-                                workflow_id="wf",
-                                steps=[
-                                    AgentStep(
-                                        step_id="task",
-                                        agent_spec=worker_spec,
-                                        output={"type": "object"},
-                                    )
-                                ],
-                            )
-                        )
-                        .build()
                     )
-                    pool.configure_runtime_database_url("postgresql://test/runtime")
-                    await pool.start()
-                    try:
-                        with patch.object(
-                            workflow_dbos,
-                            "_load_dbos_api",
-                            return_value=(_FakeWorkflowDBOS, None, None, None, None),
-                        ), patch(
-                            "mash.workflows.engine.load_dbos_api",
-                            return_value=(_FakeWorkflowDBOS, None, None, None, None),
-                        ):
-                            output = await workflow_dbos.execute_registered_workflow(
-                                pool.runner_id,
-                                "wf",
-                                f"mw:{pool.runner_id}:wf:test",
-                                workflow_input={"target_agent_id": "primary"},
-                                session_id="repl-session-1",
-                                user_id="u-7",
-                            )
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    service = pool.get_workflow_service()
+                    run = await service.run_workflow(
+                        "wf",
+                        workflow_input={"target_agent_id": "primary"},
+                        session_id="repl-session-1",
+                        user_id="u-7",
+                    )
+                    run_id = run.run_id
+                    for _ in range(250):
+                        finished = await service.get_run("wf", run_id)
+                        if finished.status in ("completed", "failed"):
+                            break
+                        await asyncio.sleep(0.02)
 
-                        self.assertEqual(output["result"], {"ok": True})
-                        run_id = f"mw:{pool.runner_id}:wf:test"
-                        worker = _agent_runtime(pool, "worker")
-                        sessions = await worker.list_sessions()
-                        # The run executes under the threaded caller session (no
-                        # synthetic workflow:...:run: scheme), tagged by run id.
-                        self.assertEqual(len(sessions), 1)
-                        self.assertEqual(sessions[0]["session_id"], "repl-session-1")
+                    self.assertEqual(finished.status, "completed")
+                    self.assertEqual(finished.result, {"ok": True})
+                    worker = _agent_runtime(pool, "worker")
+                    sessions = await worker.list_sessions()
+                    # The run executes under the threaded caller session (no
+                    # synthetic workflow:...:run: scheme), tagged by run id.
+                    self.assertEqual(len(sessions), 1)
+                    self.assertEqual(sessions[0]["session_id"], "repl-session-1")
 
-                        run_turns = await worker.memory_store.list_workflow_turns(
-                            app_id="worker", workflow_id="wf"
-                        )
-                        self.assertEqual(len(run_turns), 1)
-                        self.assertEqual(run_turns[0]["workflow_run_id"], run_id)
-                        self.assertEqual(run_turns[0]["task_id"], "task")
+                    run_turns = await worker.memory_store.list_workflow_turns(
+                        app_id="worker", workflow_id="wf"
+                    )
+                    self.assertEqual(len(run_turns), 1)
+                    self.assertEqual(run_turns[0]["workflow_run_id"], run_id)
+                    self.assertEqual(run_turns[0]["task_id"], "task")
 
-                        # The run's trace events are queryable by workflow_run_id.
-                        events = await worker.runtime_store.list_events(
-                            app_id="worker", workflow_run_id=run_id
-                        )
-                        self.assertTrue(events)
-                        self.assertTrue(
-                            all(e.workflow_run_id == run_id for e in events)
-                        )
-                        # The step submits under a request id fixed by run and step.
-                        self.assertEqual(
-                            {e.request_id for e in events}, {f"{run_id}-task"}
-                        )
-                        # ... and for the run's user.
-                        identity = await worker.runtime_store.get_request_identity(
-                            f"{run_id}-task"
-                        )
-                        self.assertEqual(identity.user_id, "u-7")
-                    finally:
-                        await pool.close()
+                    # The run's trace events are queryable by workflow_run_id.
+                    events = await worker.runtime_store.list_events(
+                        app_id="worker", workflow_run_id=run_id
+                    )
+                    self.assertTrue(events)
+                    self.assertTrue(
+                        all(e.workflow_run_id == run_id for e in events)
+                    )
+                    # The step submits under a request id fixed by run and step.
+                    self.assertEqual(
+                        {e.request_id for e in events}, {f"{run_id}-task"}
+                    )
+                    # ... and for the run's user.
+                    identity = await worker.runtime_store.get_request_identity(
+                        f"{run_id}-task"
+                    )
+                    self.assertEqual(identity.user_id, "u-7")
+                finally:
+                    await pool.close()
 
-    async def test_provider_exception_is_surfaced_without_crossing_dbos_as_object(self) -> None:
+    async def test_provider_exception_is_surfaced_on_the_terminal_event(self) -> None:
         class FakeProviderError(RuntimeError):
             pass
 
@@ -716,23 +596,16 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async def raise_provider_error(*_args, **_kwargs):
             raise FakeProviderError(provider_message)
 
-        _FailureInspectingWorkflowDBOS.fail_payload = None
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 async def _no_retry(fn, **_kw):
                     return await fn()
 
                 with patch(
-                    "mash.runtime.service.DBOSRequestEngine",
-                    _StepRestrictedRequestEngine,
-                ), patch(
-                    "mash.runtime.engine.workflow.DBOS",
-                    _FailureInspectingWorkflowDBOS,
-                ), patch(
-                    "mash.runtime.engine.workflow.plan_request_step",
+                    "mash.runtime.engine.loop.plan_request_step",
                     raise_provider_error,
                 ), patch(
-                    "mash.runtime.engine.workflow.retry_transient",
+                    "mash.runtime.engine.loop.retry_transient",
                     _no_retry,
                 ):
                     pool = HostBuilder().agent(
@@ -750,16 +623,8 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         payload = events[-1]["data"]
                         self.assertEqual(payload["error"], provider_message)
                         self.assertEqual(payload["error_type"], "FakeProviderError")
-                        self.assertEqual(
-                            _FailureInspectingWorkflowDBOS.fail_payload,
-                            {
-                                "error": provider_message,
-                                "error_type": "FakeProviderError",
-                                "error_code": "overloaded",
-                                "retryable": True,
-                            },
-                        )
-                        self.assertNotIn("gASV", str(payload.get("error")))
+                        self.assertEqual(payload["error_code"], "overloaded")
+                        self.assertIs(payload["retryable"], True)
                     finally:
                         await pool.close()
 
@@ -1266,78 +1131,74 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_subagent_call_inside_a_dbos_step_submits_over_http(self) -> None:
+    async def test_subagent_call_inside_a_step_submits_over_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                with patch(
-                    "mash.runtime.service.DBOSRequestEngine",
-                    _StepRestrictedRequestEngine,
-                ), patch("mash.runtime.engine.workflow.DBOS", _FakeWorkflowDBOS):
-                    pool = (
-                        HostBuilder()
-                        .agent(
-                            build_delegating_spec(
-                                agent_id="primary-app",
-                                final_text="delegated-ok",
-                                subagent_id="research",
-                                subagent_prompt="analyze",
-                            ),
-                            metadata=metadata(),
-                        )
-                        .agent(
-                            build_spec(
-                                agent_id="research",
-                                response_text="research-ok",
-                            ),
-                            metadata=metadata(),
-                        )
-                        .host(
-                            Host(
-                                host_id="assistant",
-                                primary="primary-app",
-                                subagents=("research",),
-                            )
-                        )
-                        .build()
+                pool = (
+                    HostBuilder()
+                    .agent(
+                        build_delegating_spec(
+                            agent_id="primary-app",
+                            final_text="delegated-ok",
+                            subagent_id="research",
+                            subagent_prompt="analyze",
+                        ),
+                        metadata=metadata(),
                     )
-                    pool.configure_runtime_database_url("postgresql://test/runtime")
-                    await pool.start()
-                    try:
-                        accepted = await pool.submit_host_request(
-                            "assistant", message="delegate", session_id="s-1",
-                            user_id="u-1",
+                    .agent(
+                        build_spec(
+                            agent_id="research",
+                            response_text="research-ok",
+                        ),
+                        metadata=metadata(),
+                    )
+                    .host(
+                        Host(
+                            host_id="assistant",
+                            primary="primary-app",
+                            subagents=("research",),
                         )
-                        request_id = accepted["request_id"]
-                        self.assertTrue(request_id)
+                    )
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    accepted = await pool.submit_host_request(
+                        "assistant", message="delegate", session_id="s-1",
+                        user_id="u-1",
+                    )
+                    request_id = accepted["request_id"]
+                    self.assertTrue(request_id)
 
-                        client = pool.get_client("primary-app")
-                        result = await _collect_terminal_payload(client, request_id, timeout=5)
-                        self.assertEqual(result["response"]["text"], "delegated-ok")
+                    client = pool.get_client("primary-app")
+                    result = await _collect_terminal_payload(client, request_id, timeout=5)
+                    self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                        primary = _agent_runtime(pool, "primary-app")
-                        request_events = await primary.runtime_store.list_request_events(request_id)
-                        subagent_events = [
-                            event
-                            for event in request_events
-                            if event.event_type == "execute_tool.end"
-                        ]
-                        self.assertEqual(len(subagent_events), 1)
-                        self.assertTrue(
-                            subagent_events[0]
-                            .payload["result"]["metadata"]
-                            .get("request_id")
-                        )
+                    primary = _agent_runtime(pool, "primary-app")
+                    request_events = await primary.runtime_store.list_request_events(request_id)
+                    subagent_events = [
+                        event
+                        for event in request_events
+                        if event.event_type == "execute_tool.end"
+                    ]
+                    self.assertEqual(len(subagent_events), 1)
+                    self.assertTrue(
+                        subagent_events[0]
+                        .payload["result"]["metadata"]
+                        .get("request_id")
+                    )
 
-                        research = _agent_runtime(pool, "research")
-                        expected_subagent_session = "s-1"
-                        turns = await research.store.get_turns(
-                            session_id=expected_subagent_session,
-                            app_id=research.app_id,
-                            limit=1,
-                        )
-                        self.assertEqual(turns[-1]["user_message"], "analyze")
-                    finally:
-                        await pool.close()
+                    research = _agent_runtime(pool, "research")
+                    expected_subagent_session = "s-1"
+                    turns = await research.store.get_turns(
+                        session_id=expected_subagent_session,
+                        app_id=research.app_id,
+                        limit=1,
+                    )
+                    self.assertEqual(turns[-1]["user_message"], "analyze")
+                finally:
+                    await pool.close()
 
     async def test_replayed_subagent_call_reattaches_to_the_same_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,6 +1,6 @@
 ---
 title: The Durable Agent Loop
-description: How the Mash agent loop runs, what runs through tool calls, how DBOS checkpointing makes the hosted runtime crash-safe, and how cancel, resume, and rerun control a request.
+description: How the Mash agent loop runs, what runs through tool calls, how per-step checkpoints make the hosted runtime crash-safe, and how cancel, resume, and rerun control a request.
 date: 2026-06-10
 author: imsid
 tags:
@@ -14,7 +14,7 @@ The agent loop in Mash is a think/act/observe cycle. Almost everything the agent
 
 A trace spans one user message through the full loop run to the final response, written as one row in `memory_turns` on completion. Within a trace, each iteration of the loop is a turn — one think/act/observe cycle.
 
-The runtime wraps each request in a [DBOS](https://docs.dbos.dev) workflow. The LLM call and the commit are each a checkpoint; each tool call gets its own checkpoint. If the agent's process crashes mid-run, the host restarts it and the workflow resumes from the last completed checkpoint.
+The runtime runs each request as a loop that checkpoints to Postgres. The LLM call and the commit are each a checkpoint; each tool call gets its own checkpoint. If the agent's process crashes mid-run, the host restarts it and the request continues from the last completed checkpoint.
 
 ## The loop
 
@@ -50,40 +50,23 @@ From the loop's perspective, these are all tool calls. The routing happens insid
 
 ## Checkpoint-level durability
 
-Because DBOS replays a workflow from its last completed checkpoint on crash recovery, the granularity of checkpoints determines the cost of recovery. If the whole loop were one checkpoint, a crash mid-run would replay from the start: every LLM call billed again, every tool call executed again. For agents that write to external systems, that matters.
+A recovered request continues from its last completed checkpoint, so the granularity of checkpoints determines the cost of recovery. If the whole loop were one checkpoint, a crash mid-run would replay from the start: every LLM call billed again, every tool call executed again. For agents that write to external systems, that matters.
 
-The runtime maps each loop iteration to three checkpoints. The LLM call runs as `step.plan.N`. Each tool call runs as its own `tool.call.N.M` checkpoint (parallel-safe calls may be batched into a single `tool.batch.N.M`). The commit runs as `step.commit.N`. In code:
+The runtime saves a checkpoint after each step of a loop iteration: after the LLM call (`step.plan.N`), after each tool call (`tool.call.N.M`; parallel-safe calls may run together as one `tool.batch.N.M`), and after the commit (`step.commit.N`). A checkpoint is the request's loop state, written over the previous one in its `runtime_request` row. In code:
 
 ```python
-# src/mash/runtime/engine/workflow.py: execute_request_workflow (trimmed)
-while True:
-    loop_index = int(workflow_state.get("loop_index") or 0)
-
-    workflow_state = await retry_transient(
-        lambda: DBOS.run_step_async(
-            {"name": f"step.plan.{loop_index}"},
-            plan_request_step, ...,
-        )
-    )
-
-    for call_index, tool_call in enumerate(tool_calls):
-        existing_results = list(workflow_state.get("result_payloads") or [])
-        if call_index < len(existing_results):
-            continue                      # already ran before the crash; skip
-        workflow_state = await _run_tool_call_for_workflow(
-            ..., loop_index=loop_index, call_index=call_index, tool_call=...,
-        )
-
-    workflow_state = await DBOS.run_step_async(
-        {"name": f"step.commit.{loop_index}"},
-        commit_request_step, ...,
-    )
-
-    if bool(workflow_state.get("done")):
-        return
+# src/mash/runtime/engine/loop.py: RequestRun._run (trimmed)
+while not state.get("done"):
+    if state.get("action") is None:        # not planned yet
+        state = await retry_transient(lambda: plan_request_step(...))
+        await self._save(state)
+    state = await self._act(state)          # runs the calls with no result yet,
+                                            # saving after each one
+    state = await commit_request_step(...)
+    await self._save(state)
 ```
 
-On resume, the `continue` in the tool call loop skips any calls whose results are already in `result_payloads`. Execution picks up at the first tool call that did not complete.
+`_act` starts at `len(state["result_payloads"])`, so on recovery it skips the calls whose results are already in the checkpoint. Execution picks up at the first tool call that did not complete.
 
 ```mermaid
 flowchart TD
@@ -103,7 +86,7 @@ flowchart TD
 
 Each green box is a checkpoint. A crash between any two of them resumes at the boundary. Re-running `step.plan.N` costs one extra LLM call with no side effects. Re-running a tool call that already completed is prevented by the index check.
 
-DBOS replays the workflow function on resume, so the loop carries all execution state in one dict passed between checkpoints:
+The loop carries all execution state in one dict, the checkpoint's `state`:
 
 | Field | What it holds |
 |---|---|
@@ -114,7 +97,7 @@ DBOS replays the workflow function on resume, so the loop carries all execution 
 | `aggregate_usage`, `tool_usage` | token accounting across the run |
 | `done` | whether `commit_step` declared the run terminal |
 
-Nothing here is written to `memory_turns` until the trace completes. Partial progress lives in workflow state and the event log until then.
+Nothing here is written to `memory_turns` until the trace completes. Partial progress lives in the checkpoint and the event log until then.
 
 ## Cancel, resume, and rerun
 
@@ -122,9 +105,7 @@ The replay that recovers a crashed process also gives a person control over a re
 
 Cancel stops a running request at the next step boundary. The step in flight finishes and checkpoints first, so a tool call that already started completes and its result is recorded. A request parked on an approval or `AskUser` has that tool call terminated. A subagent invocation is a tool call like any other: a child that has already been invoked runs to completion, and cancel never cascades to it.
 
-Resume continues a cancelled request from its last checkpoint. All of its context comes from the checkpoints, so the request picks up with the model context as it stood rather than one rebuilt from the original message. A request whose session has accrued a later turn is rejected with a 409, because resume replays the original context snapshot and allowing it would persist a turn that ignores everything after it. A request cancelled while parked on an interaction resumes by issuing a fresh `AskUser` call under a new interaction id.
-
-DBOS declines to resume a workflow that ended in error, since its resume path updates only workflows whose status is outside `SUCCESS` and `ERROR`. A failed request starts over with rerun instead.
+Resume continues a cancelled or failed request from its last checkpoint; a failed one runs its failed step again. All of its context comes from the checkpoints, so the request picks up with the model context as it stood rather than one rebuilt from the original message. A request whose session has accrued a later turn is rejected with a 409, because resume replays the original context snapshot and allowing it would persist a turn that ignores everything after it. A request cancelled while parked on an interaction resumes by issuing a fresh `AskUser` call under a new interaction id.
 
 Rerun starts a previous request over as a new request, with a new request id, a new trace, and a `rerun_of` key stamped into the request metadata for provenance. The original message and host snapshot ride along, and `context.load` runs fresh against the session as it stands now.
 
@@ -142,13 +123,13 @@ seq  event_type                     detail
 47   execute_tool.start             sleep 3 && echo step-8
 ```
 
-Seq 44 is where the cancel landed. The model call that was already running finished and checkpointed, which is why its `chat.end` sits after the cancelled `invoke_agent.end`. Resume at 46 replays the checkpoints and execution continues at the eighth tool call. No work between step-7 and step-8 ran twice.
+Seq 44 is where the cancel landed. The model call that was already running finished and checkpointed, which is why its `chat.end` sits after the cancelled `invoke_agent.end`. Resume at 46 reads the checkpoint and execution continues at the eighth tool call. No work between step-7 and step-8 ran twice.
 
 Because terminality reads the last lifecycle event for a request, `mash.request.resumed` returns a cancelled request to non-terminal, and a client whose stream ended reopens it. Trace and request are one to one, so the admin UI hangs these three actions off the Logs trace view and addresses the request by its trace id.
 
 ## Event sourcing
 
-Every plan, tool call, and commit emits structured events to the `runtime_event_log` table alongside the workflow state. Those events are how the streaming API works: a client polling `GET .../request/{id}/events` is reading from that log. They are also how the runtime provides observability into a run.
+Every plan, tool call, and commit emits structured events to the `runtime_event_log` table alongside the checkpoint. Those events are how the streaming API works: a client polling `GET .../request/{id}/events` is reading from that log. They are also how the runtime provides observability into a run.
 
 The events are the same regardless of which LLM provider runs the think step. All providers (Anthropic, OpenAI, Gemini, and OSS models via `OSSCompatibleProvider`) implement the same `send(LLMRequest) -> LLMResponse` interface. The loop works only with `LLMResponse`, so `chat.end` carries the same fields whether Claude or a self-hosted Qwen model produced the plan, with the provider and model as its `gen_ai.provider.name` and `gen_ai.request.model` attributes. Swapping providers is a change to `build_llm()`; the events, the tooling, and the loop are unaffected.
 
@@ -161,7 +142,7 @@ where session_id = 'd8ec0a00-20df-48dc-a90b-9aa1b8393f8b'
 order by seq;
 ```
 
-The event log and workflow state are separate stores. Workflow state holds what the runtime needs to continue execution; the event log holds the record of what happened. The completed trace is written to a third store. That split is covered in the next post.
+The event log and the checkpoint are separate. The checkpoint holds what the runtime needs to continue execution; the event log holds the record of what happened. The completed trace is written to a third store. That split is covered in the next post.
 
 ## Failure handling
 
@@ -170,8 +151,8 @@ Three layers cover different failure modes:
 | Failure | Handled by | You do |
 |---|---|---|
 | Transient error (rate limit, timeout, network blip) | `retry_transient()`: in-process retry with exponential backoff and jitter, three retries after the first attempt | nothing |
-| Retries exhausted, or terminal error (bad API key, context overflow) | workflow emits `request.error` with `error_code` and `retryable` | inspect; call `POST .../rerun` if worth running again |
-| Process crash (OOM, `kill -9`, hardware) | DBOS finds the orphaned workflow on next startup and replays from the last checkpoint | nothing |
+| Retries exhausted, or terminal error (bad API key, context overflow) | the loop emits `request.error` with `error_code` and `retryable` | inspect; call `POST .../resume` to retry the failed step, or `.../rerun` to start over |
+| Process crash (OOM, `kill -9`, hardware) | the restarted process continues the agent's running requests from their checkpoints; after 10 recoveries a request fails | nothing |
 
 The first layer wraps LLM planning and tool execution and classifies errors by pattern:
 
@@ -190,6 +171,6 @@ _TERMINAL_PATTERNS = (
 )
 ```
 
-Unknown errors default to retryable. A crashed process emits no `request.error`, so `GET .../request/{id}/status` covers that case by querying the DBOS workflow state directly. A status of `pending` means the request will recover on next startup; `failed` means it will not recover on its own, and rerun is how it starts over.
+Unknown errors default to retryable. A crashed process emits no `request.error`, so `GET .../request/{id}/status` covers that case by reading the request's status from `runtime_request`. A status of `running` means the request continues when its agent's process starts; `failed` means it will not continue on its own.
 
 *Next: [The Runtime Store](persistence-store.md).*

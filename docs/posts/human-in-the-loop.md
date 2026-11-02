@@ -43,8 +43,8 @@ After each plan step, the workflow checks the planned tool calls against `regist
 On a denial, the workflow synthesizes an error result for each pending call and hands it back to the model like any other tool outcome, and the request keeps going:
 
 ```python
-# src/mash/runtime/engine/workflow.py (trimmed)
-denied_result = {
+# src/mash/runtime/engine/loop.py (trimmed)
+denied = {
     "tool_call_id": tool_call.id,
     "tool_name": tool_call.name,
     "result": {
@@ -62,9 +62,9 @@ The agent observes the denial in its next think phase and can adjust or propose 
 The second pause is agent-initiated. `AskUser` is a built-in tool the agent calls when it needs information to continue, and in the hosted runtime its `execute()` method is dead code: the workflow recognizes the call by name and routes around it.
 
 ```python
-# src/mash/runtime/engine/workflow.py (trimmed)
-if str(tool_call.get("name") or "") == "AskUser":
-    return await _handle_ask_user_interaction(...)
+# src/mash/runtime/engine/loop.py (trimmed)
+if name == "AskUser":
+    return await self._ask_user(state, tool_call=tool_call, loop_index=loop_index)
 ```
 
 The interception exists for durability. The tool's purpose is to wait for a human, and a plain `await` inside `execute()` would hold that wait in process memory, where one restart would lose the question. The workflow translates the call into a durable interaction instead, and when the answer arrives, it hands the agent an ordinary `ToolResult` whose content is the user's response. As far as the model is concerned, `AskUser` is a tool that works like any other. (Outside a hosted runtime, calling it returns an error result saying it only works hosted.)
@@ -83,30 +83,22 @@ The timeout defaults are conservative: an unanswered approval is a denial, and `
 
 ## The pause machinery
 
-The whole flow is visible in `execute_request_workflow`. The workflow emits an event, then blocks on DBOS's durable messaging:
+The whole flow is visible in `RequestRun._run_interaction`. The loop opens the interaction in a step whose result it keeps in its checkpoint, then waits for the answer:
 
 ```python
-# src/mash/runtime/engine/workflow.py (trimmed)
-interaction_id = f"itr_{uuid.uuid4().hex[:12]}"
-
-await DBOS.run_step_async(
-    {"name": f"interaction.create.{loop_index}"},
-    emit_interaction_create, ...,
+# src/mash/runtime/engine/loop.py (trimmed)
+opened = await self._step(
+    f"{step_prefix}.open.{loop_index}.{attempt}",
+    self._open_interaction, ...,       # mints the id, appends interaction.create
 )
-
-response = await DBOS.recv_async(interaction_id, timeout_seconds=timeout_seconds)
-
-timed_out = response is None
-if timed_out:
-    response = "deny" if interaction_type == "approval" else ...
-
-await DBOS.run_step_async(
-    {"name": f"interaction.ack.{loop_index}"},
-    emit_interaction_ack, ...,
+response, timed_out = await self._await_answer(
+    opened["interaction_id"], deadline=opened["deadline"], ...
 )
 ```
 
-`DBOS.recv_async` is the durable block, a checkpoint in the workflow that says it is waiting for a message on this topic. The process can die and restart any number of times while the workflow sits there; on recovery, DBOS replays to the `recv` and resumes waiting. The pause belongs to the workflow's durable state, so whichever process recovers the workflow continues the wait.
+The answer is an event: the interaction's `mash.interaction.end`, keyed `interaction.ack.<id>`. `_await_answer` waits in process until the deadline, then reads the log. At the deadline it appends the default answer itself (`deny` for an approval), under the same key, so an answer and a timeout that race leave one row, and both sides read it.
+
+The process can die and restart any number of times while the request waits. The recovered loop finds the interaction's id and deadline in its checkpoint, reads the answer from the log if one arrived while it was down, and otherwise waits out the rest of the deadline.
 
 On the wire, the client sees the pause as a pair of frames in the event stream from [the request lifecycle post](request-lifecycle.md):
 
@@ -129,21 +121,21 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request/7c9e…/interactio
   -d '{"interaction_id": "itr_a1b2c3d4e5f6", "response": "approve"}'
 ```
 
-Under the hood that call becomes `DBOS.send(workflow_id, response, topic=interaction_id)`, a message addressed to the waiting workflow and keyed by the interaction id. The `recv` wakes, the `ack` event is appended, and the loop continues into the tool phase.
+The agent's process appends the answer as the `ack` event and wakes the waiting loop, which continues into the tool phase. An answer to an interaction that already has one, a timeout or a cancel gets `409 INTERACTION_CLOSED`.
 
 ```mermaid
 sequenceDiagram
     participant User
     participant API as mash.api
-    participant WF as request workflow
+    participant WF as request loop
     participant Log as event log
 
     WF->>Log: request.interaction.create
     Log-->>User: SSE frame (prompt, options)
-    Note over WF: DBOS.recv: durable block.<br/>Restarts resume here.
+    Note over WF: waits until the deadline.<br/>A restart reads the log.
     User->>API: POST .../interaction {interaction_id, response}
-    API->>WF: DBOS.send(topic=interaction_id)
-    WF->>Log: request.interaction.ack
+    API->>Log: request.interaction.ack
+    API->>WF: wake
     Note over WF: loop continues
 ```
 
@@ -165,7 +157,7 @@ The `timed_out` flag is worth checking. A timed-out `info` interaction hands the
 
 ## One mechanism
 
-Approval gating and `AskUser` look like different features, but in the runtime they are the same mechanism: a `request.interaction.create` / `request.interaction.ack` pair in the log, a blocking `DBOS.recv` keyed by interaction id, and an answer delivered through `POST .../interaction`. The only difference is who initiates the pause, the runtime before a flagged tool or the agent itself.
+Approval gating and `AskUser` look like different features, but in the runtime they are the same mechanism: a `request.interaction.create` / `request.interaction.ack` pair in the log, a loop waiting on the interaction's id, and an answer delivered through `POST .../interaction`. The only difference is who initiates the pause, the runtime before a flagged tool or the agent itself.
 
 A client that can render a prompt and POST a response handles every human-in-the-loop case Mash has, and new interaction-shaped features can reuse the same pair of events.
 

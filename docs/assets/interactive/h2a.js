@@ -18,7 +18,6 @@
 
   var RID = "req-7f3a";
   var ITR = "itr_4be19c0a7d21";
-  var WFID = "assistant:" + RID;
 
   /* ---------- bindings and operations ---------- */
 
@@ -101,10 +100,10 @@
               what: "AgentRuntime.submit_request → request.accepted",
               body:
                 "<p>The runtime mints " + code("request_id") + ", appends " +
-                code("runtime.request.accepted") + " to " + code("runtime_event_log") +
-                ", and starts the durable workflow " + code(WFID) +
-                ". It returns once the workflow has started, without waiting for " +
-                "the agent loop.</p>",
+                code("invoke_agent.start") + " to " + code("runtime_event_log") +
+                ", which records the request " + code("running") + " in " +
+                code("runtime_request") + ", and starts the request loop. It returns " +
+                "once the loop has started, without waiting for it.</p>",
               payload: json({
                 request_id: RID,
                 agent_id: "assistant",
@@ -253,10 +252,10 @@
                 "event: request.started\n" +
                 'data: {"request_id": "' + RID + '", "agent_id": "assistant", "session_id": "s-1", "status": "started"}\n\n' +
                 "event: agent.trace\n" +
-                'data: {"event_type": "runtime.context.loaded", "trace_id": "tr-91c2", ...}\n\n' +
+                'data: {"event_type": "mash.context_load.end", "trace_id": "tr-91c2", ...}\n\n' +
                 "...\n\n" +
                 "event: request.completed\n" +
-                'data: {"request_id": "' + RID + '", "status": "completed", "response": {...}, ...}',
+                'data: {"request_id": "' + RID + '", "status": "ok", "response": {...}, ...}',
             },
           ],
         },
@@ -294,23 +293,21 @@
             {
               lane: 2,
               who: "Client",
-              what: "AgentClient.post_interaction → DBOS.send",
+              what: "AgentClient.post_interaction → answer_interaction",
               body:
                 "<p>" + link("AgentClient.post_interaction", "runtime/client.py") +
-                " POSTs the response to the agent's process, whose AgentServer sends it to " +
-                "the request's workflow. The topic is the interaction id.</p>",
-              payload:
-                'DBOS.send("' + WFID + '", "approve", topic="' + ITR + '")',
+                " POSTs the response to the agent's process. Its AgentServer appends " +
+                "the answer as the interaction's " + code("mash.interaction.end") +
+                " and wakes the waiting loop.</p>",
+              payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
               lane: 3,
               who: "Agent",
-              what: "recv_async returns → request.interaction.ack",
+              what: "the loop wakes → request.interaction.ack",
               body:
-                "<p>The workflow's " + code("DBOS.recv_async(" + ITR + ")") +
-                " returns " + code('"approve"') + ". The ack step appends " +
-                code("runtime.interaction.ack") + ", which the stream publishes as " +
-                code("request.interaction.ack") + ", and the loop runs the tool.</p>",
+                "<p>The stream publishes the ack as " + code("request.interaction.ack") +
+                ". The loop reads " + code('"approve"') + " from it and runs the tool.</p>",
               payload: json({
                 request_id: RID,
                 agent_id: "assistant",
@@ -387,7 +384,7 @@
               what: "AgentRuntime.submit_request → request.accepted",
               body:
                 "<p>Same runtime path as a pool deploy: append " +
-                code("runtime.request.accepted") + ", start workflow " + code(WFID) +
+                code("invoke_agent.start") + ", start the request loop" +
                 ", return the accepted payload.</p>",
               payload: json({
                 request_id: RID,
@@ -484,22 +481,22 @@
             {
               lane: 2,
               who: "Agent server",
-              what: "AgentServer.post_interaction → DBOS.send",
+              what: "AgentServer.post_interaction → answer_interaction",
               body:
                 "<p>" + link("AgentServer.post_interaction", "runtime/server.py") +
-                " returns 404 " + code("REQUEST_NOT_FOUND") + " for an unknown request " +
-                "and 400 when " + code("interaction_id") + " is missing. Then it " +
-                "calls " + code("DBOS.send") + " to the request's workflow with the " +
-                "interaction id as topic.</p>",
-              payload: 'DBOS.send("' + WFID + '", "approve", topic="' + ITR + '")',
+                " returns 404 " + code("REQUEST_NOT_FOUND") + " for an unknown request, " +
+                "400 when " + code("interaction_id") + " is missing, and 409 " +
+                code("INTERACTION_CLOSED") + " once the interaction has an answer. " +
+                "Then it appends the answer and wakes the request's loop.</p>",
+              payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
               lane: 3,
               who: "Agent",
               what: "recv_async returns → request.interaction.ack",
               body:
-                "<p>The parked workflow receives the response and the stream " +
-                "publishes " + code("request.interaction.ack") + ".</p>",
+                "<p>The waiting loop wakes and the stream publishes " +
+                code("request.interaction.ack") + ".</p>",
               payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
@@ -639,21 +636,21 @@
 
   var MAPPING = [
     {
-      internal: "runtime.request.accepted",
+      internal: "invoke_agent.start",
       wire: "request.accepted",
-      note: "First event of every request. Fixed fields only.",
+      note: "First event of every request; its trace id is minted here. Fixed fields only.",
       data: withBase({ status: "accepted" }),
     },
     {
-      internal: "runtime.trace.started",
+      internal: "mash.context_load.start",
       wire: "request.started",
-      note: "Appended by the request.start step.",
+      note: "Appended when the loop starts loading the request's context.",
       data: withBase({ status: "started" }),
     },
     {
-      internal: "runtime.interaction.create",
+      internal: "mash.interaction.start",
       wire: "request.interaction.create",
-      note: "The request is waiting on DBOS.recv_async.",
+      note: "The request loop is waiting for the answer.",
       data: withBase({
         interaction_id: ITR,
         type: "approval",
@@ -663,24 +660,24 @@
       }),
     },
     {
-      internal: "runtime.interaction.ack",
+      internal: "mash.interaction.end",
       wire: "request.interaction.ack",
-      note: "The workflow received a response, or the wait timed out.",
+      note: "The interaction's answer: the user's response, the timeout default, or a cancel.",
       data: withBase({ interaction_id: ITR, response: "approve" }),
     },
     {
-      internal: "runtime.request.completed",
+      internal: "invoke_agent.end (status ok)",
       wire: "request.completed",
       note: "Terminal. Payload passed through as stored, including the turn payload.",
       data: withBase({
-        status: "completed",
+        status: "ok",
         trace_id: "tr-91c2",
         response: { text: "Here is the release plan.", signals: {}, metadata: {} },
         session_total_tokens: 4934,
       }),
     },
     {
-      internal: "runtime.request.failed",
+      internal: "invoke_agent.end (status error)",
       wire: "request.error",
       note: "Terminal. Fields come from classify_error.",
       data: withBase({
@@ -692,30 +689,31 @@
       }),
     },
     {
-      internal: "runtime.request.cancelled",
+      internal: "invoke_agent.end (status cancelled)",
       wire: "request.cancelled",
       note: "Terminal. Appended when the request is cancelled.",
       data: withBase({ status: "cancelled" }),
     },
     {
-      internal: "runtime.request.resumed",
+      internal: "mash.request.resumed",
       wire: "request.resumed",
-      note: "Non-terminal. A cancelled or recovery-exhausted request was resumed, so the stream reopens.",
+      note: "Non-terminal. A cancelled or failed request was resumed, so the stream reopens.",
       data: withBase({ status: "resumed", previous_status: "cancelled" }),
     },
     {
       internal:
-        "runtime.context.loaded, runtime.llm.think.started, runtime.llm.think.completed, " +
-        "runtime.tool.call.started, runtime.tool.call.completed, " +
-        "runtime.subagent.call.completed, runtime.step.completed, " +
-        "runtime.turn.persisted, runtime.step.failed",
+        "mash.context_load.end, chat.start, chat.delta, chat.end, " +
+        "execute_tool.start, execute_tool.end, mash.step.end, " +
+        "mash.request.mode_changed",
       wire: "agent.trace",
       note: "Every other event type. One envelope; the original type is in event_type.",
-      data: trace("runtime.tool.call.completed", 0, "tool.call.0.call_a1", {
+      data: trace("execute_tool.end", 0, "execute_tool.end.0.call_a1", {
+        status: "ok",
         tool_call_id: "call_a1",
         tool_name: "search_docs",
         duration_ms: 412,
         result: { content: "3 matches", is_error: false, metadata: {} },
+        attributes: { "gen_ai.tool.name": "search_docs", "gen_ai.tool.call.id": "call_a1" },
       }),
     },
   ];
@@ -724,32 +722,44 @@
     return { name: name, data: data };
   }
 
+  var CHAT = { "gen_ai.operation.name": "chat", "gen_ai.provider.name": "anthropic", "gen_ai.request.model": "claude-sonnet-4-6" };
+  function chatEnd(inTok, outTok, finish) {
+    return Object.assign({}, CHAT, {
+      "gen_ai.usage.input_tokens": inTok,
+      "gen_ai.usage.output_tokens": outTok,
+      "gen_ai.response.finish_reasons": [finish],
+    });
+  }
+  function toolAttrs(id, name) {
+    return { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name, "gen_ai.tool.call.id": id };
+  }
+
   var SAMPLE = [
     frame("request.accepted", withBase({ status: "accepted" })),
     frame("request.started", withBase({ status: "started" })),
-    frame("agent.trace", trace("runtime.context.loaded", null, null, { message: "Plan the next release." })),
-    frame("agent.trace", trace("runtime.llm.think.started", 0, "llm.think.started.0", { loop_index: 0 })),
-    frame("agent.trace", trace("runtime.llm.think.completed", 0, "llm.think.0", {
+    frame("agent.trace", trace("mash.context_load.end", null, null, { status: "ok" })),
+    frame("agent.trace", trace("chat.start", 0, "chat.start.0", { attributes: CHAT })),
+    frame("agent.trace", trace("chat.end", 0, "chat.end.0", {
+      status: "ok",
       action_type: "tool_call",
       tool_calls: [
-        { id: "call_a1", name: "search_docs", parallel_safe: true },
-        { id: "call_b2", name: "read_file", parallel_safe: true },
-        { id: "call_c3", name: "write_note", parallel_safe: false },
+        { id: "call_a1", name: "search_docs", arguments: {}, parallel_safe: true },
+        { id: "call_b2", name: "read_file", arguments: {}, parallel_safe: true },
+        { id: "call_c3", name: "write_note", arguments: {}, parallel_safe: false },
       ],
-      token_usage: { input: 2140, output: 96 },
+      attributes: chatEnd(2140, 96, "tool_call"),
     })),
-    frame("agent.trace", trace("runtime.tool.call.started", 0, "tool.call.started.0.call_a1", { tool_call_id: "call_a1", tool_name: "search_docs" })),
-    frame("agent.trace", trace("runtime.tool.call.started", 0, "tool.call.started.0.call_b2", { tool_call_id: "call_b2", tool_name: "read_file" })),
-    frame("agent.trace", trace("runtime.tool.call.completed", 0, "tool.call.0.call_a1", { tool_call_id: "call_a1", tool_name: "search_docs", duration_ms: 412, result: { content: "3 matches", is_error: false, metadata: {} } })),
-    frame("agent.trace", trace("runtime.tool.call.completed", 0, "tool.call.0.call_b2", { tool_call_id: "call_b2", tool_name: "read_file", duration_ms: 38, result: { content: "CHANGELOG.md contents", is_error: false, metadata: {} } })),
-    frame("agent.trace", trace("runtime.tool.call.started", 0, "tool.call.started.0.call_c3", { tool_call_id: "call_c3", tool_name: "write_note" })),
-    frame("agent.trace", trace("runtime.tool.call.completed", 0, "tool.call.0.call_c3", { tool_call_id: "call_c3", tool_name: "write_note", duration_ms: 21, result: { content: "saved", is_error: false, metadata: {} } })),
-    frame("agent.trace", trace("runtime.step.completed", 0, "step.completed.0", { action_type: "tool_call", tool_calls: ["search_docs", "read_file", "write_note"], duration_ms: 3120 })),
-    frame("agent.trace", trace("runtime.llm.think.started", 1, "llm.think.started.1", { loop_index: 1 })),
-    frame("agent.trace", trace("runtime.llm.think.completed", 1, "llm.think.1", { action_type: "finish", assistant_text: "Here is the release plan.", tool_calls: [], token_usage: { input: 2510, output: 188 } })),
-    frame("agent.trace", trace("runtime.step.completed", 1, "step.completed.1", { action_type: "finish", tool_calls: [], duration_ms: 2290 })),
-    frame("agent.trace", trace("runtime.turn.persisted", null, null, { trace_id: "tr-91c2", session_total_tokens: 4934 })),
-    frame("request.completed", withBase({ status: "completed", trace_id: "tr-91c2", response: { text: "Here is the release plan.", signals: {}, metadata: {} } })),
+    frame("agent.trace", trace("execute_tool.start", 0, "execute_tool.start.0.call_a1", { tool_call_id: "call_a1", tool_name: "search_docs", attributes: toolAttrs("call_a1", "search_docs") })),
+    frame("agent.trace", trace("execute_tool.start", 0, "execute_tool.start.0.call_b2", { tool_call_id: "call_b2", tool_name: "read_file", attributes: toolAttrs("call_b2", "read_file") })),
+    frame("agent.trace", trace("execute_tool.end", 0, "execute_tool.end.0.call_a1", { status: "ok", tool_call_id: "call_a1", tool_name: "search_docs", duration_ms: 412, result: { content: "3 matches", is_error: false, metadata: {} }, attributes: toolAttrs("call_a1", "search_docs") })),
+    frame("agent.trace", trace("execute_tool.end", 0, "execute_tool.end.0.call_b2", { status: "ok", tool_call_id: "call_b2", tool_name: "read_file", duration_ms: 38, result: { content: "CHANGELOG.md contents", is_error: false, metadata: {} }, attributes: toolAttrs("call_b2", "read_file") })),
+    frame("agent.trace", trace("execute_tool.start", 0, "execute_tool.start.0.call_c3", { tool_call_id: "call_c3", tool_name: "write_note", attributes: toolAttrs("call_c3", "write_note") })),
+    frame("agent.trace", trace("execute_tool.end", 0, "execute_tool.end.0.call_c3", { status: "ok", tool_call_id: "call_c3", tool_name: "write_note", duration_ms: 21, result: { content: "saved", is_error: false, metadata: {} }, attributes: toolAttrs("call_c3", "write_note") })),
+    frame("agent.trace", trace("mash.step.end", 0, "mash.step.end.0", { status: "ok", action_type: "tool_call", tool_calls: ["search_docs", "read_file", "write_note"], duration_ms: 3120, attributes: { "mash.loop_index": 0 } })),
+    frame("agent.trace", trace("chat.start", 1, "chat.start.1", { attributes: CHAT })),
+    frame("agent.trace", trace("chat.end", 1, "chat.end.1", { status: "ok", action_type: "finish", assistant_text: "Here is the release plan.", tool_calls: [], attributes: chatEnd(2510, 188, "end_turn") })),
+    frame("agent.trace", trace("mash.step.end", 1, "mash.step.end.1", { status: "ok", action_type: "finish", tool_calls: [], duration_ms: 2290, attributes: { "mash.loop_index": 1 } })),
+    frame("request.completed", withBase({ status: "ok", trace_id: "tr-91c2", session_total_tokens: 4934, response: { text: "Here is the release plan.", signals: {}, metadata: {} } })),
   ];
 
   function initEvents(root) {

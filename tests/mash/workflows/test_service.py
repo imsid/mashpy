@@ -1,9 +1,8 @@
-"""Tests for the workflow registry and service (DBOS-mocked, no Postgres)."""
+"""Tests for the workflow registry and service (in-memory store, no Postgres)."""
 
 from __future__ import annotations
 
 import unittest
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
@@ -25,7 +24,9 @@ from mash.workflows import (
     WorkflowSpec,
     WorkflowUserRequiredError,
 )
-from mash.workflows import dbos as workflow_dbos
+from conftest import _TestWorkflowStore
+from mash.workflows.engine import WorkflowRunner
+from mash.workflows.runs import make_run_id, workflow_run_id_prefix
 
 
 def _agent_step(step_id: str, agent_id: str) -> AgentStep:
@@ -48,31 +49,16 @@ def _double(inp: TriggerInput, _ctx: StepContext) -> StepOutput:
     return StepOutput(doubled=inp.count * 2)
 
 
-async def _async_none() -> None:
-    return None
-
-
-@dataclass
-class _FakeWorkflowStatus:
-    workflow_id: str
-    status: str
-    created_at: int = 1_700_000_000_000
-    updated_at: int = 1_700_000_001_000
-    output: dict[str, Any] | None = None
-    error: Exception | None = None
-    deduplication_id: str | None = None
-
-
 class _FakeHost:
-    def __init__(self, registry: WorkflowRegistry) -> None:
-        self.runtime_database_url = "postgresql://example"
+    def __init__(self, registry: WorkflowRegistry, store: Any = None) -> None:
         self._registry = registry
+        self._store = store
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._registry
 
-    def get_workflow_store(self) -> None:
-        return None
+    def get_workflow_store(self) -> Any:
+        return self._store
 
 
 class WorkflowRegistryTests(unittest.TestCase):
@@ -95,12 +81,23 @@ class WorkflowRegistryTests(unittest.TestCase):
 
 
 class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, workflow: WorkflowSpec) -> WorkflowService:
+    def setUp(self) -> None:
+        # Runs are recorded, not executed: the engine is covered elsewhere.
+        self.started: list[Any] = []
+        starter = patch.object(WorkflowRunner, "start", lambda _r, run: self.started.append(run))
+        starter.start()
+        self.addCleanup(starter.stop)
+
+    def _service(self, workflow: WorkflowSpec, store: Any = None) -> WorkflowService:
         registry = WorkflowRegistry()
         registry.register(workflow)
         return WorkflowService(
-            registry, cast("Pool", _FakeHost(registry)), runner_id="runner-1"
+            registry, cast("Pool", _FakeHost(registry, store)), runner_id="runner-1"
         )
+
+    def _stored_service(self, workflow: WorkflowSpec) -> tuple[WorkflowService, Any]:
+        store = _TestWorkflowStore("postgresql://test/runtime")
+        return self._service(workflow, store), store
 
     async def test_list_workflows_returns_catalog_summaries(self) -> None:
         service = self._service(
@@ -151,82 +148,69 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(definition["steps"][0]["ordinal"], 0)
         self.assertEqual(definition["steps"][0]["kind"], "code")
         self.assertEqual(definition["steps"][0]["agent_ids"], [])
-        self.assertFalse(definition["steps"][0]["orchestration"])
         self.assertIn("doubled", definition["steps"][0]["output_schema"]["properties"])
         self.assertEqual(definition["steps"][0]["timeout_s"], 10.0)
         self.assertNotIn("strategy", definition)
 
-    async def test_run_workflow_starts_dbos_and_returns_status(self) -> None:
-        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
+    async def test_run_workflow_stores_a_queued_run_and_starts_it(self) -> None:
+        service, store = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
 
-        async def start_workflow_run(**kwargs):
-            self.assertEqual(kwargs["runner_id"], "runner-1")
-            self.assertEqual(kwargs["dedup_key"], "manual")
-            return "mw:host-1:wf:abc"
+        run = await service.run_workflow(
+            "wf", dedup_key="manual", workflow_input={"n": 1}, user_id="u-1"
+        )
 
-        async def get_workflow_status(run_id):
-            return _FakeWorkflowStatus(workflow_id=run_id, status="ENQUEUED")
-
-        with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
-            workflow_dbos, "get_workflow_status", get_workflow_status
-        ):
-            run = await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
-        self.assertEqual(run.run_id, "mw:host-1:wf:abc")
         self.assertEqual(run.status, "queued")
+        self.assertTrue(run.run_id.startswith(workflow_run_id_prefix("runner-1", "wf")))
+        stored = await store.get_run(run.run_id)
+        self.assertEqual(stored.status, "queued")
+        self.assertEqual(stored.dedup_key, "manual")
+        self.assertEqual(stored.workflow_input, {"n": 1})
+        self.assertEqual(stored.user_id, "u-1")
+        self.assertEqual([r.run_id for r in self.started], [run.run_id])
 
-    async def test_run_workflow_passes_input(self) -> None:
-        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
-        seen: dict[str, Any] = {}
+    async def test_queued_run_is_readable_and_streamable_at_once(self) -> None:
+        service, _ = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        run = await service.run_workflow("wf", user_id="u-1")
 
-        async def start_workflow_run(**kwargs):
-            seen.update(kwargs)
-            return "mw:host-1:wf:abc"
+        fetched = await service.get_run("wf", run.run_id)
+        events = await service.stream_run_events("wf", run.run_id)
 
-        async def get_workflow_status(_run_id):
-            return _FakeWorkflowStatus(workflow_id="mw:host-1:wf:abc", status="ENQUEUED")
-
-        with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
-            workflow_dbos, "get_workflow_status", get_workflow_status
-        ):
-            await service.run_workflow("wf", workflow_input={"n": 1}, user_id="u-1")
-        self.assertEqual(seen["workflow_input"], {"n": 1})
-        self.assertEqual(seen["user_id"], "u-1")
+        self.assertEqual(fetched.status, "queued")
+        self.assertTrue(hasattr(events, "__anext__"))
 
     async def test_run_of_a_workflow_with_agents_requires_a_user(self) -> None:
-        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
-        with patch.object(workflow_dbos, "start_workflow_run") as start:
-            with self.assertRaises(WorkflowUserRequiredError):
-                await service.run_workflow("wf")
-            with self.assertRaises(ValueError):
-                await service.run_workflow("wf", user_id="has space")
-        start.assert_not_called()
+        service, _ = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        with self.assertRaises(WorkflowUserRequiredError):
+            await service.run_workflow("wf")
+        with self.assertRaises(ValueError):
+            await service.run_workflow("wf", user_id="has space")
+        self.assertEqual(self.started, [])
 
     async def test_code_only_workflow_runs_without_a_user(self) -> None:
-        service = self._service(
+        service, _ = self._stored_service(
             WorkflowSpec(
                 workflow_id="wf",
                 steps=[CodeStep(step_id="double", run=_double, input=TriggerInput, output=StepOutput)],
             )
         )
-        seen: dict[str, Any] = {}
-
-        async def start_workflow_run(**kwargs):
-            seen.update(kwargs)
-            return "mw:host-1:wf:abc"
-
-        with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run), patch.object(
-            workflow_dbos, "get_workflow_status", lambda _run_id: _async_none()
-        ):
-            await service.run_workflow("wf", workflow_input={"count": 1})
-        self.assertIsNone(seen["user_id"])
+        run = await service.run_workflow("wf", workflow_input={"count": 1})
+        self.assertIsNone(run.user_id)
 
     async def test_run_workflow_rejects_non_object_input(self) -> None:
-        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
+        service, _ = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
         with self.assertRaises(ValueError):
             await service.run_workflow("wf", workflow_input=[1, 2, 3])  # type: ignore[arg-type]
 
-    async def test_run_workflow_validates_declared_input_before_enqueue(self) -> None:
-        service = self._service(
+    async def test_run_workflow_validates_declared_input_before_storing(self) -> None:
+        service, store = self._stored_service(
             WorkflowSpec(
                 workflow_id="wf",
                 input_model=TriggerInput,
@@ -240,89 +224,46 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
         )
-        with patch.object(workflow_dbos, "start_workflow_run") as start:
-            with self.assertRaises(WorkflowInputValidationError) as raised:
-                await service.run_workflow("wf", workflow_input={"count": "bad"})
-        start.assert_not_called()
+        with self.assertRaises(WorkflowInputValidationError) as raised:
+            await service.run_workflow("wf", workflow_input={"count": "bad"})
+        self.assertEqual(self.started, [])
+        self.assertEqual(await store.list_runs("wf"), [])
         self.assertEqual(raised.exception.workflow_id, "wf")
         self.assertEqual(raised.exception.errors[0]["loc"], ("count",))
 
-    async def test_duplicate_dedup_key_is_rejected(self) -> None:
-        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
+    async def test_duplicate_dedup_key_is_rejected_while_the_run_is_active(self) -> None:
+        service, store = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        first = await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
 
-        async def start_workflow_run(**_kwargs):
-            raise workflow_dbos.WorkflowDeduplicatedError("mw:existing")
+        with self.assertRaises(DuplicateWorkflowRunError) as raised:
+            await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
+        self.assertEqual(raised.exception.existing_run.run_id, first.run_id)
 
-        with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
-            with self.assertRaises(DuplicateWorkflowRunError):
-                await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
+        await store.finish_run(first.run_id, status="completed", finished_at=2.0)
+        second = await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
+        self.assertNotEqual(second.run_id, first.run_id)
 
-    async def test_get_run_falls_back_to_dbos_status(self) -> None:
-        # No store record yet (queued run): the run projects from DBOS status.
-        service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
-
-        async def get_workflow_status(run_id):
-            return _FakeWorkflowStatus(
-                workflow_id=run_id, status="SUCCESS", output={"ok": True}
-            )
-
-        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-            run = await service.get_run("wf", "mw:host-1:wf:abc")
-        self.assertEqual(run.status, "completed")
-        self.assertEqual(run.result, {"ok": True})
+    async def test_run_unknown_to_the_store_is_not_found(self) -> None:
+        service, _ = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        with self.assertRaises(WorkflowNotFoundError):
+            await service.get_run("wf", "mw:runner-1:wf:missing")
+        with self.assertRaises(WorkflowNotFoundError):
+            await service.stream_run_events("wf", "mw:runner-1:wf:missing")
 
     async def test_unknown_workflow_is_rejected(self) -> None:
         service = self._service(WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")]))
         with self.assertRaises(WorkflowNotFoundError):
             await service.list_runs("missing")
 
-    def _service_with_store(self, workflow: WorkflowSpec, store: Any) -> WorkflowService:
-        registry = WorkflowRegistry()
-        registry.register(workflow)
-        host = _FakeHost(registry)
-        host.get_workflow_store = lambda: store  # type: ignore[method-assign]
-        return WorkflowService(registry, cast("Pool", host), runner_id="runner-1")
-
-    async def test_stream_run_events_accepts_queued_run_via_dbos_status(self) -> None:
-        # The store row is written only once the run starts executing; a client
-        # streaming right after enqueue must not 404 on a run DBOS knows about.
-        workflow = WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
-
-        class _FakeStore:
-            async def get_run(self, _run_id):
-                return None  # row not written yet
-
-        service = self._service_with_store(workflow, _FakeStore())
-
-        async def get_workflow_status(run_id):
-            return _FakeWorkflowStatus(workflow_id=run_id, status="PENDING")
-
-        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-            events = await service.stream_run_events("wf", "mw:host-1:wf:abc")
-        # Returned the poll iterator instead of raising; nothing consumed yet.
-        self.assertTrue(hasattr(events, "__anext__"))
-
-    async def test_stream_run_events_rejects_run_unknown_to_store_and_dbos(self) -> None:
-        workflow = WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
-
-        class _FakeStore:
-            async def get_run(self, _run_id):
-                return None
-
-        service = self._service_with_store(workflow, _FakeStore())
-
-        async def get_workflow_status(_run_id):
-            return None
-
-        with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-            with self.assertRaises(WorkflowNotFoundError):
-                await service.stream_run_events("wf", "mw:host-1:wf:abc")
-
 
 class WorkflowIdHelperTests(unittest.TestCase):
     def test_run_id_carries_prefix(self) -> None:
-        prefix = workflow_dbos.workflow_run_id_prefix("r_abc", "wf")
-        run_id = workflow_dbos.make_run_id("r_abc", "wf")
+        prefix = workflow_run_id_prefix("r_abc", "wf")
+        run_id = make_run_id("r_abc", "wf")
         self.assertTrue(run_id.startswith(prefix))
         self.assertTrue(prefix.startswith("mw:r_abc:wf:"))
 

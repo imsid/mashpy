@@ -1,10 +1,9 @@
 """Postgres-backed store for workflow runs, steps, and the step audit log.
 
-The connection-taking functions (``insert_run``, ``upsert_step``,
-``append_step_event`` …) are the atomic write path: Phase 2 calls them with the
-DBOS step's own connection so a step's records commit together with its memoized
-output. ``WorkflowStore`` wraps them with a pool for standalone use (reads, and
-run bookkeeping outside a DBOS step).
+These tables are a run's durable state: the engine resumes a run from its
+completed ``workflow_steps`` rows. The connection-taking functions
+(``insert_run``, ``upsert_step``, ``append_step_event`` …) each take an open
+connection; ``WorkflowStore`` wraps them over the process's shared pool.
 
 Timestamps are epoch seconds, matching the rest of the Mash schema.
 """
@@ -16,14 +15,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from mash.storage.migrations import run_migrations
-
-try:
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-except ImportError:  # pragma: no cover - dependency missing
-    dict_row = None  # type: ignore[assignment]
-    AsyncConnectionPool = None  # type: ignore[assignment]
+from mash.storage.pool import acquire_pool, release_pool
 
 
 # Run statuses (workflow-level).
@@ -101,7 +93,16 @@ def _json(value: Any) -> str | None:
 # --- Connection-taking write functions (the atomic path) ---------------------
 
 
+class RunDeduplicatedError(RuntimeError):
+    """A queued or running run already has the workflow's dedup key."""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        super().__init__(f"workflow run '{run_id}' is already active for this dedup key")
+
+
 async def insert_run(conn: Any, run: WorkflowRunRecord) -> None:
+    """Insert the run, or raise ``RunDeduplicatedError`` for an active dedup key."""
     async with conn.cursor() as cursor:
         await cursor.execute(
             """
@@ -109,7 +110,8 @@ async def insert_run(conn: Any, run: WorkflowRunRecord) -> None:
                 run_id, workflow_id, status, workflow_input, result, error,
                 dedup_key, session_id, user_id, created_at, started_at, finished_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (run_id) DO NOTHING
+            ON CONFLICT DO NOTHING
+            RETURNING run_id
             """,
             (
                 run.run_id,
@@ -126,6 +128,19 @@ async def insert_run(conn: Any, run: WorkflowRunRecord) -> None:
                 run.finished_at,
             ),
         )
+        if await cursor.fetchone() is not None or run.dedup_key is None:
+            return
+        await cursor.execute(
+            """
+            SELECT run_id FROM workflow_runs
+            WHERE workflow_id = %s AND dedup_key = %s
+              AND status IN ('queued', 'running')
+            """,
+            (run.workflow_id, run.dedup_key),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            raise RunDeduplicatedError(str(row["run_id"]))
 
 
 async def mark_run_started(conn: Any, run_id: str, started_at: float) -> None:
@@ -215,8 +230,8 @@ async def append_step_event(
 ) -> int:
     """Append one step lifecycle event, assigning the next per-step seq.
 
-    Idempotent on ``(run_id, step_id, attempt, event_type)``: a DBOS re-run of
-    the step re-appends the same transition and ON CONFLICT DO NOTHING makes it a
+    Idempotent on ``(run_id, step_id, attempt, event_type)``: a rerun of the
+    step after a crash re-appends the same transition and ON CONFLICT DO NOTHING makes it a
     no-op. Returns the seq of the (existing or newly inserted) event. Must run
     inside a transaction; the advisory lock serializes concurrent appends for the
     same step so seq stays gap-free.
@@ -328,30 +343,15 @@ class WorkflowStore:
     async def open(self) -> None:
         if self._pool is not None:
             return
-        if dict_row is None or AsyncConnectionPool is None:
-            raise RuntimeError(
-                "psycopg and psycopg_pool are required for WorkflowStore. "
-                "Install mashpy with PostgreSQL runtime dependencies."
-            )
         async with self._open_lock:
             if self._pool is not None:
                 return
-            pool = AsyncConnectionPool(
-                self._database_url,
-                min_size=1,
-                max_size=5,
-                open=False,
-                check=AsyncConnectionPool.check_connection,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-            )
-            await pool.open()
-            await run_migrations(pool)
-            self._pool = pool
+            self._pool = await acquire_pool(self._database_url)
 
     async def close(self) -> None:
         if self._pool is not None:
-            await self._pool.close()
             self._pool = None
+            await release_pool(self._database_url)
 
     async def create_run(self, run: WorkflowRunRecord) -> None:
         await self.open()
@@ -415,6 +415,51 @@ class WorkflowStore:
                     at=at,
                     attempt=attempt,
                     payload=payload,
+                )
+
+    async def list_unfinished_runs(self, run_id_prefix: str) -> list[WorkflowRunRecord]:
+        """Queued and running runs whose id starts with ``run_id_prefix``, oldest first."""
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM workflow_runs
+                    WHERE status IN ('queued', 'running') AND starts_with(run_id, %s)
+                    ORDER BY created_at, run_id
+                    """,
+                    (run_id_prefix,),
+                )
+                rows = await cursor.fetchall()
+        return [_run_from_row(row) for row in rows]
+
+    async def count_recovery(self, run_id: str) -> int:
+        """Count one more recovery of the run and return the total."""
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE workflow_runs SET recoveries = recoveries + 1
+                    WHERE run_id = %s RETURNING recoveries
+                    """,
+                    (run_id,),
+                )
+                row = await cursor.fetchone()
+        return int(row["recoveries"]) if row is not None else 0
+
+    async def requeue_run(self, run_id: str) -> None:
+        """Put a finished run back in the queue, clearing its outcome."""
+        await self.open()
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET status = %s, result = NULL, error = NULL, finished_at = NULL
+                    WHERE run_id = %s
+                    """,
+                    (RUN_QUEUED, run_id),
                 )
 
     async def get_run(self, run_id: str) -> WorkflowRunRecord | None:

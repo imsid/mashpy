@@ -403,7 +403,7 @@ export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
     [agentId, sessionId, traceId],
   );
 
-  // DBOS is the authority on whether the request is still running; the trace
+  // The request's recorded status says whether it is still running; the trace
   // row's status is a log-derived fallback for traces with no live request.
   const statusState = useApi(
     () =>

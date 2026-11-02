@@ -58,12 +58,11 @@ The runtime is intentionally split into four layers:
    - `events/store/` (Postgres backend; schema lives in the shared `mash/storage/migrations/` baseline)
    - defines the append-only runtime event model and the store interface used for replay/streaming
 
-3. **Workflow durability**
-   - `engine/protocol.py`
-   - `engine/dbos.py`
-   - `engine/workflow.py`
+3. **Request durability**
+   - `engine/engine.py`
+   - `engine/loop.py`
    - `engine/steps.py`
-   - defines the engine boundary for starting durable requests and the DBOS implementation of that boundary
+   - runs each request as a loop that checkpoints to `runtime_request` after every step
 
 4. **Supporting internal helpers**
    - `factory.py`
@@ -111,8 +110,9 @@ sequenceDiagram
         User->>API: POST .../interaction {interaction_id, response}
         API->>Client: post_interaction(...)
         Client->>Server: POST .../interaction
-        Server->>Engine: DBOS.send (resume workflow)
+        Server->>Engine: answer_interaction(...)
         Engine->>Events: append request.interaction.ack
+        Engine->>Engine: wake the waiting loop
     end
 
     Engine->>Agent: act (execute tools) -> observe
@@ -170,29 +170,22 @@ A request's lifecycle state is one such record, not an inference: the events tha
 
 ### Runtime Durability
 
-Durability in this package means accepted requests are executed by a workflow engine that can survive retry/restart semantics outside the in-memory `AgentRuntime` object.
+Durability in this package means an accepted request survives its process.
+Each request runs as a loop whose state is checkpointed to its
+`runtime_request` row after every step; a restarted process continues the
+agent's running requests from their checkpoints. See
+[`engine/README.md`](./engine/README.md).
 
-The workflow durability interface is:
-
-- [`engine/protocol.py`](./engine/protocol.py)
-  - `RequestEngine`
-- [`engine/dbos.py`](./engine/dbos.py)
-  - `DBOSRequestEngine`
-  - DBOS bootstrap and runtime registry
-- [`engine/workflow.py`](./engine/workflow.py)
-  - request workflow entrypoint and workflow id helpers
+- [`engine/engine.py`](./engine/engine.py)
+  - `RequestEngine`: `open()` (recovers), `close()`, `start_request(...)`,
+    `continue_request(...)`, `get_request_status(...)`, `cancel_request(...)`,
+    `answer_interaction(...)`
+- [`engine/loop.py`](./engine/loop.py)
+  - `RequestRun`: one request's loop and checkpoint
 - [`engine/steps.py`](./engine/steps.py)
-  - durable request steps
+  - the steps the loop runs
 
-The `RequestEngine` boundary is also intentionally small:
-
-- `open()`
-- `close()`
-- `start_request(...)`
-- `get_request_status(...)`
-- `resume_request(...)`
-
-This is the execution/durability boundary. It decides how work starts and resumes. It does not replace the runtime event log.
+This is the execution and durability boundary. It does not replace the runtime event log.
 
 ## Runtime Responsibilities
 
@@ -337,19 +330,14 @@ lifecycle.
 
 ### `engine/`
 
-- [`engine/protocol.py`](./engine/protocol.py)
-  - `RequestEngine` protocol
+- [`engine/engine.py`](./engine/engine.py)
+  - `RequestEngine`: starts, recovers, cancels and continues requests, stores interaction answers
 
-- [`engine/dbos.py`](./engine/dbos.py)
-  - DBOS-backed engine implementation
-  - DBOS bootstrap
-  - runtime registration for workflow callbacks
-
-- [`engine/workflow.py`](./engine/workflow.py)
-  - durable request workflow orchestration
+- [`engine/loop.py`](./engine/loop.py)
+  - `RequestRun`: the request loop and its checkpoint
 
 - [`engine/steps.py`](./engine/steps.py)
-  - granular workflow step implementations
+  - the loop's steps
   - interaction event emission helpers (`emit_interaction_create`, `emit_interaction_ack`)
 
 ### `events/`
@@ -418,9 +406,9 @@ At a high level, one request flows like this:
    `subagent` parent's `started_by` and `parent_request_id` go into the
    accepted event's payload.
 3. `AgentRuntime` delegates execution start to the configured `RequestEngine`.
-4. The workflow engine runs durable steps from `engine/workflow.py` and `engine/steps.py`.
+4. The request engine runs the loop in `engine/loop.py` over the steps in `engine/steps.py`, checkpointing after each.
 5. Those steps load/build context, run think/tool phases, persist turns, and append `RuntimeEvent`s.
-6. API clients stream those events from `runtime_store` through polling-backed SSE replay in `server.py`.
+6. API clients stream those events from `runtime_store` through SSE replay in `server.py`; an append wakes the stream in memory.
 7. Terminal state is represented by `request.completed` or `request.error`.
 
 The key point is:
@@ -548,15 +536,15 @@ Interactions allow an agent to pause mid-execution and request information or ap
 
 ### How Interactions Work
 
-1. During the workflow loop, after `plan_request_step`, if the action payload contains an `interaction` field, the workflow initiates an interaction.
-2. The workflow emits a `mash.interaction.start` event (visible on SSE as `request.interaction.create`).
-3. The workflow calls `DBOS.recv(interaction_id, timeout_seconds=...)` — this durably blocks execution.
-4. The host delivers the user's response via `post_interaction` on the client, which calls `DBOS.send(workflow_id, response, topic=interaction_id)`.
-5. The workflow resumes, emits `mash.interaction.end`, and continues to tool execution.
+1. During the request loop, after `plan_request_step`, if the action payload contains an `interaction` field, the loop opens an interaction.
+2. The loop emits a `mash.interaction.start` event (visible on SSE as `request.interaction.create`) and records the interaction's id and deadline in its checkpoint.
+3. The loop waits in process until the deadline.
+4. The host delivers the user's response via `post_interaction` on the client. The agent's server appends it as `mash.interaction.end` and wakes the loop.
+5. The loop reads the answer and continues to tool execution.
 
 ### Durability
 
-Interactions use DBOS `recv`/`send` for durable blocking. If the process restarts while waiting for a response, the workflow automatically resumes at the same `recv` point. This enables interactions that span hours or days.
+An interaction's answer is its `mash.interaction.end` event. If the process restarts while a request waits, the recovered loop finds the interaction in its checkpoint, reads the answer from the log if one arrived, and otherwise waits out the rest of the deadline. An answer to an interaction that is already closed returns `409 INTERACTION_CLOSED`.
 
 ### Timeout Defaults
 
@@ -567,7 +555,7 @@ If no response arrives within `timeout_seconds`:
 
 ### Client Operation
 
-`AgentClient.post_interaction(request_id, *, interaction_id, response)` POSTs to `/agent/{agent_id}/request/{request_id}/interaction`; the agent's server delivers the response with `DBOS.send()`.
+`AgentClient.post_interaction(request_id, *, interaction_id, response)` POSTs to `/agent/{agent_id}/request/{request_id}/interaction`; the agent's server stores the response and wakes the request.
 
 ## Error Classification and Resumability
 
@@ -606,30 +594,28 @@ There are three layers of failure handling, each covering a different scenario:
 | Failure type | Handled by | Developer action |
 |---|---|---|
 | Transient error (rate limit, timeout, network) | `retry_transient()` — in-process, immediate, with backoff | None — automatic |
-| Retries exhausted or terminal error | `REQUEST_FAILED` emitted | Rerun the request — a failed request is not resumable |
-| Cancelled, or DBOS recovery attempts exhausted | `REQUEST_CANCELLED` / `REQUEST_FAILED` emitted | Call `resume_request()` to re-drive it |
+| Retries exhausted or terminal error | `REQUEST_FAILED` emitted | Call `resume_request()` to continue from the failed step, or rerun it |
+| Cancelled | `REQUEST_CANCELLED` emitted | Call `resume_request()` to continue it |
 | Step budget exhausted (`max_steps`) | `REQUEST_FAILED` with `error_code=max_steps_exhausted`, `stop_reason=max_steps` | Raise `max_steps` or narrow the task |
-| Process crash (OOM, kill, hardware) | DBOS local recovery on next startup | None — automatic on restart |
+| Process crash (OOM, kill, hardware) | The restarted process continues it from its checkpoint | None; after 10 recoveries it fails with `error_type=recovery_limit` |
 
 **Step-level retry** covers transient errors during normal operation. If retries exhaust or the error is non-retryable, the workflow emits `REQUEST_FAILED` with `error_code` and `retryable` fields from `classify_error()` so the developer knows what happened.
 
-**Developer-initiated resume** covers requests that stopped without finishing — a cancelled one, or one whose DBOS recovery attempts ran out. The developer calls `resume_request(request_id)` to set the DBOS workflow back to PENDING for re-execution. A request that ended in `ERROR` is not one of these: DBOS neither transitions it nor re-runs a step whose error is checkpointed, so `resume_request` reports that it cannot be resumed rather than acknowledging a no-op. Rerun it instead.
+**Developer-initiated resume** covers requests that stopped without finishing: a cancelled one, or a failed one. `resume_request(request_id)` records the request running and continues it from its checkpoint, so the failed step runs again and the steps before it do not.
 
 **Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
-**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the DBOS workflow is left in PENDING state in the database. The host restarts the process, and on startup `DBOS.launch()` finds the PENDING workflows under the agent's executor id (`agent:<agent_id>`) and puts them back on DBOS's internal queue, where the agent's process picks them up and replays them from the last completed step. Each agent process runs DBOS under an application name of its own, and DBOS dequeues by application name, so no other process takes them. A host restart restarts every agent the same way, and a disabled agent's pending requests continue when it is enabled. This happens once at startup, not continuously. If `DBOS_CONDUCTOR_KEY` is set, crash recovery is instead delegated to the DBOS Conductor service, which monitors and recovers workflows externally.
+**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the request stays `running` in `runtime_request`. The host restarts the process, and on startup its engine reads the agent's `running` requests and continues each from its checkpoint; the step that was running runs again. Only the agent's own process continues its requests, since recovery selects by `agent_id`. A host restart restarts every agent the same way, and a disabled agent's running requests continue when it is enabled. This is one query at startup; an idle process makes no others.
 
 ### Request Status, Cancel, Resume, and Rerun APIs
 
 `AgentRuntime` exposes five methods for inspecting and controlling a request:
 
-- `get_request_status(request_id)` — queries the DBOS workflow status directly (not the event log). Returns `pending`, `completed`, `failed`, `cancelled`, or `queued`. Use this when the event stream goes silent after a crash to determine whether the request will be auto-recovered (`pending`) or needs manual intervention (`failed`).
+- `get_request_status(request_id)` reads the request's status from `runtime_request`: `running`, `completed`, `failed` or `cancelled`. A `running` request whose stream has gone quiet after a crash continues when its agent's process restarts.
 
-- `cancel_request(request_id)` — cancels the DBOS workflow, which preempts the request at the next step boundary; the step in flight finishes and checkpoints. Acks a pending interaction as cancelled and emits `REQUEST_CANCELLED`, which the cancel path owns because `DBOSWorkflowCancelledError` derives from `BaseException` and bypasses the workflow's error handler. Idempotent on a request that is already terminal.
+- `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and checkpoints. Idempotent on a request that is already terminal.
 
-- `resume_request(request_id)` — for requests in `cancelled` (or `MAX_RECOVERY_ATTEMPTS_EXCEEDED`) state, calls `DBOS.resume_workflow_async()` to set the workflow back to PENDING for recovery, then emits `REQUEST_RESUMED`. Rejects with `RequestStaleError` when the session has accrued a newer replayable turn, since resume replays the request's original context snapshot. Returns informational status if the request is already pending or completed.
-
-  A `failed` request cannot be resumed: `DBOS.resume_workflows` updates only workflows whose status is outside `SUCCESS` and `ERROR`, so the call would be a silent no-op. The method reports the failed status and points at rerun. Resuming a failed request from its last checkpoint would need `DBOS.fork_workflow`, which mints a new workflow id and so breaks the request/workflow/trace 1:1 mapping that `workflow_id_for` assumes.
+- `resume_request(request_id)` continues a `cancelled` or `failed` request from its checkpoint: it emits `REQUEST_RESUMED`, which records the request running, then restarts the loop. Rejects with `RequestStaleError` when the session has accrued a newer replayable turn, since resume continues from the request's original context. Returns informational status if the request is already running or completed.
 
 - `set_request_mode(request_id, mode)` switches a running request between `fg` and `bg` by appending `mash.request.mode_changed`. It raises `RequestTerminalError` once the request is terminal. The mode tells clients whether the conversation waits on the request; it does not change how the request runs.
 
@@ -674,14 +660,13 @@ Questions that belong here:
 Use this when you need to change how durable work is started or resumed:
 
 - `RequestEngine`
-- `DBOSRequestEngine`
-- DBOS workflow registration/execution helpers
+- `RequestRun`
 
 Questions that belong here:
 
 - How is a request started durably?
-- How are retries/resumptions handled?
-- How do workflow ids map to request ids?
+- What does the checkpoint hold, and when is it saved?
+- How are recovery, cancel and resume handled?
 
 ## Design Rules
 

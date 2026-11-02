@@ -1,28 +1,25 @@
 # Workflows
 
-`src/mash/workflows` is a DBOS-backed workflow layer on top of the Mash agent
-runtime. A workflow is an ordered pipeline of typed steps with deterministic,
+`src/mash/workflows` is the workflow layer on top of the Mash agent runtime. A workflow is an ordered pipeline of typed steps with deterministic,
 code-owned control flow; nondeterminism (an agent run, an external call) is
 contained inside steps with schema-checked boundaries. Runs are durable (an
-interrupted run resumes from its last checkpoint) and observable (a per-step
+interrupted run continues from its completed steps) and observable (a per-step
 audit trail in a dedicated store).
 
 Every workflow is a **step pipeline**: an ordered `steps` list run by the
 forward-pipeline engine ([`engine.py`](./engine.py)). There is no alternative
 execution shape. Dynamic control flow (fan-out over rows, conditional work)
-lives inside a `CodeStep` body, guarded by stable replay identities.
+lives inside a `CodeStep` body, keyed on the step's stable identities.
 
 ## Steps
 
 Each step is one of:
 
 - **`CodeStep`** — deterministic Python: `run(inp, ctx) -> output`, sync or async.
-  Pydantic-typed on both edges. Authored in Python only. The default body is a
-  memoized DBOS step. An opt-in `orchestration=True` body instead runs in the
-  parent workflow context so it can submit and await many agent requests,
-  and is replayed after recovery, so it owns its own idempotency. Declare any
-  statically known agent dependencies with `agent_ids=[...]`, independently of
-  execution mode; registration validates them and tooling can discover them.
+  Pydantic-typed on both edges. Authored in Python only. A body may submit and
+  await many agent requests itself. Declare any statically known agent
+  dependencies with `agent_ids=[...]`; registration validates them and tooling
+  can discover them.
 - **`AgentStep`** — one run of a registered agent's loop. `output` may be a
   pydantic model or a JSON-schema dict; either becomes the request's
   structured-output schema. `input` may be a pydantic model or `None`
@@ -76,11 +73,14 @@ always names a primary agent.
 
 ## Idempotency
 
-Step execution is at-least-once (DBOS recovery re-runs an interrupted step).
-Pure transforms replay safely. A step with external effects must dedupe on a
-stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`,
-`attempt`, and `user_id`, all stable across retries. The framework never
-invents a key or classifies steps.
+Step execution is at-least-once: a step the host died in runs again when the
+run continues. Pure transforms rerun safely. A step with external effects must
+dedupe on a stable key. `StepContext` carries `run_id`, `step_id`,
+`workflow_input`, `attempt` and `user_id`. `attempt` is 1 on the first run of a
+step, stays the same when the host died in the step, and goes up by one when a
+failed step is resumed, so a key that includes it retries the effect on resume
+and reattaches after a crash. The framework never invents a key or classifies
+steps.
 
 ## The run's user
 
@@ -111,36 +111,35 @@ async def fetch_bill(inp: BillIn, ctx: StepContext) -> BillOut:
         ...
 ```
 
-An orchestration CodeStep is replayed as part of the parent workflow and is not
-memoized as one opaque DBOS step. Use it only for dynamic orchestration, keep
-child starts serial and deterministic, and record per-item progress under stable
-identities in a durable ledger. Completed ledger items must be skipped when the
-body is replayed. Terminal waits may run concurrently after their child
-workflows have been started in deterministic order.
+A code step that fans out over many agent requests submits each under a
+request id built from the run, the step and the item, and records per-item
+progress in a durable ledger, so a rerun of the step reattaches to the requests
+already started and skips the items already done. Masher's `run-experiment`
+steps work this way.
 
 ## Durability and resume
 
-DBOS orchestrates and recovers runs. Each ordinary step body and each workflow
-store write is its own memoized DBOS step, so a replay skips completed work;
-store writes are idempotent so the crash-after-effect window converges rather
-than duplicating. Orchestration CodeSteps recover from their application ledger.
+A run's durable state is its rows in the workflow store. The host runs each
+run as a task, at most 8 at a time. Each step records its input and output in
+`workflow_steps`, so a run continues from them: a `completed` step is skipped
+and its stored output feeds the next step.
 
-- `resume_run(run_id)` — replay completed steps and re-drive from where the run
-  stopped (same `run_id`). Agent steps interlock with their own durable request
-  workflow through a deterministic `request_id`, so they resume mid-loop.
-  Resume covers runs that stopped without finishing: a host that died mid-run,
-  a cancelled run, one that exhausted its recovery attempts.
-- `run_workflow(workflow_id, ...)` — a fresh `run_id` from step 1.
+- On start, after the API server has bound what code steps use, the host
+  continues the runs under its runner id that are `queued` or `running`
+  (`Pool.recover_workflow_runs()`). A run continued 10 times without finishing
+  fails. Deployments that share a database give each pool its own runner id
+  (`MASH_RUNNER_ID`).
+- `resume_run(run_id)` puts a failed or cancelled run back in the queue under
+  the same `run_id`; it reruns from the first step that did not complete.
+  An agent step submits under a request id fixed by run, step and attempt, so
+  after a crash it reattaches to the request it started, and after a resume
+  it starts a new one. A completed run is rejected with
+  `WorkflowResumeNotSupportedError` (HTTP 409).
+- `run_workflow(workflow_id, ...)` writes a `queued` row with a fresh `run_id`
+  and starts it from step 1. A `dedup_key` admits one queued or running run
+  per workflow and key; a second gets `DuplicateWorkflowRunError` (HTTP 409).
 
-A **terminally failed run is not resumable** and `resume_run` rejects it with
-`WorkflowResumeNotSupportedError` (HTTP 409). DBOS checkpoints a step's error
-next to its output, so replaying a failed run re-raises the recorded error
-instead of re-running the step, and `resume_workflows` skips rows already in
-`SUCCESS` or `ERROR`. Reporting that no-op as a resume would be a lie; a failed
-run starts over as a new run.
-
-A step may declare `timeout_s`; exceeding it fails the step, not a retry. When
-DBOS recovery attempts are exhausted the run is `failed`.
+A step may declare `timeout_s`; exceeding it fails the step, not a retry.
 
 ## Storage
 
@@ -148,7 +147,8 @@ Three tables (in the shared schema baseline `001_baseline.sql`, with
 `workflow_runs.user_id` from `007_workflow_run_user.sql`), owned by the
 workflow layer:
 
-- `workflow_runs` — one row per run (status, `workflow_input`, `user_id`, `result`, timing).
+- `workflow_runs` — one row per run (status, `workflow_input`, `dedup_key`,
+  `user_id`, `result`, timing, and `recoveries` from `011_durable_state.sql`).
 - `workflow_steps` — one row per step (status, input/output snapshots, attempt,
   `agent_request_id`).
 - `workflow_step_events` — append-only lifecycle audit keyed by
@@ -168,10 +168,9 @@ span per step, and each agent step's request nested under its step. See
 `WorkflowService`:
 
 - `list_workflows()` / `list_runs(workflow_id, ...)` / `get_run(workflow_id, run_id)`
-  — runs read from the store; a run not yet in the store (still queued)
-  projects from DBOS status.
-- `resume_run(workflow_id, run_id)` — re-drive an interrupted run; rejects a
-  terminal one.
+  — runs read from the store, queued ones included.
+- `resume_run(workflow_id, run_id)` — continue a failed or cancelled run from
+  its completed steps; rejects a completed one.
 - `list_run_step_events(...)` — the step audit trail.
 - `stream_run_events(...)` — SSE from the store, so code steps are visible.
 

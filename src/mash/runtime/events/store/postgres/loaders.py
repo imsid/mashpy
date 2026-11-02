@@ -268,10 +268,6 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                     raise RuntimeError("failed to persist runtime event")
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
                 await _project_mode(cursor, event)
-                await cursor.execute(
-                    "SELECT pg_notify('runtime_events', %s)",
-                    (event.request_id or "",),
-                )
     return dict_to_event(stored)
 
 
@@ -568,6 +564,60 @@ async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None
             )
             row = await cursor.fetchone()
     return RequestStatus(str(row["status"])) if row is not None else None
+
+
+async def save_checkpoint(
+    pool: Any, request_id: str, checkpoint: dict[str, Any]
+) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE runtime_request SET checkpoint = %s::jsonb WHERE request_id = %s",
+                (json.dumps(checkpoint, ensure_ascii=True, default=str), request_id),
+            )
+
+
+async def get_checkpoint(pool: Any, request_id: str) -> dict[str, Any] | None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT checkpoint FROM runtime_request WHERE request_id = %s",
+                (request_id,),
+            )
+            row = await cursor.fetchone()
+    if row is None or not isinstance(row["checkpoint"], dict):
+        return None
+    return dict(row["checkpoint"])
+
+
+async def list_running_requests(pool: Any, agent_id: str) -> list[str]:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT request_id FROM runtime_request
+                WHERE agent_id = %s AND status = 'running'
+                ORDER BY started_at NULLS LAST, request_id
+                """,
+                (agent_id,),
+            )
+            rows = await cursor.fetchall()
+    return [str(row["request_id"]) for row in rows]
+
+
+async def count_recovery(pool: Any, request_id: str) -> int:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                UPDATE runtime_request SET recoveries = recoveries + 1
+                WHERE request_id = %s
+                RETURNING recoveries
+                """,
+                (request_id,),
+            )
+            row = await cursor.fetchone()
+    return int(row["recoveries"]) if row is not None else 0
 
 
 async def read_request_stream(

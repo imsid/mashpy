@@ -34,7 +34,7 @@ Each group of endpoints projects one subsystem from earlier in the series.
 |---|---|---|
 | POST | `/agent/{agent_id}/request` | submit; returns `request_id`; accepts an optional `structured_output` schema |
 | GET | `/agent/{agent_id}/request/{request_id}/events` | SSE stream, a replay of persisted events |
-| GET | `/agent/{agent_id}/request/{request_id}/status` | DBOS workflow status, for when the stream goes quiet |
+| GET | `/agent/{agent_id}/request/{request_id}/status` | the request's recorded status, for when the stream goes quiet |
 | POST | `/agent/{agent_id}/request/{request_id}/cancel` | stop a running request at the next step boundary |
 | POST | `/agent/{agent_id}/request/{request_id}/resume` | continue a cancelled request from its last checkpoint |
 | POST | `/agent/{agent_id}/request/{request_id}/rerun` | start a previous request over as a new request |

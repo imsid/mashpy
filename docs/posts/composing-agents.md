@@ -104,13 +104,13 @@ flowchart TD
     P -- "subagent call" --> H
     H -- "checked against snapshot" --> A
     H -- "checked against snapshot" --> B
-    PG[("Postgres\nevents, sessions, DBOS")]
+    PG[("Postgres\nevents, sessions, checkpoints")]
     H --- PG
     P --- PG
     A --- PG
 ```
 
-`RunSubAgents` runs as an ordinary step. Each child request is its own DBOS workflow, submitted under an id derived from the primary's request id, the call's position and the item's index: a UUID5 of `{request_id}-sub-{loop}-{call}-{index}`. A replayed or retried step resubmits those ids, and each child's runtime returns the request it already started instead of starting a second. Cancelling the primary's request cancels its running children.
+`RunSubAgents` runs as an ordinary step. Each child request is a request of its own, submitted under an id derived from the primary's request id, the call's position and the item's index: a UUID5 of `{request_id}-sub-{loop}-{call}-{index}`. A replayed or retried step resubmits those ids, and each child's runtime returns the request it already started instead of starting a second. Cancelling the primary's request cancels its running children.
 
 ## The second registration kind
 

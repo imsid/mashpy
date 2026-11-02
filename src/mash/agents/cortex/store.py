@@ -13,7 +13,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from mash.storage.migrations import run_migrations
+from mash.storage.pool import acquire_pool, release_pool
 
 from .models import (
     CortexConflictError,
@@ -22,13 +22,6 @@ from .models import (
     CortexUserInfo,
     EntryChange,
 )
-
-try:
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-except ImportError:
-    dict_row = None  # type: ignore[assignment]
-    AsyncConnectionPool = None  # type: ignore[assignment]
 
 
 # Recognized in-memory sentinel URL, mirroring PostgresEvalStore. Tests that
@@ -236,27 +229,14 @@ class CortexStore:
     async def open(self) -> None:
         if self._mem is not None or self._pool is not None:
             return
-        if dict_row is None or AsyncConnectionPool is None:
-            raise RuntimeError("psycopg and psycopg_pool are required for CortexStore.")
         async with self._open_lock:
-            if self._pool is not None:
-                return
-            pool = AsyncConnectionPool(
-                self._database_url,
-                min_size=1,
-                max_size=5,
-                open=False,
-                check=AsyncConnectionPool.check_connection,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-            )
-            await pool.open()
-            await run_migrations(pool)
-            self._pool = pool
+            if self._pool is None:
+                self._pool = await acquire_pool(self._database_url)
 
     async def close(self) -> None:
         if self._pool is not None:
-            await self._pool.close()
             self._pool = None
+            await release_pool(self._database_url)
 
     async def get_profile(self, user_id: str) -> str | None:
         """The user's profile, or None when the user has no Cortex."""

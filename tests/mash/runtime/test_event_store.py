@@ -423,7 +423,7 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
         )
         self.assertTrue(await self.store.has_request(self.request_id))
 
-    async def test_listener_reconnects_after_server_closes_connection(self) -> None:
+    async def test_waiter_wakes_after_server_closes_connections(self) -> None:
         waiter = self.store.register_request_waiter(self.request_id)
         try:
             _terminate_other_backends(self.database_url)
@@ -436,47 +436,97 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
                     session_id="session-recovery",
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
-                    dedupe_key=f"listener-{uuid.uuid4().hex[:8]}",
+                    dedupe_key=f"waiter-{uuid.uuid4().hex[:8]}",
                     payload={"status": "accepted"},
                 )
             )
-            try:
-                await asyncio.wait_for(waiter.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                self.fail("waiter was not woken after the listener connection died")
+            self.assertTrue(waiter.is_set())
         finally:
             self.store.unregister_request_waiter(self.request_id, waiter)
 
-    async def test_listener_keeps_delivering_notifies_after_reconnect(self) -> None:
-        old_conn = self.store._listener_conn
-        _terminate_other_backends(self.database_url)
 
-        deadline = asyncio.get_running_loop().time() + 10.0
-        while self.store._listener_conn is None or self.store._listener_conn is old_conn:
-            if asyncio.get_running_loop().time() > deadline:
-                self.fail("listener did not reconnect")
-            await asyncio.sleep(0.05)
+class PostgresRequestCheckpointTests(unittest.IsolatedAsyncioTestCase):
+    """The request engine's durable state: checkpoint, running list, recoveries."""
 
-        waiter = self.store.register_request_waiter(self.request_id)
+    async def asyncSetUp(self) -> None:
+        _require_postgres_runtime_support()
+        self.database_url = _runtime_database_url()
+        self.request_id = f"store-{uuid.uuid4()}"
+        self.agent_id = f"ckpt-{uuid.uuid4().hex[:8]}"
+        self.store = PostgresRuntimeStore(self.database_url)
+        await self.store.open()
+
+    async def asyncTearDown(self) -> None:
+        await self.store.close()
+        _delete_request_rows(self.database_url, self.request_id)
+
+    async def _accept(self) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.agent_id,
+                agent_id=self.agent_id,
+                request_id=self.request_id,
+                session_id="s-1",
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
+            )
+        )
+
+    async def test_checkpoint_round_trips_and_is_overwritten(self) -> None:
+        await self._accept()
+        self.assertIsNone(await self.store.get_checkpoint(self.request_id))
+
+        await self.store.save_checkpoint(self.request_id, {"trace_id": "t", "state": {"loop_index": 0}})
+        await self.store.save_checkpoint(self.request_id, {"trace_id": "t", "state": {"loop_index": 1}})
+
+        self.assertEqual(
+            await self.store.get_checkpoint(self.request_id),
+            {"trace_id": "t", "state": {"loop_index": 1}},
+        )
+
+    async def test_running_requests_and_recoveries(self) -> None:
+        await self._accept()
+        self.assertEqual(await self.store.list_running_requests(self.agent_id), [self.request_id])
+        self.assertEqual(await self.store.count_recovery(self.request_id), 1)
+        self.assertEqual(await self.store.count_recovery(self.request_id), 2)
+
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.agent_id,
+                agent_id=self.agent_id,
+                request_id=self.request_id,
+                session_id="s-1",
+                event_type=RuntimeEventType.INVOKE_AGENT_END.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, "ok"),
+                dedupe_key="request.completed.0",
+                payload={"status": "ok"},
+            )
+        )
+        self.assertEqual(await self.store.list_running_requests(self.agent_id), [])
+
+
+class SharedPoolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stores_share_one_pool_that_keeps_no_idle_connections(self) -> None:
+        _require_postgres_runtime_support()
+        from mash.memory.store.backends.postgres.store import PostgresStore
+        from mash.storage import pool as shared
+
+        database_url = _runtime_database_url()
+        runtime_store = PostgresRuntimeStore(database_url)
+        memory_store = PostgresStore(database_url)
+        await runtime_store.open()
+        await memory_store.open()
         try:
-            await self.store.append_event(
-                RuntimeEvent(
-                    app_id="store-test",
-                    agent_id="store-test",
-                    request_id=self.request_id,
-                    session_id="session-recovery",
-                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
-                    lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
-                    dedupe_key=f"post-reconnect-{uuid.uuid4().hex[:8]}",
-                    payload={"status": "accepted"},
-                )
-            )
-            try:
-                await asyncio.wait_for(waiter.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                self.fail("waiter was not woken by NOTIFY after reconnect")
+            self.assertIs(runtime_store._pool, memory_store._pool)
+            self.assertEqual(runtime_store._pool.min_size, 0)
+            self.assertEqual(runtime_store._pool.max_idle, shared.MAX_IDLE_SECONDS)
         finally:
-            self.store.unregister_request_waiter(self.request_id, waiter)
+            await runtime_store.close()
+            pool = memory_store._pool
+            self.assertFalse(pool.closed)
+            await memory_store.close()
+            self.assertTrue(pool.closed)
 
 
 class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):

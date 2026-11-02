@@ -1,4 +1,4 @@
-"""DBOS runtime step implementations and workflow-state transitions."""
+"""The request loop's steps and the loop-state transitions they make."""
 
 from __future__ import annotations
 
@@ -34,15 +34,6 @@ from ..requests import (
 
 if TYPE_CHECKING:
     from ..service import AgentRuntime
-
-
-def _require_runtime(agent_id: str) -> "AgentRuntime":
-    # Import is deferred here to avoid a circular import through engine.dbos.
-    from .dbos import (
-        require_runtime as resolve_runtime,  # pylint: disable=import-outside-toplevel
-    )
-
-    return resolve_runtime(agent_id)
 
 
 def _merge_tool_usage(
@@ -384,7 +375,7 @@ async def _persist_turn_payload(
     latest_turn = latest_turns[-1] if latest_turns else None
     if latest_turn is not None and str(latest_turn.get("trace_id")) == resolved_trace_id:
         # This step is being replayed after its insert committed but before
-        # DBOS recorded the step output. The turn is already stored, and its
+        # the loop checkpointed it. The turn is already stored, and its
         # session total already counts this turn, so reuse it instead of
         # adding the turn's tokens a second time.
         session_total_tokens = _int_or_zero(latest_turn.get("session_total_tokens"))
@@ -440,7 +431,7 @@ async def _persist_turn_payload(
 
 
 async def start_request_trace(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     message: str,
@@ -451,7 +442,6 @@ async def start_request_trace(
     accepted; reading it from that row gives a replay the same id.
     """
     del message
-    runtime = _require_runtime(agent_id)
     events = await runtime.runtime_store.list_request_events(request_id)
     accepted_trace_id = next(
         (
@@ -481,14 +471,13 @@ async def start_request_trace(
 
 
 async def load_request_context(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
     message: str,
     request_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    runtime = _require_runtime(agent_id)
     # The host snapshot is captured in this persisted step output, so recovery
     # replays the original composition even if the host is redefined while the
     # request is in flight.
@@ -544,13 +533,12 @@ async def load_request_context(
 
 
 async def plan_request_step(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
     workflow_state: dict[str, Any],
 ) -> dict[str, Any]:
-    runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
     # A step spans think, act and commit, so its clock starts before the LLM call.
     step_started_at = float(time.time())
@@ -714,14 +702,13 @@ def _tool_call_from_payload(tool_call_payload: dict[str, Any]) -> ToolCall:
 
 
 async def run_step_tool_call(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
     workflow_state: dict[str, Any],
     tool_call_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
     tool_call = _tool_call_from_payload(tool_call_payload)
     result_payload = await _execute_and_record_tool_call(
@@ -775,7 +762,7 @@ async def _run_bounded(
 
 
 async def run_step_tool_batch(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
@@ -784,8 +771,8 @@ async def run_step_tool_batch(
 ) -> dict[str, Any]:
     """Execute a batch of parallel-safe tool calls concurrently.
 
-    Runs as a single DBOS step so crash recovery replays the batch atomically:
-    either all of its results are recorded or the whole batch re-runs. Each call
+    The loop checkpoints the batch's results together, so crash recovery
+    either has all of them or re-runs the whole batch. Each call
     still builds its own turn agent (mirroring the serial path), so concurrent
     executions share no mutable agent state. Concurrency is capped by the
     agent's ``max_parallel_tools`` so a wide fan-out can't exhaust the
@@ -796,7 +783,6 @@ async def run_step_tool_batch(
     ``max_parallel_tools`` workers drains the calls, so a wide batch costs a
     fixed number of pending tasks rather than one per call.
     """
-    runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
     host = workflow_state.get("host") or None
     user_id = workflow_state.get("user_id")
@@ -833,14 +819,13 @@ async def run_step_tool_batch(
 
 
 async def commit_request_step(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
     workflow_state: dict[str, Any],
     structured_output_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    runtime = _require_runtime(agent_id)
     loop_index = int(workflow_state.get("loop_index") or 0)
     context = context_helpers.deserialize_context(
         runtime, workflow_state.get("context") or {}
@@ -906,7 +891,7 @@ async def commit_request_step(
 
 
 async def persist_completed_turn(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
@@ -914,7 +899,6 @@ async def persist_completed_turn(
     workflow_state: dict[str, Any],
     request_metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    runtime = _require_runtime(agent_id)
     response = context_helpers.response_from_context_payload(
         runtime,
         {
@@ -940,7 +924,7 @@ async def persist_completed_turn(
 
 
 async def finalize_structured_output(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
@@ -948,7 +932,6 @@ async def finalize_structured_output(
     structured_output_request: dict[str, Any],
 ) -> dict[str, Any]:
     del request_id
-    runtime = _require_runtime(agent_id)
     context = context_helpers.deserialize_context(
         runtime,
         workflow_state.get("context") or {},
@@ -1012,22 +995,8 @@ INTERACTION_SCHEMAS = {
     "browser": {"type": "enum", "options": ["done", "cancel"]},
 }
 
-# Marker a cancel sends to a pending interaction's topic. No user response can
-# produce this shape (responses are strings or lists), so an in-flight recv that
-# returns it unambiguously means "this interaction was cancelled": the current
-# attempt ends and, on resume, a fresh interaction is issued.
-INTERACTION_CANCEL_SENTINEL: dict[str, Any] = {"__mash_interaction_cancelled__": True}
-
-
-def is_interaction_cancel_sentinel(response: Any) -> bool:
-    return (
-        isinstance(response, dict)
-        and response.get("__mash_interaction_cancelled__") is True
-    )
-
-
 async def open_interaction(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
@@ -1038,15 +1007,14 @@ async def open_interaction(
     timeout_seconds: int = 300,
     extra: dict[str, Any] | None = None,
 ) -> str:
-    """Mint the interaction id and emit its create event in one checkpointed step.
+    """Mint an interaction id and emit its create event.
 
-    Generating the id inside the step is what makes replay safe: DBOS records the
-    step's return value, so recovery hands the same id back to both the UI and
-    the ``recv`` listener instead of minting a fresh one at workflow scope.
+    The loop keeps the id in its checkpoint, so a recovered request waits on
+    the interaction the user already sees.
     """
     interaction_id = f"itr_{uuid.uuid4().hex[:12]}"
     await emit_interaction_create(
-        agent_id,
+        runtime,
         request_id,
         session_id,
         trace_id,
@@ -1061,7 +1029,7 @@ async def open_interaction(
 
 
 async def emit_interaction_create(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
@@ -1073,7 +1041,6 @@ async def emit_interaction_create(
     timeout_seconds: int = 300,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    runtime = _require_runtime(agent_id)
     if interaction_type == "choice":
         schema = INTERACTION_SCHEMAS["choice"](options or [])
     else:
@@ -1103,7 +1070,7 @@ async def emit_interaction_create(
 
 
 async def emit_interaction_ack(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
@@ -1112,8 +1079,8 @@ async def emit_interaction_ack(
     response: Any,
     timed_out: bool = False,
     cancelled: bool = False,
-) -> None:
-    runtime = _require_runtime(agent_id)
+) -> RuntimeEvent:
+    """Append the interaction's answer. The first answer stored wins; returns it."""
     payload: dict[str, Any] = {
         "status": EndStatus.CANCELLED.value if cancelled else EndStatus.OK.value,
         "interaction_id": interaction_id,
@@ -1123,7 +1090,7 @@ async def emit_interaction_ack(
         payload["timed_out"] = True
     if cancelled:
         payload["cancelled"] = True
-    await append_runtime_event(
+    return await append_runtime_event(
         runtime,
         RuntimeEvent(
             request_id=request_id,
@@ -1138,13 +1105,12 @@ async def emit_interaction_ack(
     )
 
 
-async def start_browser_handoff(agent_id: str, request_id: str) -> dict[str, Any]:
+async def start_browser_handoff(runtime: "AgentRuntime", request_id: str) -> dict[str, Any]:
     """Ask the host for a live-view link to the request user's browser.
 
     ``{url, expires_at, timeout_seconds}``, or ``{error}`` when there is no one
     to hand off to: a workflow request, or an agent without browser tools.
     """
-    runtime = _require_runtime(agent_id)
     if get_workflow_id():
         return {
             "error": (
@@ -1170,9 +1136,8 @@ async def start_browser_handoff(agent_id: str, request_id: str) -> dict[str, Any
     return dict(response.json())
 
 
-async def end_browser_handoff(agent_id: str, request_id: str) -> dict[str, Any]:
+async def end_browser_handoff(runtime: "AgentRuntime", request_id: str) -> dict[str, Any]:
     """Revoke the request's live view; the page as the user left it."""
-    runtime = _require_runtime(agent_id)
     host_api_url, token = runtime._browser_tools
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -1189,13 +1154,12 @@ async def end_browser_handoff(agent_id: str, request_id: str) -> dict[str, Any]:
 
 
 async def complete_request(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str,
     turn_payload: dict[str, Any],
 ) -> None:
-    runtime = _require_runtime(agent_id)
     attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
@@ -1221,19 +1185,12 @@ async def complete_request(
 
 
 async def emit_request_cancelled(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str | None,
     trace_id: str | None,
 ) -> None:
-    """Append the cancelled ``invoke_agent.end``.
-
-    The cancel path owns this: ``DBOSWorkflowCancelledError`` derives from
-    ``BaseException``, so it bypasses the workflow's ``except Exception``
-    handler and ``fail_request`` never fires. Without this event the request
-    would have no terminal record and streams would hang.
-    """
-    runtime = _require_runtime(agent_id)
+    """Append the cancelled ``invoke_agent.end``. The cancel path owns it."""
     attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
@@ -1258,13 +1215,12 @@ async def emit_request_cancelled(
 
 
 async def fail_request(
-    agent_id: str,
+    runtime: "AgentRuntime",
     request_id: str,
     session_id: str,
     trace_id: str | None,
     error_payload: dict[str, Any],
 ) -> None:
-    runtime = _require_runtime(agent_id)
     attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,

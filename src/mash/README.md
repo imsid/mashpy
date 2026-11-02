@@ -5,7 +5,7 @@
 ## What Lives Here
 - `core`: single-agent execution loop, config, context, and LLM provider contracts.
 - `runtime`: agent specs, host composition, server/client runtime behavior, and session routing.
-- `workflows`: code-defined host-level workflow specs, registry, and DBOS-backed orchestration service.
+- `workflows`: code-defined host-level workflow specs, registry, engine, and service.
 - `evals`: synthetic eval data model (datasets, rubrics, experiments, runs), scoring service, per-row operational metrics, and the Postgres eval store.
 - `api`: FastAPI app wiring, host serving helpers, and admin dashboard UI serving.
 - `cli`: the `mash` command-line, remote shell flow, and terminal rendering.
@@ -39,7 +39,7 @@
 
 ## Package Boundaries
 - Keep SDK/runtime primitives in `core` and `runtime`.
-- Keep host-level workflow orchestration and DBOS workflow contracts in `workflows`.
+- Keep host-level workflow execution and storage in `workflows`.
 - Keep HTTP-specific behavior in `api` and terminal UX in `cli`.
 - Keep tool schemas centralized in `tools`.
 - Keep logs machine-readable and stable enough for downstream inspection.

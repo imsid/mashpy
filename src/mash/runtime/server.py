@@ -8,13 +8,12 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dbos import DBOS
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .engine.workflow import workflow_id_for
+from .engine import InteractionClosedError
 from .errors import RequestStaleError, RequestTerminalError
 from .events import PostgresRuntimeStore
 from ..otel.context import normalize_trace_context
@@ -362,10 +361,14 @@ class AgentServer:
         if not isinstance(interaction_id, str) or not interaction_id.strip():
             return _json_error(400, "INVALID_REQUEST", "interaction_id is required")
 
-        response_value = payload.get("response")
-
-        wf_id = workflow_id_for(agent_id, request_id)
-        await DBOS.send_async(wf_id, response_value, topic=interaction_id.strip())
+        try:
+            await self.runtime.answer_interaction(
+                request_id, interaction_id.strip(), payload.get("response")
+            )
+        except KeyError:
+            return _json_error(404, "INTERACTION_NOT_FOUND", "Interaction not found")
+        except InteractionClosedError as exc:
+            return _json_error(409, "INTERACTION_CLOSED", str(exc))
 
         return JSONResponse({"ok": True, "interaction_id": interaction_id.strip()})
 

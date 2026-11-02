@@ -266,35 +266,32 @@ Every call names the request it serves, and the host checks it as the sandbox re
     then answer `done` when they finish or `cancel`.
 - `request.interaction.ack` follows with the `response`, plus `timed_out` or
   `cancelled` when set.
+- `404 INTERACTION_NOT_FOUND` for an interaction the request never opened, and
+  `409 INTERACTION_CLOSED` once it has an answer, a timeout or a cancel.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/status`
-- Returns the current DBOS workflow status for a request.
+- Returns the request's recorded status.
 - Path params:
   - `agent_id`
   - `request_id`
 - Returns:
   - `request_id`
-  - `workflow_id`
-  - `status`: `pending` | `completed` | `failed` | `cancelled` | `queued`
-  - `dbos_status`: raw DBOS status string
-  - `error`: optional error message
-  - `recovery_attempts`: optional number of DBOS recovery attempts
+  - `status`: `running` | `completed` | `failed` | `cancelled`
 - Use this to check request state when the SSE stream goes silent (e.g., after a
-  process crash).
+  process crash). A `running` request continues when its agent's process
+  restarts.
 
 `POST /api/v1/agent/{agent_id}/request/{request_id}/resume`
-- Resumes a failed or cancelled request by setting the DBOS workflow back to
-  PENDING for recovery.
+- Continues a failed or cancelled request from its last step.
 - Path params:
   - `agent_id`
   - `request_id`
 - Returns:
   - `request_id`
-  - `workflow_id`
-  - `status`: `resumed` | `completed` | `pending` | current status
+  - `status`: `resumed` | `completed` | `running`
   - `previous_status`: the status before resume (only when `status` is `resumed`)
   - `message`: human-readable description
-- If the request is already completed or pending, returns informational status
+- If the request is already completed or running, returns informational status
   without changing state.
 - Rejected with `409 REQUEST_STALE` when the request's session has accrued a
   newer replayable turn (resume replays the original context snapshot, so it is

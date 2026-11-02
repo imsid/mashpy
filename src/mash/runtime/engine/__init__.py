@@ -1,7 +1,5 @@
-"""Runtime request engine exports."""
+"""The request engine: runs an agent's requests durably in its process."""
 
-from .dbos import DBOSRequestEngine
-from .protocol import RequestEngine
-from .workflow import workflow_id_for
+from .engine import InteractionClosedError, RequestEngine
 
-__all__ = ["DBOSRequestEngine", "RequestEngine", "workflow_id_for"]
+__all__ = ["InteractionClosedError", "RequestEngine"]

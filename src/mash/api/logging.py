@@ -9,14 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional, Protocol
 
-try:  # pragma: no cover - optional dependency at import time
-    import psycopg
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-except ImportError:  # pragma: no cover - exercised only without optional deps
-    psycopg = None
-    dict_row = None
-    AsyncConnectionPool = None  # type: ignore[assignment]
+from mash.storage.pool import acquire_pool, release_pool
 
 logger = logging.getLogger(__name__)
 
@@ -100,25 +93,10 @@ class PostgresAPIEventStore(APIEventStore):
             return
         if self._pool is not None:
             return
-        if psycopg is None or dict_row is None or AsyncConnectionPool is None:  # pragma: no cover - env dependent
-            raise RuntimeError(
-                "psycopg and psycopg_pool are required for PostgresAPIEventStore. Install mashpy with PostgreSQL runtime dependencies."
-            )
         async with self._open_lock:
             if self._pool is not None:
                 return
-            pool = AsyncConnectionPool(
-                self._database_url,
-                min_size=1,
-                max_size=5,
-                open=False,
-                # Managed Postgres closes idle connections server-side; validate
-                # at checkout so a stale connection is replaced, not handed out.
-                check=AsyncConnectionPool.check_connection,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-            )
-            await pool.open()
-            self._pool = pool
+            self._pool = await acquire_pool(self._database_url)
             await self._init_schema()
 
     async def close(self) -> None:
@@ -127,8 +105,8 @@ class PostgresAPIEventStore(APIEventStore):
             return
         if self._pool is None:
             return
-        await self._pool.close()
         self._pool = None
+        await release_pool(self._database_url)
 
     async def append_event(self, event: APIEvent) -> APIEvent:
         if self._memory_store is not None:

@@ -335,9 +335,9 @@ matching the step's output schema. The step can target a pooled agent by id or
 carry its own `agent_spec`, which registers as a workflow-only agent hidden
 from listings and delegation.
 
-Runs are durable and observable. DBOS orchestrates each run, a failed run
-resumes from the failed step with completed steps replayed from their stored
-outputs, and every step leaves an audit trail of status, input and output
+Runs are durable and observable. The host runs each run, a failed run
+resumes from the failed step with completed steps skipped and their stored
+outputs fed forward, and every step leaves an audit trail of status, input and output
 snapshots, and lifecycle events in dedicated workflow tables. Runs start and
 stream over the API (`POST /api/v1/workflow/{id}/run`, then SSE on the run's
 events endpoint) or the REPL (`/workflow run|status|resume`). Code steps can

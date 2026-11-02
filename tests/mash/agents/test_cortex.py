@@ -19,7 +19,6 @@ from mash.agents.cortex import (
 )
 from mash.runtime import HostBuilder
 from mash.runtime.agent_process import build_agent_server
-from mash.runtime.engine import dbos as engine_dbos
 from mash.runtime.factory import build_agent_instance
 from mash.testing.runtime_fixtures import build_spec, metadata
 
@@ -113,11 +112,6 @@ class SearchCortexToolTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentProcessWiringTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        state = patch.object(engine_dbos, "_STATE", engine_dbos._DBOSRuntimeState())
-        state.start()
-        self.addCleanup(state.stop)
-
     def _server(self, *, cortex: bool):
         return build_agent_server(
             _pool(cortex=cortex), "assistant", token="tok", host_api_url="http://host"

@@ -46,7 +46,6 @@ class StepConstructionTests(unittest.TestCase):
         self.assertIs(step.input, TriggerIn)
         self.assertIsNone(step.timeout_s)
         self.assertEqual(step.agent_ids, ())
-        self.assertFalse(step.orchestration)
 
     def test_agent_step_valid_with_agent_id(self) -> None:
         step = AgentStep(
@@ -54,17 +53,6 @@ class StepConstructionTests(unittest.TestCase):
         )
         self.assertEqual(step.kind, "agent")
         self.assertEqual(step.agent_id, "writer")
-
-    def test_code_step_can_enable_orchestration(self) -> None:
-        step = CodeStep(
-            step_id="fan-out",
-            run=_scan,
-            input=TriggerIn,
-            output=ScanOut,
-            orchestration=True,
-        )
-
-        self.assertTrue(step.orchestration)
 
     def test_code_step_normalizes_declared_agent_ids(self) -> None:
         step = CodeStep(

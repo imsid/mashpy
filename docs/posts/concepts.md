@@ -52,7 +52,7 @@ An inference provider that hosts and serves a model. Each provider exposes its o
 
 A specification that combines a prompt, tools, skills, memory, and a provider. Together they give the model what it needs to work through a large, multi-step task. Each step in the process is a turn; the full sequence is the agent loop. Individual turns can run autonomously or pause for human input. Because the loop can be long-running and run in the background, durability matters: retries, resumability, replays, and observability.
 
-Every agent framework offers its own way to define an agent spec and execute the loop. Mash provides a Python SDK for authoring agents and uses `dbos-transact` for durable execution.
+Every agent framework offers its own way to define an agent spec and execute the loop. Mash provides a Python SDK for authoring agents and runs each request on a loop that checkpoints to Postgres after every step.
 
 To make the spec concrete, here is what a Morning Brief agent looks like, one that assembles a personalized daily digest:
 

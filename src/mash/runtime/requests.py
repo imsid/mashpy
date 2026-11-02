@@ -26,8 +26,8 @@ if TYPE_CHECKING:
     from .service import AgentRuntime
 
 
-# Caller-supplied request ids end up inside DBOS workflow ids
-# (``{agent_id}:{request_id}``), so they are kept to a conservative charset.
+# Caller-supplied request ids end up in URLs and in subagent and workflow
+# request ids, so they are kept to a conservative charset.
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
 _USER_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,255}$")
 
@@ -323,7 +323,6 @@ async def _submit_request_inner(
 ) -> dict[str, Any]:
     target_session_id = session_id
     request_id = request_id or str(uuid.uuid4())
-    workflow_id = f"{self.app_id}:{request_id}"
     started_by = STARTED_BY_USER
     parent_request_id = None
     parent = (request_metadata or {}).get("parent")
@@ -342,7 +341,6 @@ async def _submit_request_inner(
     if host_id:
         attributes[semconv.MASH_HOST_ID] = host_id
     payload: dict[str, Any] = {
-        "workflow_id": workflow_id,
         "message": message,
         "initial_session_id": target_session_id,
         "request_metadata": dict(request_metadata or {}),
@@ -540,17 +538,13 @@ async def resume_request(
     session_id = next((e.session_id for e in events if e.session_id), None)
     request_trace_id = next((e.trace_id for e in events if e.trace_id), None)
 
-    # A request that already completed has nothing to replay, so the engine's
-    # idempotent response is the honest answer even once the session has moved
-    # on. Checking it first keeps a completed request from reporting stale.
-    already_completed = (
-        await self.runtime_store.get_request_lifecycle(request_id)
-        is RequestStatus.COMPLETED
-    )
+    # A completed request has nothing to replay, so it answers completed even
+    # once the session has moved on, rather than reporting stale.
+    status = await self.runtime_store.get_request_lifecycle(request_id)
 
     # Stale-session guard: resume replays the request's original context
     # snapshot, so it is unsafe once the session has a newer replayable turn.
-    if session_id and not already_completed:
+    if session_id and status is not RequestStatus.COMPLETED:
         turns = await self.store.get_turns(session_id, self.app_id)
         if _session_has_later_turn(
             turns,
@@ -562,37 +556,51 @@ async def resume_request(
                 f"newer turns"
             )
 
-    result = await self.engine.resume_request(request_id=request_id)
+    if status is RequestStatus.COMPLETED:
+        return {
+            "request_id": request_id,
+            "status": "completed",
+            "message": "request already completed successfully",
+        }
+    if status is RequestStatus.RUNNING:
+        return {
+            "request_id": request_id,
+            "status": "running",
+            "message": "request is already running",
+        }
 
-    if str(result.get("status")) == "resumed":
-        # Non-terminal lifecycle event. Because terminality reads the last
-        # event, appending it after a failed or cancelled invoke_agent.end flips
-        # the request back to non-terminal so closed streams re-open. A distinct
-        # dedupe_key per resume (by prior resumed count) lets a request be
-        # resumed more than once.
-        prior_resumes = request_attempt(events)
-        await append_runtime_event(
-            self,
-            RuntimeEvent(
-                request_id=request_id,
-                app_id=self.app_id,
-                agent_id=self.app_id,
-                trace_id=request_trace_id,
-                session_id=session_id,
-                event_type=RuntimeEventType.REQUEST_RESUMED.value,
-                dedupe_key=f"request.resumed.{prior_resumes}",
-                lifecycle=RequestStatus.RUNNING,
-                payload={
-                    "request_id": request_id,
-                    "agent_id": self.app_id,
-                    "session_id": session_id,
-                    "status": "resumed",
-                    "previous_status": result.get("previous_status"),
-                    "attributes": {semconv.MASH_REQUEST_ID: request_id},
-                },
-            ),
-        )
-    return result
+    # Recorded before the loop restarts, so the new attempt's terminal event
+    # gets a dedupe key of its own (see request_attempt). Because terminality
+    # reads the last lifecycle event, this also re-opens closed streams.
+    prior_resumes = request_attempt(events)
+    await append_runtime_event(
+        self,
+        RuntimeEvent(
+            request_id=request_id,
+            app_id=self.app_id,
+            agent_id=self.app_id,
+            trace_id=request_trace_id,
+            session_id=session_id,
+            event_type=RuntimeEventType.REQUEST_RESUMED.value,
+            dedupe_key=f"request.resumed.{prior_resumes}",
+            lifecycle=RequestStatus.RUNNING,
+            payload={
+                "request_id": request_id,
+                "agent_id": self.app_id,
+                "session_id": session_id,
+                "status": "resumed",
+                "previous_status": status.value if status else None,
+                "attributes": {semconv.MASH_REQUEST_ID: request_id},
+            },
+        ),
+    )
+    await self.engine.continue_request(request_id)
+    return {
+        "request_id": request_id,
+        "status": "resumed",
+        "previous_status": status.value if status else None,
+        "message": "request has been resumed from its last step",
+    }
 
 
 async def rerun_request(

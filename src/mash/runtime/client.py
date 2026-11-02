@@ -24,6 +24,10 @@ class RequestModeConflictError(AgentClientError):
     """The request has finished, so its mode cannot change (HTTP 409)."""
 
 
+class InteractionClosedError(AgentClientError):
+    """The interaction already has an answer, a timeout or a cancel (HTTP 409)."""
+
+
 class AgentClientLike(Protocol):
     """Shared transport contract for one addressable agent runtime."""
 
@@ -382,13 +386,7 @@ class AgentClient:
                 f"POST interaction failed (status=404): {self._extract_message(resp)}"
             )
         if resp.status_code == 409:
-            raise AgentClientError(
-                "POST interaction failed (status=409): interaction already responded"
-            )
-        if resp.status_code == 410:
-            raise AgentClientError(
-                "POST interaction failed (status=410): interaction timed out"
-            )
+            raise InteractionClosedError(self._extract_message(resp))
         if resp.status_code != 200:
             raise AgentClientError(
                 f"POST interaction failed (status={resp.status_code}): {self._extract_message(resp)}"

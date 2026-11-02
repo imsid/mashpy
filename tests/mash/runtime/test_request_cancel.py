@@ -1,10 +1,9 @@
-"""Tests for Phase 2 request cancellation.
+"""Tests for request cancellation.
 
-The DBOS-specific cancel-at-step-boundary behavior needs a live DBOS + Postgres.
-Here we cover the parts the engine composes: the pending-interaction finder, the
-public-event mapping, the terminal cancelled event flipping a request terminal,
-and cancel's idempotence — driven through the runtime surface against the inline
-test engine.
+The pending-interaction finder, the public-event mapping, the terminal
+cancelled event flipping a request terminal, and cancel's idempotence, driven
+through the runtime surface. A loop stopping at its next step after a cancel is
+covered in ``test_request_engine.py``.
 """
 
 from __future__ import annotations
@@ -149,7 +148,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         interaction_id = await open_interaction(
-            runtime.app_id,
+            runtime,
             "req-1",
             "s-1",
             "trace-1",
@@ -197,7 +196,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        await emit_request_cancelled(runtime.app_id, "req-3", "s-1", "trace-3")
+        await emit_request_cancelled(runtime, "req-3", "s-1", "trace-3")
         self.assertTrue(await runtime.runtime_store.is_request_terminal("req-3"))
 
         await runtime.runtime_store.append_event(
@@ -214,7 +213,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(await runtime.runtime_store.is_request_terminal("req-3"))
 
-        await emit_request_cancelled(runtime.app_id, "req-3", "s-1", "trace-3")
+        await emit_request_cancelled(runtime, "req-3", "s-1", "trace-3")
 
         events = await runtime.runtime_store.list_request_events("req-3")
         cancelled = [
@@ -244,8 +243,8 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 dedupe_key="request.accepted",
             )
         )
-        await emit_request_cancelled(runtime.app_id, "req-4", "s-1", "trace-4")
-        await emit_request_cancelled(runtime.app_id, "req-4", "s-1", "trace-4")
+        await emit_request_cancelled(runtime, "req-4", "s-1", "trace-4")
+        await emit_request_cancelled(runtime, "req-4", "s-1", "trace-4")
 
         events = await runtime.runtime_store.list_request_events("req-4")
         cancelled = [

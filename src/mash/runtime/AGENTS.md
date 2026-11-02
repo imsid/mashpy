@@ -7,13 +7,14 @@
 - `AgentServer` is the per-agent HTTP/SSE adapter.
 - `Pool` owns agent registration, host definitions, and lifecycle.
 - Hosted request execution is event-sourced through `runtime_store`.
-- `RequestEngine` and the `engine/` package remain the workflow/backend boundary.
+- `RequestEngine` and the `engine/` package remain the durability boundary; a request's durable state is its `runtime_request` row and its events.
 - `memory_store` and `runtime_store` remain separate responsibilities.
 - `AgentRuntime` receives stores via constructor injection — it never creates or closes them.
 - `Pool` owns shared store instances and their lifecycle; `AgentServer` owns its own.
 - Runtime servers and clients preserve the current host/session contracts.
 - Subagent session derivation remains deterministic.
-- Interactions (approval/info/choice) block durably via DBOS `recv`/`send` in the workflow loop.
+- Interactions (approval/info/choice/browser) wait in the request loop; the answer is the `mash.interaction.end` event, so a recovered loop finds it.
+- Every event a step appends has a dedupe key, so a step that runs twice after a crash appends nothing twice.
 - `post_interaction` is the only way to deliver a response to a blocked interaction.
 
 ## Change Rules

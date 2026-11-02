@@ -1,8 +1,8 @@
 """Replay-stable RunSubAgents child ids.
 
-The durable loop binds a prefix fixed by the call's position around each
-RunSubAgents step. The tool derives each child's id from it, so a replay
-resubmits the same ids and idempotent submission returns the children
+The request loop binds a prefix fixed by the call's position around each
+RunSubAgents step. The tool derives each child's id from it, so a rerun of
+the step resubmits the same ids and idempotent submission returns the children
 already running.
 """
 
@@ -21,7 +21,8 @@ from mash.logging.trace_context import (
     get_subagent_id_prefix,
 )
 from mash.runtime import AgentRuntime
-from mash.runtime.engine import workflow as engine_workflow
+from mash.runtime.engine import loop as engine_loop
+from mash.runtime.engine.loop import RequestRun
 from mash.testing.runtime_fixtures import build_spec
 from mash.tools.subagent import child_request_id
 
@@ -51,31 +52,31 @@ class ChildIdTests(unittest.TestCase):
         )
 
 
-class _DBOS:
-    def __init__(self) -> None:
-        self.prefixes: list[Any] = []
-
-    async def run_step_async(self, options: Any, fn: Any, *args: Any) -> dict:
-        del options, fn, args
-        self.prefixes.append(get_subagent_id_prefix())
-        return {}
-
-
-class WorkflowBindingTests(unittest.IsolatedAsyncioTestCase):
+class LoopBindingTests(unittest.IsolatedAsyncioTestCase):
     async def _bound_prefix(self, tool_name: str) -> Any:
-        dbos = _DBOS()
-        with patch.object(engine_workflow, "DBOS", dbos):
-            await engine_workflow._run_tool_call_for_workflow(
-                "agent-a",
-                "req-1",
-                "s-1",
-                "trace-1",
+        prefixes: list[Any] = []
+
+        async def _tool_call(*args: Any) -> dict:
+            del args
+            prefixes.append(get_subagent_id_prefix())
+            return {}
+
+        run = RequestRun(
+            object(),  # type: ignore[arg-type]
+            request_id="req-1",
+            message="hi",
+            session_id="s-1",
+            request_metadata={},
+            checkpoint={"trace_id": "trace-1"},
+        )
+        with patch.object(engine_loop, "run_step_tool_call", _tool_call):
+            await run._tool_call(
                 {},
                 loop_index=2,
                 call_index=1,
                 tool_call={"id": "c1", "name": tool_name, "arguments": {}},
             )
-        [prefix] = dbos.prefixes
+        [prefix] = prefixes
         return prefix
 
     async def test_run_subagents_runs_under_its_positional_prefix(self) -> None:

@@ -7,32 +7,8 @@ from typing import Any
 
 import pytest
 
-from mash.logging import (
-    bound_host_id,
-    bound_request_id,
-    bound_request_metadata,
-    bound_subagent_id_prefix,
-)
-from mash.runtime import context as context_helpers
-from mash.runtime.errors import classify_error
-from mash.runtime.requests import (
-    caller_metadata_from_request_metadata,
-    host_id_from_request_metadata,
-)
 from mash.runtime import Pool
-from mash.runtime.engine.dbos import register_runtime, unregister_runtime
 from mash.testing.agents import LocalAgentProvider
-from mash.runtime.engine.steps import (
-    commit_request_step,
-    complete_request,
-    fail_request,
-    finalize_structured_output,
-    load_request_context,
-    persist_completed_turn,
-    plan_request_step,
-    run_step_tool_call,
-    start_request_trace,
-)
 from mash.otel import semconv
 from mash.runtime.events.types import (
     FeedbackRecord,
@@ -108,6 +84,8 @@ class _RequestState:
     started_at: float | None = None
     parent_request_id: str | None = None
     updated_at: float = 0.0
+    checkpoint: dict[str, Any] | None = None
+    recoveries: int = 0
 
 
 class _TestRuntimeStore:
@@ -333,6 +311,38 @@ class _TestRuntimeStore:
         async with self._lock:
             state = self._request_state.get(request_id)
         return state.status if state is not None else None
+
+    async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
+        import json
+
+        async with self._lock:
+            state = self._request_state.get(request_id)
+            if state is not None:
+                # Round-trip through JSON, as the jsonb column does.
+                state.checkpoint = json.loads(json.dumps(checkpoint, default=str))
+
+    async def get_checkpoint(self, request_id: str) -> dict[str, Any] | None:
+        async with self._lock:
+            state = self._request_state.get(request_id)
+        if state is None or state.checkpoint is None:
+            return None
+        return dict(state.checkpoint)
+
+    async def list_running_requests(self, agent_id: str) -> list[str]:
+        async with self._lock:
+            return [
+                request_id
+                for request_id, state in self._request_state.items()
+                if state.agent_id == agent_id and state.status is RequestStatus.RUNNING
+            ]
+
+    async def count_recovery(self, request_id: str) -> int:
+        async with self._lock:
+            state = self._request_state.get(request_id)
+            if state is None:
+                return 0
+            state.recoveries += 1
+            return state.recoveries
 
     async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
         async with self._lock:
@@ -575,254 +585,6 @@ class _TestRuntimeStore:
         if request_id:
             for ev in self._request_waiters.get(request_id, ()):
                 ev.set()
-
-
-async def _execute_request_inline(
-    runtime: Any,
-    *,
-    request_id: str,
-    message: str,
-    session_id: str,
-    request_metadata: dict[str, Any],
-) -> None:
-    if not isinstance(session_id, str):
-        raise TypeError("session_id must be a string")
-    session_id = session_id.strip()
-    if not session_id:
-        raise ValueError("session_id is required")
-    trace_id: str | None = None
-    with bound_request_id(request_id), bound_host_id(
-        host_id_from_request_metadata(request_metadata)
-    ), bound_request_metadata(
-        caller_metadata_from_request_metadata(request_metadata)
-    ):
-        try:
-            trace_id = await start_request_trace(
-                runtime.app_id,
-                request_id,
-                session_id=session_id,
-                message=message,
-            )
-            workflow_state = await load_request_context(
-                runtime.app_id,
-                request_id,
-                session_id,
-                trace_id,
-                message,
-                request_metadata,
-            )
-            while True:
-                workflow_state = await plan_request_step(
-                    runtime.app_id,
-                    request_id,
-                    session_id,
-                    trace_id,
-                    workflow_state,
-                )
-                event_payload = dict(workflow_state.get("action") or {})
-                tool_calls = context_helpers.tool_calls_from_action_payload(event_payload)
-
-                loop_index = int(workflow_state.get("loop_index") or 0)
-                for call_index, tool_call in enumerate(tool_calls):
-                    # As the durable loop does: a RunSubAgents call derives its
-                    # child ids from its position.
-                    prefix = (
-                        f"{request_id}-sub-{loop_index}-{call_index}"
-                        if tool_call.name == "RunSubAgents"
-                        else None
-                    )
-                    with bound_subagent_id_prefix(prefix):
-                        workflow_state = await run_step_tool_call(
-                            runtime.app_id,
-                            request_id,
-                            session_id,
-                            trace_id,
-                            workflow_state,
-                            {
-                                "id": tool_call.id,
-                                "name": tool_call.name,
-                                "arguments": dict(tool_call.arguments or {}),
-                            },
-                        )
-                workflow_state = await commit_request_step(
-                    runtime.app_id,
-                    request_id,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                    workflow_state=workflow_state,
-                )
-                if not bool(workflow_state.get("done")):
-                    continue
-
-                structured_output_request = request_metadata.get(
-                    "structured_output_request"
-                )
-                if isinstance(structured_output_request, dict):
-                    workflow_state = await finalize_structured_output(
-                        runtime.app_id,
-                        request_id,
-                        session_id,
-                        trace_id,
-                        workflow_state,
-                        structured_output_request,
-                    )
-                turn_payload = await persist_completed_turn(
-                    runtime.app_id,
-                    request_id,
-                    session_id,
-                    trace_id,
-                    message=message,
-                    workflow_state=workflow_state,
-                    request_metadata=request_metadata,
-                )
-                await complete_request(
-                    runtime.app_id,
-                    request_id,
-                    session_id,
-                    trace_id,
-                    turn_payload,
-                )
-                return
-        except Exception as exc:
-            # Mirror the real engine: the error payload is whatever
-            # classify_error makes of the exception, so tests see the same
-            # error_code/retryable/stop_reason fields production emits.
-            await fail_request(
-                runtime.app_id,
-                request_id,
-                session_id,
-                trace_id,
-                classify_error(exc),
-            )
-
-
-class _TestDBOSRequestEngine:
-    def __init__(self, runtime: Any, *, database_url: str) -> None:
-        self._runtime = runtime
-        self._database_url = database_url
-        self._tasks: set[asyncio.Task[None]] = set()
-
-    async def open(self) -> None:
-        register_runtime(self._runtime)
-        return None
-
-    async def close(self) -> None:
-        if not self._tasks:
-            unregister_runtime(self._runtime)
-            return
-        tasks = list(self._tasks)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
-        unregister_runtime(self._runtime)
-
-    async def start_request(
-        self,
-        *,
-        request_id: str,
-        message: str,
-        session_id: str,
-        request_metadata: dict[str, Any],
-    ) -> None:
-        task = asyncio.create_task(
-            _execute_request_inline(
-                self._runtime,
-                request_id=request_id,
-                message=message,
-                session_id=session_id,
-                request_metadata=dict(request_metadata or {}),
-            ),
-            name=f"TestRequest-{self._runtime.app_id}-{request_id}",
-        )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def cancel_request(self, *, request_id: str) -> dict[str, Any]:
-        """Mirror DBOSRequestEngine.cancel_request over the inline executor.
-
-        Preempts the request's inline task (the stand-in for DBOS cancellation),
-        settles any parked interaction, and emits the terminal cancelled event.
-        """
-        from mash.runtime.engine.steps import (
-            emit_interaction_ack,
-            emit_request_cancelled,
-        )
-        from mash.runtime.requests import find_pending_interaction
-
-        store = self._runtime.runtime_store
-        if await store.is_request_terminal(request_id):
-            return {
-                "request_id": request_id,
-                "status": "completed",
-                "message": "request is already in a terminal state",
-            }
-        for task in list(self._tasks):
-            if task.get_name().endswith(f"-{request_id}"):
-                task.cancel()
-        events = await store.list_request_events(request_id)
-        trace_id = next((e.trace_id for e in events if e.trace_id), None)
-        session_id = next((e.session_id for e in events if e.session_id), None)
-        pending = find_pending_interaction(events)
-        if pending is not None:
-            await emit_interaction_ack(
-                self._runtime.app_id,
-                request_id,
-                session_id,
-                trace_id,
-                interaction_id=pending,
-                response=None,
-                cancelled=True,
-            )
-        await emit_request_cancelled(
-            self._runtime.app_id, request_id, session_id, trace_id
-        )
-        return {
-            "request_id": request_id,
-            "status": "cancelled",
-            "message": "request has been cancelled",
-        }
-
-    async def resume_request(self, *, request_id: str) -> dict[str, Any]:
-        """Mirror DBOSRequestEngine.resume_request from the recorded status.
-
-        The inline executor has no DBOS status, so read the request's lifecycle
-        state: a cancelled request resumes; a completed one is an idempotent
-        no-op; a failed one cannot be resumed, because DBOS refuses to resume a
-        workflow that ended in ERROR.
-        """
-        store = self._runtime.runtime_store
-        events = await store.list_request_events(request_id)
-        if not events:
-            raise KeyError(request_id)
-        status = await store.get_request_lifecycle(request_id)
-        if status is RequestStatus.COMPLETED:
-            return {
-                "request_id": request_id,
-                "status": "completed",
-                "message": "request already completed successfully",
-            }
-        if status is RequestStatus.FAILED:
-            return {
-                "request_id": request_id,
-                "status": "failed",
-                "message": (
-                    "failed requests cannot be resumed; rerun the request "
-                    "to start it over"
-                ),
-            }
-        if status is RequestStatus.CANCELLED:
-            return {
-                "request_id": request_id,
-                "status": "resumed",
-                "previous_status": "cancelled",
-                "message": "request has been resumed for recovery",
-            }
-        return {
-            "request_id": request_id,
-            "status": "pending",
-            "message": "request is already pending recovery",
-        }
 
 
 class _TestMemoryStore:
@@ -1126,6 +888,7 @@ class _TestWorkflowStore:
         self._runs: dict[str, Any] = {}
         self._steps: dict[tuple[str, str], Any] = {}
         self._events: list[Any] = []
+        self._recoveries: dict[str, int] = {}
 
     async def open(self) -> None:
         pass
@@ -1136,7 +899,37 @@ class _TestWorkflowStore:
         self._events.clear()
 
     async def create_run(self, run: Any) -> None:
+        from mash.workflows.store import RunDeduplicatedError
+
+        if run.dedup_key is not None:
+            for existing in self._runs.values():
+                if (
+                    existing.workflow_id == run.workflow_id
+                    and existing.dedup_key == run.dedup_key
+                    and existing.status in ("queued", "running")
+                ):
+                    raise RunDeduplicatedError(existing.run_id)
         self._runs.setdefault(run.run_id, run)
+
+    async def list_unfinished_runs(self, run_id_prefix: str):
+        runs = [
+            run
+            for run in self._runs.values()
+            if run.status in ("queued", "running") and run.run_id.startswith(run_id_prefix)
+        ]
+        return sorted(runs, key=lambda run: (run.created_at, run.run_id))
+
+    async def count_recovery(self, run_id: str) -> int:
+        self._recoveries[run_id] = self._recoveries.get(run_id, 0) + 1
+        return self._recoveries[run_id]
+
+    async def requeue_run(self, run_id: str) -> None:
+        run = self._runs.get(run_id)
+        if run is not None:
+            run.status = "queued"
+            run.result = None
+            run.error = None
+            run.finished_at = None
 
     async def mark_run_started(self, run_id: str, started_at: float) -> None:
         run = self._runs.get(run_id)
@@ -1156,6 +949,11 @@ class _TestWorkflowStore:
         self._steps[(step.run_id, step.step_id)] = step
 
     async def append_step_event(self, *, run_id, workflow_id, step_id, event_type, at, attempt=1, payload=None) -> int:
+        for existing in self._events:
+            if (existing.run_id, existing.step_id, existing.attempt, existing.event_type) == (
+                run_id, step_id, attempt, event_type
+            ):
+                return existing.seq
         seq = sum(1 for e in self._events if e.run_id == run_id and e.step_id == step_id) + 1
         self._events.append(
             WorkflowStepEventRecord(
@@ -1211,7 +1009,14 @@ def _patch_hosted_runtime_for_tests():
     patcher.setattr("mash.runtime.host.host.PostgresStore", _TestMemoryStore)
     patcher.setattr("mash.runtime.host.host.WorkflowStore", _TestWorkflowStore)
     patcher.setattr("mash.runtime.server.PostgresRuntimeStore", _TestRuntimeStore)
-    patcher.setattr("mash.runtime.service.DBOSRequestEngine", _TestDBOSRequestEngine)
+    # The request loop retries transient step errors with backoff; tests keep
+    # the retries and drop the sleeps.
+    from mash.runtime import errors as runtime_errors
+
+    async def _retry_without_backoff(fn, **_kwargs):
+        return await runtime_errors.retry_transient(fn, base_delay=0.0, max_delay=0.0)
+
+    patcher.setattr("mash.runtime.engine.loop.retry_transient", _retry_without_backoff)
     # Every pool a test starts runs its agents on localhost ports in-process unless
     # the test configures a provider itself.
     patcher.setattr(

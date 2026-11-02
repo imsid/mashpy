@@ -1,412 +1,166 @@
 # Engine
 
-`src/mash/runtime/engine` is the workflow-durability layer for hosted runtime execution.
-
-Its job is narrow:
-
-- start one durable workflow per accepted request
-- resume that request safely across process failure or restart
-- keep durability separate from both:
-  - the core loop in [`src/mash/core/agent.py`](../../core/agent.py)
-  - the append-only request event log in [`../events/`](../events)
-
-The design rule is:
-
-- **`Agent` owns loop semantics**
-- **DBOS owns continuation and resume**
-- **`runtime_store` owns observable request progress**
-
-## What A DBOS Workflow Means Here
-
-One DBOS workflow instance executes one accepted runtime request for one `(agent_id, request_id)` pair.
-
-- registered workflow name: `mash.runtime.execute_request`
-- workflow id: `"{agent_id}:{request_id}"`
-- registration happens once in [`dbos.py`](./dbos.py)
-- the workflow entrypoint is [`execute_request_workflow(...)`](./workflow.py)
-
-The workflow does **not** call `Agent.run(...)` directly. It checkpoints progress around canonical agent-step boundaries.
-
-## Files In This Layer
-
-- [`protocol.py`](./protocol.py)
-  - defines the `RequestEngine` interface (`open`, `close`, `start_request`, `get_request_status`, `resume_request`)
-- [`dbos.py`](./dbos.py)
-  - boots DBOS
-  - registers live runtimes
-  - registers the workflow
-  - starts workflow instances
-  - implements `get_request_status` (queries DBOS workflow status)
-  - implements `resume_request` (calls `DBOS.resume_workflow_async`)
-- [`workflow.py`](./workflow.py)
-  - sequences DBOS boundaries and loop control
-- [`steps.py`](./steps.py)
-  - contains both:
-    - DBOS-facing workflow entrypoints
-    - runtime-side state transitions and turn persistence helpers
-  - interaction event emission helpers (`emit_interaction_create`, `emit_interaction_ack`)
-
-There is no separate runtime adapter file anymore. The engine implementation lives in `workflow.py` and `steps.py`.
-
-## Where Workflow Start Fits In The Request Lifecycle
-
-One boundary stays explicit:
-
-- `invoke_agent.start` is appended **before** the DBOS workflow starts, with the request's trace id
-- durable execution begins only when the engine starts the workflow
-
-The sequence is:
-
-1. [`../requests.py`](../requests.py) creates `request_id`.
-2. [`../requests.py`](../requests.py) mints the trace id and appends `invoke_agent.start`.
-3. [`../requests.py`](../requests.py) calls `self.engine.start_request(...)`.
-4. [`DBOSRequestEngine.start_request(...)`](./dbos.py) ensures DBOS is initialized and the workflow is registered.
-5. [`DBOSRequestEngine.start_request(...)`](./dbos.py) sets the workflow id with `SetWorkflowID(...)`.
-6. [`DBOSRequestEngine.start_request(...)`](./dbos.py) calls `DBOS.start_workflow_async(...)`.
-7. DBOS invokes the registered workflow wrapper, which calls [`execute_request_workflow(...)`](./workflow.py).
-
-## Why The Workflow Does Not Call `Agent.run(...)`
-
-[`Agent.run(...)`](../../core/agent.py) is the full in-memory turn loop.
-
-If the DBOS workflow called `run()` directly:
-
-- a crash mid-turn would replay the whole turn
-- already-completed tool calls could run again
-- there would be no mid-turn resume point
-
-Instead, the workflow checkpoints around canonical step primitives:
-
-- `Agent.plan_step(...)`
-- `Agent.execute_step_tool_call(...)`
-- `Agent.commit_step(...)`
-
-## How DBOS Is Bootstrapped
-
-[`dbos.py`](./dbos.py) is responsible for runtime initialization:
-
-- `ensure_dbos_ready(database_url)` validates `MASH_DATABASE_URL`
-- DBOS is initialized with the shared Mash system database config
-- DBOS runs with this process's executor id: `host` by default, or the value
-  set by `configure_executor_id(...)` before launch (`agent_executor_id(agent_id)`
-  gives `agent:<agent_id>` for an agent process). On launch DBOS recovers only
-  the pending workflows recorded under that executor id
-- DBOS runs under this process's application name: `mash` for the host, and
-  `agent_application_name(agent_id)` (`mash-agent-<slug>-<hash>`) for an agent
-  process, set by `configure_agent_process(...)`. DBOS recovers and resumes a
-  workflow by putting it on its internal queue, which every process polls, and
-  dequeues by application name rather than executor. The name of its own keeps
-  an agent's recovered and resumed requests in that agent's process; under a
-  shared name, another process could take one and fail it with `runtime '<id>'
-  is not registered`
-- only the host declares the workflow-run queue (`ensure_queue_registered`): a
-  queue row belongs to one application, and agent processes never enqueue runs
-- `register_workflow(...)` installs the workflow once
-- `DBOS.launch()` activates the runtime
-- live `AgentRuntime` objects are stored in `_STATE.runtime_registry`
-- workflow steps recover the current runtime via `require_runtime(agent_id)`
-
-Important nuance:
-
-- the workflow is durable
-- the runtime object is still resolved from the local runtime registry
-- DBOS is not the source of truth for agent configuration or memory stores
-
-## Workflow Inputs And IDs
-
-Workflow inputs:
-
-- `agent_id`
-- `request_id`
-- `message`
-- `session_id`
-- `request_metadata`
-
-Important ids:
-
-- `request_id`: request lifecycle id
-- `workflow_id`: DBOS instance id, built from `agent_id:request_id`
-- `trace_id`: per-run trace id created in `start_request_trace(...)`
-- `session_id`: conversation/session id used for history lookup and turn persistence
-
-## Durable Workflow State
-
-After `load_request_context(...)`, the workflow carries one durable state object between DBOS steps:
-
-- `context`
-  - serialized `Context`
-- `compaction`
-  - compaction metadata from context loading
-- `loop_index`
-  - current agent step index
-- `aggregate_usage`
-  - accumulated token usage across think phases
-- `tool_usage`
-  - accumulated per-tool token and invocation usage
-- `action`
-  - the current planned action payload
-- `result_payloads`
-  - completed tool results for the current step
-- `signals`
-  - final collected signals once the run becomes terminal
-- `done`
-  - whether the agent context has reached terminal completion
-- `interaction_response` (optional)
-  - the most recent interaction response, available after an interaction ack
-
-This state lives in workflow execution only. It is **not** written to the memory store as partial turns.
-
-## Step-By-Step Workflow Execution
-
-### 1. `request.start`
-
-Implemented by `start_request_trace(...)`.
-
-This step:
-
-- reads the `trace_id` minted on `invoke_agent.start`, so a replay returns the same id
-- appends `mash.context_load.start`
-
-### 2. `context.load`
-
-Implemented by `load_request_context(...)`.
-
-This step:
-
-- loads conversation history
-- may compact the session first
-- builds the initial serialized `Context`
-- initializes durable workflow state
-- appends `mash.context_load.end`
-
-### 3. `step.plan.<loop_index>`
-
-Implemented by `plan_request_step(...)`.
-
-This step:
-
-- appends `chat.start`
-- deserializes the current context
-- builds a request-scoped agent
-- calls `Agent.plan_step(...)`
-- updates workflow state with:
-  - the new serialized context
-  - the current action payload
-  - token usage deltas
-  - merged tool usage
-- appends `chat.end`, with the provider, model, token counts and finish reason
-  under `attributes`
-- binds the loop index for the model call, so its `chat.delta` rows key by it
-
-Important behavior:
-
-- assistant output is already reflected in the serialized context before the step returns
-- this step does **not** enable DBOS automatic retries
-
-### 4. `<prefix>.open.<loop_index>.<attempt>` / `<prefix>.ack.<loop_index>.<attempt>` (conditional)
-
-Driven by `_run_interaction(...)`, using the `open_interaction(...)` and `emit_interaction_ack(...)` steps. `<prefix>` is `interaction` for the approval gate and `ask_user` for the AskUser tool intercept, keeping the two sites in separate step namespaces.
-
-These steps run only when the action payload from `plan_request_step` contains an `interaction` field (or the plan calls `AskUser`). Per attempt, the workflow:
-
-- runs `open_interaction`, a **checkpointed** step that mints the `interaction_id` *inside the step* and appends `mash.interaction.start` (visible as `request.interaction.create` on SSE). Because the id is the step's return value, DBOS replay hands the same id back to both the UI and the `recv` listener — without this, a recovered workflow would mint a fresh id and `recv` on a topic no sender ever targets.
-- calls `DBOS.recv(interaction_id, timeout_seconds=...)` — durable block
-- on a real response (or timeout): appends `mash.interaction.end` and injects the response into `workflow_state["interaction_response"]`
-- on the **cancel sentinel** (`INTERACTION_CANCEL_SENTINEL`, sent by the cancel path to a parked interaction's topic): acks the attempt as cancelled and loops to a new attempt — a fresh `open` step, a fresh id, a fresh create event — which is what a later resume replays into.
-
-This uses DBOS's durable messaging (`recv`/`send`) rather than `run_step_async` for the wait. The host delivers responses via `DBOS.send(workflow_id, response, topic=interaction_id)`.
-
-### 5. `tool.call.<loop_index>.<call_index>` (with workflow-level interceptions)
-
-Implemented by `run_step_tool_call(...)`, with special handling for:
-
-- **`AskUser`**: Intercepted by `_handle_ask_user_interaction()`. Instead of executing the tool, the workflow emits `mash.interaction.start`, durably blocks via `DBOS.recv()`, and returns the user's response as a normal tool result. This enables agent-initiated user interaction.
-- **`RunSubAgents`**: Runs as an ordinary step under a bound prefix, `{request_id}-sub-{loop_index}-{call_index}`. The tool gives its `n`-th child the id `uuid5(namespace, f"{prefix}-{n}")`, so a replay or retry of the step resubmits the same ids and idempotent submission returns the children already running. The step returns once every child has ended or the call's timeout has cancelled the rest. Its `execute_tool.start` lists each child's `agent_id` and `request_id` under `subagents`, so the CLI and the trace projection read the children's own logs.
-
-For all other tools, this step:
-
-- appends `execute_tool.start` with the call's arguments
-- runs exactly one tool call through `Agent.execute_step_tool_call(...)`
-- appends the result payload to workflow state
-- updates tool usage in workflow state
-- appends `execute_tool.end` with `status` `ok` or `error`
-
-Important behavior:
-
-- tool calls run in order
-- completed results remain in `result_payloads`, so already-finished tool calls in the current step are not rerun after resume
-- this step does **not** enable DBOS automatic retries
-
-### 6. `step.commit.<loop_index>`
-
-Implemented by `commit_request_step(...)`.
-
-This step is the core commit boundary. It calls `Agent.commit_step(...)`.
-
-This step decides:
-
-- whether `finish` marks the run complete
-- whether tool results should be observed back into context
-- whether max-step exhaustion should force completion
-- when signals are collected
-
-It returns the next workflow state with:
-
-- updated serialized context
-- next `loop_index`
-- final `signals` if terminal
-- cleared `action` and `result_payloads`
-- `done`
-
-It appends `mash.step.end`.
-
-This is the only place in the workflow that decides whether execution should continue.
-
-### 7. `turn.persist`
-
-Implemented by `persist_completed_turn(...)`.
-
-This step runs only once the workflow is terminal.
-
-It:
-
-- reconstructs the final response from the completed context
-- attaches aggregate token usage and trace metadata
-- persists the final turn to the memory store
-
-Important nuance:
-
-- intermediate steps are never persisted as conversation turns
-- only the final completed turn is written to long-term conversation memory
-
-### 8. `request.complete`
-
-Implemented by `complete_request(...)`.
-
-This step:
-
-- appends `invoke_agent.end` with `status: ok` and the turn payload
-
-### 9. `request.fail`
-
-Implemented by `fail_request(...)`.
-
-This step:
-
-- records terminal failure as `invoke_agent.end` with `status: error` and `error.type`
-- preserves the request error contract
-- the payload includes `error_code` and `retryable` fields from `classify_error()`
-
-### Step-level retry
-
-The LLM planning step (`step.plan`) and tool execution steps (`tool.call`) are wrapped in `retry_transient()` from [`../errors.py`](../errors.py). Transient errors (rate limits, timeouts, network errors) are retried automatically with exponential backoff before the exception reaches the workflow-level error handler.
-
-- Retries happen in-process with configurable max attempts (`DEFAULT_MAX_STEP_RETRIES`, default 3)
-- Non-retryable errors are not retried and propagate immediately
-- If retries exhaust, the exception propagates to the workflow handler which emits `REQUEST_FAILED`
-- The developer can then call `resume_request()` to manually retry the failed request
-
-## Sequence Diagram
-
-```mermaid
-sequenceDiagram
-    participant Req as "requests.py"
-    participant Eng as "DBOSRequestEngine"
-    participant WF as "workflow.py"
-    participant Step as "engine/steps.py"
-    participant Agent as "Agent"
-    participant Store as "runtime_store"
-    participant Memory as "memory_store"
-
-    Req->>Store: append invoke_agent.start
-    Req->>Eng: start_request(request_id, message, session_id)
-    Eng->>WF: DBOS.start_workflow_async(...)
-    WF->>Step: start_request_trace(...)
-    Step->>Store: append mash.context_load.start
-    WF->>Step: load_request_context(...)
-    Step->>Store: append mash.context_load.end
-
-    loop "until workflow_state.done"
-        WF->>Step: plan_request_step(workflow_state)
-        Step->>Store: append chat.start
-        Step->>Agent: Agent.plan_step(...)
-        Step->>Store: append chat.end
-
-        opt "if action contains interaction"
-            WF->>Step: emit_interaction_create(...)
-            Step->>Store: append mash.interaction.start
-            WF->>WF: DBOS.recv(interaction_id) — durable block
-            Note over WF: Host calls DBOS.send() via post_interaction
-            WF->>Step: emit_interaction_ack(...)
-            Step->>Store: append mash.interaction.end
-        end
-
-        loop "for each tool call in action"
-            WF->>Step: run_step_tool_call(workflow_state, tool_call)
-            Step->>Store: append execute_tool.start
-            Step->>Agent: Agent.execute_step_tool_call(...)
-            Step->>Store: append execute_tool.end
-        end
-
-        WF->>Step: commit_request_step(workflow_state)
-        Step->>Agent: Agent.commit_step(...)
-        Step->>Store: append mash.step.end
-    end
-
-    WF->>Step: persist_completed_turn(workflow_state)
-    Step->>Memory: save final turn
-    WF->>Step: complete_request(turn_payload)
-    Step->>Store: append invoke_agent.end
-```
-
-## Main Loop
-
-At a high level, the workflow runs:
-
-1. start request
-2. load context
-3. plan one canonical agent step
-4. if the plan requires interaction: emit `mash.interaction.start`, durably block via `DBOS.recv`, emit `mash.interaction.end`
-5. run each tool call for that step durably, in order
-6. commit that step
-7. if not done, repeat
-8. once done, persist the final turn
-9. complete request
-
-This is a durable `plan -> [interaction] -> tool calls -> commit` loop wrapped around the canonical core agent semantics.
-
-## Relationship To Event Sourcing
-
-The DBOS workflow is not the user-facing event stream.
-
-- DBOS workflow state tracks execution progress for resume
-- `runtime_store` records the observable request timeline
-- workflow steps append `RuntimeEvent` records as execution proceeds
-
-Each event is named after the span it bounds, so the order reads as a span tree
-(see [`../../otel/`](../../otel) for the projection). Typical successful order:
+`src/mash/runtime/engine` runs an agent's requests durably in its process. It
+starts one loop per accepted request, continues the loop after a crash or a
+resume, and stays out of the way of two neighbours:
+
+- the core loop in [`src/mash/core/agent.py`](../../core/agent.py), which owns
+  what a step does
+- the request event log in [`../events/`](../events), which owns what a client
+  sees
+
+A request's durable state is its row in `runtime_request` (status and
+checkpoint) plus its events. The engine keeps nothing else, so a restarted
+process loses nothing. An idle engine makes no queries.
+
+## Files
+
+- [`engine.py`](./engine.py): `RequestEngine`. Starts, recovers, cancels and
+  continues requests, and stores interaction answers. One per `AgentRuntime`.
+- [`loop.py`](./loop.py): `RequestRun`, one request's loop and its checkpoint.
+- [`steps.py`](./steps.py): the steps the loop runs, and the events each one
+  appends.
+
+## Request lifecycle
+
+1. [`../requests.py`](../requests.py) mints the request id and the trace id and
+   appends `invoke_agent.start`, which records the request `running` in
+   `runtime_request` and carries the message and request metadata.
+2. It calls `engine.start_request(...)`, which starts a `RequestRun` as an
+   asyncio task.
+3. The loop runs the steps below, saving its checkpoint after each one.
+4. It ends with `invoke_agent.end`: `ok`, `error`, or `cancelled` (appended by
+   the cancel path).
+
+## Checkpoint
+
+`runtime_request.checkpoint` is one JSON object, overwritten after every step:
+
+- `trace_id`: the request's trace, read from `invoke_agent.start`
+- `state`: the loop state the steps thread through each other:
+  - `context`: the serialized `Context`
+  - `compaction`: compaction metadata from context loading
+  - `loop_index`: the current agent step
+  - `aggregate_usage`, `tool_usage`: token and tool usage so far
+  - `action`: the model's planned action for this step, or `None` before planning
+  - `result_payloads`: the tool results this step has so far
+  - `interaction_response`: the answer to the action's interaction, once it has one
+  - `signals`, `done`: set by the commit
+- `memo`: small results inside the current step, by name: an interaction's id
+  and deadline (`<prefix>.open.<loop>.<attempt>`), a browser handoff's link,
+  the saved turn (`turn.persist`). Cleared when the step commits.
+
+The loop reads the checkpoint to know where it is:
+
+| Checkpoint | Next |
+|---|---|
+| none | `request.start`, then `context.load` |
+| `action` is `None` | plan |
+| an action, fewer results than tool calls | the remaining calls |
+| results for every call | commit |
+| `done` | finalize structured output, save the turn, complete |
+
+A step that was running when the process died runs again. Its events are
+deduped by key, so a rerun appends nothing twice.
+
+## Steps
+
+1. `start_request_trace`: reads the trace id from `invoke_agent.start` and
+   appends `mash.context_load.start`.
+2. `load_request_context`: loads history (compacting first if needed), builds
+   the system prompt with the host snapshot and the Cortex profile, and
+   appends `mash.context_load.end`. Its output is the first `state`, so a
+   recovered request sees the context it first saw.
+3. `plan_request_step`: appends `chat.start`, calls `Agent.plan_step(...)`,
+   and appends `chat.end` with the model's turn and its usage under
+   `attributes`. An action whose tools need approval gets an `interaction`.
+4. Interaction, when the action has one: see below.
+5. Tool calls, in order. A maximal run of consecutive parallel-safe calls runs
+   concurrently in one `run_step_tool_batch`; any other call runs alone in
+   `run_step_tool_call`. Each call appends `execute_tool.start` and
+   `execute_tool.end`. Three tools get special handling:
+   - `AskUser` becomes an interaction, and its answer the tool result.
+   - `browser_handoff` asks the host for a live-view link (memoized), opens a
+     `browser` interaction, and ends the handoff once it is answered.
+   - `RunSubAgents` runs under the prefix `{request_id}-sub-{loop}-{call}`.
+     The tool derives each child's id from it, so a rerun resubmits the same
+     ids and gets back the children already running.
+6. `commit_request_step`: calls `Agent.commit_step(...)`, which decides
+   whether the request is done, and appends `mash.step.end`. It clears
+   `action` and `result_payloads` and advances `loop_index`.
+7. Once done: `finalize_structured_output` when a schema was requested and no
+   tool set it, `persist_completed_turn` (the only write to conversation
+   memory), and `complete_request`.
+
+An exception from any step ends the request with `fail_request`, whose payload
+is `classify_error(...)`: `error`, `error_type`, `error_code`, `retryable`.
+Planning and tool steps first retry transient errors in process with
+`retry_transient(...)` from [`../errors.py`](../errors.py).
+
+## Interactions
+
+An interaction's answer is its `mash.interaction.end` event, keyed
+`interaction.ack.<id>`.
+
+- The loop opens one in a memoized step that mints the id, appends
+  `mash.interaction.start`, and records the deadline.
+- It waits on an in-process event until the deadline, then reads the log.
+- `engine.answer_interaction(...)`, behind the agent server's interaction
+  route, appends the answer and wakes the loop. An answer to an interaction
+  that already has one, a timeout or a cancel raises `InteractionClosedError`
+  (`409`).
+- At the deadline the loop appends the type's default answer with
+  `timed_out`. An answer and a timeout that race write under the same key, so
+  the first row wins and both sides read it.
+
+After a crash the loop finds the interaction in `memo`, reads its answer from
+the log if one arrived, and otherwise waits out the rest of the deadline.
+
+## Cancel and resume
+
+`engine.cancel_request(...)` acks an open interaction as cancelled, appends
+the cancelled `invoke_agent.end`, and sets the run's cancel flag. The step
+running at the time finishes and checkpoints; the loop stops before the next.
+
+`resume_request(...)` in [`../requests.py`](../requests.py) accepts a
+cancelled or failed request: it appends `mash.request.resumed`, which records
+the request `running` and gives the new attempt terminal dedupe keys of its
+own, then calls `engine.continue_request(...)`. The loop continues from the
+checkpoint. If the request was cancelled while waiting on an interaction, it
+opens a new one under the next attempt number.
+
+## Recovery
+
+`engine.open()` reads `runtime_request` for the agent's requests that are
+`running` and continues each from its checkpoint. A request continued more
+than `MAX_RECOVERIES` (10) times fails with `error_type: recovery_limit`, so a
+request that crashes its process every time stops. `runtime_request.recoveries`
+counts them.
+
+`engine.close()` cancels the running loops and leaves their requests
+`running`, so the next `open()` continues them.
+
+## Events
+
+Each event is named after the span it bounds (see [`../../otel/`](../../otel)).
+A successful request:
 
 1. `invoke_agent.start`
 2. `mash.context_load.start`, `mash.context_load.end`
-3. per loop step: `chat.start`, `chat.end`, zero or more `mash.interaction.start` /
-   `mash.interaction.end` pairs, zero or more `execute_tool.start` / `execute_tool.end`
-   pairs, then `mash.step.end`
+3. per step: `chat.start`, `chat.end`, any `mash.interaction.start` /
+   `mash.interaction.end` pairs, any `execute_tool.start` / `execute_tool.end`
+   pairs, `mash.step.end`
 4. `invoke_agent.end` with `status: ok`
 
 `chat.delta` rows sit between `chat.start` and `chat.end` when streaming is on.
+The runtime store wakes a request's stream waiters in memory when it appends,
+since the same process writes and serves the stream.
 
-On failure (after step-level retries are exhausted for transient errors, or immediately for terminal errors):
+## Design rules
 
-1. events 1 to 3 as above (partial)
-2. `invoke_agent.end` with `status: error` (terminal; the stream ends, and the payload
-   includes `error_code` and `retryable`). The projection closes the spans still open
-   at that point and marks the innermost one as the error.
-
-## Design Rules For Future Edits
-
-- If you need to change loop semantics, start in [`src/mash/core/agent.py`](../../core/agent.py).
-- If you need to change durable progression or resume boundaries, start in [`workflow.py`](./workflow.py) and [`steps.py`](./steps.py).
-- If you need to change request streaming or replay semantics, start in [`../requests.py`](../requests.py) and [`../events/`](../events).
-- Do not move partial turn persistence into the memory store.
-- Do not let `workflow.py` grow runtime-state patching helpers that belong in `steps.py`.
-- Do not reintroduce a second adapter layer unless there is a real new boundary to justify it.
+- Loop semantics change in [`src/mash/core/agent.py`](../../core/agent.py).
+- What is checkpointed, and when, changes in [`loop.py`](./loop.py).
+- Streaming and replay change in [`../requests.py`](../requests.py) and
+  [`../events/`](../events).
+- Conversation memory gets only the final turn.
+- Every event a step appends has a dedupe key, so a step can run twice.

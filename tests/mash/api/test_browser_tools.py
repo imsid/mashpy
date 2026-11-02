@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import os
 import tempfile
 import unittest
-from collections import defaultdict
 from typing import Any
 from unittest.mock import patch
 
@@ -16,7 +13,6 @@ import httpx
 from mash.browser.manager import BrowserManager
 from mash.logging.trace_context import bound_workflow_ids
 from mash.runtime import AgentRuntime, HostBuilder
-from mash.runtime.engine.dbos import register_runtime, unregister_runtime
 from mash.runtime.engine.steps import start_browser_handoff
 from mash.sandbox.manager import SandboxManager
 from mash.testing.browsers import FakePage, LocalBrowserProvider
@@ -25,54 +21,6 @@ from mash.testing.sandboxes import LocalSandboxProvider
 from mash.tools.browser import browser_tool_names
 
 PAGES = {"https://www.pge.com/": FakePage(title="PG&E account")}
-
-
-class _InlineDBOS:
-    """Just enough DBOS for a parked interaction: steps run inline, send/recv by topic."""
-
-    def __init__(self) -> None:
-        self.topics: dict[str, asyncio.Queue] = defaultdict(asyncio.Queue)
-
-    async def run_step_async(self, config, fn, *args, **kwargs):
-        del config
-        return await fn(*args, **kwargs)
-
-    async def recv_async(self, topic, timeout_seconds=None):
-        try:
-            return await asyncio.wait_for(self.topics[topic].get(), timeout_seconds)
-        except asyncio.TimeoutError:
-            return None
-
-    async def send_async(self, workflow_id, value, topic=None):
-        del workflow_id
-        await self.topics[topic].put(value)
-
-
-@contextlib.contextmanager
-def _durable_handoffs():
-    """Route browser_handoff through the engine's interception in the test executor.
-
-    The test suite runs requests inline, without DBOS; this swaps in the
-    engine's handoff handler for that one tool, over ``_InlineDBOS``.
-    """
-    import conftest
-    from mash.runtime.engine import workflow as engine_workflow
-
-    fake = _InlineDBOS()
-    original = conftest.run_step_tool_call
-
-    async def run_step_tool_call(agent_id, request_id, session_id, trace_id, state, payload):
-        if payload["name"] == "browser_handoff":
-            return await engine_workflow._handle_browser_handoff(
-                agent_id, request_id, session_id, trace_id, state,
-                tool_call=payload, loop_index=int(state.get("loop_index") or 0), call_index=0,
-            )
-        return await original(agent_id, request_id, session_id, trace_id, state, payload)
-
-    with patch.object(conftest, "run_step_tool_call", run_step_tool_call), patch.object(
-        engine_workflow, "DBOS", fake
-    ), patch("mash.runtime.server.DBOS", fake):
-        yield
 
 
 class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
@@ -86,7 +34,7 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
     ) -> tuple[str, list[dict[str, Any]], LocalBrowserProvider]:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}
-        ), _durable_handoffs():
+        ):
             spec = build_tool_calling_spec(
                 agent_id="billing", tool_name=tool_name, arguments=arguments
             )
@@ -210,11 +158,9 @@ class BrowserToolRegistrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_handoff_fails_at_once_in_a_workflow_request(self) -> None:
         runtime = await self._runtime(build_spec(agent_id="billing"))
         runtime.enable_browser_tools(host_api_url="http://unreachable.invalid", token="t")
-        register_runtime(runtime)
-        self.addCleanup(unregister_runtime, runtime)
 
         with bound_workflow_ids("wf", "run-1"):
-            started = await start_browser_handoff("billing", "req-1")
+            started = await start_browser_handoff(runtime, "req-1")
 
         self.assertIn("Nobody is watching this workflow run", started["error"])
 

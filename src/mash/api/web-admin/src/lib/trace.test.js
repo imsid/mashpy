@@ -9,12 +9,11 @@ test('cancel applies only while the trace is running', () => {
   assert.equal(traceActions('cancelled').cancel, false);
 });
 
-test('resume applies to cancelled traces but never to failed ones', () => {
-  // DBOS refuses to resume a workflow that ended in ERROR, so offering resume
-  // on a failed trace would promise something the runtime cannot do.
+test('resume applies to cancelled and failed traces', () => {
   assert.equal(traceActions('cancelled').resume, true);
-  assert.equal(traceActions('error').resume, false);
+  assert.equal(traceActions('error').resume, true);
   assert.equal(traceActions('in_progress').resume, false);
+  assert.equal(traceActions('completed').resume, false);
 });
 
 test('rerun applies to every finished trace', () => {

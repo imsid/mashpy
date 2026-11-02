@@ -9,7 +9,11 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from mash.runtime import AgentClientError
-from mash.runtime.client import AgentUnavailableError, RequestModeConflictError
+from mash.runtime.client import (
+    AgentUnavailableError,
+    InteractionClosedError,
+    RequestModeConflictError,
+)
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.host.host import AgentDisabledError, AgentInUseError
 from mash.runtime.host.processes import AgentStartError
@@ -301,11 +305,22 @@ def build_agent_router() -> APIRouter:
                 status_code=400,
             )
         response_value = body.get("response")
-        result = await client.post_interaction(
-            request_id.strip(),
-            interaction_id=interaction_id.strip(),
-            response=response_value,
-        )
+        try:
+            result = await client.post_interaction(
+                request_id.strip(),
+                interaction_id=interaction_id.strip(),
+                response=response_value,
+            )
+        except InteractionClosedError as exc:
+            raise APIError(
+                code="INTERACTION_CLOSED", message=str(exc), status_code=409
+            ) from exc
+        except AgentUnavailableError:
+            raise
+        except AgentClientError as exc:
+            raise APIError(
+                code="INTERACTION_NOT_FOUND", message=str(exc), status_code=404
+            ) from exc
         return success(result)
 
     @router.get("/agent/{agent_id}/request/{request_id}/status")
