@@ -7,7 +7,7 @@ Agents and workflows import as peers from the package root:
         WorkflowSpec, CodeStep, AgentStep, StepContext,
     )
 
-Exports are lazy so ``import mash`` never drags in DBOS or provider SDKs.
+Exports are lazy so ``import mash`` never drags in the runtime or provider SDKs.
 """
 
 from importlib import import_module
@@ -48,8 +48,8 @@ _EXPORTS: dict[str, str] = {
     "Host": "mash.runtime",
     "HostBuilder": "mash.runtime",
     "Pool": "mash.runtime",
-    # The leaf module, not mash.workflows: the package init pulls in the
-    # DBOS-backed service, which authoring-time imports must not load.
+    # The leaf module, not mash.workflows: authoring-time imports must not
+    # load the workflow service and engine.
     "WorkflowSpec": "mash.workflows.spec",
     "CodeStep": "mash.workflows.spec",
     "AgentStep": "mash.workflows.spec",

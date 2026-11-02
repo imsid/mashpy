@@ -168,12 +168,12 @@ else:
 
 ### Availability and Constraints
 
-AskUser **only works in a hosted runtime** with DBOS interaction support. In local or non-hosted contexts:
+AskUser **only works in a hosted runtime**, whose request loop turns it into an interaction. In local or non-hosted contexts:
 
 - Calling AskUser returns an error result: `"AskUser requires a hosted runtime with interaction support."`
 - This is intentional—AskUser requires durable interaction infrastructure that is only available in the hosted runtime.
 
-If you encounter this error in a hosted context, it indicates a bug in the workflow engine's tool-call interception logic.
+If you encounter this error in a hosted context, it indicates a bug in the request loop's tool-call interception.
 
 ### Agent Guidance
 

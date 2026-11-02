@@ -37,7 +37,7 @@ links the host serves.
    │  /home/agent/workspaces/research  ◄── volume mash-sandbox-<key>
    └──────────────────────────────────────┘
 
-   Postgres: events, DBOS, sessions, workflow runs (host and agents only)
+   Postgres: events, request checkpoints, sessions, workflow runs (host and agents only)
 ```
 
 - The host imports `build_pool()` and keeps each agent's spec and metadata.
@@ -67,8 +67,8 @@ links the host serves.
 - A host that cannot reach a Docker daemon runs without sandboxes, and its
   agents get no sandbox tools. This is how a host runs on a platform with no
   Docker socket (Render, Cloud Run, Fargate). The host logs which mode it chose.
-- All durable state (events, sessions, DBOS workflows, workflow runs) lives in
-  Postgres. Workspace files live on the sandbox volumes.
+- All durable state (events, request checkpoints, sessions, workflow runs)
+  lives in Postgres. Workspace files live on the sandbox volumes.
 
 A deployment runs one host replica.
 
@@ -268,8 +268,8 @@ curl http://127.0.0.1:8000/api/v1/agent -H "Authorization: Bearer dev-key"   # e
 
 - Disable returns `409 AGENT_IN_USE`, naming the references, while a host
   composition or workflow names the agent.
-- Requests in flight are not cancelled. They stay pending and continue when
-  the agent is enabled again. New requests to a disabled agent return
+- Requests in flight are not cancelled. They stay running and continue from
+  their checkpoints when the agent is enabled again. New requests to a disabled agent return
   `409 AGENT_DISABLED`.
 - The enabled set is in memory and resets on restart. Adding an agent that is
   not in `build_pool()` takes a deploy.
@@ -301,16 +301,32 @@ mash sandbox stop u-42                        # stop now; the volume is kept
 
 ## Durability
 
-- Each agent process runs DBOS as executor `agent:<agent_id>`, so after a
-  crash, a restart, or being enabled again it recovers exactly its own agent's
-  pending requests. The host runs as executor `host` and recovers only its
-  workflow runs.
+- A request checkpoints its loop state to its `runtime_request` row after
+  every step. After a crash, a restart, or being enabled again, an agent
+  process continues its own agent's `running` requests from their
+  checkpoints. A request continued 10 times without finishing fails.
+- The host continues the workflow runs under its runner id that are queued
+  or running, from their completed steps.
 - Subagent calls and workflow agent steps submit with fixed request ids, so a
-  replayed call reattaches to the request it already started.
-- A `run_code` call is a tool step. After a crash DBOS replays it, and the code
-  runs again in the same sandbox.
-- A host restart restarts every agent process, and each recovers its pending
-  requests. Running sandboxes count as active from the restart.
+  step that runs again reattaches to the request it already started.
+- A `run_code` call is a tool step. If the process dies during it, the step
+  runs again after recovery, and the code runs again in the same sandbox.
+- A host restart restarts every agent process, and each continues its
+  running requests. Running sandboxes count as active from the restart.
+
+## Idle cost
+
+An idle host and its agent processes make no queries to Postgres and keep no
+connections open. Each process has one connection pool, shared by its stores,
+that holds no connections at rest and closes one unused for 60 seconds. A
+process opens connections when it has work: a request, a workflow run, an API
+read. At startup each process runs the migrations and one recovery query.
+
+Measured on a host with six agent processes, idle, on Postgres 17: no
+transactions in 30 seconds, and no open connections two minutes after
+startup. A process busy with work holds up to 20 connections, so size
+Postgres's `max_connections` for 20 per agent process plus 20 for the host
+if every agent may be busy at once.
 
 ## Exporting traces
 
@@ -495,7 +511,6 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; agent processes inherit it |
 | `OPENAI_API_KEY` | host | none | OpenAI API key; agent processes inherit it |
 | `GEMINI_API_KEY` | host | none | Google Gemini API key; agent processes inherit it |
-| `DBOS_CONDUCTOR_KEY` | host | none | DBOS Conductor key; agent processes inherit it |
 | `CORTEX_AGENT_<PROVIDER>_MODEL` | host | the provider's default | Model for `cortex-agent` in a pool with Cortex enabled (`ANTHROPIC`, `OPENAI`, `GEMINI`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | host | none | OTLP/HTTP collector address; setting it (or a per-signal `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT`) turns the exporter on. Needs `mashpy[otel]` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | host | none | Headers for the collector, such as an API key |

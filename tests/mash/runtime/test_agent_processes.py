@@ -1,7 +1,7 @@
 """AgentProcessProvider with real ``mash agent serve`` children.
 
-The children run their own runtime and DBOS against a real Postgres, so these
-tests skip when one is not reachable (``MASH_REAL_DATABASE_URL``).
+The children run their own runtime against a real Postgres, so these tests
+skip when one is not reachable (``MASH_REAL_DATABASE_URL``).
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import unittest
 import uuid
 
 from mash.runtime.client import AgentClient
-from mash.runtime.engine.dbos import workflow_id_for
 from mash.runtime.host.processes import STATUS_RUNNING, AgentProcessProvider, _Child
 
 try:
@@ -152,22 +151,26 @@ class RecoveryOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(1.0)  # the model call is in flight
         await provider.stop(owner)
 
-        # Put the request back on DBOS's internal queue, as DBOS recovery does
-        # when the owner restarts, while only the sibling is running.
-        workflow_id = workflow_id_for(owner, request_id)
-        with psycopg.connect(database_url, autocommit=True) as conn:
-            conn.execute(
-                "UPDATE dbos.workflow_status SET status = 'ENQUEUED', "
-                "queue_name = COALESCE(queue_name, '_dbos_internal_queue'), "
-                "started_at_epoch_ms = NULL WHERE workflow_uuid = %s",
-                (workflow_id,),
-            )
-            await asyncio.sleep(5.0)  # several of the sibling's queue polls
-            status = conn.execute(
-                "SELECT status FROM dbos.workflow_status WHERE workflow_uuid = %s",
-                (workflow_id,),
-            ).fetchone()[0]
-        self.assertEqual(status, "ENQUEUED")
+        # Only the sibling is running. Restarting it runs its recovery, which
+        # must leave the owner's request alone.
+        def _state() -> tuple[str, int]:
+            with psycopg.connect(database_url, autocommit=True) as conn:
+                status = conn.execute(
+                    "SELECT status FROM runtime_request WHERE request_id = %s",
+                    (request_id,),
+                ).fetchone()[0]
+                count = conn.execute(
+                    "SELECT count(*) FROM runtime_event_log WHERE request_id = %s",
+                    (request_id,),
+                ).fetchone()[0]
+            return status, count
+
+        before = _state()
+        await provider.stop(sibling)
+        await provider.ensure(sibling)
+        await asyncio.sleep(2.0)
+        self.assertEqual(before[0], "running")
+        self.assertEqual(_state(), before)
 
         endpoint = await provider.ensure(owner)
         client = AgentClient(endpoint.base_url, owner, token=endpoint.token)

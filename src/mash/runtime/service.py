@@ -15,7 +15,7 @@ from ..memory.store import MemoryStore
 from . import context as context_helpers
 from . import factory as factory_helpers
 from . import requests as request_helpers
-from .engine import DBOSRequestEngine, RequestEngine
+from .engine import RequestEngine
 from .events import RuntimeStore
 from .spec import AgentSpec
 
@@ -53,10 +53,7 @@ class AgentRuntime:
 
         self.memory_store = memory_store
         self.runtime_store = runtime_store
-        self.engine: RequestEngine = DBOSRequestEngine(
-            self,
-            database_url=self.runtime_database_url,
-        )
+        self.engine = RequestEngine(self)
         self.store = self.memory_store
         self.event_logger = EventLogger(self.runtime_store)
         self.signal_collector = build_default_signal_collector()
@@ -293,6 +290,14 @@ class AgentRuntime:
     async def cancel_request(self, request_id: str) -> dict[str, Any]:
         self.require_open()
         return await self.engine.cancel_request(request_id=request_id)
+
+    async def answer_interaction(
+        self, request_id: str, interaction_id: str, response: Any
+    ) -> None:
+        self.require_open()
+        await self.engine.answer_interaction(
+            request_id=request_id, interaction_id=interaction_id, response=response
+        )
 
     def require_open(self) -> None:
         if not self._is_open:

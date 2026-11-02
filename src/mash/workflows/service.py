@@ -12,10 +12,17 @@ from pydantic import ValidationError
 
 from mash.runtime.requests import validate_user_id
 
-from . import dbos as workflow_dbos
+from .engine import WorkflowRunner
 from .registry import WorkflowRegistry
+from .runs import make_run_id
 from .spec import WorkflowSpec
-from .store import RUN_COMPLETED, RUN_FAILED, RUN_QUEUED, RUN_TERMINAL
+from .store import (
+    RUN_COMPLETED,
+    RUN_QUEUED,
+    RUN_TERMINAL,
+    RunDeduplicatedError,
+    WorkflowRunRecord,
+)
 
 if TYPE_CHECKING:
     from mash.runtime.host.host import Pool
@@ -77,14 +84,7 @@ class WorkflowUserRequiredError(ValueError):
 
 
 class WorkflowResumeNotSupportedError(RuntimeError):
-    """Raised when a run's state cannot transition back into execution.
-
-    DBOS resumes a workflow only out of a non-terminal state: its resume path
-    updates rows whose status is outside ``SUCCESS`` and ``ERROR``, and a step
-    that ended in error has that error checkpointed, so a replay re-raises it
-    instead of re-running the step. A terminal run therefore cannot be resumed
-    at all, and reporting the no-op as a successful resume would be a lie.
-    """
+    """Raised when a run cannot be resumed: it completed."""
 
     def __init__(self, run_id: str, status: str, message: str) -> None:
         self.run_id = run_id
@@ -107,8 +107,8 @@ class DuplicateWorkflowRunError(RuntimeError):
 class WorkflowService:
     """Host-level workflow execution service.
 
-    Runs own their history in the workflow store; before the store row is
-    written a queued run is projected from DBOS status.
+    A run's row is written when it is submitted, so every run, queued or not,
+    is read from the workflow store.
     """
 
     def __init__(
@@ -123,6 +123,14 @@ class WorkflowService:
         self._runner_id = str(runner_id or "").strip()
         if not self._runner_id:
             raise ValueError("runner_id is required")
+        self._runner = WorkflowRunner(pool, runner_id=self._runner_id)
+
+    async def recover(self) -> None:
+        """Continue this deployment's unfinished runs. The host calls it on start."""
+        await self._runner.recover()
+
+    async def close(self) -> None:
+        await self._runner.close()
 
     def _workflow_store(self) -> Any | None:
         getter = getattr(self._pool, "get_workflow_store", None)
@@ -219,48 +227,39 @@ class WorkflowService:
                     resolved_workflow_id,
                     exc.errors(include_url=False, include_context=False),
                 ) from exc
-        database_url = str(getattr(self._pool, "runtime_database_url", "") or "").strip()
-        if not database_url:
-            raise RuntimeError("MASH_DATABASE_URL is required")
+        store = self._workflow_store()
+        if store is None:
+            raise RuntimeError("the workflow store is not open; start the pool first")
 
+        record = WorkflowRunRecord(
+            run_id=make_run_id(self._runner_id, resolved_workflow_id),
+            workflow_id=resolved_workflow_id,
+            status=RUN_QUEUED,
+            workflow_input=normalized_workflow_input,
+            dedup_key=normalized_dedup_key,
+            session_id=normalized_session_id,
+            user_id=user_id,
+            created_at=time.time(),
+        )
         try:
-            run_id = await workflow_dbos.start_workflow_run(
-                database_url=database_url,
-                runner_id=self._runner_id,
-                workflow=workflow,
-                dedup_key=normalized_dedup_key,
-                workflow_input=normalized_workflow_input,
-                session_id=normalized_session_id,
-                user_id=user_id,
-            )
-        except workflow_dbos.WorkflowDeduplicatedError as exc:
-            existing_run = WorkflowRun(
-                run_id=exc.run_id,
-                workflow_id=resolved_workflow_id,
-                dedup_key=normalized_dedup_key,
-                status="running",
-                created_at=time.time(),
-            )
+            await store.create_run(record)
+        except RunDeduplicatedError as exc:
+            existing = await store.get_run(exc.run_id)
             raise DuplicateWorkflowRunError(
                 resolved_workflow_id,
                 normalized_dedup_key or "",
-                existing_run,
+                _run_from_record(existing)
+                if existing is not None
+                else WorkflowRun(
+                    run_id=exc.run_id,
+                    workflow_id=resolved_workflow_id,
+                    dedup_key=normalized_dedup_key,
+                    status="running",
+                    created_at=time.time(),
+                ),
             ) from exc
-
-        status = await workflow_dbos.get_workflow_status(run_id)
-        if status is not None:
-            return _run_from_status(
-                status,
-                workflow_id=resolved_workflow_id,
-                dedup_key=normalized_dedup_key,
-            )
-        return WorkflowRun(
-            run_id=run_id,
-            workflow_id=resolved_workflow_id,
-            dedup_key=normalized_dedup_key,
-            status=RUN_QUEUED,
-            created_at=time.time(),
-        )
+        self._runner.start(record)
+        return _run_from_record(record)
 
     async def get_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
         resolved_workflow_id = str(workflow_id or "").strip()
@@ -279,27 +278,15 @@ class WorkflowService:
                 steps = await store.get_run_steps(resolved_run_id)
                 run.steps = [_step_to_dict(step) for step in steps]
                 return run
-        # The store row is written once the run starts executing; before that
-        # the run is only visible as DBOS status. Fall through to it.
-        status = await _get_workflow_status_or_none(resolved_run_id)
-        if status is None:
-            raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
-        return _run_from_status(
-            status,
-            workflow_id=resolved_workflow_id,
-            dedup_key=_dedup_key_from_status(status, resolved_workflow_id),
-        )
+        raise WorkflowNotFoundError(f"workflow run '{resolved_run_id}' was not found")
 
     async def resume_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
-        """Re-drive an interrupted run from its last checkpoint.
+        """Continue a run from its completed steps.
 
-        Resume covers runs that stopped without finishing — a host that died
-        mid-run, a cancelled run, one that exhausted its recovery attempts.
-        Completed steps replay from their memoized outputs and the pipeline
-        continues from where it stopped, under the same ``run_id``.
-
-        A run that reached a terminal outcome is rejected rather than
-        acknowledged: see :class:`WorkflowResumeNotSupportedError`.
+        A failed or cancelled run goes back in the queue and reruns from the
+        first step that did not complete. A queued or running run is left
+        running. A completed run is rejected: see
+        :class:`WorkflowResumeNotSupportedError`.
         """
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
@@ -309,34 +296,21 @@ class WorkflowService:
         if not resolved_run_id:
             raise ValueError("run_id is required")
         store = self._workflow_store()
-        if store is None or await store.get_run(resolved_run_id) is None:
+        record = await store.get_run(resolved_run_id) if store is not None else None
+        if record is None or record.workflow_id != resolved_workflow_id:
             raise WorkflowNotFoundError(
                 f"workflow run '{resolved_run_id}' was not found"
             )
-        status = await _get_workflow_status_or_none(resolved_run_id)
-        if status is None:
-            raise WorkflowNotFoundError(
-                f"workflow run '{resolved_run_id}' is no longer known to the "
-                "durable runtime and cannot be resumed"
-            )
-        raw_status = str(getattr(status, "status", "") or "")
-        if raw_status == "SUCCESS":
+        if record.status == RUN_COMPLETED:
             raise WorkflowResumeNotSupportedError(
                 resolved_run_id,
                 RUN_COMPLETED,
                 f"workflow run '{resolved_run_id}' already completed "
                 "successfully; start a new run instead",
             )
-        if raw_status == "ERROR":
-            raise WorkflowResumeNotSupportedError(
-                resolved_run_id,
-                RUN_FAILED,
-                f"workflow run '{resolved_run_id}' failed terminally and "
-                "cannot be resumed: the failed step's error is checkpointed, "
-                "so replaying the run re-raises it instead of re-running the "
-                "step. Start a new run instead.",
-            )
-        await workflow_dbos.resume_workflow_run(resolved_run_id)
+        if record.status in RUN_TERMINAL:
+            await store.requeue_run(resolved_run_id)
+        self._runner.start(record)
         return await self.get_run(resolved_workflow_id, resolved_run_id)
 
     async def list_run_step_events(
@@ -384,16 +358,10 @@ class WorkflowService:
             raise WorkflowNotFoundError(
                 f"workflow run '{resolved_run_id}' was not found"
             )
-        # The store row is written only once the run starts executing; a run is
-        # enqueued and its id returned before that, so a client streaming
-        # immediately would otherwise 404 on a valid run. Mirror get_run: if the
-        # store has no row yet, accept the run when DBOS knows it and let the
-        # poll loop pick up step events once the row appears.
         if await store.get_run(resolved_run_id) is None:
-            if await _get_workflow_status_or_none(resolved_run_id) is None:
-                raise WorkflowNotFoundError(
-                    f"workflow run '{resolved_run_id}' was not found"
-                )
+            raise WorkflowNotFoundError(
+                f"workflow run '{resolved_run_id}' was not found"
+            )
         return self._stream_step_run_events(
             resolved_workflow_id, resolved_run_id, store, poll_interval
         )
@@ -498,9 +466,6 @@ class WorkflowService:
             }
             if step.kind == "code":
                 entry["agent_ids"] = list(getattr(step, "agent_ids", ()))
-                entry["orchestration"] = bool(
-                    getattr(step, "orchestration", False)
-                )
             if step.kind == "agent":
                 entry["agent_id"] = getattr(step, "agent_id", None)
                 entry["skill_name"] = getattr(step, "skill_name", None)
@@ -583,71 +548,6 @@ def _step_to_dict(step: Any) -> dict[str, Any]:
     }
 
 
-def _run_from_status(
-    status: Any,
-    *,
-    workflow_id: str,
-    dedup_key: str | None,
-) -> WorkflowRun:
-    raw_status = str(getattr(status, "status", "") or "")
-    created_at = _millis_to_seconds(getattr(status, "created_at", None)) or time.time()
-    updated_at = _millis_to_seconds(getattr(status, "updated_at", None))
-    mapped_status = _map_dbos_status(raw_status)
-    return WorkflowRun(
-        run_id=str(getattr(status, "workflow_id", "") or ""),
-        workflow_id=workflow_id,
-        dedup_key=dedup_key,
-        status=mapped_status,
-        created_at=created_at,
-        started_at=created_at if mapped_status not in {"queued"} else None,
-        finished_at=updated_at if mapped_status in {"completed", "failed", "cancelled"} else None,
-        error=_status_error(status),
-        result=_status_result(status),
-    )
-
-
-def _map_dbos_status(status: str) -> str:
-    return {
-        "PENDING": "queued",
-        "ENQUEUED": "queued",
-        "DELAYED": "queued",
-        "SUCCESS": "completed",
-        "ERROR": "failed",
-        "MAX_RECOVERY_ATTEMPTS_EXCEEDED": "failed",
-        "CANCELLED": "cancelled",
-    }.get(status, status.lower() or "unknown")
-
-
-def _millis_to_seconds(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value) / 1000.0
-    except (TypeError, ValueError):
-        return None
-
-
-def _status_error(status: Any) -> str | None:
-    error = getattr(status, "error", None)
-    if error is None:
-        return None
-    text = str(error).strip()
-    return text or None
-
-
-def _status_result(status: Any) -> dict[str, Any] | None:
-    output = getattr(status, "output", None)
-    return dict(output) if isinstance(output, dict) else None
-
-
-def _dedup_key_from_status(status: Any, workflow_id: str) -> str | None:
-    dedup = getattr(status, "deduplication_id", None)
-    if not isinstance(dedup, str) or not dedup:
-        return None
-    prefix = f"{workflow_id}:"
-    return dedup[len(prefix) :] if dedup.startswith(prefix) else dedup
-
-
 def _parse_time_filter(value: str | None) -> float | None:
     normalized = _normalize_optional_text(value)
     if normalized is None:
@@ -670,10 +570,3 @@ def _parse_time_filter(value: str | None) -> float | None:
 
 async def _sleep(duration: float) -> None:
     await asyncio.sleep(max(0.0, float(duration)))
-
-
-async def _get_workflow_status_or_none(run_id: str) -> Any | None:
-    try:
-        return await workflow_dbos.get_workflow_status(run_id)
-    except Exception:
-        return None

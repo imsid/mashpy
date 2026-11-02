@@ -45,11 +45,11 @@ class _Curator:
         self.output = output
         self.requests: list[dict[str, Any]] = []
 
-    async def post(self, runner_id: str, **kwargs: Any) -> str:
+    async def post(self, pool: Any, **kwargs: Any) -> str:
         self.requests.append(kwargs)
         return f"req-{kwargs['workflow_run_id']}-{kwargs['task_id']}"
 
-    async def collect(self, runner_id: str, agent_id: str, request_id: str) -> dict[str, Any]:
+    async def collect(self, pool: Any, agent_id: str, request_id: str) -> dict[str, Any]:
         return {"response": {"text": "", "structured_output": self.output}}
 
 
@@ -270,25 +270,16 @@ class CortexBuildTests(_CortexBuildFixture):
         self.assertEqual(len((await self.store.load("u-1")).entries), 1)
 
 
-class _InlineDBOS:
-    @staticmethod
-    async def run_step_async(config, func, *args, **kwargs):
-        result = func(*args, **kwargs)
-        return await result if inspect.isawaitable(result) else result
-
-
 class CortexBuildEngineTests(_CortexBuildFixture):
-    """The same workflow through the forward engine, with DBOS steps run inline."""
+    """The same workflow through the forward engine."""
 
     RUNNER = "runner-cortex"
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         from mash.workflows import WorkflowRegistry
-        from mash.workflows import dbos as workflow_dbos
         from mash.workflows.store import WorkflowStore
 
-        self.workflow_dbos = workflow_dbos
         self.url = _postgres_url()
         self.workflow_store = WorkflowStore(self.url)
         await self.workflow_store.open()
@@ -299,10 +290,8 @@ class CortexBuildEngineTests(_CortexBuildFixture):
             get_workflow_registry=lambda: registry,
             get_workflow_store=lambda: self.workflow_store,
         )
-        workflow_dbos.register_runner(self.RUNNER, self.engine_host)
 
     async def asyncTearDown(self) -> None:
-        self.workflow_dbos.unregister_runner(self.RUNNER, self.engine_host)
         await self.workflow_store.close()
         with psycopg.connect(self.url, autocommit=True) as conn:
             for table in ("workflow_step_events", "workflow_steps", "workflow_runs"):
@@ -317,14 +306,29 @@ class CortexBuildEngineTests(_CortexBuildFixture):
             "upserts": [{"entry_id": None, "topic": "units", "content": "Uses metric", "sources": []}],
             "deletes": [],
         }
-        run_id = self.workflow_dbos.make_run_id(self.RUNNER, CORTEX_BUILD_WORKFLOW_ID)
-        fake = (_InlineDBOS, None, None, None)
-        with patch.object(self.workflow_dbos, "_load_dbos_api", return_value=fake), patch(
-            "mash.workflows.engine.load_dbos_api", return_value=fake
-        ):
-            output = await self.workflow_dbos.execute_registered_workflow(
-                self.RUNNER, CORTEX_BUILD_WORKFLOW_ID, run_id, workflow_input={}, user_id="u-1"
+        from mash.workflows.engine import FORWARD_PIPELINE_STRATEGY, WorkflowExecutionContext
+        from mash.workflows.runs import make_run_id
+        from mash.workflows.store import WorkflowRunRecord
+
+        run_id = make_run_id(self.RUNNER, CORTEX_BUILD_WORKFLOW_ID)
+        await self.workflow_store.create_run(
+            WorkflowRunRecord(
+                run_id=run_id,
+                workflow_id=CORTEX_BUILD_WORKFLOW_ID,
+                status="queued",
+                user_id="u-1",
+                created_at=1.0,
             )
+        )
+        output = await FORWARD_PIPELINE_STRATEGY.run(
+            WorkflowExecutionContext(
+                pool=self.engine_host,  # type: ignore[arg-type]
+                workflow=self.workflow,
+                run_id=run_id,
+                workflow_input={},
+                user_id="u-1",
+            )
+        )
 
         self.assertEqual(output["result"]["entries_written"], 1)
         self.assertEqual(self.curator.requests[0]["workflow_run_id"], run_id)

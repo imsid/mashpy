@@ -151,12 +151,10 @@ class CodeStep(StepSpec):
     """A step executed by deterministic Python.
 
     ``run`` is ``run(inp: input, ctx: StepContext) -> output`` and may be sync or
-    async. By default DBOS memoizes the body as an opaque step. Set
-    ``orchestration=True`` only when the body must start durable child workflows;
-    that mode runs in the parent workflow context and may replay, so its external
-    work must be guarded by a durable, idempotent ledger. Code steps are
-    pydantic-typed on both edges — they are authored in Python, never over the
-    wire.
+    async. A run that stopped partway through the step runs it again, so a body
+    with external effects keys them on ``ctx.run_id``, ``ctx.step_id`` and
+    ``ctx.attempt``. Code steps are pydantic-typed on both edges: they are
+    authored in Python, never over the wire.
     """
 
     step_id: str
@@ -164,7 +162,6 @@ class CodeStep(StepSpec):
     output: type[BaseModel]
     run: Callable[..., Any]
     agent_ids: tuple[str, ...]
-    orchestration: bool
     timeout_s: float | None
     kind: str
 
@@ -176,7 +173,6 @@ class CodeStep(StepSpec):
         input: type[BaseModel],
         output: type[BaseModel],
         agent_ids: tuple[str, ...] | list[str] = (),
-        orchestration: bool = False,
         timeout_s: float | None = None,
     ) -> None:
         resolved_step_id = _require_step_id(step_id)
@@ -190,7 +186,6 @@ class CodeStep(StepSpec):
         object.__setattr__(self, "output", output)
         object.__setattr__(self, "run", run)
         object.__setattr__(self, "agent_ids", _normalize_agent_ids(agent_ids))
-        object.__setattr__(self, "orchestration", bool(orchestration))
         object.__setattr__(self, "timeout_s", _normalize_timeout(timeout_s))
         object.__setattr__(self, "kind", "code")
 

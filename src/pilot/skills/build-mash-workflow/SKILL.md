@@ -58,12 +58,11 @@ I/O, and, when `input_model` is set, field-level adjacency between steps.
 ### CodeStep
 
 `run` is `run(inp, ctx) -> output`, sync or async, pydantic-typed on both
-edges. The body executes as a memoized DBOS step, so a recovered run skips it
-if it already completed. Declare statically known agent dependencies with
-`agent_ids=[...]` so registration can validate them. Set `orchestration=True`
-only when the body must start durable child workflows; that mode replays with
-the parent workflow and its external work must be guarded by a durable,
-idempotent ledger.
+edges. A run that continues after a crash or a resume skips the step if it
+already completed. Declare statically known agent dependencies with
+`agent_ids=[...]` so registration can validate them. A body that starts many
+agent requests keys each on `ctx.run_id`, `ctx.step_id`, `ctx.attempt` and the
+item, so a rerun of the step reattaches to the requests already started.
 
 ### AgentStep
 
@@ -87,11 +86,12 @@ slate; there is no cross-run state.
 
 ### Idempotency
 
-Step execution is at-least-once: DBOS recovery re-runs an interrupted step.
-Pure transforms replay safely. A step with external effects must dedupe on a
-stable key — `StepContext` carries `run_id`, `step_id`, `workflow_input`,
-`attempt`, and the run's `user_id`, all stable across retries (e.g.
-`f"{ctx.run_id}:{ctx.step_id}"`).
+Step execution is at-least-once: a step the host died in runs again when the
+run continues. Pure transforms rerun safely. A step with external effects must
+dedupe on a stable key. `StepContext` carries `run_id`, `step_id`,
+`workflow_input`, `attempt`, and the run's `user_id` (e.g.
+`f"{ctx.run_id}:{ctx.step_id}:{ctx.attempt}"`). `attempt` stays the same after
+a crash and goes up when a failed step is resumed.
 The framework never invents a key.
 
 A step may declare `timeout_s`; exceeding it fails the step, and the run stays

@@ -6,12 +6,11 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import os
 import tempfile
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -29,7 +28,7 @@ from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec, metadata
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
-from mash.workflows import dbos as workflow_dbos
+from mash.workflows.engine import WorkflowRunner
 
 
 class ChangelogInput(BaseModel):
@@ -50,16 +49,12 @@ def _double_code_step(inp: DoublerInput, _ctx: StepContext) -> DoublerOutput:
     return DoublerOutput(n=inp.n, doubled=inp.n * 2)
 
 
-class _InlineDBOS:
-    """Runs engine steps inline, standing in for DBOS in workflow tests."""
-
-    @staticmethod
-    async def run_step_async(config, func, *args, **kwargs):
-        del config
-        result = func(*args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+def _hold_runs():
+    """Record started workflow runs instead of executing them."""
+    started: list[Any] = []
+    holder = patch.object(WorkflowRunner, "start", lambda _runner, run: started.append(run))
+    holder.started = started  # type: ignore[attr-defined]
+    return holder
 
 
 MASHER_WORKFLOW_IDS = [
@@ -159,17 +154,6 @@ def _build_test_client(
         )
         with TestClient(app) as client:
             yield client
-
-
-@dataclass
-class _FakeWorkflowStatus:
-    workflow_id: str
-    status: str
-    created_at: int = 1_700_000_000_000
-    updated_at: int = 1_700_000_001_000
-    output: dict[str, Any] | None = None
-    error: Exception | None = None
-    deduplication_id: str | None = None
 
 
 def _save_workflow_turn(
@@ -1256,21 +1240,8 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
                 }
             ]
 
-            async def start_workflow_run(**kwargs):
-                assert kwargs["workflow_input"] == {}
-                return "mw:host-1:changelog:abc"
-
-            async def get_workflow_status(_run_id):
-                return _FakeWorkflowStatus(
-                    workflow_id="mw:host-1:changelog:abc",
-                    status="ENQUEUED",
-                )
-
-            with patch.object(
-                workflow_dbos,
-                "start_workflow_run",
-                start_workflow_run,
-            ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            hold = _hold_runs()
+            with hold:
                 submitted = client.post(
                     "/api/v1/workflow/changelog/run", json={"user_id": "u-1"}
                 )
@@ -1278,7 +1249,9 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
             payload = submitted.json()["data"]
             assert payload["workflow_id"] == "changelog"
             assert payload["status"] == "queued"
-            assert payload["run_id"] == "mw:host-1:changelog:abc"
+            runner_id = _runtime_state(client).pool.runner_id
+            assert payload["run_id"].startswith(f"mw:{runner_id}:changelog:")
+            assert [run.run_id for run in hold.started] == [payload["run_id"]]
 
 
 def test_workflow_only_pool_serves_and_completes_runs() -> None:
@@ -1326,44 +1299,19 @@ def test_workflow_only_pool_serves_and_completes_runs() -> None:
                 ]
                 assert "doubler" in workflow_ids
 
-                inline_dbos = (_InlineDBOS, None, None, None, None)
-
-                async def start_workflow_run(**kwargs):
-                    run_id = workflow_dbos.make_run_id(
-                        kwargs["runner_id"], kwargs["workflow"].workflow_id
-                    )
-                    with patch.object(
-                        workflow_dbos, "_load_dbos_api", return_value=inline_dbos
-                    ), patch(
-                        "mash.workflows.engine.load_dbos_api",
-                        return_value=inline_dbos,
-                    ):
-                        await workflow_dbos.execute_registered_workflow(
-                            kwargs["runner_id"],
-                            kwargs["workflow"].workflow_id,
-                            run_id,
-                            workflow_input=kwargs["workflow_input"],
-                            session_id=kwargs["session_id"],
-                        )
-                    return run_id
-
-                async def get_workflow_status(_run_id):
-                    return None
-
-                with patch.object(
-                    workflow_dbos, "start_workflow_run", start_workflow_run
-                ), patch.object(
-                    workflow_dbos, "get_workflow_status", get_workflow_status
-                ):
-                    submitted = client.post(
-                        "/api/v1/workflow/doubler/run", json={"input": {"n": 21}}
-                    )
+                submitted = client.post(
+                    "/api/v1/workflow/doubler/run", json={"input": {"n": 21}}
+                )
                 assert submitted.status_code == 200
                 run_id = submitted.json()["data"]["run_id"]
 
-                detail = client.get(f"/api/v1/workflow/doubler/runs/{run_id}")
-                assert detail.status_code == 200
-                run = detail.json()["data"]
+                for _ in range(100):
+                    detail = client.get(f"/api/v1/workflow/doubler/runs/{run_id}")
+                    assert detail.status_code == 200
+                    run = detail.json()["data"]
+                    if run["status"] == "completed":
+                        break
+                    time.sleep(0.02)
                 assert run["status"] == "completed"
                 assert run["result"] == {"n": 21, "doubled": 42}
 
@@ -1372,34 +1320,23 @@ def test_workflow_run_accepts_input_object() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            async def start_workflow_run(**kwargs):
-                assert kwargs["workflow_input"] == {"target_agent_id": "primary"}
-                assert kwargs["user_id"] == "u-1"
-                return "mw:host-1:changelog:abc"
-
-            async def get_workflow_status(_run_id):
-                return _FakeWorkflowStatus(
-                    workflow_id="mw:host-1:changelog:abc",
-                    status="ENQUEUED",
-                )
-
-            with patch.object(
-                workflow_dbos,
-                "start_workflow_run",
-                start_workflow_run,
-            ), patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
+            hold = _hold_runs()
+            with hold:
                 submitted = client.post(
                     "/api/v1/workflow/changelog/run",
                     json={"input": {"target_agent_id": "primary"}, "user_id": "u-1"},
                 )
             assert submitted.status_code == 200
+            [run] = hold.started
+            assert run.workflow_input == {"target_agent_id": "primary"}
+            assert run.user_id == "u-1"
 
 
 def test_workflow_run_with_agents_requires_a_user_id() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            with patch.object(workflow_dbos, "start_workflow_run") as start:
+            with patch.object(WorkflowRunner, "start") as start:
                 missing = client.post("/api/v1/workflow/changelog/run", json={})
                 invalid = client.post(
                     "/api/v1/workflow/changelog/run", json={"user_id": "has space"}
@@ -1426,7 +1363,7 @@ def test_workflow_run_rejects_invalid_typed_input_before_enqueue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            with patch.object(workflow_dbos, "start_workflow_run") as start:
+            with patch.object(WorkflowRunner, "start") as start:
                 response = client.post(
                     "/api/v1/workflow/changelog/run",
                     json={"input": {"count": "not-an-integer"}, "user_id": "u-1"},
@@ -1452,12 +1389,11 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            async def start_workflow_run(**_kwargs):
-                raise workflow_dbos.WorkflowDeduplicatedError(
-                    "mw:host-1:changelog:old"
+            with _hold_runs():
+                first = client.post(
+                    "/api/v1/workflow/changelog/run",
+                    json={"dedup_key": "manual", "user_id": "u-1"},
                 )
-
-            with patch.object(workflow_dbos, "start_workflow_run", start_workflow_run):
                 response = client.post(
                     "/api/v1/workflow/changelog/run",
                     json={"dedup_key": "manual", "user_id": "u-1"},
@@ -1465,33 +1401,31 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
             assert response.status_code == 409
             payload = response.json()["error"]
             assert payload["code"] == "WORKFLOW_DUPLICATE_RUN"
-            assert payload["details"]["run_id"] == "mw:host-1:changelog:old"
+            assert payload["details"]["run_id"] == first.json()["data"]["run_id"]
 
 
-def test_workflow_run_status_endpoint_returns_dbos_status() -> None:
+def test_workflow_run_status_endpoint_reads_the_store() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
-            host_id = _runtime_state(client).pool.runner_id
-            run_id = f"mw:{host_id}:changelog:abc"
+            pool = _runtime_state(client).pool
+            run_id = f"mw:{pool.runner_id}:changelog:abc"
+            pool.get_workflow_store()._runs[run_id] = WorkflowRunRecord(
+                run_id=run_id,
+                workflow_id="changelog",
+                status="completed",
+                result={"summary": "done"},
+                created_at=1.0,
+            )
 
-            async def get_workflow_status(_run_id):
-                return _FakeWorkflowStatus(
-                    workflow_id=run_id,
-                    status="SUCCESS",
-                    output={"summary": "done"},
-                    deduplication_id=None,
-                )
-
-            with patch.object(workflow_dbos, "get_workflow_status", get_workflow_status):
-                response = client.get(f"/api/v1/workflow/changelog/runs/{run_id}")
+            response = client.get(f"/api/v1/workflow/changelog/runs/{run_id}")
             assert response.status_code == 200
             payload = response.json()["data"]
             assert payload["run_id"] == run_id
             assert payload["workflow_id"] == "changelog"
             assert payload["status"] == "completed"
             assert payload["result"] == {"summary": "done"}
-            assert payload["workflow_input"] is None
+            assert payload["workflow_input"] == {}
 
 
 def test_workflow_runs_endpoint_lists_store_runs() -> None:
@@ -1551,7 +1485,6 @@ def test_workflow_runs_endpoint_returns_empty_for_non_completed_status() -> None
         with _build_test_client(root, workflow_enabled=True) as client:
             _save_workflow_turn(client, run_id="mw:h_static:changelog:abc")
 
-            assert not hasattr(workflow_dbos, "list_workflow_statuses")
             response = client.get(
                 "/api/v1/workflow/changelog/runs",
                 params={
@@ -1598,7 +1531,6 @@ def test_workflow_runs_endpoint_respects_api_auth() -> None:
             unauthorized = client.get("/api/v1/workflow/changelog/runs")
             assert unauthorized.status_code == 401
 
-            assert not hasattr(workflow_dbos, "list_workflow_statuses")
             authorized = client.get(
                 "/api/v1/workflow/changelog/runs",
                 headers={"x-api-key": "secret"},
@@ -1762,3 +1694,29 @@ def _collect_sse_events(stream) -> list[dict[str, Any]]:
             if current_event in {"workflow.task.completed", "workflow.task.error", "workflow.error"}:
                 break
     return events
+
+
+def test_answer_to_a_closed_interaction_is_a_conflict() -> None:
+    from mash.runtime.client import AgentClient, InteractionClosedError
+
+    async def _closed(*_args, **_kwargs):
+        raise InteractionClosedError("interaction 'itr_1' is no longer open")
+
+    async def _missing(*_args, **_kwargs):
+        from mash.runtime import AgentClientError
+
+        raise AgentClientError("POST interaction failed (status=404): not found")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with _build_test_client(Path(tmp)) as client:
+            url = "/api/v1/agent/primary/request/req-1/interaction"
+            body = {"interaction_id": "itr_1", "response": "yes"}
+            with patch.object(AgentClient, "post_interaction", _closed):
+                closed = client.post(url, json=body)
+            with patch.object(AgentClient, "post_interaction", _missing):
+                missing = client.post(url, json=body)
+
+    assert closed.status_code == 409
+    assert closed.json()["error"]["code"] == "INTERACTION_CLOSED"
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "INTERACTION_NOT_FOUND"

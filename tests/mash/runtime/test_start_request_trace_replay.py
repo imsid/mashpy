@@ -6,7 +6,6 @@ import unittest
 from types import SimpleNamespace
 
 from conftest import build_test_stores
-from mash.runtime.engine.dbos import register_runtime, unregister_runtime
 from mash.runtime.engine.steps import start_request_trace
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 
@@ -16,10 +15,6 @@ class StartRequestTraceReplayTests(unittest.IsolatedAsyncioTestCase):
         runtime_store, _ = build_test_stores()
         self.runtime_store = runtime_store
         self.runtime = SimpleNamespace(app_id="agent-a", runtime_store=runtime_store)
-        register_runtime(self.runtime)
-
-    async def asyncTearDown(self) -> None:
-        unregister_runtime(self.runtime)
 
     async def test_returns_the_trace_id_minted_on_accept(self) -> None:
         await self.runtime_store.append_event(
@@ -32,8 +27,8 @@ class StartRequestTraceReplayTests(unittest.IsolatedAsyncioTestCase):
                 dedupe_key="request.accepted",
             )
         )
-        first = await start_request_trace("agent-a", "req-1", "s-1", "hello")
-        replayed = await start_request_trace("agent-a", "req-1", "s-1", "hello")
+        first = await start_request_trace(self.runtime, "req-1", "s-1", "hello")
+        replayed = await start_request_trace(self.runtime, "req-1", "s-1", "hello")
 
         self.assertEqual(first, "11111111-2222-3333-4444-555555555555")
         self.assertEqual(replayed, first)

@@ -24,7 +24,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from ...workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
-from ...workflows.dbos import (
+from ...workflows.agents import (
     collect_terminal_payload,
     post_inline_agent_request,
 )
@@ -270,9 +270,8 @@ async def _fan_out_after_warmup(
 ) -> None:
     """Warm one row, then start deterministic batches and await each concurrently.
 
-    Starting child workflows mutates the parent DBOS workflow's function
-    sequence, so starts remain serial and deterministic. Once a batch is
-    started, terminal collection and row persistence can run concurrently.
+    Starts stay serial, so rows start in a fixed order. Once a batch is
+    started, terminal collection and row persistence run concurrently.
     """
     if not rows:
         return
@@ -366,7 +365,7 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
             if request_id is not None:
                 try:
                     payload = await collect_terminal_payload(
-                        pool.runner_id, primary_agent_id, request_id
+                        pool, primary_agent_id, request_id
                     )
                     actual_output = _response_text(payload)
                 except Exception as exc:  # noqa: BLE001 - row failure
@@ -396,7 +395,7 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
             await service.persist_run(active)
             try:
                 request_id = await post_inline_agent_request(
-                    pool.runner_id,
+                    pool,
                     agent_id=primary_agent_id,
                     message=row.input,
                     structured_output=None,
@@ -444,7 +443,7 @@ def _build_judge_experiment_rows(context: MasherRuntimeContext):
             else:
                 try:
                     payload = await collect_terminal_payload(
-                        pool.runner_id, EVAL_JUDGE_AGENT_ID, request_id
+                        pool, EVAL_JUDGE_AGENT_ID, request_id
                     )
                     scores, weighted_score = parse_judge_output(
                         _response_json_text(payload), rubric
@@ -475,7 +474,7 @@ def _build_judge_experiment_rows(context: MasherRuntimeContext):
             await service.persist_run(active)
             try:
                 request_id = await post_inline_agent_request(
-                    pool.runner_id,
+                    pool,
                     agent_id=EVAL_JUDGE_AGENT_ID,
                     message=build_judge_message(
                         row_input=row.input,
@@ -540,7 +539,6 @@ def build_run_experiment_workflow(context: MasherRuntimeContext) -> WorkflowSpec
                 run=_build_execute_experiment_rows(context),
                 input=ExperimentRef,
                 output=ExperimentRef,
-                orchestration=True,
             ),
             CodeStep(
                 step_id="judge-rows",
@@ -548,7 +546,6 @@ def build_run_experiment_workflow(context: MasherRuntimeContext) -> WorkflowSpec
                 input=ExperimentRef,
                 output=RunExperimentResult,
                 agent_ids=[EVAL_JUDGE_AGENT_ID],
-                orchestration=True,
             ),
         ],
     )

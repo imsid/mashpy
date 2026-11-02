@@ -10,9 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
-from mash.workflows.dbos import register_runner as register_workflow_runner
-from mash.workflows.dbos import resolve_runner_id
-from mash.workflows.dbos import unregister_runner as unregister_workflow_runner
+from mash.workflows.runs import resolve_runner_id
 from mash.workflows.store import WorkflowStore
 
 from ..client import AgentClient, AgentClientLike
@@ -384,7 +382,6 @@ class Pool:
             self.runtime_database_url = resolve_database_url()
         if not self.runtime_database_url:
             raise RuntimeError("MASH_DATABASE_URL is required to start hosted Mash runtimes")
-        register_workflow_runner(self.runner_id, self)
         try:
             shared_runtime_store = PostgresRuntimeStore(self.runtime_database_url)
             shared_memory_store = PostgresStore(self.runtime_database_url)
@@ -515,6 +512,14 @@ class Pool:
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry
 
+    async def recover_workflow_runs(self) -> None:
+        """Continue the runs this deployment left unfinished.
+
+        Call it once the pool has started and whatever its code steps use is
+        bound; the API server does so at the end of startup.
+        """
+        await self._workflow_service.recover()
+
     def get_workflow_service(self) -> WorkflowService:
         return self._workflow_service
 
@@ -635,7 +640,7 @@ class Pool:
         return [{"skill_name": name, **data} for name, data in counts.items()]
 
     async def close(self) -> None:
-        unregister_workflow_runner(self.runner_id, self)
+        await self._workflow_service.close()
         for client in self._clients.values():
             await client.close()
         self._clients.clear()

@@ -18,7 +18,6 @@
 
   var RID = "req-7f3a";
   var ITR = "itr_4be19c0a7d21";
-  var WFID = "assistant:" + RID;
 
   /* ---------- bindings and operations ---------- */
 
@@ -102,9 +101,9 @@
               body:
                 "<p>The runtime mints " + code("request_id") + ", appends " +
                 code("runtime.request.accepted") + " to " + code("runtime_event_log") +
-                ", and starts the durable workflow " + code(WFID) +
-                ". It returns once the workflow has started, without waiting for " +
-                "the agent loop.</p>",
+                ", which records the request " + code("running") + " in " +
+                code("runtime_request") + ", and starts the request loop. It returns " +
+                "once the loop has started, without waiting for it.</p>",
               payload: json({
                 request_id: RID,
                 agent_id: "assistant",
@@ -294,23 +293,21 @@
             {
               lane: 2,
               who: "Client",
-              what: "AgentClient.post_interaction → DBOS.send",
+              what: "AgentClient.post_interaction → answer_interaction",
               body:
                 "<p>" + link("AgentClient.post_interaction", "runtime/client.py") +
-                " POSTs the response to the agent's process, whose AgentServer sends it to " +
-                "the request's workflow. The topic is the interaction id.</p>",
-              payload:
-                'DBOS.send("' + WFID + '", "approve", topic="' + ITR + '")',
+                " POSTs the response to the agent's process. Its AgentServer appends " +
+                "the answer as the interaction's " + code("runtime.interaction.ack") +
+                " and wakes the waiting loop.</p>",
+              payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
               lane: 3,
               who: "Agent",
-              what: "recv_async returns → request.interaction.ack",
+              what: "the loop wakes → request.interaction.ack",
               body:
-                "<p>The workflow's " + code("DBOS.recv_async(" + ITR + ")") +
-                " returns " + code('"approve"') + ". The ack step appends " +
-                code("runtime.interaction.ack") + ", which the stream publishes as " +
-                code("request.interaction.ack") + ", and the loop runs the tool.</p>",
+                "<p>The stream publishes the ack as " + code("request.interaction.ack") +
+                ". The loop reads " + code('"approve"') + " from it and runs the tool.</p>",
               payload: json({
                 request_id: RID,
                 agent_id: "assistant",
@@ -387,7 +384,7 @@
               what: "AgentRuntime.submit_request → request.accepted",
               body:
                 "<p>Same runtime path as a pool deploy: append " +
-                code("runtime.request.accepted") + ", start workflow " + code(WFID) +
+                code("runtime.request.accepted") + ", start the request loop" +
                 ", return the accepted payload.</p>",
               payload: json({
                 request_id: RID,
@@ -484,22 +481,22 @@
             {
               lane: 2,
               who: "Agent server",
-              what: "AgentServer.post_interaction → DBOS.send",
+              what: "AgentServer.post_interaction → answer_interaction",
               body:
                 "<p>" + link("AgentServer.post_interaction", "runtime/server.py") +
-                " returns 404 " + code("REQUEST_NOT_FOUND") + " for an unknown request " +
-                "and 400 when " + code("interaction_id") + " is missing. Then it " +
-                "calls " + code("DBOS.send") + " to the request's workflow with the " +
-                "interaction id as topic.</p>",
-              payload: 'DBOS.send("' + WFID + '", "approve", topic="' + ITR + '")',
+                " returns 404 " + code("REQUEST_NOT_FOUND") + " for an unknown request, " +
+                "400 when " + code("interaction_id") + " is missing, and 409 " +
+                code("INTERACTION_CLOSED") + " once the interaction has an answer. " +
+                "Then it appends the answer and wakes the request's loop.</p>",
+              payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
               lane: 3,
               who: "Agent",
               what: "recv_async returns → request.interaction.ack",
               body:
-                "<p>The parked workflow receives the response and the stream " +
-                "publishes " + code("request.interaction.ack") + ".</p>",
+                "<p>The waiting loop wakes and the stream publishes " +
+                code("request.interaction.ack") + ".</p>",
               payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
@@ -653,7 +650,7 @@
     {
       internal: "runtime.interaction.create",
       wire: "request.interaction.create",
-      note: "The request is waiting on DBOS.recv_async.",
+      note: "The request loop is waiting for the answer.",
       data: withBase({
         interaction_id: ITR,
         type: "approval",

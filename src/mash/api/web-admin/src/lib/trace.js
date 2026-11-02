@@ -13,8 +13,8 @@ export const TRACE_STATUS = {
 
 export const TERMINAL_TRACE_STATUSES = new Set(['completed', 'error', 'cancelled']);
 
-// The request-status endpoint speaks DBOS's vocabulary; map it onto the trace
-// chips so a drawer and its list row never disagree.
+// Map the request-status endpoint's statuses onto the trace chips so a drawer
+// and its list row never disagree.
 const REQUEST_STATUS_TO_TRACE = {
   completed: 'completed',
   failed: 'error',
@@ -35,15 +35,14 @@ export function traceStatusMeta(status) {
 
 /** Which actions apply to a trace in this state.
  *
- * Cancel needs something running. Resume covers cancelled only — DBOS refuses
- * to resume a workflow that ended in error, so rerun is a failed request's
- * only restart. Rerun applies to anything already finished.
+ * Cancel needs something running. Resume continues a cancelled or failed
+ * request from its last step. Rerun applies to anything already finished.
  */
 export function traceActions(status) {
   const value = String(status || '');
   return {
     cancel: value === 'in_progress',
-    resume: value === 'cancelled',
+    resume: value === 'cancelled' || value === 'error',
     rerun: TERMINAL_TRACE_STATUSES.has(value),
   };
 }

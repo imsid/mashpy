@@ -199,6 +199,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             eval_agent_spec = pool.get_registered_agent_spec(EVAL_AGENT_ID)
             if eval_agent_spec is not None and hasattr(eval_agent_spec, "runtime_context"):
                 eval_agent_spec.runtime_context.bind_eval_service(eval_service)
+        await pool.recover_workflow_runs()
         otel_exporter = None
         runtime_store = pool.get_runtime_store()
         if runtime_store is not None:

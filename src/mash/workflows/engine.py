@@ -5,18 +5,17 @@ Runs a ``WorkflowSpec.steps`` pipeline: step *n*'s output threads into step
 validated through pydantic models at each boundary. The final step's output is
 the run result.
 
-Durability and observability come from DBOS plus the workflow store:
+A run's durable state is its rows in the workflow store. Each step records its
+input and output in ``workflow_steps``, so a run that stopped (a host crash, a
+failed step that was resumed) continues from them: a ``completed`` step is
+skipped and its stored output feeds the next step. A step that did not
+complete runs again under a new attempt, unless it was running when the host
+died, in which case it keeps its attempt and an agent step reattaches to the
+request it started.
 
-- each step body and each store write is its own ``run_step_async`` step, so DBOS
-  memoizes it and skips it on replay;
-- store writes are idempotent (``workflow_steps`` upsert keyed by
-  ``(run_id, step_id)``; ``workflow_step_events`` insert keyed by
-  ``(run_id, step_id, attempt, event_type)``), so the rare crash-after-effect
-  re-run converges instead of duplicating.
-
-An agent step submits its request in a step under a ``request_id`` fixed by run
-and step (see ``post_inline_agent_request``), so a replayed submit reattaches to
-the request it already started.
+``WorkflowRunner`` runs each run as a task on the host, at most
+``MAX_CONCURRENT_RUNS`` at a time, and continues the deployment's unfinished
+runs when the host starts.
 """
 
 from __future__ import annotations
@@ -24,24 +23,19 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mash.runtime.structured_output import serialize_structured_output
 
-from .dbos import (
-    _run_session_id,
-    collect_terminal_payload,
-    load_dbos_api,
-    post_inline_agent_request,
-    require_runner,
-)
+from .agents import collect_terminal_payload, post_inline_agent_request
+from .runs import run_session_id, runner_run_id_prefix
 from .spec import CodeStep, StepContext, StepSpec, WorkflowSpec
 from .store import (
     RUN_COMPLETED,
     RUN_FAILED,
-    RUN_RUNNING,
     STEP_COMPLETED,
     STEP_EVENT_COMPLETED,
     STEP_EVENT_FAILED,
@@ -53,12 +47,21 @@ from .store import (
     WorkflowStore,
 )
 
+if TYPE_CHECKING:
+    from mash.runtime.host.host import Pool
+
+logger = logging.getLogger(__name__)
+
+MAX_CONCURRENT_RUNS = 8
+# A run continued this many times after a crash without finishing fails.
+MAX_RECOVERIES = 10
+
 
 @dataclass(frozen=True)
 class WorkflowExecutionContext:
     """Inputs the engine needs to execute one workflow run."""
 
-    runner_id: str
+    pool: "Pool"
     workflow: WorkflowSpec
     run_id: str
     workflow_input: dict[str, Any]
@@ -66,23 +69,11 @@ class WorkflowExecutionContext:
     user_id: str | None = None
 
 
-# Per-step attempt is fixed at 1 for now. DBOS recovery attempts are not yet
-# surfaced into the step body; when they are, this becomes the recovery count so
-# retried steps get distinct audit rows.
-_ATTEMPT = 1
-
-
-def _store(runner_id: str) -> WorkflowStore:
-    pool = require_runner(runner_id)
+def _store(pool: "Pool") -> WorkflowStore:
     store = getattr(pool, "get_workflow_store", lambda: None)()
     if store is None:
         raise RuntimeError("workflow store is not available on this pool")
     return store
-
-
-def _resolve_step(runner_id: str, workflow_id: str, ordinal: int) -> StepSpec:
-    workflow = require_runner(runner_id).get_workflow_registry().get(workflow_id)
-    return workflow.steps[ordinal]
 
 
 async def _with_timeout(awaitable: Any, timeout_s: float | None, step_id: str) -> Any:
@@ -96,42 +87,14 @@ async def _with_timeout(awaitable: Any, timeout_s: float | None, step_id: str) -
         ) from exc
 
 
-# --- DBOS step bodies (serializable args only) -------------------------------
-
-
-async def _mark_run_started(
-    runner_id: str,
-    run_id: str,
-    workflow_id: str,
-    workflow_input: dict[str, Any],
-    session_id: str,
-    user_id: str | None,
-) -> dict[str, Any]:
-    store = _store(runner_id)
-    now = time.time()
-    await store.create_run(
-        WorkflowRunRecord(
-            run_id=run_id,
-            workflow_id=workflow_id,
-            status=RUN_RUNNING,
-            workflow_input=workflow_input,
-            session_id=session_id,
-            user_id=user_id,
-            created_at=now,
-            started_at=now,
-        )
-    )
-    await store.mark_run_started(run_id, now)
-    return {"ok": True}
-
-
 async def _record_step(
-    runner_id: str,
+    store: WorkflowStore,
+    *,
     run_id: str,
     workflow_id: str,
-    step_id: str,
+    step: StepSpec,
     ordinal: int,
-    kind: str,
+    attempt: int,
     status: str,
     input_snapshot: dict[str, Any] | None,
     output_snapshot: dict[str, Any] | None,
@@ -139,21 +102,20 @@ async def _record_step(
     agent_request_id: str | None,
     event_type: str,
     event_payload: dict[str, Any] | None,
-) -> dict[str, Any]:
-    store = _store(runner_id)
+) -> None:
     now = time.time()
     await store.upsert_step(
         WorkflowStepRecord(
             run_id=run_id,
             workflow_id=workflow_id,
-            step_id=step_id,
+            step_id=step.step_id,
             ordinal=ordinal,
-            kind=kind,
+            kind=step.kind,
             status=status,
             input_snapshot=input_snapshot,
             output_snapshot=output_snapshot,
             error=error,
-            attempt=_ATTEMPT,
+            attempt=attempt,
             agent_request_id=agent_request_id,
             started_at=now if status == STEP_RUNNING else None,
             finished_at=now if status in (STEP_COMPLETED, STEP_FAILED) else None,
@@ -162,102 +124,38 @@ async def _record_step(
     await store.append_step_event(
         run_id=run_id,
         workflow_id=workflow_id,
-        step_id=step_id,
+        step_id=step.step_id,
         event_type=event_type,
         at=now,
-        attempt=_ATTEMPT,
+        attempt=attempt,
         payload=event_payload,
     )
-    return {"ok": True}
-
-
-async def _finish_run(
-    runner_id: str,
-    run_id: str,
-    status: str,
-    result: dict[str, Any] | None,
-    error: str | None,
-) -> dict[str, Any]:
-    await _store(runner_id).finish_run(
-        run_id, status=status, result=result, error=error, finished_at=time.time()
-    )
-    return {"ok": True}
 
 
 async def _run_code_step(
-    runner_id: str,
-    run_id: str,
-    workflow_id: str,
-    ordinal: int,
-    workflow_input: dict[str, Any],
+    ctx: WorkflowExecutionContext,
+    step: CodeStep,
     input_snapshot: dict[str, Any],
-    user_id: str | None,
+    attempt: int,
 ) -> dict[str, Any]:
-    return await _invoke_code_step(
-        runner_id,
-        run_id,
-        workflow_id,
-        ordinal,
-        workflow_input,
-        input_snapshot,
-        user_id,
-    )
-
-
-async def _invoke_code_step(
-    runner_id: str,
-    run_id: str,
-    workflow_id: str,
-    ordinal: int,
-    workflow_input: dict[str, Any],
-    input_snapshot: dict[str, Any],
-    user_id: str | None,
-) -> dict[str, Any]:
-    step = _resolve_step(runner_id, workflow_id, ordinal)
-    if not isinstance(step, CodeStep):
-        raise RuntimeError(f"workflow step '{step.step_id}' is not a code step")
     inp = step.input.model_validate(input_snapshot)
-    ctx = StepContext(
-        run_id=run_id,
+    step_ctx = StepContext(
+        run_id=ctx.run_id,
         step_id=step.step_id,
-        workflow_input=dict(workflow_input),
-        attempt=_ATTEMPT,
-        user_id=user_id,
-        browsers=getattr(require_runner(runner_id), "get_browsers", lambda: None)(),
+        workflow_input=dict(ctx.workflow_input),
+        attempt=attempt,
+        user_id=ctx.user_id,
+        browsers=getattr(ctx.pool, "get_browsers", lambda: None)(),
     )
 
     async def _invoke() -> Any:
-        result = step.run(inp, ctx)
+        result = step.run(inp, step_ctx)
         return await result if inspect.isawaitable(result) else result
 
     out = await _with_timeout(_invoke(), step.timeout_s, step.step_id)
     if not isinstance(out, step.output):
         out = step.output.model_validate(out)
     return out.model_dump(mode="json")
-
-
-async def _submit_agent_step(
-    runner_id: str,
-    agent_id: str,
-    message: str,
-    structured_output: dict[str, Any] | None,
-    workflow_id: str,
-    run_id: str,
-    step_id: str,
-    session_id: str,
-    user_id: str,
-) -> str:
-    return await post_inline_agent_request(
-        runner_id,
-        agent_id=agent_id,
-        message=message,
-        structured_output=structured_output,
-        workflow_id=workflow_id,
-        workflow_run_id=run_id,
-        task_id=step_id,
-        session_id=session_id,
-        user_id=user_id,
-    )
 
 
 def _coerce_input(step: StepSpec, merged: dict[str, Any]) -> dict[str, Any]:
@@ -301,7 +199,7 @@ def _agent_step_message(
     """Envelope sent to an agent step.
 
     ``input`` is the coerced step input (``workflow_input`` merged with the prior
-    step's output). Each run is a clean slate — there is no cross-run state. A
+    step's output). Each run is a clean slate; there is no cross-run state. A
     ``skill_name`` adds the load-this-skill-first instructions.
     """
     payload: dict[str, Any] = {
@@ -322,138 +220,131 @@ def _agent_step_message(
     return json.dumps(payload, ensure_ascii=True)
 
 
+def _step_attempt(existing: WorkflowStepRecord | None) -> int:
+    """1 for a new step; the same attempt for one the host died in; else the next."""
+    if existing is None:
+        return 1
+    if existing.status == STEP_RUNNING:
+        return max(1, int(existing.attempt))
+    return max(1, int(existing.attempt)) + 1
+
+
 class ForwardPipelineStrategy:
-    """The one shape every workflow runs: a linear, durable, observable forward pipeline."""
+    """The one shape every workflow runs: a linear forward pipeline."""
 
     async def run(self, ctx: WorkflowExecutionContext) -> dict[str, Any]:
-        dbos_class, *_ = load_dbos_api()
-        workflow: WorkflowSpec = ctx.workflow
-        runner_id = ctx.runner_id
+        store = _store(ctx.pool)
+        workflow = ctx.workflow
         run_id = ctx.run_id
         wf_id = workflow.workflow_id
-        session_id = ctx.session_id or _run_session_id(run_id)
+        session_id = ctx.session_id or run_session_id(run_id)
 
-        await dbos_class.run_step_async(
-            {"name": "run.start"},
-            _mark_run_started,
-            runner_id,
-            run_id,
-            wf_id,
-            ctx.workflow_input,
-            session_id,
-            ctx.user_id,
-        )
+        await store.mark_run_started(run_id, time.time())
+        recorded = {step.step_id: step for step in await store.get_run_steps(run_id)}
 
         prev_output: dict[str, Any] | None = None
         result: dict[str, Any] = {}
         for ordinal, step in enumerate(workflow.steps):
+            existing = recorded.get(step.step_id)
+            if existing is not None and existing.status == STEP_COMPLETED:
+                prev_output = dict(existing.output_snapshot or {})
+                result = prev_output
+                continue
+
+            attempt = _step_attempt(existing)
             merged = {**ctx.workflow_input, **(prev_output or {})}
             input_snapshot: dict[str, Any] = merged
             # Reset per step and before the try: the failure path records this,
             # and a step that fails in _coerce_input must not carry the
             # previous iteration's request id into its own row.
             agent_request_id: str | None = None
+            record = {
+                "run_id": run_id,
+                "workflow_id": wf_id,
+                "step": step,
+                "ordinal": ordinal,
+                "attempt": attempt,
+            }
             try:
                 input_snapshot = _coerce_input(step, merged)
                 if step.kind == "agent":
-                    agent_request_id = await dbos_class.run_step_async(
-                        {"name": f"{step.step_id}.submit"},
-                        _submit_agent_step,
-                        runner_id,
-                        step.agent_id,  # type: ignore[attr-defined]
-                        _agent_step_message(
+                    agent_request_id = await post_inline_agent_request(
+                        ctx.pool,
+                        agent_id=step.agent_id,  # type: ignore[attr-defined]
+                        message=_agent_step_message(
                             step,
                             workflow_id=wf_id,
                             run_id=run_id,
                             workflow_input=ctx.workflow_input,
                             input_snapshot=input_snapshot,
                         ),
-                        serialize_structured_output(step.output),
-                        wf_id,
-                        run_id,
-                        step.step_id,
-                        session_id,
-                        ctx.user_id,
+                        structured_output=serialize_structured_output(step.output),
+                        workflow_id=wf_id,
+                        workflow_run_id=run_id,
+                        task_id=step.step_id,
+                        session_id=session_id,
+                        user_id=ctx.user_id,  # type: ignore[arg-type]
+                        attempt=attempt,
                     )
 
-                await dbos_class.run_step_async(
-                    {"name": f"{step.step_id}.record.start"},
-                    _record_step,
-                    runner_id, run_id, wf_id, step.step_id, ordinal, step.kind,
-                    STEP_RUNNING, input_snapshot, None, None, agent_request_id,
-                    STEP_EVENT_STARTED, None,
+                await _record_step(
+                    store,
+                    **record,
+                    status=STEP_RUNNING,
+                    input_snapshot=input_snapshot,
+                    output_snapshot=None,
+                    error=None,
+                    agent_request_id=agent_request_id,
+                    event_type=STEP_EVENT_STARTED,
+                    event_payload=None,
                 )
 
-                if step.kind == "code":
-                    if getattr(step, "orchestration", False):
-                        # Orchestration code runs in the workflow context so it
-                        # can submit and await many agent requests itself. It is
-                        # replayed after recovery and therefore owns a durable,
-                        # idempotent work ledger rather than relying on DBOS to
-                        # memoize the code body as one opaque step.
-                        output_snapshot = await _invoke_code_step(
-                            runner_id,
-                            run_id,
-                            wf_id,
-                            ordinal,
-                            ctx.workflow_input,
-                            input_snapshot,
-                            ctx.user_id,
-                        )
-                    else:
-                        output_snapshot = await dbos_class.run_step_async(
-                            {"name": f"{step.step_id}.run"},
-                            _run_code_step,
-                            runner_id,
-                            run_id,
-                            wf_id,
-                            ordinal,
-                            ctx.workflow_input,
-                            input_snapshot,
-                            ctx.user_id,
-                        )
+                if isinstance(step, CodeStep):
+                    output_snapshot = await _run_code_step(ctx, step, input_snapshot, attempt)
                 else:
                     payload = await _with_timeout(
-                        dbos_class.run_step_async(
-                            {"name": f"{step.step_id}.await"},
-                            collect_terminal_payload,
-                            runner_id, step.agent_id, agent_request_id,  # type: ignore[attr-defined]
+                        collect_terminal_payload(
+                            ctx.pool, step.agent_id, agent_request_id  # type: ignore[attr-defined,arg-type]
                         ),
                         step.timeout_s,
                         step.step_id,
                     )
                     output_snapshot = _extract_agent_output(step, payload)
 
-                await dbos_class.run_step_async(
-                    {"name": f"{step.step_id}.record.done"},
-                    _record_step,
-                    runner_id, run_id, wf_id, step.step_id, ordinal, step.kind,
-                    STEP_COMPLETED, input_snapshot, output_snapshot, None,
-                    agent_request_id, STEP_EVENT_COMPLETED, None,
+                await _record_step(
+                    store,
+                    **record,
+                    status=STEP_COMPLETED,
+                    input_snapshot=input_snapshot,
+                    output_snapshot=output_snapshot,
+                    error=None,
+                    agent_request_id=agent_request_id,
+                    event_type=STEP_EVENT_COMPLETED,
+                    event_payload=None,
                 )
             except Exception as exc:
                 error = str(exc)
-                await dbos_class.run_step_async(
-                    {"name": f"{step.step_id}.record.fail"},
-                    _record_step,
-                    runner_id, run_id, wf_id, step.step_id, ordinal, step.kind,
-                    STEP_FAILED, input_snapshot, None, error, agent_request_id,
-                    STEP_EVENT_FAILED, {"error": error},
+                await _record_step(
+                    store,
+                    **record,
+                    status=STEP_FAILED,
+                    input_snapshot=input_snapshot,
+                    output_snapshot=None,
+                    error=error,
+                    agent_request_id=agent_request_id,
+                    event_type=STEP_EVENT_FAILED,
+                    event_payload={"error": error},
                 )
-                await dbos_class.run_step_async(
-                    {"name": "run.fail"},
-                    _finish_run,
-                    runner_id, run_id, RUN_FAILED, None, error,
+                await store.finish_run(
+                    run_id, status=RUN_FAILED, error=error, finished_at=time.time()
                 )
                 raise
 
             prev_output = output_snapshot
             result = output_snapshot
 
-        await dbos_class.run_step_async(
-            {"name": "run.done"},
-            _finish_run,
-            runner_id, run_id, RUN_COMPLETED, result, None,
+        await store.finish_run(
+            run_id, status=RUN_COMPLETED, result=result, finished_at=time.time()
         )
         return {
             "workflow_id": wf_id,
@@ -466,8 +357,86 @@ class ForwardPipelineStrategy:
 FORWARD_PIPELINE_STRATEGY = ForwardPipelineStrategy()
 
 
+class WorkflowRunner:
+    """Runs a pool's workflow runs as tasks on the host."""
+
+    def __init__(self, pool: "Pool", *, runner_id: str) -> None:
+        self._pool = pool
+        self._runner_id = runner_id
+        self._slots = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+        self._tasks: dict[str, asyncio.Task[None]] = {}
+
+    def is_running(self, run_id: str) -> bool:
+        return run_id in self._tasks
+
+    def start(self, run: WorkflowRunRecord) -> None:
+        """Run ``run``, whose row is ``queued`` or ``running``, unless it already runs."""
+        if run.run_id in self._tasks:
+            return
+        workflow = self._pool.get_workflow_registry().get(run.workflow_id)
+        ctx = WorkflowExecutionContext(
+            pool=self._pool,
+            workflow=workflow,
+            run_id=run.run_id,
+            workflow_input=dict(run.workflow_input or {}),
+            session_id=run.session_id,
+            user_id=run.user_id,
+        )
+        task = asyncio.create_task(self._run(ctx), name=f"mash-workflow-{run.run_id}")
+        self._tasks[run.run_id] = task
+        task.add_done_callback(lambda _: self._tasks.pop(run.run_id, None))
+
+    async def recover(self) -> None:
+        """Continue this runner's queued and running runs."""
+        store = _store(self._pool)
+        registry = self._pool.get_workflow_registry()
+        for run in await store.list_unfinished_runs(runner_run_id_prefix(self._runner_id)):
+            if run.run_id in self._tasks:
+                continue
+            try:
+                registry.get(run.workflow_id)
+            except KeyError:
+                await store.finish_run(
+                    run.run_id,
+                    status=RUN_FAILED,
+                    error=f"workflow '{run.workflow_id}' is no longer registered",
+                    finished_at=time.time(),
+                )
+                continue
+            if await store.count_recovery(run.run_id) > MAX_RECOVERIES:
+                await store.finish_run(
+                    run.run_id,
+                    status=RUN_FAILED,
+                    error=(
+                        f"the run did not finish after {MAX_RECOVERIES} recoveries; "
+                        "start a new run"
+                    ),
+                    finished_at=time.time(),
+                )
+                continue
+            self.start(run)
+
+    async def close(self) -> None:
+        tasks = list(self._tasks.values())
+        for task in tasks:
+            task.cancel()
+        # A cancelled run stays running in the store; the next start continues it.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    async def _run(self, ctx: WorkflowExecutionContext) -> None:
+        async with self._slots:
+            try:
+                await FORWARD_PIPELINE_STRATEGY.run(ctx)
+            except Exception:
+                # The pipeline recorded the failure on the run.
+                logger.info("workflow run %s failed", ctx.run_id, exc_info=True)
+
+
 __all__ = [
-    "ForwardPipelineStrategy",
     "FORWARD_PIPELINE_STRATEGY",
+    "ForwardPipelineStrategy",
+    "MAX_CONCURRENT_RUNS",
     "WorkflowExecutionContext",
+    "WorkflowRunner",
 ]

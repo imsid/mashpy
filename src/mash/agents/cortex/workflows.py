@@ -23,7 +23,7 @@ from mash.runtime.events import RuntimeEventType
 from mash.runtime.events.types import event_attributes
 from mash.runtime.structured_output import serialize_structured_output
 from mash.workflows import CodeStep, StepContext, WorkflowSpec
-from mash.workflows.dbos import collect_terminal_payload, post_inline_agent_request
+from mash.workflows.agents import collect_terminal_payload, post_inline_agent_request
 
 from .context import CortexRuntimeContext
 from .models import EntryChange
@@ -229,10 +229,10 @@ def _build_curate(context: CortexRuntimeContext):
             },
             ensure_ascii=True,
         )
-        # The request id is fixed by run and task, so a replay of this
-        # orchestration step reattaches to the same curator request.
+        # The request id is fixed by run, step and attempt, so this step
+        # running again after a crash reattaches to the same curator request.
         request_id = await post_inline_agent_request(
-            pool.runner_id,
+            pool,
             agent_id=CORTEX_AGENT_ID,
             message=message,
             structured_output=serialize_structured_output(CuratorOutput),
@@ -241,8 +241,9 @@ def _build_curate(context: CortexRuntimeContext):
             task_id="curate",
             session_id=f"cortex:{ctx.run_id}",
             user_id=inp.user_id,
+            attempt=ctx.attempt,
         )
-        payload = await collect_terminal_payload(pool.runner_id, CORTEX_AGENT_ID, request_id)
+        payload = await collect_terminal_payload(pool, CORTEX_AGENT_ID, request_id)
         structured = (payload.get("response") or {}).get("structured_output")
         if not isinstance(structured, dict):
             raise RuntimeError("cortex-agent completed without structured output")
@@ -308,7 +309,6 @@ def build_cortex_build_workflow(context: CortexRuntimeContext) -> WorkflowSpec:
                 input=CortexBundle,
                 output=CortexCuration,
                 agent_ids=[CORTEX_AGENT_ID],
-                orchestration=True,
             ),
             CodeStep(
                 step_id="write",

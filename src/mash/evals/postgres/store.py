@@ -14,16 +14,9 @@ from ..models import (
     ScoringCriterion,
     ScoringRubric,
 )
-from mash.storage.migrations import run_migrations
+from mash.storage.pool import acquire_pool, release_pool
 
 from . import loaders
-
-try:
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-except ImportError:
-    dict_row = None  # type: ignore[assignment]
-    AsyncConnectionPool = None  # type: ignore[assignment]
 
 
 # Recognized in-memory sentinel URL, mirroring PostgresAPIEventStore. Tests
@@ -273,34 +266,18 @@ class PostgresEvalStore:
             return
         if self._pool is not None:
             return
-        if dict_row is None or AsyncConnectionPool is None:
-            raise RuntimeError(
-                "psycopg and psycopg_pool are required for PostgresEvalStore."
-            )
         async with self._open_lock:
             if self._pool is not None:
                 return
-            pool = AsyncConnectionPool(
-                self._database_url,
-                min_size=1,
-                max_size=5,
-                open=False,
-                # Managed Postgres closes idle connections server-side; validate
-                # at checkout so a stale connection is replaced, not handed out.
-                check=AsyncConnectionPool.check_connection,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-            )
-            await pool.open()
-            await run_migrations(pool)
-            self._pool = pool
+            self._pool = await acquire_pool(self._database_url)
 
     async def close(self) -> None:
         if self._mem is not None:
             await self._mem.close()
             return
         if self._pool is not None:
-            await self._pool.close()
             self._pool = None
+            await release_pool(self._database_url)
 
     # ------------------------------------------------------------------
     # Eval

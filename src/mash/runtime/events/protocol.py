@@ -54,6 +54,20 @@ class RuntimeStore(Protocol):
         """The agent and user a request was accepted for, or None if unknown."""
         ...
 
+    async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
+        """Overwrite the request's loop state; the request engine resumes from it."""
+        ...
+
+    async def get_checkpoint(self, request_id: str) -> dict[str, Any] | None: ...
+
+    async def list_running_requests(self, agent_id: str) -> list[str]:
+        """Ids of the agent's requests whose status is ``running``."""
+        ...
+
+    async def count_recovery(self, request_id: str) -> int:
+        """Count one more recovery of the request and return the total."""
+        ...
+
     async def read_request_stream(
         self,
         request_id: str,

@@ -1,7 +1,7 @@
 """Workflow orchestration exports.
 
 Lazy exports: the authoring types in ``spec.py`` must be importable without
-loading the DBOS-backed service modules this package also exports.
+loading the service and engine modules this package also exports.
 """
 
 from __future__ import annotations

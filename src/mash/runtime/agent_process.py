@@ -25,7 +25,6 @@ import uuid
 from typing import Any
 
 from .client import AgentClient
-from .engine.dbos import configure_agent_process
 from .host.subagents import AgentMetadata
 from .server import AgentServer
 
@@ -70,11 +69,7 @@ def build_agent_server(
     sandbox_tools: bool = False,
     browser_tools: bool = False,
 ) -> AgentServer:
-    """Build the ``AgentServer`` for one agent of ``pool``.
-
-    Configures this process's DBOS for the agent, so build at most one per
-    process.
-    """
+    """Build the ``AgentServer`` for one agent of ``pool``."""
     resolved_agent_id = str(agent_id or "").strip()
     spec = pool.get_registered_agent_spec(resolved_agent_id)
     if spec is None:
@@ -84,7 +79,6 @@ def build_agent_server(
     if not str(host_api_url or "").strip():
         raise ValueError("host API URL is required")
 
-    configure_agent_process(resolved_agent_id)
     server = AgentServer.from_spec(
         spec,
         runtime_database_url=runtime_database_url,

@@ -1,13 +1,12 @@
 """End-to-end tests for the forward-pipeline engine (requires Postgres).
 
-Drives ``execute_registered_workflow`` with a fake DBOS (steps run inline) and a
-real ``WorkflowStore``, asserting output threading, result persistence, the step
-audit trail, and failure handling.
+Drives the pipeline over a real ``WorkflowStore``, asserting output threading,
+result persistence, the step audit trail, failure handling, and resuming a run
+from its completed steps.
 """
 
 from __future__ import annotations
 
-import inspect
 import os
 import unittest
 from typing import TYPE_CHECKING, Any, cast
@@ -19,16 +18,20 @@ if TYPE_CHECKING:
     from mash.runtime.host.host import Pool
 
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowRegistry, WorkflowSpec
-from mash.workflows import dbos as workflow_dbos
-from mash.workflows.dbos import make_run_id
+from mash.workflows.engine import FORWARD_PIPELINE_STRATEGY, WorkflowExecutionContext
+from mash.workflows.runs import make_run_id
 from mash.workflows.store import (
     RUN_COMPLETED,
     RUN_FAILED,
+    RUN_QUEUED,
+    STEP_RUNNING,
     STEP_COMPLETED,
     STEP_EVENT_COMPLETED,
     STEP_EVENT_FAILED,
     STEP_EVENT_STARTED,
     STEP_FAILED,
+    WorkflowRunRecord,
+    WorkflowStepRecord,
     WorkflowStore,
 )
 
@@ -97,18 +100,6 @@ def _boom(_inp: DoubleOut, _ctx: StepContext) -> FinalOut:
     raise ValueError("kaboom")
 
 
-class _FakeDBOS:
-    step_names: list[str] = []
-
-    @staticmethod
-    async def run_step_async(config, func, *args, **kwargs):
-        _FakeDBOS.step_names.append(config["name"])
-        result = func(*args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return result
-
-
 class _FakeHost:
     def __init__(self, registry: WorkflowRegistry, store: WorkflowStore) -> None:
         self.runtime_database_url = "postgresql://example"
@@ -126,16 +117,13 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
     RUNNER = "runner-engine"
 
     async def asyncSetUp(self) -> None:
-        _FakeDBOS.step_names = []
         self.url = _require_postgres()
         self.store = WorkflowStore(self.url)
         await self.store.open()
         self.registry = WorkflowRegistry()
         self.host = cast("Pool", _FakeHost(self.registry, self.store))
-        workflow_dbos.register_runner(self.RUNNER, self.host)
 
     async def asyncTearDown(self) -> None:
-        workflow_dbos.unregister_runner(self.RUNNER, self.host)
         await self.store.close()
         for wf in (
             "pipe",
@@ -144,21 +132,36 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
             "pipe-agent-exhausted",
             "pipe-agent-fail",
             "pipe-coerce-fail",
-            "pipe-orchestration",
+            "pipe-resume",
+            "pipe-crash",
         ):
             _cleanup(self.url, wf)
 
-    async def _execute(self, workflow_id: str, workflow_input: dict[str, Any]) -> tuple[str, Any]:
-        run_id = make_run_id(self.RUNNER, workflow_id)
-        with patch.object(
-            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None)
-        ), patch(
-            "mash.workflows.engine.load_dbos_api",
-            return_value=(_FakeDBOS, None, None, None),
-        ):
-            output = await workflow_dbos.execute_registered_workflow(
-                self.RUNNER, workflow_id, run_id, workflow_input=workflow_input
+    async def _execute(
+        self, workflow_id: str, workflow_input: dict[str, Any], run_id: str | None = None
+    ) -> tuple[str, Any]:
+        """Run the pipeline once, creating the run's queued row on first use."""
+        run_id = run_id or make_run_id(self.RUNNER, workflow_id)
+        if await self.store.get_run(run_id) is None:
+            await self.store.create_run(
+                WorkflowRunRecord(
+                    run_id=run_id,
+                    workflow_id=workflow_id,
+                    status=RUN_QUEUED,
+                    workflow_input=workflow_input,
+                    user_id="u-1",
+                    created_at=1.0,
+                )
             )
+        output = await FORWARD_PIPELINE_STRATEGY.run(
+            WorkflowExecutionContext(
+                pool=self.host,
+                workflow=self.registry.get(workflow_id),
+                run_id=run_id,
+                workflow_input=workflow_input,
+                user_id="u-1",
+            )
+        )
         return run_id, output
 
     async def test_code_pipeline_threads_and_persists(self) -> None:
@@ -193,34 +196,113 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         events = await self.store.list_step_events(run_id, step_id="double")
         self.assertEqual([e.event_type for e in events], [STEP_EVENT_STARTED, STEP_EVENT_COMPLETED])
 
-    async def test_orchestration_code_runs_in_workflow_context(self) -> None:
+    async def test_resume_reruns_from_the_failed_step(self) -> None:
+        calls: list[tuple[str, int]] = []
+        fail = {"boom": True}
+
+        def _double_counted(inp: TriggerIn, ctx: StepContext) -> DoubleOut:
+            calls.append((ctx.step_id, ctx.attempt))
+            return _double(inp, ctx)
+
+        def _flaky(inp: DoubleOut, ctx: StepContext) -> FinalOut:
+            calls.append((ctx.step_id, ctx.attempt))
+            if fail["boom"]:
+                raise ValueError("kaboom")
+            return _finalize(inp, ctx)
+
         self.registry.register(
             WorkflowSpec(
-                workflow_id="pipe-orchestration",
+                workflow_id="pipe-resume",
                 input_model=TriggerIn,
                 steps=[
-                    CodeStep(
-                        step_id="double",
-                        run=_double,
-                        input=TriggerIn,
-                        output=DoubleOut,
-                    ),
-                    CodeStep(
-                        step_id="fan-out",
-                        run=_finalize,
-                        input=DoubleOut,
-                        output=FinalOut,
-                        orchestration=True,
-                    ),
+                    CodeStep(step_id="double", run=_double_counted, input=TriggerIn, output=DoubleOut),
+                    CodeStep(step_id="finalize", run=_flaky, input=DoubleOut, output=FinalOut),
                 ],
             )
         )
+        with self.assertRaises(ValueError):
+            run_id, _ = await self._execute("pipe-resume", {"n": 4})
+        run_id = (await self.store.list_runs("pipe-resume"))[0].run_id
 
-        _, output = await self._execute("pipe-orchestration", {"n": 3})
+        fail["boom"] = False
+        await self.store.requeue_run(run_id)
+        _, output = await self._execute("pipe-resume", {"n": 4}, run_id=run_id)
 
-        self.assertEqual(output["result"]["doubled"], 6)
-        self.assertIn("double.run", _FakeDBOS.step_names)
-        self.assertNotIn("fan-out.run", _FakeDBOS.step_names)
+        self.assertEqual(output["result"]["doubled"], 8)
+        # The completed step is not run again; the failed one runs as attempt 2.
+        self.assertEqual(calls, [("double", 1), ("finalize", 1), ("finalize", 2)])
+        events = await self.store.list_step_events(run_id, step_id="finalize")
+        self.assertEqual(
+            [(e.attempt, e.event_type) for e in events],
+            [
+                (1, STEP_EVENT_STARTED),
+                (1, STEP_EVENT_FAILED),
+                (2, STEP_EVENT_STARTED),
+                (2, STEP_EVENT_COMPLETED),
+            ],
+        )
+        run = await self.store.get_run(run_id)
+        assert run is not None
+        self.assertEqual(run.status, RUN_COMPLETED)
+
+    async def test_step_the_host_died_in_keeps_its_agent_request(self) -> None:
+        submitted: list[str] = []
+
+        async def _fake_post(pool, *, agent_id, message, structured_output, **kwargs):
+            del pool, agent_id, message, structured_output
+            from mash.workflows.agents import agent_step_request_id
+
+            request_id = agent_step_request_id(
+                kwargs["workflow_run_id"], kwargs["task_id"], kwargs["attempt"]
+            )
+            submitted.append(request_id)
+            return request_id
+
+        async def _fake_collect(pool, agent_id, request_id):
+            del pool, agent_id, request_id
+            return {"response": {"structured_output": {"doubled": 2, "message": "ok"}}}
+
+        self.registry.register(
+            WorkflowSpec(
+                workflow_id="pipe-crash",
+                input_model=TriggerIn,
+                steps=[
+                    AgentStep(step_id="write", agent_id="writer", input=None, output=FinalOut),
+                ],
+            )
+        )
+        run_id = make_run_id(self.RUNNER, "pipe-crash")
+        await self.store.create_run(
+            WorkflowRunRecord(
+                run_id=run_id,
+                workflow_id="pipe-crash",
+                status="running",
+                workflow_input={"n": 1},
+                created_at=1.0,
+            )
+        )
+        # The host died after the step started its request.
+        await self.store.upsert_step(
+            WorkflowStepRecord(
+                run_id=run_id,
+                workflow_id="pipe-crash",
+                step_id="write",
+                ordinal=0,
+                kind="agent",
+                status=STEP_RUNNING,
+                attempt=1,
+                agent_request_id=f"{run_id}-write",
+            )
+        )
+        with patch("mash.workflows.engine.post_inline_agent_request", _fake_post), patch(
+            "mash.workflows.engine.collect_terminal_payload", _fake_collect
+        ):
+            await self._execute("pipe-crash", {"n": 1}, run_id=run_id)
+
+        self.assertEqual(submitted, [f"{run_id}-write"])
+        steps = {step.step_id: step for step in await self.store.get_run_steps(run_id)}
+        self.assertEqual(steps["write"].attempt, 1)
+        self.assertEqual(steps["write"].status, STEP_COMPLETED)
 
     async def test_failed_step_marks_run_failed(self) -> None:
         self.registry.register(
@@ -319,20 +401,11 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = make_run_id(self.RUNNER, "pipe-agent-exhausted")
-        with patch.object(
-            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None)
-        ), patch(
-            "mash.workflows.engine.load_dbos_api",
-            return_value=(_FakeDBOS, None, None, None),
-        ), patch(
-            "mash.workflows.engine.post_inline_agent_request", _fake_post
-        ), patch(
+        with patch("mash.workflows.engine.post_inline_agent_request", _fake_post), patch(
             "mash.workflows.engine.collect_terminal_payload", _fake_collect
         ):
             with self.assertRaises(RuntimeError) as caught:
-                await workflow_dbos.execute_registered_workflow(
-                    self.RUNNER, "pipe-agent-exhausted", run_id, workflow_input={"n": 42}
-                )
+                await self._execute("pipe-agent-exhausted", {"n": 42}, run_id=run_id)
 
         self.assertIn("max step limit", str(caught.exception))
         self.assertEqual(ran_after, [])
@@ -346,7 +419,6 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps["double"].status, STEP_COMPLETED)
         self.assertEqual(steps["write"].status, STEP_FAILED)
         self.assertNotIn("after", steps)
-        self.assertNotIn("after.run", _FakeDBOS.step_names)
 
     async def test_failed_agent_step_keeps_its_request_id(self) -> None:
         # The link from a step to the request that did its work is worth most
@@ -372,20 +444,11 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = make_run_id(self.RUNNER, "pipe-agent-fail")
-        with patch.object(
-            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None)
-        ), patch(
-            "mash.workflows.engine.load_dbos_api",
-            return_value=(_FakeDBOS, None, None, None),
-        ), patch(
-            "mash.workflows.engine.post_inline_agent_request", _fake_post
-        ), patch(
+        with patch("mash.workflows.engine.post_inline_agent_request", _fake_post), patch(
             "mash.workflows.engine.collect_terminal_payload", _fake_collect
         ):
             with self.assertRaises(RuntimeError):
-                await workflow_dbos.execute_registered_workflow(
-                    self.RUNNER, "pipe-agent-fail", run_id, workflow_input={"n": 21}
-                )
+                await self._execute("pipe-agent-fail", {"n": 21}, run_id=run_id)
 
         steps = {step.step_id: step for step in await self.store.get_run_steps(run_id)}
         self.assertEqual(steps["write"].status, STEP_FAILED)
@@ -426,20 +489,11 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run_id = make_run_id(self.RUNNER, "pipe-coerce-fail")
-        with patch.object(
-            workflow_dbos, "_load_dbos_api", return_value=(_FakeDBOS, None, None, None)
-        ), patch(
-            "mash.workflows.engine.load_dbos_api",
-            return_value=(_FakeDBOS, None, None, None),
-        ), patch(
-            "mash.workflows.engine.post_inline_agent_request", _fake_post
-        ), patch(
+        with patch("mash.workflows.engine.post_inline_agent_request", _fake_post), patch(
             "mash.workflows.engine.collect_terminal_payload", _fake_collect
         ):
             with self.assertRaises(Exception):
-                await workflow_dbos.execute_registered_workflow(
-                    self.RUNNER, "pipe-coerce-fail", run_id, workflow_input={"n": 21}
-                )
+                await self._execute("pipe-coerce-fail", {"n": 21}, run_id=run_id)
 
         steps = {step.step_id: step for step in await self.store.get_run_steps(run_id)}
         self.assertEqual(steps["write"].agent_request_id, "req-prev-step")

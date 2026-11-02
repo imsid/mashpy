@@ -1,10 +1,8 @@
-"""Unit tests for the Phase 1 interaction step primitives.
+"""Unit tests for the interaction step primitives.
 
-The full DBOS replay-convergence behavior (same interaction id before/after
-recovery, cancel sentinel issuing a fresh attempt) needs a live DBOS + Postgres
-and is exercised there. These cover the pure pieces the workflow leans on: the
-cancel sentinel predicate, the ``open_interaction`` step that mints the id and
-emits the create event, and the ``cancelled`` marker on the ack.
+``open_interaction`` mints the id and emits the create event, and the ack
+carries the ``cancelled`` marker. The loop's waiting, recovery and cancel
+behavior is covered in ``test_request_engine.py``.
 """
 
 from __future__ import annotations
@@ -15,13 +13,7 @@ import unittest
 
 from conftest import build_test_stores
 from mash.runtime import AgentRuntime
-from mash.runtime.engine.dbos import register_runtime, unregister_runtime
-from mash.runtime.engine.steps import (
-    emit_interaction_ack,
-    is_interaction_cancel_sentinel,
-    open_interaction,
-    INTERACTION_CANCEL_SENTINEL,
-)
+from mash.runtime.engine.steps import emit_interaction_ack, open_interaction
 from mash.runtime.events import RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec
 
@@ -29,24 +21,6 @@ from mash.testing.runtime_fixtures import build_spec
 def _test_stores() -> dict:
     rs, ms = build_test_stores()
     return {"runtime_store": rs, "memory_store": ms}
-
-
-class InteractionSentinelTests(unittest.TestCase):
-    def test_sentinel_is_recognized(self) -> None:
-        self.assertTrue(is_interaction_cancel_sentinel(INTERACTION_CANCEL_SENTINEL))
-        self.assertTrue(
-            is_interaction_cancel_sentinel({"__mash_interaction_cancelled__": True})
-        )
-
-    def test_real_responses_are_not_sentinels(self) -> None:
-        self.assertFalse(is_interaction_cancel_sentinel(""))
-        self.assertFalse(is_interaction_cancel_sentinel("approve"))
-        self.assertFalse(is_interaction_cancel_sentinel(["a", "b"]))
-        self.assertFalse(is_interaction_cancel_sentinel(None))
-        self.assertFalse(is_interaction_cancel_sentinel({"answer": "yes"}))
-        self.assertFalse(
-            is_interaction_cancel_sentinel({"__mash_interaction_cancelled__": False})
-        )
 
 
 class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
@@ -60,19 +34,13 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
             **_test_stores(),
         )
         await runtime.open()
-        register_runtime(runtime)
-
-        async def _cleanup() -> None:
-            unregister_runtime(runtime)
-            await runtime.shutdown()
-
-        self.addAsyncCleanup(_cleanup)
+        self.addAsyncCleanup(runtime.shutdown)
         return runtime
 
     async def test_open_interaction_mints_id_and_emits_create(self) -> None:
         runtime = await self._with_runtime()
         interaction_id = await open_interaction(
-            runtime.app_id,
+            runtime,
             "req-1",
             "s-1",
             "trace-1",
@@ -99,11 +67,11 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_interaction_ids_are_unique_per_call(self) -> None:
         runtime = await self._with_runtime()
         first = await open_interaction(
-            runtime.app_id, "req-2", "s-1", "trace-1",
+            runtime, "req-2", "s-1", "trace-1",
             interaction_type="info", prompt="?",
         )
         second = await open_interaction(
-            runtime.app_id, "req-2", "s-1", "trace-1",
+            runtime, "req-2", "s-1", "trace-1",
             interaction_type="info", prompt="?",
         )
         self.assertNotEqual(first, second)
@@ -111,7 +79,7 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_ack_records_cancelled_marker(self) -> None:
         runtime = await self._with_runtime()
         await emit_interaction_ack(
-            runtime.app_id,
+            runtime,
             "req-3",
             "s-1",
             "trace-1",
@@ -131,7 +99,7 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_ack_without_cancel_has_no_marker(self) -> None:
         runtime = await self._with_runtime()
         await emit_interaction_ack(
-            runtime.app_id,
+            runtime,
             "req-4",
             "s-1",
             "trace-1",

@@ -48,7 +48,7 @@ so a subagent reads the same user.
 ## `cortex-build`
 
 ```text
-collect (code) -> curate (orchestration code: cortex-agent) -> write (code)
+collect (code) -> curate (code: cortex-agent) -> write (code)
 ```
 
 A run builds the Cortex of the user it acts for. `workflow_input`

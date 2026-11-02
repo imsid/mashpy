@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
 
 from starlette.testclient import TestClient
 
-from mash.runtime.engine.workflow import workflow_id_for
+from mash.runtime.engine import InteractionClosedError
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.server import AgentServer
 
@@ -20,19 +19,6 @@ class _Store:
         return request_id != "missing"
 
 
-class _DBOS:
-    """DBOS 3 rejects its sync calls inside a running event loop."""
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, object, str]] = []
-
-    def send(self, *args, **kwargs) -> None:
-        raise RuntimeError("send() was called while an event loop is running.")
-
-    async def send_async(self, destination_id: str, message: object, topic: str) -> None:
-        self.sent.append((destination_id, message, topic))
-
-
 class _Runtime:
     app_id = "agent-a"
 
@@ -40,6 +26,7 @@ class _Runtime:
         self.runtime_store = _Store()
         self.store = _Store()
         self.calls: list[tuple[str, str]] = []
+        self.answers: list[tuple[str, str, object]] = []
 
     async def open(self) -> None:
         return None
@@ -66,6 +53,15 @@ class _Runtime:
 
     async def rerun_request(self, request_id: str) -> dict:
         return await self._record("rerun", request_id)
+
+    async def answer_interaction(
+        self, request_id: str, interaction_id: str, response: object
+    ) -> None:
+        if interaction_id == "int-missing":
+            raise KeyError(interaction_id)
+        if interaction_id == "int-closed":
+            raise InteractionClosedError("interaction 'int-closed' is no longer open")
+        self.answers.append((request_id, interaction_id, response))
 
 
 ROUTES = [
@@ -114,16 +110,30 @@ class AgentServerControlRouteTests(unittest.TestCase):
         self.assertEqual(resp.json()["error"]["code"], "ROUTE_NOT_FOUND")
         self.assertEqual(self.runtime.calls, [])
 
-    def test_interaction_response_is_sent_without_blocking_the_loop(self) -> None:
-        dbos = _DBOS()
-        with patch("mash.runtime.server.DBOS", dbos):
-            resp = self.client.post(
-                "/agent/agent-a/request/req-1/interaction",
-                json={"interaction_id": "int-1", "response": "yes"},
-            )
+    def test_interaction_answer_goes_to_the_runtime(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/request/req-1/interaction",
+            json={"interaction_id": "int-1", "response": "yes"},
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ok": True, "interaction_id": "int-1"})
-        self.assertEqual(dbos.sent, [(workflow_id_for("agent-a", "req-1"), "yes", "int-1")])
+        self.assertEqual(self.runtime.answers, [("req-1", "int-1", "yes")])
+
+    def test_answer_to_a_closed_interaction_returns_409(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/request/req-1/interaction",
+            json={"interaction_id": "int-closed", "response": "yes"},
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["code"], "INTERACTION_CLOSED")
+
+    def test_answer_to_an_unknown_interaction_returns_404(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/request/req-1/interaction",
+            json={"interaction_id": "int-missing", "response": "yes"},
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["code"], "INTERACTION_NOT_FOUND")
 
 
 if __name__ == "__main__":

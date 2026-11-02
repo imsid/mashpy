@@ -1,35 +1,24 @@
-"""PostgresRuntimeStore — connection pool, pub/sub lifecycle, and protocol delegation."""
+"""PostgresRuntimeStore: the runtime event log over the process's shared pool."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections import defaultdict
-from typing import Any, cast
+from typing import Any
 
-from mash.storage.migrations import run_migrations
+from mash.storage.pool import acquire_pool, release_pool
 
 from ...protocol import RuntimeStore
-from ...types import FeedbackRecord, RequestStatus, RuntimeEvent
+from ...types import FeedbackRecord, RequestIdentity, RequestStatus, RuntimeEvent
 from . import loaders
-
-try:
-    import psycopg
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-except ImportError:
-    psycopg = None  # type: ignore[assignment]
-    dict_row = None  # type: ignore[assignment]
-    AsyncConnectionPool = None  # type: ignore[assignment]
-
-logger = logging.getLogger(__name__)
-
-_LISTENER_RECONNECT_INITIAL_DELAY = 0.5
-_LISTENER_RECONNECT_MAX_DELAY = 30.0
 
 
 class PostgresRuntimeStore(RuntimeStore):
-    """Append-only Postgres-backed runtime event store."""
+    """Append-only Postgres-backed runtime event store.
+
+    A request's events are written and streamed by the same agent process, so
+    an append wakes the request's stream waiters in memory.
+    """
 
     def __init__(self, database_url: str) -> None:
         resolved = str(database_url or "").strip()
@@ -39,98 +28,18 @@ class PostgresRuntimeStore(RuntimeStore):
         self._pool: Any = None
         self._open_lock = asyncio.Lock()
         self._request_waiters: dict[str, set[asyncio.Event]] = defaultdict(set)
-        self._listener_conn: Any = None
-        self._listener_task: asyncio.Task | None = None
 
     async def open(self) -> None:
         if self._pool is not None:
             return
-        if psycopg is None or dict_row is None or AsyncConnectionPool is None:
-            raise RuntimeError(
-                "psycopg and psycopg_pool are required for PostgresRuntimeStore. "
-                "Install mashpy with PostgreSQL runtime dependencies."
-            )
         async with self._open_lock:
-            if self._pool is not None:
-                return
-            pool = AsyncConnectionPool(
-                self._database_url,
-                min_size=2,
-                max_size=10,
-                open=False,
-                # Managed Postgres closes idle connections server-side; validate
-                # at checkout so a stale connection is replaced, not handed out.
-                check=AsyncConnectionPool.check_connection,
-                kwargs={"autocommit": True, "row_factory": dict_row},
-            )
-            await pool.open()
-            await run_migrations(pool)
-            self._pool = pool
-
-            await self._connect_listener()
-            self._listener_task = asyncio.create_task(self._listen_loop())
-
-    async def _connect_listener(self) -> None:
-        self._listener_conn = cast(
-            Any,
-            await psycopg.AsyncConnection.connect(self._database_url, autocommit=True),
-        )
-        await self._listener_conn.execute("LISTEN runtime_events")
+            if self._pool is None:
+                self._pool = await acquire_pool(self._database_url)
 
     async def close(self) -> None:
-        if self._listener_task is not None:
-            self._listener_task.cancel()
-            try:
-                await self._listener_task
-            except asyncio.CancelledError:
-                pass
-            self._listener_task = None
-
-        if self._listener_conn is not None:
-            await self._listener_conn.close()
-            self._listener_conn = None
-
         if self._pool is not None:
-            await self._pool.close()
             self._pool = None
-
-    async def _listen_loop(self) -> None:
-        delay = _LISTENER_RECONNECT_INITIAL_DELAY
-        while True:
-            try:
-                if self._listener_conn is None:
-                    await self._connect_listener()
-                    delay = _LISTENER_RECONNECT_INITIAL_DELAY
-                    # NOTIFYs sent while the listener was down are lost; wake
-                    # every waiter so it re-reads the log instead of sleeping
-                    # through events appended during the outage.
-                    self._wake_all_waiters()
-                async for notify in self._listener_conn.notifies():
-                    request_id = notify.payload
-                    if request_id:
-                        for ev in self._request_waiters.get(request_id, ()):
-                            ev.set()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                logger.warning(
-                    "runtime event listener connection lost (%s); reconnecting in %.1fs",
-                    exc,
-                    delay,
-                )
-                conn, self._listener_conn = self._listener_conn, None
-                if conn is not None:
-                    try:
-                        await conn.close()
-                    except Exception:
-                        pass
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, _LISTENER_RECONNECT_MAX_DELAY)
-
-    def _wake_all_waiters(self) -> None:
-        for waiters in self._request_waiters.values():
-            for ev in waiters:
-                ev.set()
+            await release_pool(self._database_url)
 
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()
@@ -146,7 +55,11 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def append_event(self, event: RuntimeEvent) -> RuntimeEvent:
         await self.open()
-        return await loaders.append_event(self._pool, event)
+        stored = await loaders.append_event(self._pool, event)
+        if stored.request_id:
+            for waiter in self._request_waiters.get(stored.request_id, ()):
+                waiter.set()
+        return stored
 
     async def list_request_events(
         self, request_id: str, *, after_seq: int = 0
@@ -207,6 +120,22 @@ class PostgresRuntimeStore(RuntimeStore):
     async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
         await self.open()
         return await loaders.get_request_identity(self._pool, request_id)
+
+    async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
+        await self.open()
+        await loaders.save_checkpoint(self._pool, request_id, checkpoint)
+
+    async def get_checkpoint(self, request_id: str) -> dict[str, Any] | None:
+        await self.open()
+        return await loaders.get_checkpoint(self._pool, request_id)
+
+    async def list_running_requests(self, agent_id: str) -> list[str]:
+        await self.open()
+        return await loaders.list_running_requests(self._pool, agent_id)
+
+    async def count_recovery(self, request_id: str) -> int:
+        await self.open()
+        return await loaders.count_recovery(self._pool, request_id)
 
     async def read_request_stream(
         self, request_id: str, *, after_seq: int = 0
