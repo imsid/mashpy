@@ -9,6 +9,19 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.34.0](https://github.com/imsid/mashpy/compare/mashpy-v0.33.0...mashpy-v0.34.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** run requests and workflow runs without DBOS ([#258](https://github.com/imsid/mashpy/issues/258))
+* **otel:** name runtime events after OpenTelemetry spans and export them over OTLP ([#256](https://github.com/imsid/mashpy/issues/256))
+
+### Features
+
+* **otel:** name runtime events after OpenTelemetry spans and export them over OTLP ([#256](https://github.com/imsid/mashpy/issues/256)) ([ab36a81](https://github.com/imsid/mashpy/commit/ab36a8182340a6d79ff6f399e0793353031441b2))
+* **runtime:** run requests and workflow runs without DBOS ([#258](https://github.com/imsid/mashpy/issues/258)) ([baef8e7](https://github.com/imsid/mashpy/commit/baef8e745466e3c2c87a9df2ddd212e9e7e5baa5))
+
 ## [0.33.0](https://github.com/imsid/mashpy/compare/mashpy-v0.32.0...mashpy-v0.33.0) (2026-10-31)
 
 
