@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import AuthGate from './components/AuthGate.jsx';
 import Shell from './components/Shell.jsx';
 import Overview from './routes/Overview.jsx';
 import Agents from './routes/Agents.jsx';
@@ -22,29 +23,31 @@ import Reference from './routes/Reference.jsx';
 
 export default function App() {
   return (
-    <Routes>
-      <Route element={<Shell />}>
-        <Route index element={<Overview />} />
-        <Route path="agents" element={<Agents />} />
-        <Route path="tools" element={<Tools />} />
-        <Route path="tools/:toolName" element={<ToolDetail />} />
-        <Route path="skills" element={<Skills />} />
-        <Route path="skills/:skillName" element={<SkillDetail />} />
-        <Route path="workflows" element={<Workflows />} />
-        <Route path="workflows/:workflowId" element={<WorkflowDetail />} />
-        <Route path="workflows/:workflowId/runs" element={<WorkflowRuns />} />
-        <Route path="workflows/:workflowId/runs/:runId" element={<WorkflowRunDetail />} />
-        <Route path="hosts" element={<Hosts />} />
-        <Route path="logs" element={<Logs />} />
-        <Route path="thoughts" element={<Thoughts />} />
-        <Route path="feedback" element={<Feedback />} />
-        <Route path="evals" element={<Evals />} />
-        <Route path="evals/:evalId" element={<EvalDetail />} />
-        <Route path="evals/:evalId/compare" element={<ExperimentCompare />} />
-        <Route path="evals/:evalId/experiments/:experimentId" element={<ExperimentDetail />} />
-        <Route path="reference" element={<Reference />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Route>
-    </Routes>
+    <AuthGate>
+      <Routes>
+        <Route element={<Shell />}>
+          <Route index element={<Overview />} />
+          <Route path="agents" element={<Agents />} />
+          <Route path="tools" element={<Tools />} />
+          <Route path="tools/:toolName" element={<ToolDetail />} />
+          <Route path="skills" element={<Skills />} />
+          <Route path="skills/:skillName" element={<SkillDetail />} />
+          <Route path="workflows" element={<Workflows />} />
+          <Route path="workflows/:workflowId" element={<WorkflowDetail />} />
+          <Route path="workflows/:workflowId/runs" element={<WorkflowRuns />} />
+          <Route path="workflows/:workflowId/runs/:runId" element={<WorkflowRunDetail />} />
+          <Route path="hosts" element={<Hosts />} />
+          <Route path="logs" element={<Logs />} />
+          <Route path="thoughts" element={<Thoughts />} />
+          <Route path="feedback" element={<Feedback />} />
+          <Route path="evals" element={<Evals />} />
+          <Route path="evals/:evalId" element={<EvalDetail />} />
+          <Route path="evals/:evalId/compare" element={<ExperimentCompare />} />
+          <Route path="evals/:evalId/experiments/:experimentId" element={<ExperimentDetail />} />
+          <Route path="reference" element={<Reference />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </AuthGate>
   );
 }

@@ -1,7 +1,8 @@
 # Pilot: a Mash host whose agents read this checkout.
 #
-# Setup (once), from the repo root: put GEMINI_API_KEY, OPENROUTER_API_KEY and
-# MASH_HOST_SECRET (openssl rand -hex 32) in .env.
+# Setup (once), from the repo root: put GEMINI_API_KEY, OPENROUTER_API_KEY,
+# MASH_HOST_SECRET and MASH_API_KEY (each `openssl rand -hex 32`) in .env.
+# The host binds 0.0.0.0 inside its container, so it needs the API key.
 #
 # Run, from the repo root:
 #   docker compose -f docker-compose.pilot.yml up -d --build
@@ -78,6 +79,7 @@ services:
       # Override the host-machine DB URL from .env with the internal network address.
       MASH_DATABASE_URL: postgresql://mash:mash@db:5432/mash_pilot
       MASH_HOST_SECRET: ${MASH_HOST_SECRET:?set MASH_HOST_SECRET in .env}
+      MASH_API_KEY: ${MASH_API_KEY:?set MASH_API_KEY in .env}
       MASH_SANDBOX_IMAGE: mash-sandbox:pilot
       MASH_BROWSER_IMAGE: mash-browser:pilot
       # Where your browser reaches this host, for the links agents hand out.

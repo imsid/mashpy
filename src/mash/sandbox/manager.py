@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping
 
 import httpx
 
-from .containers import ContainerManager, bearer
+from .containers import ContainerManager, bearer, daemon_path
 from .provider import SandboxEndpoint, SandboxProvider, SandboxUnavailableError
 
 MASH_SANDBOX_IDLE_SECONDS_ENV = "MASH_SANDBOX_IDLE_SECONDS"
@@ -70,11 +70,12 @@ class SandboxManager(ContainerManager):
             body["stdin"] = stdin
         if env:
             body["env"] = dict(env)
+        path = daemon_path("exec")
 
         async def forward(endpoint: SandboxEndpoint) -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=timeout + _EXEC_OVERHEAD_SECONDS) as client:
                 response = await client.post(
-                    f"{endpoint.base_url}/exec", json=body, headers=bearer(endpoint)
+                    f"{endpoint.base_url}{path}", json=body, headers=bearer(endpoint)
                 )
             if response.status_code != 200:
                 raise SandboxUnavailableError(
@@ -87,12 +88,11 @@ class SandboxManager(ContainerManager):
 
     async def read_file(self, user_id: str, *, agent_id: str, path: str) -> httpx.Response:
         """``GET /files`` in the user's sandbox; the daemon's response as is."""
+        url = daemon_path("files", agent_id, tail=path)
 
         async def forward(endpoint: SandboxEndpoint) -> httpx.Response:
             async with httpx.AsyncClient(timeout=_FILE_TIMEOUT_SECONDS) as client:
-                return await client.get(
-                    f"{endpoint.base_url}/files/{agent_id}/{path}", headers=bearer(endpoint)
-                )
+                return await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
         return await self._use(user_id, forward)
 
@@ -100,11 +100,12 @@ class SandboxManager(ContainerManager):
         self, user_id: str, *, agent_id: str, path: str, data: bytes
     ) -> httpx.Response:
         """``PUT /files`` in the user's sandbox; the daemon's response as is."""
+        url = daemon_path("files", agent_id, tail=path)
 
         async def forward(endpoint: SandboxEndpoint) -> httpx.Response:
             async with httpx.AsyncClient(timeout=_FILE_TIMEOUT_SECONDS) as client:
                 return await client.put(
-                    f"{endpoint.base_url}/files/{agent_id}/{path}",
+                    f"{endpoint.base_url}{url}",
                     content=data,
                     headers=bearer(endpoint),
                 )
@@ -122,8 +123,11 @@ class SandboxManager(ContainerManager):
         headers: Mapping[str, str] | None = None,
         body: bytes = b"",
     ) -> httpx.Response:
-        """HTTP to ``port`` in the user's sandbox, through the daemon's ``/ports``."""
-        url = f"/ports/{port}/{path}" + (f"?{query}" if query else "")
+        """HTTP to ``port`` in the user's sandbox, through the daemon's ``/ports``.
+
+        Raises ``UnsafePathError`` for a ``path`` with ``.`` or ``..`` segments.
+        """
+        url = daemon_path("ports", str(port), tail=path, query=query)
 
         async def forward(endpoint: SandboxEndpoint) -> httpx.Response:
             async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT_SECONDS) as client:

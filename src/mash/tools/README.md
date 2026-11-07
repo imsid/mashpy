@@ -90,7 +90,7 @@ class DeployTool:
         ...
 ```
 
-If the user responds `"approve"`, the tool executes normally. If `"deny"` or `"skip"`, the tool call is skipped and the agent receives an error result indicating denial.
+If the user responds `"approve"`, the tool executes normally. If `"deny"` or `"skip"`, or the interaction times out, the tool call is skipped and the agent receives an error result indicating denial. Any other answer is refused with `400 INVALID_RESPONSE` and the interaction stays open.
 
 The approval check is automatic — no additional wiring is needed beyond setting the attribute. The registry exposes `tools_requiring_approval(names)` for the runtime to query which tools in a planned step need consent.
 

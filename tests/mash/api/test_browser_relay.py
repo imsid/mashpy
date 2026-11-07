@@ -184,6 +184,20 @@ class BrowserRelayTests(unittest.TestCase):
         self.assertTrue(self.post("/save", download_id="dl-1", path="../x").json()["is_error"])
         self.assertTrue(self.post("/save", download_id="nope", path="x").json()["is_error"])
 
+    def test_save_refuses_a_download_id_that_names_another_route(self) -> None:
+        self.navigate()
+        saved = self.post("/save", download_id="../sites", path="sites.json")
+
+        self.assertEqual(saved.status_code, 400)
+        self.assertEqual(saved.json()["error"]["code"], "INVALID_REQUEST")
+        written = self.sandbox_provider.workspaces("u-1") / "billing" / "sites.json"
+        self.assertFalse(written.exists())
+
+    def test_the_live_view_serves_only_its_own_files(self) -> None:
+        token = make_view_token(SECRET, "u-1", "", 2**40)
+        climbed = self.http.get(f"/s/{token}/browser/..%2Fsites")
+        self.assertEqual(climbed.status_code, 404)
+
     def test_upload_gives_a_sandbox_file_to_the_file_chooser(self) -> None:
         folder = self.sandbox_provider.workspaces("u-1") / "billing"
         folder.mkdir(parents=True)

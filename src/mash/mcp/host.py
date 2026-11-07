@@ -5,12 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, Optional
 
-from dotenv import load_dotenv
-
 from .client import MCPHTTPClient
 
-# Load environment variables
-load_dotenv()
 
 class Host:
     """Host process that manages MCP client instances and interactions.

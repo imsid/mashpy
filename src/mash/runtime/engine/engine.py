@@ -10,7 +10,8 @@ events, so the engine holds nothing that a restart would lose:
   next step boundary.
 - ``continue_request`` runs a cancelled or failed request again from its
   checkpoint, after ``resume_request`` has recorded it running.
-- ``answer_interaction`` stores the answer and wakes the loop waiting on it.
+- ``answer_interaction`` checks the answer against the interaction's schema,
+  stores it and wakes the loop waiting on it.
 """
 
 from __future__ import annotations
@@ -22,7 +23,12 @@ from typing import TYPE_CHECKING, Any
 from ..events import RequestStatus, RuntimeEventType
 from ..requests import find_pending_interaction
 from .loop import RequestRun
-from .steps import emit_interaction_ack, emit_request_cancelled, fail_request
+from .steps import (
+    emit_interaction_ack,
+    emit_request_cancelled,
+    fail_request,
+    interaction_response_error,
+)
 
 if TYPE_CHECKING:
     from ..service import AgentRuntime
@@ -36,6 +42,10 @@ MAX_RECOVERIES = 10
 
 class InteractionClosedError(RuntimeError):
     """Raised when an answer names an interaction that is not open."""
+
+
+class InvalidInteractionResponseError(ValueError):
+    """Raised when an answer is not one its interaction's schema allows."""
 
 
 class RequestEngine:
@@ -145,8 +155,10 @@ class RequestEngine:
     ) -> None:
         """Store the answer to an open interaction and wake the request.
 
-        Raises ``KeyError`` for an unknown interaction and
-        ``InteractionClosedError`` once it has an answer, a timeout or a cancel.
+        Raises ``KeyError`` for an unknown interaction,
+        ``InvalidInteractionResponseError`` for an answer its schema does not
+        allow, and ``InteractionClosedError`` once it has an answer, a timeout
+        or a cancel.
         """
         events = await self._store.list_request_events(request_id)
         opened = next(
@@ -160,6 +172,9 @@ class RequestEngine:
         )
         if opened is None:
             raise KeyError(f"interaction '{interaction_id}' not found")
+        invalid = interaction_response_error((opened.payload or {}).get("schema"), response)
+        if invalid is not None:
+            raise InvalidInteractionResponseError(invalid)
         stored = await emit_interaction_ack(
             self._runtime,
             request_id,
@@ -253,4 +268,9 @@ class RequestEngine:
         task.add_done_callback(_done)
 
 
-__all__ = ["InteractionClosedError", "MAX_RECOVERIES", "RequestEngine"]
+__all__ = [
+    "InteractionClosedError",
+    "InvalidInteractionResponseError",
+    "MAX_RECOVERIES",
+    "RequestEngine",
+]

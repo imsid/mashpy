@@ -20,7 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import httpx
 
-from mash.sandbox.containers import ContainerManager, bearer
+from mash.sandbox.containers import ContainerManager, bearer, daemon_path
 
 from .provider import BrowserEndpoint, BrowserUnavailableError
 from .tokens import make_view_token, read_view_token
@@ -85,11 +85,12 @@ class BrowserManager(ContainerManager):
         sites: Sequence[str],
     ) -> dict[str, Any]:
         """Run one relayed tool in the request's tab; the daemon's result."""
+        url = daemon_path("requests", request_id, "call")
 
         async def forward(endpoint: BrowserEndpoint) -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=_CALL_TIMEOUT_SECONDS) as client:
                 response = await client.post(
-                    f"{endpoint.base_url}/requests/{request_id}/call",
+                    f"{endpoint.base_url}{url}",
                     json={"tool": tool, "arguments": dict(arguments), "sites": list(sites)},
                     headers=bearer(endpoint),
                 )
@@ -109,11 +110,12 @@ class BrowserManager(ContainerManager):
         sites: Sequence[str],
     ) -> dict[str, Any]:
         """Give ``data`` to the file chooser that clicking ``target`` opens."""
+        url = daemon_path("requests", request_id, "upload")
 
         async def forward(endpoint: BrowserEndpoint) -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=_FILE_TIMEOUT_SECONDS) as client:
                 response = await client.post(
-                    f"{endpoint.base_url}/requests/{request_id}/upload",
+                    f"{endpoint.base_url}{url}",
                     params={
                         "name": name,
                         "target": target,
@@ -129,37 +131,40 @@ class BrowserManager(ContainerManager):
 
     async def download(self, user_id: str, download_id: str) -> httpx.Response:
         """``GET /downloads/<id>``; the daemon's response as is."""
+        url = daemon_path("downloads", download_id)
 
         async def forward(endpoint: BrowserEndpoint) -> httpx.Response:
             async with httpx.AsyncClient(timeout=_FILE_TIMEOUT_SECONDS) as client:
-                return await client.get(
-                    f"{endpoint.base_url}/downloads/{download_id}", headers=bearer(endpoint)
-                )
+                return await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
         return await self._use(user_id, forward)
 
     async def front(self, user_id: str, request_id: str) -> None:
+        url = daemon_path("requests", request_id, "front")
+
         async def forward(endpoint: BrowserEndpoint) -> None:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                await client.post(
-                    f"{endpoint.base_url}/requests/{request_id}/front", headers=bearer(endpoint)
-                )
+                await client.post(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
         await self._use(user_id, forward)
 
     async def sites(self, user_id: str) -> list[dict[str, Any]]:
+        url = daemon_path("sites")
+
         async def forward(endpoint: BrowserEndpoint) -> list[dict[str, Any]]:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(f"{endpoint.base_url}/sites", headers=bearer(endpoint))
+                response = await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
             return list(_json_or_raise(response, endpoint).get("sites") or [])
 
         return await self._use(user_id, forward)
 
     async def clear_site(self, user_id: str, domain: str) -> dict[str, Any]:
+        url = daemon_path("sites", domain)
+
         async def forward(endpoint: BrowserEndpoint) -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.delete(
-                    f"{endpoint.base_url}/sites/{domain}", headers=bearer(endpoint)
+                    f"{endpoint.base_url}{url}", headers=bearer(endpoint)
                 )
             return _json_or_raise(response, endpoint)
 
@@ -169,7 +174,7 @@ class BrowserManager(ContainerManager):
         self, user_id: str, *, path: str, query: str = ""
     ) -> httpx.Response:
         """A file of the live view's client, from the daemon's ``/view/``."""
-        url = f"/view/{path}" + (f"?{query}" if query else "")
+        url = daemon_path("view", tail=path, query=query)
 
         async def forward(endpoint: BrowserEndpoint) -> httpx.Response:
             async with httpx.AsyncClient(timeout=30.0) as client:

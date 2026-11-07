@@ -995,6 +995,24 @@ INTERACTION_SCHEMAS = {
     "browser": {"type": "enum", "options": ["done", "cancel"]},
 }
 
+
+def interaction_response_error(schema: Any, response: Any) -> str | None:
+    """Why ``response`` does not answer an interaction of ``schema``, or None."""
+    kind = schema.get("type") if isinstance(schema, dict) else "text"
+    options = list(schema.get("options") or []) if isinstance(schema, dict) else []
+    if kind == "enum":
+        if not isinstance(response, str) or response not in options:
+            return f"response must be one of {options}"
+    elif kind == "multi_select":
+        if not isinstance(response, list) or not all(
+            isinstance(item, str) and item in options for item in response
+        ):
+            return f"response must be a list of options from {options}"
+    elif not isinstance(response, str):
+        return "response must be a string"
+    return None
+
+
 async def open_interaction(
     runtime: "AgentRuntime",
     request_id: str,

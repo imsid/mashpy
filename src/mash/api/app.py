@@ -31,6 +31,7 @@ from mash.api.routes.common import (
     APIError,
     AppRuntimeState,
     api_key_from_request,
+    api_key_matches,
     error_payload,
     state_from_request,
 )
@@ -240,7 +241,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             application.state.runtime_state = None
 
     app = FastAPI(title="Mash Host", version="1.0.0", lifespan=_lifespan)
-    mount_admin_ui(app)
+    mount_admin_ui(app, api_prefix=resolved_config.api_prefix)
 
     cors_origins = resolved_config.resolved_cors_origins()
     if cors_origins:
@@ -357,7 +358,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         expected_key = state.api_key
         if expected_key is None:
             return
-        if api_key_from_request(request) != expected_key:
+        if not api_key_matches(api_key_from_request(request), expected_key):
             raise APIError(
                 code="UNAUTHORIZED",
                 message="valid API key is required",
@@ -406,5 +407,6 @@ def run_host(pool: Pool, *, config: MashHostConfig | None = None) -> None:
     """Run the Mash host API service with uvicorn."""
 
     resolved_config = config or MashHostConfig()
+    resolved_config.check_bind()
     app = create_app(pool, config=resolved_config)
     uvicorn.run(app, host=resolved_config.bind_host, port=resolved_config.bind_port)

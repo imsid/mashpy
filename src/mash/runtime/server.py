@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .engine import InteractionClosedError
+from .engine import InteractionClosedError, InvalidInteractionResponseError
 from .errors import RequestStaleError, RequestTerminalError
 from .events import PostgresRuntimeStore
 from ..otel.context import normalize_trace_context
@@ -367,6 +367,8 @@ class AgentServer:
             )
         except KeyError:
             return _json_error(404, "INTERACTION_NOT_FOUND", "Interaction not found")
+        except InvalidInteractionResponseError as exc:
+            return _json_error(400, "INVALID_RESPONSE", str(exc))
         except InteractionClosedError as exc:
             return _json_error(409, "INTERACTION_CLOSED", str(exc))
 

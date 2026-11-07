@@ -12,6 +12,7 @@ from mash.runtime import AgentClientError
 from mash.runtime.client import (
     AgentUnavailableError,
     InteractionClosedError,
+    InvalidInteractionResponseError,
     RequestModeConflictError,
 )
 from mash.runtime.errors import RequestStaleError
@@ -311,6 +312,10 @@ def build_agent_router() -> APIRouter:
                 interaction_id=interaction_id.strip(),
                 response=response_value,
             )
+        except InvalidInteractionResponseError as exc:
+            raise APIError(
+                code="INVALID_RESPONSE", message=str(exc), status_code=400
+            ) from exc
         except InteractionClosedError as exc:
             raise APIError(
                 code="INTERACTION_CLOSED", message=str(exc), status_code=409

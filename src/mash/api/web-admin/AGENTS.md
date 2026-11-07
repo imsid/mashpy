@@ -5,7 +5,9 @@ The admin dashboard SPA. Built with Vite into `../static/admin/` and served at
 
 ## What Must Stay True
 - The SPA reads data only through `src/lib/api.js` against `/api/v1`; it adds no
-  new transport and relies on the `mash_api_key` cookie for auth.
+  new transport and relies on the `mash_api_key` cookie for auth. Only
+  `POST /admin/session` sets that cookie, after checking the key the operator
+  typed into `AuthGate`; serving `/admin` never hands out the key.
 - Routes are declared in `src/App.jsx`; the nav tab list lives in
   `src/components/Shell.jsx`. The two stay in sync.
 - The build output directory is `../static/admin/`; `mount_admin_ui` depends on

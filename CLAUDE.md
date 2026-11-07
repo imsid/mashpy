@@ -876,8 +876,9 @@ mash host serve --host-app my_agent.spec:build_pool --port 8000
 
 # Host in a container: mount the Docker socket and add its group;
 # sandboxes then run on the `mash-sandboxes` network.
-# Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET, and MASH_PUBLIC_URL
-# to the address users reach the host at.
+# Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET, MASH_API_KEY, and
+# MASH_PUBLIC_URL to the address users reach the host at. The host refuses to
+# bind a non-loopback address such as 0.0.0.0 without an API key.
 # Without a Docker socket the host runs and its agents get no sandbox tools.
 
 # Programmatic
@@ -885,7 +886,10 @@ from mash.api import run_host, MashHostConfig
 run_host(
     pool,
     config=MashHostConfig(
-        bind_host="0.0.0.0", bind_port=8000, host_app="my_agent.spec:build_pool"
+        bind_host="0.0.0.0",
+        bind_port=8000,
+        api_key=os.environ["MASH_API_KEY"],
+        host_app="my_agent.spec:build_pool",
     ),
 )
 ```

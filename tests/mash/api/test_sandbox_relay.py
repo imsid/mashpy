@@ -262,6 +262,27 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(index.text, "<h1>Sales</h1>\n")
         self.assertTrue((folder / "report.html").exists())
 
+    async def test_a_file_link_serves_names_that_need_encoding(self) -> None:
+        await self.manager.exec(
+            "u-1", agent_id="research", command="printf hi > 'a?b #1.txt'", timeout=10
+        )
+        page = await self.http.get(f"{self.link}/files/research/a%3Fb%20%231.txt")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertEqual(page.text, "hi")
+
+    async def test_a_port_link_cannot_climb_to_the_daemons_other_routes(self) -> None:
+        climbed = await self.http.post(
+            f"{self.link}/ports/1/..%2F..%2Fexec",
+            json={"agent_id": "research", "command": "touch climbed", "timeout": 5},
+        )
+        self.assertEqual(climbed.status_code, 400)
+        self.assertFalse((self.provider.workspaces("u-1") / "research" / "climbed").exists())
+
+    async def test_a_file_link_cannot_name_a_folder_outside_the_files(self) -> None:
+        climbed = await self.http.get(f"{self.link}/files/..%2Fhealth")
+        self.assertEqual(climbed.status_code, 404)
+        self.assertEqual(climbed.text, "no such file")
+
     async def test_links_need_a_token_the_host_made(self) -> None:
         for link in ("/s/forged/files/research/report.html", "/s/dS0x.0000/files/research/x"):
             with self.subTest(link=link):

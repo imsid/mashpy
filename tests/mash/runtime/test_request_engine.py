@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from conftest import build_test_stores, seed_lifecycle
 from mash.runtime import AgentRuntime
-from mash.runtime.engine import InteractionClosedError
+from mash.runtime.engine import InteractionClosedError, InvalidInteractionResponseError
 from mash.runtime.engine.engine import MAX_RECOVERIES
 from mash.runtime.engine.steps import emit_interaction_ack
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
@@ -44,6 +44,27 @@ class _BlockingTool:
         self.runs += 1
         await self.release.wait()
         return ToolResult.success("worked")
+
+    def to_llm_format(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description, "input_schema": self.parameters}
+
+
+class _GatedTool:
+    """A tool that needs the user's approval; counts its runs."""
+
+    name = "deploy"
+    description = "Deploy."
+    requires_approval = True
+    parallel_safe = False
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.runs = 0
+
+    async def execute(self, args: dict[str, Any]) -> ToolResult:
+        del args
+        self.runs += 1
+        return ToolResult.success("deployed")
 
     def to_llm_format(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "input_schema": self.parameters}
@@ -155,6 +176,48 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
             await runtime.answer_interaction(request_id, interaction_id, "another")
         with self.assertRaises(KeyError):
             await runtime.answer_interaction(request_id, "itr_unknown", "x")
+
+    async def _approval(self) -> tuple[_GatedTool, AgentRuntime, str, str]:
+        tool = _GatedTool()
+        runtime = await self._runtime(_Spec(tool, tool_name="deploy", arguments={}))
+        accepted = await runtime.submit_request(message="ship", session_id="s-1", user_id="u-1")
+        request_id = accepted["request_id"]
+        [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
+        self.assertEqual(opened.payload["type"], "approval")
+        return tool, runtime, request_id, opened.payload["interaction_id"]
+
+    async def test_an_approve_runs_an_approval_gated_tool(self) -> None:
+        tool, runtime, request_id, interaction_id = await self._approval()
+
+        await runtime.answer_interaction(request_id, interaction_id, "approve")
+        end = await self._terminal(request_id)
+
+        self.assertEqual(tool.runs, 1)
+        self.assertEqual(end.payload["response"]["text"], "deployed")
+
+    async def test_a_deny_or_skip_does_not_run_the_tool(self) -> None:
+        for answer in ("deny", "skip"):
+            with self.subTest(answer=answer):
+                tool, runtime, request_id, interaction_id = await self._approval()
+
+                await runtime.answer_interaction(request_id, interaction_id, answer)
+                await self._terminal(request_id)
+
+                self.assertEqual(tool.runs, 0)
+                await runtime.engine.close()
+
+    async def test_an_answer_outside_the_schema_is_refused_and_runs_nothing(self) -> None:
+        tool, runtime, request_id, interaction_id = await self._approval()
+
+        for answer in ("no", "Deny", "", None, ["approve"], {"choice": "approve"}):
+            with self.subTest(answer=answer):
+                with self.assertRaises(InvalidInteractionResponseError):
+                    await runtime.answer_interaction(request_id, interaction_id, answer)
+        self.assertEqual(await self._events(request_id, RuntimeEventType.INTERACTION_END.value), [])
+
+        await runtime.answer_interaction(request_id, interaction_id, "deny")
+        await self._terminal(request_id)
+        self.assertEqual(tool.runs, 0)
 
     async def test_an_answer_stored_before_a_crash_is_used_on_recovery(self) -> None:
         spec = self._ask_spec()

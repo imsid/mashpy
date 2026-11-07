@@ -7,6 +7,7 @@
 Global
 
 - `--version`: print the installed Mash version and docs URL.
+- Every command first loads the nearest `.env` from the working directory up, without overriding variables already set. `agent serve` is the exception: an agent process takes its environment from the host, which leaves out `MASH_HOST_SECRET` and `MASH_API_KEY`. The library itself never reads `.env`.
 
 Connection bootstrap
 
@@ -38,7 +39,7 @@ Host management
 - `--host-app module:attribute` or `MASH_HOST_APP`: host target to load.
 - `--host`: API bind host. Defaults to `127.0.0.1` or `MASH_API_HOST`.
 - `--port`: API bind port. Defaults to `8000` or `MASH_API_PORT` / `PORT`.
-- `--api-key`: optional bearer API key, or `MASH_API_KEY`.
+- `--api-key`: bearer API key, or `MASH_API_KEY`. Required unless `--host` is a loopback address; without one `host serve` exits.
 - `--cors-origin`: repeatable allowed CORS origin.
 - `--disable-observability`: disable telemetry endpoints.
 - `MASH_HOST_SECRET`: derives each agent's, each sandbox's and each browser's token and enables the `/h2a`, `/sandbox` and `/browser` relays.

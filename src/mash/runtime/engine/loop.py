@@ -412,10 +412,12 @@ class RequestRun:
 
         tool_calls = context_helpers.tool_calls_from_action_payload(action)
         raw_tool_calls = list(action.get("tool_calls") or [])
+        # Only an explicit approve runs the tools; deny, skip and a timeout
+        # (answered "deny") do not.
         approval_denied = (
             isinstance(interaction, dict)
             and interaction.get("type") == "approval"
-            and state.get("interaction_response") in ("deny", "skip")
+            and state.get("interaction_response") != "approve"
         )
 
         def parallel_safe(index: int) -> bool:

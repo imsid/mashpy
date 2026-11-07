@@ -280,8 +280,8 @@ def build_pool():
 **Configure the environment:**
 
 The host needs an LLM key, a Postgres URL for its durable runtime, and a
-secret it derives agent and sandbox tokens from. Put them in a `.env` file the
-host loads on start:
+secret it derives agent and sandbox tokens from. Put them in a `.env` file in
+the directory you run `mash host serve` from; the CLI loads it on start:
 
 ```bash
 # .env
@@ -359,7 +359,7 @@ Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
 shipped in this repo at [`src/pilot/`](src/pilot/). Its `pilot` agent answers
 questions from the source and searches the docs site and GitHub in the user's
 browser, and its `builder` agent builds Mash apps in the user's sandbox. It also ships the `pilot-changelog` workflow. Run it from a checkout,
-with `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `MASH_HOST_SECRET` in `.env`:
+with `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `MASH_HOST_SECRET` and `MASH_API_KEY` in `.env`:
 
 ```bash
 docker compose -f docker-compose.pilot.yml up -d --build

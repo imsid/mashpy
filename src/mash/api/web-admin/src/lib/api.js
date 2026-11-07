@@ -1,11 +1,14 @@
 // Thin client for the Mash host API.
 //
-// Auth rides the same-origin `mash_api_key` cookie that the /admin index
-// response sets, so requests need no explicit Authorization header. Every
-// successful response is wrapped as `{ ok, data }` by the server; we unwrap
-// `data` here and raise a typed ApiError otherwise.
+// Auth rides the same-origin `mash_api_key` cookie, which `createSession`
+// gets from POST /admin/session once the operator types the API key, so
+// requests need no explicit Authorization header. A 401 from the API fires
+// UNAUTHORIZED_EVENT, which sends the dashboard back to its sign-in screen.
+// Every successful response is wrapped as `{ ok, data }` by the server; we
+// unwrap `data` here and raise a typed ApiError otherwise.
 
 const API_BASE = '/api/v1';
+export const UNAUTHORIZED_EVENT = 'mash:unauthorized';
 const WORKFLOW_EVENT_NAMES = [
   'step.started',
   'step.completed',
@@ -83,6 +86,7 @@ async function request(path, { method = 'GET', params, body, signal } = {}) {
   }
 
   if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
     const err = payload?.error ?? {};
     throw new ApiError(err.message || `request failed (${response.status})`, {
       status: response.status,
@@ -106,9 +110,37 @@ async function openapi() {
   return response.json();
 }
 
+// Check the API key and keep it in the dashboard's cookie. Lives beside the
+// dashboard at /admin, outside the /api/v1 envelope's auth.
+async function createSession(apiKey) {
+  let response;
+  try {
+    response = await fetch('/admin/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+  } catch (cause) {
+    throw new ApiError('network request failed', { details: String(cause) });
+  }
+  if (!response.ok) {
+    let err = {};
+    try {
+      err = (await response.json())?.error ?? {};
+    } catch {
+      err = {};
+    }
+    throw new ApiError(err.message || `sign-in failed (${response.status})`, {
+      status: response.status,
+      code: err.code,
+    });
+  }
+}
+
 export const api = {
   request,
   openapi,
+  createSession,
 
   // --- Deployment / pool ---
   health: () => request('/health'),

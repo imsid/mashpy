@@ -1,14 +1,31 @@
-"""Serve the built admin dashboard from packaged static assets."""
+"""Serve the built admin dashboard from packaged static assets.
+
+The dashboard calls ``/api/v1`` with the same-origin ``mash_api_key`` cookie.
+Only ``POST /admin/session`` sets that cookie, and only after it has checked
+the key the operator typed: serving the dashboard itself never hands out the
+key.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from .routes.common import API_KEY_COOKIE
+from .routes.common import (
+    API_KEY_COOKIE,
+    APIError,
+    api_key_matches,
+    state_from_request,
+    success,
+)
+
+
+class AdminSessionRequest(BaseModel):
+    api_key: str
 
 
 def get_admin_static_dir() -> Path:
@@ -30,7 +47,7 @@ def admin_assets_available() -> bool:
     return static_dir.exists() and (static_dir / "index.html").exists()
 
 
-def mount_admin_ui(app: FastAPI) -> None:
+def mount_admin_ui(app: FastAPI, *, api_prefix: str) -> None:
     """Mount the admin SPA at /admin when its assets are available.
 
     Mounting is best-effort: a deployment that never built the admin bundle
@@ -50,30 +67,39 @@ def mount_admin_ui(app: FastAPI) -> None:
         name="admin-assets",
     )
 
-    def _build_index_response(request: Request) -> FileResponse:
-        response = FileResponse(index_path)
-        runtime_state = getattr(request.app.state, "runtime_state", None)
-        api_key = getattr(runtime_state, "api_key", None)
-        if api_key:
-            response.set_cookie(
-                key=API_KEY_COOKIE,
-                value=api_key,
-                httponly=True,
-                secure=False,
-                samesite="lax",
-                path="/",
+    @app.post("/admin/session", include_in_schema=False)
+    async def admin_session(request: Request, body: AdminSessionRequest) -> JSONResponse:
+        """Check the operator's API key and keep it in the dashboard's cookie."""
+        expected_key = state_from_request(request).api_key
+        if expected_key is None:
+            # No key configured: the API is open and needs no cookie.
+            return JSONResponse(success({"authenticated": True}))
+        if not api_key_matches(body.api_key.strip() or None, expected_key):
+            raise APIError(
+                code="UNAUTHORIZED",
+                message="valid API key is required",
+                status_code=401,
             )
+        response = JSONResponse(success({"authenticated": True}))
+        response.set_cookie(
+            key=API_KEY_COOKIE,
+            value=expected_key,
+            httponly=True,
+            secure=request.url.scheme == "https",
+            samesite="strict",
+            path=api_prefix,
+        )
         return response
 
     @app.get("/admin", include_in_schema=False)
     @app.get("/admin/", include_in_schema=False)
-    def admin_index(request: Request) -> FileResponse:
-        return _build_index_response(request)
+    def admin_index() -> FileResponse:
+        return FileResponse(index_path)
 
     @app.get("/admin/{path:path}", include_in_schema=False)
-    def admin_spa(path: str, request: Request) -> FileResponse:
+    def admin_spa(path: str) -> FileResponse:
         del path
-        return _build_index_response(request)
+        return FileResponse(index_path)
 
 
 __all__ = ["admin_assets_available", "get_admin_static_dir", "mount_admin_ui"]

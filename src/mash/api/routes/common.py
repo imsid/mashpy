@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
@@ -274,3 +275,10 @@ def api_key_from_request(request: Request) -> Optional[str]:
     x_api_key = normalize_optional_text(request.headers.get("x-api-key"))
     cookie_api_key = normalize_optional_text(request.cookies.get(API_KEY_COOKIE))
     return header_token or x_api_key or cookie_api_key
+
+
+def api_key_matches(provided: Optional[str], expected: str) -> bool:
+    """Whether ``provided`` is the host's API key, compared in constant time."""
+    if provided is None:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))

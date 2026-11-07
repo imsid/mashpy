@@ -76,7 +76,7 @@ def add_serve_parser(subparsers) -> None:
     parser.add_argument(
         "--api-key",
         default=None,
-        help="Optional API key (or set MASH_API_KEY)",
+        help="API key (or set MASH_API_KEY); required unless --host is a loopback address",
     )
     parser.add_argument(
         "--cors-origin",
@@ -106,6 +106,10 @@ def _run_serve_command(args) -> int:
             else MashHostConfig().cors_allow_origins
         ),
     )
+    try:
+        config.check_bind()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     pool = _resolve_host(args.host_app)
     run_host(pool, config=config)
     return 0

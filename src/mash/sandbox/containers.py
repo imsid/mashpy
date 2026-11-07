@@ -16,6 +16,7 @@ import logging
 import time
 from collections import defaultdict
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TypeVar
+from urllib.parse import quote
 
 import httpx
 
@@ -216,4 +217,43 @@ def bearer(endpoint: ContainerEndpoint) -> dict[str, str]:
     return {"Authorization": f"Bearer {endpoint.token}"}
 
 
-__all__ = ["ContainerManager", "ContainerProvider", "bearer"]
+# Characters a path segment may carry unencoded (RFC 3986 pchar, less the
+# unreserved ones `quote` always keeps).
+_SEGMENT_SAFE = "!$&'()*+,;=:@"
+
+
+class UnsafePathError(ValueError):
+    """A path part would leave the daemon route it was meant for."""
+
+
+def daemon_path(*segments: str, tail: str | None = None, query: str = "") -> str:
+    """The path, and query, of a call to a container's daemon.
+
+    Each of ``segments`` is one path segment. ``tail`` is a path of any number
+    of segments that follows them, such as the path a link forwards to a port;
+    an empty ``tail`` ends the path with a slash. Every segment is
+    percent-encoded, and ``.`` and ``..`` segments are refused: the HTTP client
+    resolves them, so ``/ports/1/../../exec`` would reach the daemon's
+    ``/exec`` with the host's token. ``query`` is appended as given.
+    """
+    parts: list[str] = []
+    for segment in segments:
+        if segment in ("", ".", "..") or "/" in segment:
+            raise UnsafePathError(f"'{segment}' is not a single path segment")
+        parts.append(quote(segment, safe=_SEGMENT_SAFE))
+    if tail is not None:
+        for segment in tail.split("/"):
+            if segment in (".", ".."):
+                raise UnsafePathError(f"path '{tail}' has a '{segment}' segment")
+            parts.append(quote(segment, safe=_SEGMENT_SAFE))
+    path = "/" + "/".join(parts)
+    return f"{path}?{query}" if query else path
+
+
+__all__ = [
+    "ContainerManager",
+    "ContainerProvider",
+    "UnsafePathError",
+    "bearer",
+    "daemon_path",
+]

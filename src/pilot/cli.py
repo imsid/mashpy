@@ -32,7 +32,14 @@ def _resolve_connection(args: argparse.Namespace) -> tuple[str, str | None]:
         or os.environ.get("MASH_API_BASE_URL")
         or PILOT_DEFAULT_API_BASE_URL
     ).strip()
-    api_key = args.api_key or os.environ.get("MASH_API_KEY") or None
+    # `mash connect`'s key, only for the deployment it was saved for.
+    saved = load_config()
+    saved_key = (
+        saved.api_key
+        if saved and saved.api_base_url.rstrip("/") == base_url.rstrip("/")
+        else None
+    )
+    api_key = args.api_key or os.environ.get("MASH_API_KEY") or saved_key
     if not base_url:
         raise ValueError(
             "API base URL is required. Use --api-base-url or PILOT_API_BASE_URL."
