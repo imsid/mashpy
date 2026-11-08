@@ -63,6 +63,7 @@ from mash.sandbox.manager import (
     SandboxManager,
 )
 from mash.sandbox.provider import DockerSandboxProvider
+from mash.storage.retention import Retention, retention_days
 from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
@@ -173,6 +174,8 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
+        # A bad MASH_RETENTION_DAYS fails here, before anything starts.
+        retention_days()
         pool.configure_runtime_database_url(
             resolved_config.resolved_runtime_database_url()
         )
@@ -208,6 +211,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             if otel_exporter is not None:
                 await otel_exporter.start()
                 logger.info("Exporting traces and logs over OTLP")
+        retention = Retention.from_env(database_url)
+        if retention is not None:
+            await retention.start()
+            logger.info("Deleting what finished more than %g days ago", retention.days)
         application.state.runtime_state = AppRuntimeState(
             pool=pool,
             eval_service=eval_service,
@@ -221,6 +228,8 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         try:
             yield
         finally:
+            if retention is not None:
+                await retention.stop()
             state = getattr(application.state, "runtime_state", None)
             if state is not None:
                 if state.otel_exporter is not None:
