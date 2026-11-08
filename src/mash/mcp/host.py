@@ -19,10 +19,10 @@ class Host:
     def __init__(self) -> None:
         self._clients: Dict[str, MCPHTTPClient] = {}
 
-    def get_client(
+    async def get_client(
         self, url: str, name: str, headers: Optional[Dict[str, str]] = None
     ) -> MCPHTTPClient:
-        """Return a singleton MCP client for the given server URL."""
+        """Return a connected singleton MCP client for the given server URL."""
         normalized_headers = (
             {
                 str(key): str(value)
@@ -42,6 +42,11 @@ class Host:
             default_headers=normalized_headers,
             elicitation_handler=self._handle_elicitation_request,
         )
+        try:
+            await client.connect()
+        except BaseException:
+            await client.aclose()
+            raise
         self._clients[cache_key] = client
         return client
 
@@ -53,10 +58,10 @@ class Host:
         )
         return f"{url}|{header_blob}"
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         """Shut down all managed MCP client connections."""
         for client in self._clients.values():
-            client.close()
+            await client.aclose()
         self._clients.clear()
 
     # ------------------------------------------------------------------

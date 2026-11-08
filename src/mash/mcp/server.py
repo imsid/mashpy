@@ -43,10 +43,10 @@ class MCPServer:
         """
         self._client = client
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         """Disconnect from the MCP server."""
         if self._client:
-            self._client.close()
+            await self._client.aclose()
             self._client = None
 
     def get_server_info(self) -> Dict[str, Any]:
@@ -62,7 +62,7 @@ class MCPServer:
             raise RuntimeError(f"Server '{self.name}' is not connected")
         return self._client.get_server_info()
 
-    def list_tools(self) -> List[Dict[str, Any]]:
+    async def list_tools(self) -> List[Dict[str, Any]]:
         """List available tools from the MCP server.
 
         Returns:
@@ -74,7 +74,7 @@ class MCPServer:
         if not self._client:
             raise RuntimeError(f"Server '{self.name}' is not connected")
 
-        tools = self._client.list_tools()
+        tools = await self._client.list_tools()
 
         # Filter by allowed_tools if specified
         if self.allowed_tools is not None:
@@ -85,7 +85,7 @@ class MCPServer:
 
         return tools
 
-    def list_resources(self) -> List[Dict[str, Any]]:
+    async def list_resources(self) -> List[Dict[str, Any]]:
         """List available resources from the MCP server.
 
         Returns:
@@ -96,9 +96,9 @@ class MCPServer:
         """
         if not self._client:
             raise RuntimeError(f"Server '{self.name}' is not connected")
-        return self._client.list_resources()
+        return await self._client.list_resources()
 
-    def list_resource_templates(self) -> List[Dict[str, Any]]:
+    async def list_resource_templates(self) -> List[Dict[str, Any]]:
         """List available resource templates from the MCP server.
 
         Returns:
@@ -109,9 +109,9 @@ class MCPServer:
         """
         if not self._client:
             raise RuntimeError(f"Server '{self.name}' is not connected")
-        return self._client.list_resource_templates()
+        return await self._client.list_resource_templates()
 
-    def list_prompts(self) -> List[Dict[str, Any]]:
+    async def list_prompts(self) -> List[Dict[str, Any]]:
         """List available prompts from the MCP server.
 
         Returns:
@@ -122,9 +122,9 @@ class MCPServer:
         """
         if not self._client:
             raise RuntimeError(f"Server '{self.name}' is not connected")
-        return self._client.list_prompts()
+        return await self._client.list_prompts()
 
-    def read_resource(self, uri: str) -> Dict[str, Any]:
+    async def read_resource(self, uri: str) -> Dict[str, Any]:
         """Read a resource from the MCP server.
 
         Args:
@@ -138,9 +138,9 @@ class MCPServer:
         """
         if not self._client:
             raise RuntimeError(f"Server '{self.name}' is not connected")
-        return self._client.read_resource(uri)
+        return await self._client.read_resource(uri)
 
-    def get_prompt(
+    async def get_prompt(
         self, name: str, arguments: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Get a prompt from the MCP server.
@@ -157,9 +157,9 @@ class MCPServer:
         """
         if not self._client:
             raise RuntimeError(f"Server '{self.name}' is not connected")
-        return self._client.get_prompt(name, arguments)
+        return await self._client.get_prompt(name, arguments)
 
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Call a tool on the MCP server.
 
         Args:
@@ -179,7 +179,7 @@ class MCPServer:
         if self.allowed_tools is not None and name.lower() not in self.allowed_tools:
             raise RuntimeError(f"Tool '{name}' is not allowed on server '{self.name}'")
 
-        return self._client.call_tool(name, arguments)
+        return await self._client.call_tool(name, arguments)
 
     def is_connected(self) -> bool:
         """Check if connected to server.

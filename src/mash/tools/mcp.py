@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
-from typing import Any, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict
 
 from .base import ToolResult
 
@@ -16,7 +15,7 @@ class MCPToolAdapter:
         name: str,
         description: str,
         parameters: Dict[str, Any],
-        executor: Callable[[Dict[str, Any]], Any],
+        executor: Callable[[Dict[str, Any]], Awaitable[Any]],
     ) -> None:
         """Initialize MCP tool adapter.
 
@@ -24,7 +23,7 @@ class MCPToolAdapter:
             name: Tool name.
             description: Tool description.
             parameters: JSON schema for parameters.
-            executor: Function to execute the tool.
+            executor: Async function that runs the tool.
         """
         self.name = name
         self.description = description
@@ -42,9 +41,7 @@ class MCPToolAdapter:
             ToolResult with execution output.
         """
         try:
-            result = self._executor(args)
-            if inspect.isawaitable(result):
-                result = await result
+            result = await self._executor(args)
             text, is_error = self._unpack(result)
             if is_error:
                 return ToolResult.error(text)
@@ -77,14 +74,14 @@ class MCPToolAdapter:
     def from_mcp_tool(
         cls,
         mcp_tool: Dict[str, Any],
-        executor: Callable[[Dict[str, Any]], Any],
+        executor: Callable[[Dict[str, Any]], Awaitable[Any]],
         prefix: str = "mcp_",
     ) -> MCPToolAdapter:
         """Create an adapter from an MCP tool definition.
 
         Args:
             mcp_tool: MCP tool definition dictionary.
-            executor: Function to execute the tool.
+            executor: Async function that runs the tool.
             prefix: Prefix to add to tool name (default: "mcp_").
 
         Returns:

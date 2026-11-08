@@ -606,7 +606,7 @@ class _StructuredOutputDefinition(_BaseDefinition):
 
 
 class _FakeMCPClient:
-    def list_tools(self) -> list[dict[str, Any]]:
+    async def list_tools(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": "search",
@@ -615,7 +615,7 @@ class _FakeMCPClient:
             }
         ]
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         return None
 
 
@@ -637,7 +637,7 @@ class _MCPDefinition(_BaseDefinition):
 
 
 class _FakeWebSearchClient:
-    def list_tools(self) -> list[dict[str, Any]]:
+    async def list_tools(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": "web_search",
@@ -651,7 +651,7 @@ class _FakeWebSearchClient:
             },
         ]
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         return None
 
 

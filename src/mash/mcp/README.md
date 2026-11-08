@@ -27,4 +27,10 @@
 - Header tokens stay in the agent process's environment. Agents' code runs in the user's sandbox, which never sees them.
 - URLs resolve where the host runs: `localhost` in a server URL is the host's machine or container. A deployment that restricts outbound traffic allows the MCP server hosts on the platform.
 - MCP session ids (`MCP-Session-ID`) live in the agent process, so a restarted agent opens new sessions.
+
+## Connection Lifecycle
+- `AgentRuntime.open()` connects each server from `build_mcp_servers()`, plus the web search provider's, and lists its tools once. `MCPManager` keeps the lists for the life of the process; building an agent for a step reads them without a network call.
+- A server that fails to connect or list its tools is logged as a warning (`mash.mcp.manager`) and left out. The agent starts without its tools, and the other servers still connect. Restarting the agent tries again.
+- `MCPHTTPClient` is async, on `httpx.AsyncClient`. Tool calls run on the agent's event loop without blocking it, so parallel calls overlap. The SSE listener for server-initiated messages is a task on the same loop.
+- Each RPC logs one DEBUG line on `mash.mcp.client`: the server name, the method, the HTTP status and the duration. Params and response bodies are not logged.
 - Approval-gated MCP tools pause the request through H2A interactions, as any other tool does. `web_search` and `web_fetch` take the same path.

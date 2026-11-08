@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from ..logging import MCPEvent, get_session_id, get_trace_id
 from .client import MCPClientError
@@ -15,10 +15,19 @@ from .server import MCPServer
 
 if TYPE_CHECKING:
     from ..logging import EventLogger
+    from .types import MCPServerConfig
+
+LOGGER = logging.getLogger("mash.mcp.manager")
 
 
 class MCPManager:
-    """Manager for MCP server connections."""
+    """Manager for MCP server connections.
+
+    ``connect_all`` connects each server and lists its tools once; the list is
+    kept for the life of the manager, and building an agent reads it without
+    touching the network. A server that fails to connect is left out and
+    logged, and the others still connect.
+    """
 
     def __init__(
         self,
@@ -34,6 +43,8 @@ class MCPManager:
             app_id: Optional app ID for event logging.
         """
         self._servers: Dict[str, MCPServer] = {}
+        self._tools: Dict[str, List[Dict[str, Any]]] = {}
+        self._unavailable: Dict[str, str] = {}
         self._host = Host()
         self._event_logger = event_logger
         self._session_id = session_id
@@ -58,31 +69,41 @@ class MCPManager:
         else:
             loop.create_task(result)
 
-    def add_server(
+    async def connect_all(self, servers: Sequence["MCPServerConfig"]) -> None:
+        """Connect each server not yet connected; log and skip any that fail."""
+        for server in servers:
+            if server.name in self._servers or server.name in self._unavailable:
+                continue
+            try:
+                await self.add_server(
+                    name=server.name,
+                    url=server.url,
+                    description=server.description,
+                    headers=server.headers,
+                    allowed_tools=server.allowed_tools,
+                )
+            except MCPClientError as exc:
+                self._unavailable[server.name] = str(exc)
+                LOGGER.warning(
+                    "MCP server '%s' is unavailable; the agent runs without its "
+                    "tools until it restarts: %s",
+                    server.name,
+                    exc,
+                )
+
+    async def add_server(
         self,
         name: str,
         url: str,
         description: str = "",
         headers: Optional[Dict[str, str]] = None,
         allowed_tools: Optional[List[str]] = None,
-        auto_connect: bool = True,
     ) -> MCPServer:
-        """Add an MCP server.
-
-        Args:
-            name: Server name (unique identifier).
-            url: Server URL.
-            description: Server description.
-            headers: HTTP headers for requests.
-            allowed_tools: Optional list of allowed tool names.
-            auto_connect: Whether to automatically connect.
-
-        Returns:
-            MCPServer instance.
+        """Connect an MCP server and list its tools.
 
         Raises:
             ValueError: If server name already exists.
-            MCPClientError: If connection fails.
+            MCPClientError: If connecting or listing tools fails.
         """
         if name in self._servers:
             raise ValueError(f"Server '{name}' already exists")
@@ -94,93 +115,68 @@ class MCPManager:
             headers=headers,
             allowed_tools=allowed_tools,
         )
-
-        if auto_connect:
-            connect_start = time.time()
-
-            # Log connection attempt
-            if self._event_logger:
-                self._emit_event(
-                    MCPEvent(
-                        event_type="mcp.client.connect",
-                        app_id=self._app_id,
-                        session_id=self._current_session_id(),
-                        server_name=name,
-                        server_url=url,
-                        trace_id=get_trace_id(),
-                    )
+        connect_start = time.time()
+        self._emit_event(
+            MCPEvent(
+                event_type="mcp.client.connect",
+                app_id=self._app_id,
+                session_id=self._current_session_id(),
+                server_name=name,
+                server_url=url,
+                trace_id=get_trace_id(),
+            )
+        )
+        try:
+            client = await self._host.get_client(url, name, headers=headers)
+            server.connect(client)
+            tools = await server.list_tools()
+        except Exception as e:
+            self._emit_event(
+                MCPEvent(
+                    event_type="mcp.client.error",
+                    app_id=self._app_id,
+                    session_id=self._current_session_id(),
+                    server_name=name,
+                    server_url=url,
+                    error=str(e),
+                    duration_ms=int((time.time() - connect_start) * 1000),
+                    trace_id=get_trace_id(),
                 )
+            )
+            await server.disconnect()
+            raise MCPClientError(f"Failed to connect to server '{name}': {e}") from e
 
-            try:
-                client = self._host.get_client(url, name, headers=headers)
-                server.connect(client)
-
-                # Log successful connection
-                if self._event_logger:
-                    # Get tool count for metadata
-                    tool_count = 0
-                    try:
-                        tools = server.list_tools()
-                        tool_count = len(tools)
-                    except Exception:
-                        pass
-
-                    self._emit_event(
-                        MCPEvent(
-                            event_type="mcp.client.connected",
-                            app_id=self._app_id,
-                            session_id=self._current_session_id(),
-                            server_name=name,
-                            server_url=url,
-                            duration_ms=int((time.time() - connect_start) * 1000),
-                            metadata={"tool_count": tool_count},
-                            trace_id=get_trace_id(),
-                        )
-                    )
-            except MCPClientError as e:
-                # Log connection error
-                if self._event_logger:
-                    self._emit_event(
-                        MCPEvent(
-                            event_type="mcp.client.error",
-                            app_id=self._app_id,
-                            session_id=self._current_session_id(),
-                            server_name=name,
-                            server_url=url,
-                            error=str(e),
-                            duration_ms=int((time.time() - connect_start) * 1000),
-                            trace_id=get_trace_id(),
-                        )
-                    )
-                raise MCPClientError(
-                    f"Failed to connect to server '{name}': {e}"
-                ) from e
-
+        self._emit_event(
+            MCPEvent(
+                event_type="mcp.client.connected",
+                app_id=self._app_id,
+                session_id=self._current_session_id(),
+                server_name=name,
+                server_url=url,
+                duration_ms=int((time.time() - connect_start) * 1000),
+                metadata={"tool_count": len(tools)},
+                trace_id=get_trace_id(),
+            )
+        )
         self._servers[name] = server
+        self._tools[name] = tools
         return server
 
-    def remove_server(self, name: str) -> None:
-        """Remove an MCP server.
-
-        Args:
-            name: Server name.
-        """
+    async def remove_server(self, name: str) -> None:
+        """Disconnect an MCP server and drop its tools."""
         if name in self._servers:
-            server = self._servers[name]
-            server.disconnect()
-            del self._servers[name]
-
-            # Log disconnection
-            if self._event_logger:
-                self._emit_event(
-                    MCPEvent(
-                        event_type="mcp.client.disconnect",
-                        app_id=self._app_id,
-                        session_id=self._current_session_id(),
-                        server_name=name,
-                        trace_id=get_trace_id(),
-                    )
+            server = self._servers.pop(name)
+            self._tools.pop(name, None)
+            await server.disconnect()
+            self._emit_event(
+                MCPEvent(
+                    event_type="mcp.client.disconnect",
+                    app_id=self._app_id,
+                    session_id=self._current_session_id(),
+                    server_name=name,
+                    trace_id=get_trace_id(),
                 )
+            )
 
     def get_server(self, name: str) -> Optional[MCPServer]:
         """Get an MCP server by name.
@@ -204,7 +200,7 @@ class MCPManager:
     def get_all_tools(
         self, prefix: str = "mcp_", normalize_name: bool = True
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all tools from all connected servers.
+        """The tools each connected server listed when it connected.
 
         Args:
             prefix: Prefix to add to tool names.
@@ -214,66 +210,26 @@ class MCPManager:
             Dictionary mapping server names to tool lists with prefixed names.
         """
         all_tools: Dict[str, List[Dict[str, Any]]] = {}
-
-        for name, server in self._servers.items():
-            if server.is_connected():
-                try:
-                    tools = server.list_tools()
-                    # Add prefix to tool names
-                    prefixed_tools = []
-                    for tool in tools:
-                        prefixed_tool = tool.copy()
-                        server_part = (
-                            self._normalize_tool_name(name) if normalize_name else name
-                        )
-                        tool_name = tool.get("name", "unknown")
-                        prefixed_tool["name"] = f"{prefix}{server_part}_{tool_name}"
-                        # Store original name in metadata
-                        if "metadata" not in prefixed_tool:
-                            prefixed_tool["metadata"] = {}
-                        prefixed_tool["metadata"]["server"] = name
-                        prefixed_tool["metadata"]["original_name"] = tool_name
-                        prefixed_tools.append(prefixed_tool)
-                    all_tools[name] = prefixed_tools
-                except Exception as e:
-                    # Log but don't fail for individual server errors
-
-                    logging.getLogger("mash.mcp.manager").error(
-                        "Failed to list tools from server '%s': %s", name, e
-                    )
-
+        for name, tools in self._tools.items():
+            server_part = self._normalize_tool_name(name) if normalize_name else name
+            prefixed_tools = []
+            for tool in tools:
+                prefixed_tool = tool.copy()
+                tool_name = tool.get("name", "unknown")
+                prefixed_tool["name"] = f"{prefix}{server_part}_{tool_name}"
+                prefixed_tool["metadata"] = {
+                    **(tool.get("metadata") or {}),
+                    "server": name,
+                    "original_name": tool_name,
+                }
+                prefixed_tools.append(prefixed_tool)
+            all_tools[name] = prefixed_tools
         return all_tools
 
-    def get_flattened_tools(
-        self, prefix: str = "mcp_", normalize_name: bool = True
-    ) -> List[Dict[str, Any]]:
-        """Get all tools from all servers as a flat list.
-
-        Args:
-            prefix: Prefix to add to tool names.
-            normalize_name: Whether to normalize server name in tool name.
-
-        Returns:
-            Flat list of all tools with prefixed names.
-        """
-        all_tools = self.get_all_tools(prefix=prefix, normalize_name=normalize_name)
-        flattened = []
-        for tools in all_tools.values():
-            flattened.extend(tools)
-        return flattened
-
-    def call_tool(
+    async def call_tool(
         self, server_name: str, tool_name: str, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Call a tool on a specific server.
-
-        Args:
-            server_name: Name of the server.
-            tool_name: Name of the tool.
-            arguments: Tool arguments.
-
-        Returns:
-            Tool result.
 
         Raises:
             ValueError: If server not found.
@@ -283,13 +239,15 @@ class MCPManager:
         if not server:
             raise ValueError(f"Server '{server_name}' not found")
 
-        return server.call_tool(tool_name, arguments)
+        return await server.call_tool(tool_name, arguments)
 
-    def disconnect_all(self) -> None:
+    async def disconnect_all(self) -> None:
         """Disconnect from all servers."""
         for server in self._servers.values():
-            server.disconnect()
-        self._host.close()
+            await server.disconnect()
+        self._servers.clear()
+        self._tools.clear()
+        await self._host.aclose()
 
     def __len__(self) -> int:
         """Get number of servers."""
@@ -298,13 +256,6 @@ class MCPManager:
     def __contains__(self, name: str) -> bool:
         """Check if server exists."""
         return name in self._servers
-
-    def __del__(self) -> None:
-        """Clean up on deletion."""
-        try:
-            self.disconnect_all()
-        except Exception:
-            pass  # Ignore errors during cleanup
 
     @staticmethod
     def _normalize_tool_name(name: str) -> str:
