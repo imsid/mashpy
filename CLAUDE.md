@@ -58,7 +58,8 @@ agent's and each sandbox's token.
   links to what it made, without registering anything; a spec opts out with
   `enable_sandbox()`. An agent gets `sandbox_put` and `sandbox_get`, which copy
   files between its machine and the sandbox, only when its spec declares
-  `sandbox_file_roots()`. Code runs as an `agent` user with a clean environment.
+  `sandbox_file_roots()`. Each agent's code runs as a uid of its own, with a
+  clean environment, in a folder only that uid can use.
 - **Browser** — a Chromium per user, in its own container next to the user's
   sandbox, whose profile keeps the sites the user signed in to. An agent whose
   spec lists sites with `browser_sites()` gets the browser tools, which drive
@@ -918,7 +919,7 @@ Docker host:
 
 ```bash
 mash sandbox ls                             # user, status, uptime, container
-mash sandbox shell <user_id> --agent <id>   # bash as `agent` in that agent's folder (--root for root)
+mash sandbox shell <user_id> --agent <id>   # bash as that agent's uid in its folder (or --root)
 mash sandbox stop <user_id>                 # stop it now; the volume is kept
 ```
 

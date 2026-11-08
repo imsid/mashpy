@@ -10,8 +10,9 @@ make room (``containers.ContainerManager``).
 
 from __future__ import annotations
 
+import contextlib
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
 import httpx
 
@@ -112,7 +113,12 @@ class SandboxManager(ContainerManager):
 
         return await self._use(user_id, forward)
 
-    async def proxy(
+    async def stream_file(self, user_id: str, *, agent_id: str, path: str) -> "Streamed":
+        """``GET /files`` in the user's sandbox, its body left unread for streaming."""
+        url = daemon_path("files", agent_id, tail=path)
+        return await self._stream(user_id, "GET", url, timeout=_FILE_TIMEOUT_SECONDS)
+
+    async def stream_proxy(
         self,
         user_id: str,
         *,
@@ -121,24 +127,77 @@ class SandboxManager(ContainerManager):
         path: str,
         query: str = "",
         headers: Mapping[str, str] | None = None,
-        body: bytes = b"",
-    ) -> httpx.Response:
+        body: AsyncIterator[bytes] | None = None,
+    ) -> "Streamed":
         """HTTP to ``port`` in the user's sandbox, through the daemon's ``/ports``.
 
-        Raises ``UnsafePathError`` for a ``path`` with ``.`` or ``..`` segments.
+        ``body`` streams up and the response streams back. Raises
+        ``UnsafePathError`` for a ``path`` with ``.`` or ``..`` segments.
         """
         url = daemon_path("ports", str(port), tail=path, query=query)
+        return await self._stream(
+            user_id, method, url, headers=headers, body=body, timeout=_PROXY_TIMEOUT_SECONDS
+        )
 
-        async def forward(endpoint: SandboxEndpoint) -> httpx.Response:
-            async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT_SECONDS) as client:
-                return await client.request(
-                    method,
-                    f"{endpoint.base_url}{url}",
-                    content=body,
-                    headers={**dict(headers or {}), **bearer(endpoint)},
+    async def _stream(
+        self,
+        user_id: str,
+        method: str,
+        url: str,
+        *,
+        timeout: float,
+        headers: Mapping[str, str] | None = None,
+        body: AsyncIterator[bytes] | None = None,
+    ) -> "Streamed":
+        # The sandbox counts as in use until the stream is closed, so the
+        # reaper cannot stop it mid-transfer.
+        stack = contextlib.AsyncExitStack()
+        try:
+            endpoint = await stack.enter_async_context(self.hold(user_id))
+            client = await stack.enter_async_context(httpx.AsyncClient(timeout=timeout))
+
+            async def send(endpoint: SandboxEndpoint) -> httpx.Response:
+                return await client.send(
+                    client.build_request(
+                        method,
+                        f"{endpoint.base_url}{url}",
+                        content=body,
+                        headers={**dict(headers or {}), **bearer(endpoint)},
+                    ),
+                    stream=True,
                 )
 
-        return await self._use(user_id, forward)
+            try:
+                response = await send(endpoint)
+            except httpx.ConnectError:
+                # The container was stopped or replaced behind the host's
+                # back; the call never reached it, so its body is unread.
+                self._endpoints.pop(user_id, None)
+                response = await send(await self._ensure(user_id))
+            stack.push_async_callback(response.aclose)
+        except httpx.HTTPError as exc:
+            await stack.aclose()
+            raise self.unavailable_error(f"{self.kind} for '{user_id}' failed: {exc}") from exc
+        except BaseException:
+            await stack.aclose()
+            raise
+        return Streamed(response, stack.aclose)
+
+
+class Streamed:
+    """A daemon response whose body is read as it arrives; ``close`` it after."""
+
+    def __init__(self, response: httpx.Response, close: Callable[[], Awaitable[None]]) -> None:
+        self.response = response
+        self.close = close
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        """The decoded body; closes the response when done or abandoned."""
+        try:
+            async for chunk in self.response.aiter_bytes():
+                yield chunk
+        finally:
+            await self.close()
 
 
 __all__ = [
@@ -148,4 +207,5 @@ __all__ = [
     "MASH_SANDBOX_MAX_RUNNING_ENV",
     "SandboxCapacityError",
     "SandboxManager",
+    "Streamed",
 ]

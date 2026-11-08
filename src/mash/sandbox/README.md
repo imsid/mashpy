@@ -30,9 +30,10 @@ in its token.
 ## Main components
 
 - `daemon.py`: `SandboxDaemon`, the app `mash sandbox serve` runs inside a
-  sandbox as the `mash` user. Every route but `/health` needs the sandbox
-  token, and everything it does in a workspace it does as `agent` through
-  `sudo`.
+  sandbox as root. Every route but `/health` needs the sandbox token, and
+  everything it does in a workspace it does as the calling agent's own uid,
+  through `setpriv`, with the caller's variables in the environment, never in
+  argv.
   - `POST /exec` takes `{agent_id, command, timeout, stdin?, env?}`, creates the
     agent's folder, runs `bash -c` there with `stdin` as input and a clean
     environment (`HOME`, `PATH`, `LANG`, `PWD`, `PYTHONUSERBASE=<folder>/.local`
@@ -45,8 +46,18 @@ in its token.
   - `GET` / `PUT /files/<agent_id>/<path>` read or write one file's bytes (up to
     100 MB) with `cat`, so files keep the agent's ownership. Paths must stay in
     the folder.
-  - `/ports/<n>/<path>` proxies HTTP to `127.0.0.1:<n>`, buffered, without the
-    `Authorization` header.
+  - `/ports/<n>/<path>` proxies HTTP to `127.0.0.1:<n>`, streaming both
+    bodies, without the `Authorization` header.
+- `agent_users.py`: `AgentUsers`, a uid for each agent from 20000 up, mapped
+  in `<workspaces>/.mash/uids.json` (root only, on the volume), and a folder
+  owned by that uid with mode 0700. The top folder is root's, mode 0711, so
+  no agent can create, claim or list another's folder, read another's
+  processes' environment, or plant files such as `sitecustomize.py` where
+  another agent's code loads them. When the daemon starts it adds an
+  `agent-<uid>` passwd entry for each mapped uid; a folder still owned by an
+  older shared uid is handed over on first use, without following links.
+  Without root, as on a developer's machine, every agent runs as the current
+  user.
 - `tokens.py`: `derive_sandbox_token(secret, user_id)`, the HMAC of
   `mash-sandbox:<user_id>` under `MASH_HOST_SECRET`. Only the host can derive
   it, and one user's token opens no other sandbox. `derive_link_token` and

@@ -4,9 +4,7 @@
 # MASH_SANDBOX_IMAGE names another. Build on it to add packages:
 #
 #   FROM ghcr.io/imsid/mash-sandbox:<version>
-#   USER root
 #   RUN pip install <package>
-#   USER mash
 #
 # What run_code's description promises lives here: change both together
 # (src/mash/tools/sandbox.py).
@@ -19,7 +17,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git jq ripgrep sqlite3 sudo \
+        ca-certificates curl git jq ripgrep sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
@@ -37,23 +35,17 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN pip install .
 
-# Two users. `mash` runs the sandbox daemon and holds the sandbox token;
-# `agent` runs the model's code and can write only under /home/agent. `mash`
-# may start bash as `agent` and nothing else. Each user's volume is created
-# from /home/agent/workspaces.
-RUN useradd --create-home --shell /bin/bash mash \
-    && useradd --create-home --shell /bin/bash agent \
-    && chmod 0700 /home/mash \
-    && mkdir -p /home/agent/workspaces \
-    && chown -R agent:agent /home/agent \
-    && chmod 0755 /home/agent /home/agent/workspaces \
-    && echo "mash ALL=(agent) NOPASSWD: /bin/bash" > /etc/sudoers.d/mash-agent \
-    && chmod 0440 /etc/sudoers.d/mash-agent \
+# The daemon runs as root and holds the sandbox token. It runs each agent's
+# code as a uid of the agent's own, in a folder only that uid may use
+# (src/mash/sandbox/agent_users.py), so agents can read neither each other's
+# files nor their processes' environment. Each user's volume is created from
+# /home/agent/workspaces; no agent may create folders at its top.
+RUN mkdir -p /home/agent/workspaces \
+    && chmod 0711 /home/agent /home/agent/workspaces \
     # Mounted checkouts belong to other uids; let git read them anyway.
     && git config --system --add safe.directory '*'
 
-USER mash
-WORKDIR /home/mash
+WORKDIR /
 
 EXPOSE 9000
 

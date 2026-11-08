@@ -1,11 +1,13 @@
-"""The sandbox daemon on a localhost port, with bash as the current user."""
+"""The sandbox daemon on a localhost port, with bash as the current user.
+
+Per-agent uids need root; tests/mash/sandbox/test_agent_users.py covers them.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import os
-import pwd
 import socket
 import tempfile
 import time
@@ -19,11 +21,10 @@ from mash.sandbox.daemon import (
     BASH_MAX_OUTPUT_CHARS,
     SandboxDaemon,
     build_bash_env,
-    resolve_bash_user,
     resolve_workspace_path,
-    run_command,
 )
 from mash.sandbox.tokens import derive_sandbox_token
+from slow_http import SlowHTTPServer
 
 TOKEN = derive_sandbox_token("secret", "u-1")
 
@@ -201,6 +202,48 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "<h1>hi</h1>\n")
         await self._exec(f"pkill -f 'http.server {port}' || true")
 
+    async def test_ports_stream_the_response(self) -> None:
+        server = SlowHTTPServer()
+        await server.start()
+        try:
+            async with self.client.stream("GET", f"/ports/{server.port}/slow") as response:
+                chunks = response.aiter_bytes()
+                first = await asyncio.wait_for(chunks.__anext__(), 5)
+                self.assertEqual(first, b"first")
+                server.release.set()
+                rest = b"".join([chunk async for chunk in chunks])
+            self.assertEqual(rest, b"second")
+        finally:
+            server.release.set()
+            await server.close()
+
+    async def test_ports_pass_a_compressed_page_on_decoded(self) -> None:
+        server = SlowHTTPServer()
+        await server.start()
+        try:
+            response = await self.client.get(f"/ports/{server.port}/gzip")
+            self.assertNotIn("content-encoding", response.headers)
+            self.assertEqual(response.content, b"compressed page")
+        finally:
+            await server.close()
+
+    async def test_ports_stream_the_request_body(self) -> None:
+        server = SlowHTTPServer()
+        await server.start()
+
+        async def body():
+            yield b"first"
+            # The server sees the first part before the client sends the rest.
+            await asyncio.wait_for(server.got_first.wait(), 5)
+            yield b"second"
+
+        try:
+            response = await self.client.post(f"/ports/{server.port}/upload", content=body())
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.text, "11")
+        finally:
+            await server.close()
+
     async def test_ports_report_nothing_listening(self) -> None:
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -224,56 +267,7 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.json()["error"]["code"], "INVALID_REQUEST")
 
 
-class BashUserTests(unittest.TestCase):
-    def _agent_entry(self, uid: int) -> pwd.struct_passwd:
-        return pwd.struct_passwd(("agent", "x", uid, uid, "", "/home/agent", "/bin/bash"))
-
-    def test_runs_as_current_user_when_agent_user_missing(self) -> None:
-        with patch("mash.sandbox.daemon.pwd.getpwnam", side_effect=KeyError("agent")):
-            self.assertIsNone(resolve_bash_user())
-
-    def test_runs_as_agent_when_agent_user_exists(self) -> None:
-        with patch(
-            "mash.sandbox.daemon.pwd.getpwnam",
-            return_value=self._agent_entry(os.geteuid() + 1),
-        ):
-            self.assertEqual(resolve_bash_user(), "agent")
-
-    def test_runs_as_current_user_when_already_agent(self) -> None:
-        with patch(
-            "mash.sandbox.daemon.pwd.getpwnam",
-            return_value=self._agent_entry(os.geteuid()),
-        ):
-            self.assertIsNone(resolve_bash_user())
-
-    def test_agent_bash_starts_through_sudo_with_clean_env(self) -> None:
-        calls = []
-
-        async def fake_exec(*args, **kwargs):
-            calls.append((args, kwargs))
-            raise RuntimeError("stop here")
-
-        with patch.dict(os.environ, {"MASH_DATABASE_URL": "postgresql://secret"}), patch(
-            "mash.sandbox.daemon.pwd.getpwnam",
-            return_value=self._agent_entry(os.geteuid() + 1),
-        ), patch("mash.sandbox.daemon.asyncio.create_subprocess_exec", fake_exec):
-            with self.assertRaises(RuntimeError):
-                asyncio.run(run_command("ls", folder="/w/research", user="agent"))
-
-        [(args, kwargs)] = calls
-        self.assertEqual(args[:5], ("sudo", "-n", "-u", "agent", "/bin/bash"))
-        self.assertEqual(args[8:10], ("/w/research", "ls"))
-        # sudo drops the environment, so it also travels as arguments.
-        self.assertIn("PYTHONUSERBASE=/w/research/.local", args[10:])
-        self.assertIn("HOME=/home/agent", args[10:])
-        self.assertEqual(
-            set(kwargs["env"]), {"HOME", "PATH", "LANG", "PWD", "PYTHONUSERBASE"}
-        )
-        self.assertEqual(kwargs["env"]["HOME"], "/home/agent")
-        self.assertEqual(kwargs["env"]["PWD"], "/w/research")
-        self.assertEqual(kwargs["env"]["PYTHONUSERBASE"], "/w/research/.local")
-        self.assertTrue(kwargs["env"]["PATH"].startswith("/w/research/.local/bin:"))
-
+class BashEnvTests(unittest.TestCase):
     def test_env_for_the_current_user_keeps_only_home_path_and_locale(self) -> None:
         with patch.dict(os.environ, {"MASH_DATABASE_URL": "postgresql://secret"}):
             env = build_bash_env(None, "/tmp", {"MASH_FILES_URL": "http://h/s/t/files/a"})

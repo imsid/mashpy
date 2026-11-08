@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from mash.runtime.host.tokens import agent_for_token
 from mash.sandbox.containers import UnsafePathError
@@ -225,17 +225,25 @@ def build_link_router() -> APIRouter:
         if resolved is None:
             return _link_error(404, "no such file")
         try:
-            response = await state_from_request(request).pool.get_sandboxes().read_file(
+            streamed = await state_from_request(request).pool.get_sandboxes().stream_file(
                 user_id, agent_id=agent_id, path=resolved
             )
         except UnsafePathError:
             return _link_error(404, "no such file")
         except (SandboxCapacityError, SandboxUnavailableError) as exc:
             return _link_error(503, str(exc))
-        if response.status_code != 200:
-            return _link_error(response.status_code, _daemon_message(response))
+        if streamed.response.status_code != 200:
+            try:
+                await streamed.response.aread()
+                return _link_error(
+                    streamed.response.status_code, _daemon_message(streamed.response)
+                )
+            finally:
+                await streamed.close()
         media_type = mimetypes.guess_type(resolved)[0] or "application/octet-stream"
-        return _link_response(response.content, 200, media_type=media_type)
+        return StreamingResponse(
+            streamed.chunks(), media_type=media_type, headers=_link_headers()
+        )
 
     @router.get("/ports/{port}")
     async def port_root(port: int) -> Response:
@@ -252,25 +260,27 @@ def build_link_router() -> APIRouter:
             for name in _FORWARDED_HEADERS
             if name in request.headers
         }
+        has_body = "content-length" in request.headers or "transfer-encoding" in request.headers
         try:
-            response = await state_from_request(request).pool.get_sandboxes().proxy(
+            streamed = await state_from_request(request).pool.get_sandboxes().stream_proxy(
                 user_id,
                 port=port,
                 method=request.method,
                 path=path,
                 query=request.url.query,
                 headers=headers,
-                body=await request.body(),
+                body=request.stream() if has_body else None,
             )
         except UnsafePathError:
             return _link_error(400, "invalid path")
         except (SandboxCapacityError, SandboxUnavailableError) as exc:
             return _link_error(503, str(exc))
-        return _link_response(
-            response.content,
-            response.status_code,
+        response = streamed.response
+        return StreamingResponse(
+            streamed.chunks(),
+            status_code=response.status_code,
             media_type=response.headers.get("content-type"),
-            location=_host_relative(response.headers.get("location")),
+            headers=_link_headers(location=_host_relative(response.headers.get("location"))),
         )
 
     return router
@@ -303,17 +313,17 @@ def _link_error(status_code: int, message: str) -> Response:
     return _link_response(message.encode(), status_code, media_type="text/plain")
 
 
-def _link_response(
-    content: bytes,
-    status_code: int,
-    *,
-    media_type: str | None,
-    location: str | None = None,
-) -> Response:
+def _link_headers(*, location: str | None = None) -> dict[str, str]:
     headers = {"Content-Security-Policy": LINK_CSP, "X-Content-Type-Options": "nosniff"}
     if location:
         headers["Location"] = location
-    return Response(content, status_code=status_code, media_type=media_type, headers=headers)
+    return headers
+
+
+def _link_response(content: bytes, status_code: int, *, media_type: str | None) -> Response:
+    return Response(
+        content, status_code=status_code, media_type=media_type, headers=_link_headers()
+    )
 
 
 __all__ = [

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import socket
 import tempfile
@@ -13,15 +14,17 @@ from typing import Any
 from unittest.mock import patch
 
 import httpx
+import uvicorn
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from conftest import build_test_stores
+from slow_http import SlowHTTPServer
 from mash.api.routes.sandbox import LINK_CSP, build_link_router, build_sandbox_router
 from mash.runtime import HostBuilder
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.tokens import derive_agent_token
-from mash.sandbox.manager import SandboxCapacityError, SandboxManager
+from mash.sandbox.manager import SandboxCapacityError, SandboxManager, Streamed
 from mash.sandbox.tokens import derive_link_token
 from mash.testing.runtime_fixtures import build_tool_calling_spec, metadata
 from mash.testing.sandboxes import LocalSandboxProvider
@@ -295,10 +298,13 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.provider.ensure_calls, [])
 
     async def test_a_port_link_passes_only_redirects_that_stay_on_the_host(self) -> None:
-        async def proxy(user_id, **kwargs):
-            return httpx.Response(302, headers={"location": self.location})
+        async def stream_proxy(user_id, **kwargs):
+            async def close() -> None:
+                return None
 
-        self.manager.proxy = proxy
+            return Streamed(httpx.Response(302, headers={"location": self.location}), close)
+
+        self.manager.stream_proxy = stream_proxy
         for location, kept in (
             ("next/", True),
             ("/s/x/ports/8000/next", True),
@@ -345,6 +351,84 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
                 "u-1", agent_id="research", command=f"pkill -f 'http.server {port}' || true",
                 timeout=10,
             )
+
+
+class _Server(uvicorn.Server):
+    def capture_signals(self):  # type: ignore[override]
+        return contextlib.nullcontext()
+
+
+class LinkStreamingTests(unittest.IsolatedAsyncioTestCase):
+    """Links stream both ways, over a real server: httpx's ASGI transport buffers."""
+
+    async def asyncSetUp(self) -> None:
+        self.provider = LocalSandboxProvider()
+        self.manager = SandboxManager(self.provider)
+        pool = SimpleNamespace(get_sandboxes=lambda: self.manager)
+        app = FastAPI()
+        app.include_router(build_link_router())
+        app.state.runtime_state = SimpleNamespace(pool=pool, host_secret=SECRET, public_url=PUBLIC)
+        self.server = _Server(
+            uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", ws="none")
+        )
+        self.task = asyncio.create_task(self.server.serve())
+        while not self.server.started:
+            await asyncio.sleep(0.01)
+        port = self.server.servers[0].sockets[0].getsockname()[1]
+        self.http = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30)
+        self.link = f"/s/{derive_link_token(SECRET, 'u-1')}"
+        self.upstream = SlowHTTPServer()
+        await self.upstream.start()
+
+    async def asyncTearDown(self) -> None:
+        self.upstream.release.set()
+        await self.http.aclose()
+        self.server.should_exit = True
+        await self.task
+        await self.upstream.close()
+        await self.manager.close()
+
+    async def test_a_port_link_streams_the_response_and_holds_the_sandbox(self) -> None:
+        url = f"{self.link}/ports/{self.upstream.port}/slow"
+        async with self.http.stream("GET", url) as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-security-policy"], LINK_CSP)
+            chunks = response.aiter_bytes()
+            self.assertEqual(await asyncio.wait_for(chunks.__anext__(), 5), b"first")
+            # The reaper must not stop the sandbox mid-stream.
+            self.assertEqual(self.manager._in_flight["u-1"], 1)
+            self.upstream.release.set()
+            self.assertEqual(b"".join([chunk async for chunk in chunks]), b"second")
+        for _ in range(100):
+            if self.manager._in_flight["u-1"] == 0:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.manager._in_flight["u-1"], 0)
+
+    async def test_a_port_link_streams_the_request_body(self) -> None:
+        async def body():
+            yield b"first"
+            await asyncio.wait_for(self.upstream.got_first.wait(), 5)
+            yield b"second"
+
+        response = await self.http.post(
+            f"{self.link}/ports/{self.upstream.port}/upload", content=body()
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "11")
+
+    async def test_a_file_link_streams_the_file(self) -> None:
+        folder = self.provider.workspaces("u-1") / "research"
+        folder.mkdir(parents=True)
+        (folder / "big.bin").write_bytes(b"x" * 3_000_000)
+
+        async with self.http.stream("GET", f"{self.link}/files/research/big.bin") as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-security-policy"], LINK_CSP)
+            size = sum([len(chunk) async for chunk in response.aiter_bytes()])
+        self.assertEqual(size, 3_000_000)
+        missing = await self.http.get(f"{self.link}/files/research/nope.txt")
+        self.assertEqual(missing.status_code, 404)
 
 
 class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):

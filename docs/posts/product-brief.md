@@ -103,8 +103,8 @@ sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`). An
 agent whose spec names folders on its machine also gets `sandbox_put` and
 `sandbox_get` to copy files in and out of those folders. Its files persist
 across requests and restarts, and the user opens the pages and files it makes
-at links the host serves. Code runs as an unprivileged `agent` user with a
-clean environment. A sandbox holds only that user's files: the agents' secrets
+at links the host serves. Each agent's code runs as an unprivileged uid of
+its own with a clean environment. A sandbox holds only that user's files: the agents' secrets
 and the database stay with the host.
 
 Each agent runs as a process of the host, with its credentials, its model

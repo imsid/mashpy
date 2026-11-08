@@ -1,8 +1,9 @@
 """The sandbox daemon: runs one user's code inside their sandbox.
 
-``mash sandbox serve`` runs this app in each user's sandbox as the ``mash``
-user. Everything it does in a workspace it does as the ``agent`` user, in the
-calling agent's folder ``<workspaces>/<agent_id>``, creating it on first use:
+``mash sandbox serve`` runs this app in each user's sandbox as root.
+Everything it does in a workspace it does as the calling agent's own uid, in
+its folder ``<workspaces>/<agent_id>``, creating both on first use
+(``agent_users.py``):
 
 - ``POST /exec`` runs ``bash -c <command>``, with optional stdin. Each call is a
   fresh shell with a clean environment: nothing from the daemon's environment
@@ -22,18 +23,19 @@ import hmac
 import json
 import os
 import posixpath
-import pwd
 import re
 import signal
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+from .agent_users import AgentUsers
 
 MASH_SANDBOX_TOKEN_ENV = "MASH_SANDBOX_TOKEN"
 SANDBOX_PORT = 9000
@@ -47,8 +49,6 @@ BASH_MAX_OUTPUT_CHARS = 30_000
 # Largest file /files reads or writes.
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
-# Bash runs as this user, which holds none of the sandbox's credentials.
-AGENT_USER = "agent"
 _AGENT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Agent ids name folders, so they are kept to a safe charset.
 _AGENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -78,17 +78,16 @@ _HOP_HEADERS = frozenset(
     }
 )
 
-# Runs as the agent user. The command runs in the background so that a TERM
-# (sent by the daemon, relayed by sudo) kills its whole process group: the
-# daemon's user may not signal the agent's processes itself. A background
-# command gets /dev/null as stdin unless stdin is redirected explicitly.
+# Runs as the agent's uid. The command runs in the background so that a TERM
+# from the daemon kills its whole process group. A background command gets
+# /dev/null as stdin unless stdin is redirected explicitly.
 _WRAPPER = (
     'mkdir -p -- "$1" && cd -- "$1" || exit 1\n'
     "trap 'kill -KILL 0' TERM\n"
     '/bin/bash -c "$2" <&0 &\n'
     'wait "$!"\n'
 )
-# Runs as the agent user: read or write one file in the agent's folder.
+# Runs as the agent's uid: read or write one file in the agent's folder.
 _READ_FILE = 'cd -- "$1" 2>/dev/null && test -f "$2" && exec cat -- "$2"\nexit 44\n'
 _WRITE_FILE = (
     'mkdir -p -- "$1" && cd -- "$1" || exit 1\n'
@@ -98,36 +97,21 @@ _WRITE_FILE = (
 _NOT_A_FILE = 44
 
 
-def resolve_bash_user() -> Optional[str]:
-    """The user bash runs as, or None to run as the current user.
-
-    Bash switches to ``agent`` when that user exists and is not the current
-    user, which is the case in a sandbox.
-    """
-    try:
-        entry = pwd.getpwnam(AGENT_USER)
-    except KeyError:
-        return None
-    if entry.pw_uid == os.geteuid():
-        return None
-    return AGENT_USER
-
-
 def build_bash_env(
-    user: Optional[str],
+    uid: Optional[int],
     working_dir: str,
     extra: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, str]:
     """The clean environment bash starts with.
 
     Nothing from the daemon's environment reaches bash except locale and,
-    when bash runs as the current user, its HOME and PATH. Python packages
-    installed with ``pip install --user`` go to ``<folder>/.local``, so they
-    persist with the agent's folder. ``extra`` adds the caller's ``MASH_*``
-    variables.
+    when bash runs as the current user, its HOME and PATH. An agent's HOME
+    is its folder, and Python packages installed with ``pip install --user``
+    go to ``<folder>/.local``, so both persist with the folder. ``extra``
+    adds the caller's ``MASH_*`` variables.
     """
-    if user is not None:
-        home = pwd.getpwnam(user).pw_dir
+    if uid is not None:
+        home = working_dir
         path = _AGENT_PATH
     else:
         home = os.environ.get("HOME", "/")
@@ -172,25 +156,20 @@ class ExecResult:
     timed_out: bool = False
 
 
-# sudo drops the caller's environment, so the variables travel as arguments
-# after the script's two and are exported before it runs.
-_EXPORT_ENV = 'for kv in "${@:3}"; do export "$kv"; done\n'
-
-
-def _agent_argv(
-    script: str, user: Optional[str], folder: str, arg: str, env: Mapping[str, str]
-) -> list[str]:
-    argv = [
-        "/bin/bash",
-        "-c",
-        _EXPORT_ENV + script,
-        "mash-exec",
-        folder,
-        arg,
-        *(f"{name}={value}" for name, value in env.items()),
-    ]
-    if user is not None:
-        argv = ["sudo", "-n", "-u", user, *argv]
+def _agent_argv(script: str, uid: Optional[int], folder: str, arg: str) -> list[str]:
+    # Variables go in the process's environment, never in argv: any uid can
+    # read another process's /proc/<pid>/cmdline, but only the same uid (or
+    # root) its environ.
+    argv = ["/bin/bash", "-c", script, "mash-exec", folder, arg]
+    if uid is not None:
+        argv = [
+            "setpriv",
+            f"--reuid={uid}",
+            f"--regid={uid}",
+            "--clear-groups",
+            "--",
+            *argv,
+        ]
     return argv
 
 
@@ -199,18 +178,18 @@ async def run_command(
     *,
     folder: str,
     timeout: float = BASH_DEFAULT_TIMEOUT,
-    user: Optional[str] = None,
+    uid: Optional[int] = None,
     stdin: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> ExecResult:
-    """Run ``bash -c command`` in ``folder`` as ``user``.
+    """Run ``bash -c command`` in ``folder`` as ``uid`` (None: the current user).
 
     Returns when bash exits. Output goes to a file rather than a pipe, so a
     process the command leaves running in the background does not hold the
     call open. ``stdin`` is fed to the command; without it, stdin is empty.
     """
-    bash_env = build_bash_env(user, folder, env)
-    argv = _agent_argv(_WRAPPER, user, folder, command, bash_env)
+    bash_env = build_bash_env(uid, folder, env)
+    argv = _agent_argv(_WRAPPER, uid, folder, command)
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as given:
         if stdin is not None:
             given.write(stdin.encode("utf-8"))
@@ -252,11 +231,11 @@ def resolve_workspace_path(path: str) -> Optional[str]:
     return normalized
 
 
-async def read_file(path: str, *, folder: str, user: Optional[str] = None) -> bytes:
-    """Read ``path`` in ``folder`` as ``user``; raise ``FileNotFound`` when absent."""
-    bash_env = build_bash_env(user, folder)
+async def read_file(path: str, *, folder: str, uid: Optional[int] = None) -> bytes:
+    """Read ``path`` in ``folder`` as ``uid``; raise ``FileNotFound`` when absent."""
+    bash_env = build_bash_env(uid, folder)
     proc = await asyncio.create_subprocess_exec(
-        *_agent_argv(_READ_FILE, user, folder, path, bash_env),
+        *_agent_argv(_READ_FILE, uid, folder, path),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -271,12 +250,12 @@ async def read_file(path: str, *, folder: str, user: Optional[str] = None) -> by
 
 
 async def write_file(
-    path: str, data: bytes, *, folder: str, user: Optional[str] = None
+    path: str, data: bytes, *, folder: str, uid: Optional[int] = None
 ) -> None:
-    """Write ``data`` to ``path`` in ``folder`` as ``user``, creating parent folders."""
-    bash_env = build_bash_env(user, folder)
+    """Write ``data`` to ``path`` in ``folder`` as ``uid``, creating parent folders."""
+    bash_env = build_bash_env(uid, folder)
     proc = await asyncio.create_subprocess_exec(
-        *_agent_argv(_WRITE_FILE, user, folder, path, bash_env),
+        *_agent_argv(_WRITE_FILE, uid, folder, path),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
@@ -332,12 +311,13 @@ class SandboxDaemon:
         *,
         token: str,
         workspaces_root: str = WORKSPACES_ROOT,
-        user: Optional[str] = None,
+        agent_users: Optional[AgentUsers] = None,
     ) -> None:
         if not str(token or "").strip():
             raise ValueError("sandbox token is required")
         self.workspaces_root = workspaces_root
-        self.user = resolve_bash_user() if user is None else user
+        self.agent_users = agent_users or AgentUsers(workspaces_root)
+        self.agent_users.prepare()
         self.app = Starlette(
             routes=[
                 Route("/health", self.health, methods=["GET"]),
@@ -384,11 +364,12 @@ class SandboxDaemon:
                 400, "INVALID_REQUEST", "env must map MASH_* names to string values"
             )
 
+        agent = self.agent_users.get(agent_id)
         result = await run_command(
             command,
-            folder=os.path.join(self.workspaces_root, agent_id),
+            folder=agent.folder,
             timeout=float(timeout),
-            user=self.user,
+            uid=agent.uid,
             stdin=stdin,
             env=env,
         )
@@ -410,7 +391,7 @@ class SandboxDaemon:
             return _json_error(
                 400, "INVALID_REQUEST", "path must be relative and stay in the agent's folder"
             )
-        folder = os.path.join(self.workspaces_root, agent_id)
+        agent = self.agent_users.get(agent_id)
         if request.method == "PUT":
             data = await request.body()
             if len(data) > MAX_FILE_BYTES:
@@ -418,12 +399,12 @@ class SandboxDaemon:
                     413, "FILE_TOO_LARGE", f"files are limited to {MAX_FILE_BYTES} bytes"
                 )
             try:
-                await write_file(path, data, folder=folder, user=self.user)
+                await write_file(path, data, folder=agent.folder, uid=agent.uid)
             except (OSError, asyncio.TimeoutError) as exc:
                 return _json_error(500, "WRITE_FAILED", str(exc) or "write timed out")
             return JSONResponse({"path": path, "bytes": len(data)})
         try:
-            data = await read_file(path, folder=folder, user=self.user)
+            data = await read_file(path, folder=agent.folder, uid=agent.uid)
         except FileNotFound:
             return _json_error(404, "FILE_NOT_FOUND", f"no file at '{path}'")
         except (OSError, asyncio.TimeoutError) as exc:
@@ -446,17 +427,38 @@ class SandboxDaemon:
             for name, value in request.headers.items()
             if name.lower() not in _HOP_HEADERS
         }
+        # Both bodies stream through: neither is held whole in memory.
+        has_body = "content-length" in request.headers or "transfer-encoding" in request.headers
+        client = httpx.AsyncClient(timeout=60.0)
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                upstream = await client.request(
-                    request.method, url, headers=headers, content=await request.body()
-                )
+            upstream = await client.send(
+                client.build_request(
+                    request.method,
+                    url,
+                    headers=headers,
+                    content=request.stream() if has_body else None,
+                ),
+                stream=True,
+            )
         except httpx.HTTPError as exc:
+            await client.aclose()
             return _json_error(
                 502, "PORT_UNREACHABLE", f"nothing answered on port {port}: {exc}"
             )
-        return Response(
-            upstream.content,
+
+        async def body() -> AsyncIterator[bytes]:
+            # Decoded, since Content-Encoding is not passed on. Closed here,
+            # not in a background task, so a client that leaves early still
+            # releases the connection.
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            body(),
             status_code=upstream.status_code,
             headers={
                 name: value
@@ -485,7 +487,6 @@ def resolve_sandbox_token(explicit_value: str | None = None) -> str | None:
 
 
 __all__ = [
-    "AGENT_USER",
     "BASH_DEFAULT_TIMEOUT",
     "BASH_MAX_TIMEOUT",
     "BASH_MAX_OUTPUT_CHARS",
@@ -499,7 +500,6 @@ __all__ = [
     "WORKSPACES_ROOT",
     "build_bash_env",
     "read_file",
-    "resolve_bash_user",
     "resolve_sandbox_token",
     "resolve_workspace_path",
     "run_command",
