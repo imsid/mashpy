@@ -782,8 +782,9 @@ messages, which can quote inputs; without it a failed span keeps its
 - `500 SEARCH_FAILED`: unexpected memory search failure
 - `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
 - `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
-- `404 REQUEST_NOT_FOUND`: unknown `request_id` for status, resume, or cancel operations
+- `404 REQUEST_NOT_FOUND`: unknown `request_id`, or a request accepted for another agent than the one in the path, on the request routes
 - `409 REQUEST_STALE`: resume rejected because the request's session has newer replayable turns
+- `409 SESSION_USER_MISMATCH`: the `session_id` belongs to another user; a session is the conversation of the user of its first request
 
 ## Source Of Truth
 - App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).

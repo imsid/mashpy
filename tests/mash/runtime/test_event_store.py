@@ -136,6 +136,29 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-1",
         )
 
+    async def test_get_other_session_user_finds_only_another_user(self) -> None:
+        session_id = f"session-{uuid.uuid4()}"
+        ids = [f"{self.request_id}-{n}" for n in range(3)]
+        self.addCleanup(_delete_request_rows, self.database_url, *ids)
+        for request_id, user_id in zip(ids, ("u-1", "u-1", None)):
+            metadata = {"user_id": user_id} if user_id else {}
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id="store-test",
+                    agent_id="store-test",
+                    request_id=request_id,
+                    session_id=session_id,
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                    lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                    dedupe_key="request.accepted",
+                    payload={"initial_session_id": session_id, "request_metadata": metadata},
+                )
+            )
+
+        self.assertIsNone(await self.store.get_other_session_user(session_id, "u-1"))
+        self.assertEqual(await self.store.get_other_session_user(session_id, "u-2"), "u-1")
+        self.assertIsNone(await self.store.get_other_session_user("no-such-session", "u-2"))
+
     async def test_reads_do_not_hide_later_committed_writes(self) -> None:
         self.assertFalse(await self.store.has_request(self.request_id))
 

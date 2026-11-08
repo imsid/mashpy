@@ -606,7 +606,10 @@ class _StructuredOutputDefinition(_BaseDefinition):
 
 
 class _FakeMCPClient:
-    def list_tools(self) -> list[dict[str, Any]]:
+    async def connect(self) -> None:
+        return None
+
+    async def list_tools(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": "search",
@@ -615,7 +618,7 @@ class _FakeMCPClient:
             }
         ]
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         return None
 
 
@@ -637,7 +640,10 @@ class _MCPDefinition(_BaseDefinition):
 
 
 class _FakeWebSearchClient:
-    def list_tools(self) -> list[dict[str, Any]]:
+    async def connect(self) -> None:
+        return None
+
+    async def list_tools(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": "web_search",
@@ -651,7 +657,7 @@ class _FakeWebSearchClient:
             },
         ]
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         return None
 
 
@@ -1468,79 +1474,55 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await runtime.shutdown()
 
-    async def test_submit_request_reuses_existing_mcp_server_registration(self) -> None:
+    async def test_mcp_tools_reach_every_request_from_one_connection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 with patch(
-                    "mash.mcp.host.Host.get_client",
-                    return_value=_FakeMCPClient(),
-                ) as get_client:
-                    with patch(
-                        "mash.mcp.manager.MCPManager._emit_event", return_value=None
-                    ):
-                        runtime = AgentRuntime.from_spec(
-                            _MCPDefinition(Path(tmp)),
-                            session_id="host-session",
-                            **_test_stores(),
-                        )
-                        try:
-                            await runtime.open()
-                            original_add_server = runtime.mcp_manager.add_server
+                    "mash.mcp.manager.MCPHTTPClient", return_value=_FakeMCPClient()
+                ) as client_cls:
+                    runtime = AgentRuntime.from_spec(
+                        _MCPDefinition(Path(tmp)),
+                        session_id="host-session",
+                        **_test_stores(),
+                    )
+                    try:
+                        await runtime.open()
+                        _, _, first = await self._invoke_request(runtime, message="first")
+                        _, _, second = await self._invoke_request(runtime, message="second")
 
-                            def fail_on_duplicate_registration(*args, **kwargs):
-                                raise AssertionError(
-                                    "configure_remote_tools should not re-add existing servers"
-                                )
-
-                            runtime.mcp_manager.add_server = fail_on_duplicate_registration  # type: ignore[method-assign]
-                            _, _, first = await self._invoke_request(
-                                runtime, message="first"
-                            )
-                            _, _, second = await self._invoke_request(
-                                runtime, message="second"
-                            )
-
-                            self.assertEqual(first["response"]["text"], "ok")
-                            self.assertEqual(second["response"]["text"], "ok")
-                            self.assertEqual(
-                                runtime.mcp_manager.list_servers(), ["github"]
-                            )
-                            self.assertEqual(get_client.call_count, 1)
-                            self.assertEqual(runtime.definition.provider.call_count, 2)
-                        finally:
-                            if runtime.mcp_manager is not None:
-                                runtime.mcp_manager.add_server = original_add_server  # type: ignore[method-assign]
-                            await runtime.shutdown()
+                        self.assertEqual(first["response"]["text"], "ok")
+                        self.assertEqual(second["response"]["text"], "ok")
+                        self.assertEqual(client_cls.call_count, 1)
+                        self.assertEqual(runtime.definition.provider.call_count, 2)
+                    finally:
+                        await runtime.shutdown()
 
     async def test_web_search_tools_registered_with_plain_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 with patch(
-                    "mash.mcp.host.Host.get_client",
+                    "mash.mcp.manager.MCPHTTPClient",
                     return_value=_FakeWebSearchClient(),
                 ):
-                    with patch(
-                        "mash.mcp.manager.MCPManager._emit_event", return_value=None
-                    ):
-                        runtime = AgentRuntime.from_spec(
-                            _WebSearchDefinition(Path(tmp)),
-                            session_id="host-session",
-                            **_test_stores(),
+                    runtime = AgentRuntime.from_spec(
+                        _WebSearchDefinition(Path(tmp)),
+                        session_id="host-session",
+                        **_test_stores(),
+                    )
+                    try:
+                        await runtime.open()
+                        _, _, result = await self._invoke_request(
+                            runtime, message="hi"
                         )
-                        try:
-                            await runtime.open()
-                            _, _, result = await self._invoke_request(
-                                runtime, message="hi"
-                            )
-                            self.assertEqual(result["response"]["text"], "ok")
-                            tool_names = runtime.definition.provider.last_tool_names
-                            self.assertIn("web_search", tool_names)
-                            self.assertIn("web_fetch", tool_names)
-                            self.assertNotIn(
-                                "mcp_parallel_web_search_web_search", tool_names
-                            )
-                        finally:
-                            await runtime.shutdown()
+                        self.assertEqual(result["response"]["text"], "ok")
+                        tool_names = runtime.definition.provider.last_tool_names
+                        self.assertIn("web_search", tool_names)
+                        self.assertIn("web_fetch", tool_names)
+                        self.assertNotIn(
+                            "mcp_parallel_web_search_web_search", tool_names
+                        )
+                    finally:
+                        await runtime.shutdown()
 
     async def test_web_search_tools_absent_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

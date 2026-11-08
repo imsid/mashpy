@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine import InteractionClosedError, InvalidInteractionResponseError
-from .errors import RequestStaleError, RequestTerminalError
+from .errors import RequestStaleError, RequestTerminalError, SessionUserMismatchError
 from .events import PostgresRuntimeStore
 from ..otel.context import normalize_trace_context
 from .requests import (
@@ -296,6 +296,8 @@ class AgentServer:
             )
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
+        except SessionUserMismatchError as exc:
+            return _json_error(409, "SESSION_USER_MISMATCH", str(exc))
         return JSONResponse(accepted, status_code=202)
 
     async def compact_session(self, request: Request) -> Response:
@@ -338,16 +340,28 @@ class AgentServer:
 
         return JSONResponse(self.runtime.describe())
 
-    async def post_interaction(self, request: Request) -> Response:
+    async def _own_request(self, request: Request) -> str | Response:
+        """The path's request id when the request is this agent's, else a 404.
+
+        Every route that acts on one request starts here. A request accepted
+        for another agent is not found, rather than run, resumed, cancelled or
+        answered under this agent's prompt and tools.
+        """
         agent_id = request.path_params.get("agent_id", "").strip()
         if agent_id != self.agent_id:
             return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-
         request_id = request.path_params.get("request_id", "").strip()
         if not request_id:
             return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-        if not await self.runtime.runtime_store.has_request(request_id):
+        identity = await self.runtime.runtime_store.get_request_identity(request_id)
+        if identity is None or identity.agent_id != self.agent_id:
             return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
+        return request_id
+
+    async def post_interaction(self, request: Request) -> Response:
+        request_id = await self._own_request(request)
+        if isinstance(request_id, Response):
+            return request_id
 
         try:
             payload = await request.json()
@@ -387,12 +401,9 @@ class AgentServer:
         return await self._control(request, self.runtime.rerun_request)
 
     async def set_request_mode(self, request: Request) -> Response:
-        agent_id = request.path_params.get("agent_id", "").strip()
-        if agent_id != self.agent_id:
-            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-        request_id = request.path_params.get("request_id", "").strip()
-        if not request_id:
-            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+        request_id = await self._own_request(request)
+        if isinstance(request_id, Response):
+            return request_id
         try:
             payload = await request.json()
         except json.JSONDecodeError:
@@ -413,32 +424,25 @@ class AgentServer:
         return JSONResponse(result)
 
     async def _control(self, request: Request, operation) -> Response:
-        agent_id = request.path_params.get("agent_id", "").strip()
-        if agent_id != self.agent_id:
-            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-
-        request_id = request.path_params.get("request_id", "").strip()
-        if not request_id:
-            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
+        request_id = await self._own_request(request)
+        if isinstance(request_id, Response):
+            return request_id
 
         try:
             result = await operation(request_id)
         except RequestStaleError as exc:
             return _json_error(409, "REQUEST_STALE", str(exc))
+        except SessionUserMismatchError as exc:
+            # A rerun submits again, onto a session that moved to another user.
+            return _json_error(409, "SESSION_USER_MISMATCH", str(exc))
         except KeyError:
             return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
         return JSONResponse(result)
 
     async def stream_request(self, request: Request) -> Response:
-        agent_id = request.path_params.get("agent_id", "").strip()
-        if agent_id != self.agent_id:
-            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-
-        request_id = request.path_params.get("request_id", "").strip()
-        if not request_id:
-            return _json_error(404, "ROUTE_NOT_FOUND", "Route not found")
-        if not await self.runtime.runtime_store.has_request(request_id):
-            return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
+        request_id = await self._own_request(request)
+        if isinstance(request_id, Response):
+            return request_id
 
         async def _generate():
             cursor = 0

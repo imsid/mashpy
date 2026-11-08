@@ -140,6 +140,12 @@ and its stored output feeds the next step.
   per workflow and key; a second gets `DuplicateWorkflowRunError` (HTTP 409).
 
 A step may declare `timeout_s`; exceeding it fails the step, not a retry.
+A sync `CodeStep` body runs in a thread of its own, off the host's event
+loop. A thread can't be stopped, so at the deadline the step fails and the
+body keeps running in the background until it returns. A resume can start the
+step again while the old body still runs, so a body with external effects
+keys them on `ctx.run_id`, `ctx.step_id` and `ctx.attempt`. An async body is
+cancelled at the deadline.
 
 ## Storage
 

@@ -41,7 +41,7 @@ from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.otel.exporter import build_exporter
 from mash.runtime import AgentClientError, Pool
-from mash.runtime.client import AgentUnavailableError
+from mash.runtime.client import AgentUnavailableError, SessionUserConflictError
 from mash.runtime.host.host import AgentDisabledError
 from mash.browser.manager import (
     DEFAULT_HANDOFF_SECONDS,
@@ -284,6 +284,11 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
 
     @app.exception_handler(AgentClientError)
     async def _client_error_handler(_: Request, exc: AgentClientError) -> JSONResponse:
+        if isinstance(exc, SessionUserConflictError):
+            return JSONResponse(
+                status_code=409,
+                content=error_payload("SESSION_USER_MISMATCH", str(exc)),
+            )
         if isinstance(exc, AgentUnavailableError):
             return JSONResponse(
                 status_code=503,

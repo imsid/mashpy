@@ -231,7 +231,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         app.state.runtime_state = SimpleNamespace(pool=pool, host_secret=SECRET)
         self.app = app
         self.http = TestClient(app)
-        self._accept("req-1", agent_id="primary-app", user_id="u-1")
+        self._accept("req-1", agent_id="primary-app", user_id="u-1", host=HOST_SNAPSHOT)
 
     def _accept(
         self,
@@ -240,12 +240,15 @@ class H2ARelayAuthTests(unittest.TestCase):
         agent_id: str,
         user_id: str | None = None,
         parent: dict | None = None,
+        host: dict | None = None,
     ) -> None:
         import asyncio
 
         request_metadata = {"user_id": user_id} if user_id else {}
         if parent is not None:
             request_metadata["parent"] = parent
+        if host is not None:
+            request_metadata["host"] = host
         asyncio.run(
             self.store.append_event(
                 RuntimeEvent(
@@ -302,7 +305,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.calls, [])
 
     def test_parent_without_a_user_forwards_none(self) -> None:
-        self._accept("req-anon", agent_id="primary-app")
+        self._accept("req-anon", agent_id="primary-app", host=HOST_SNAPSHOT)
 
         resp = self._submit(parent=_parent("req-anon"))
 
@@ -338,8 +341,32 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
 
-    def test_subagent_must_be_in_the_host_snapshot(self) -> None:
-        resp = self._submit(host={**HOST_SNAPSHOT, "subagents": ["writer"]})
+    def test_subagent_must_be_in_the_parents_stored_host(self) -> None:
+        self._accept("req-w", agent_id="primary-app", user_id="u-1",
+                     host={**HOST_SNAPSHOT, "subagents": ["writer"]})
+
+        resp = self._submit(parent=_parent("req-w"))
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
+
+    def test_a_host_in_the_body_cannot_widen_the_parents_host(self) -> None:
+        # The caller writes the body; only the parent's stored snapshot counts.
+        resp = self._submit(target="other", host={**HOST_SNAPSHOT, "subagents": ["research", "other"]})
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
+
+    def test_the_parents_stored_host_is_forwarded(self) -> None:
+        resp = self._submit(host={**HOST_SNAPSHOT, "subagents": ["research", "other"]})
+
+        self.assertEqual(resp.status_code, 202, resp.text)
+        self.assertEqual(self.client_for_research.calls[0]["host"], HOST_SNAPSHOT)
+
+    def test_a_parent_without_a_host_may_not_claim_one(self) -> None:
+        self._accept("req-bare", agent_id="primary-app", user_id="u-1")
+
+        resp = self._submit(parent=_parent("req-bare"))
 
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
@@ -352,8 +379,13 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(call["parent"]["started_by"], "primary-app")
 
     def test_without_a_host_only_the_caller_is_a_target(self) -> None:
-        self.assertEqual(self._submit(target="primary-app", host=None).status_code, 202)
-        resp = self._submit(target="research", host=None)
+        self._accept("req-bare", agent_id="primary-app", user_id="u-1")
+        bare = _parent("req-bare")
+        self.assertEqual(
+            self._submit(target="primary-app", host=None, parent=bare).status_code, 202
+        )
+        self.assertIsNone(self.client_for_research.calls[0]["host"])
+        resp = self._submit(target="research", host=None, parent=bare)
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(len(self.client_for_research.calls), 1)
 

@@ -2,9 +2,9 @@
 
 Status: Draft
 
-Version: 0.8.0
+Version: 0.9.0
 
-Last Updated: 2026-11-02
+Last Updated: 2026-11-07
 
 ## 1. Overview
 
@@ -519,8 +519,9 @@ For `POST /agent/{agent_id}/request`, the server MUST:
 9. if `parent` is present, validate it against the shapes in section 6.1, returning `400 INVALID_PARENT` otherwise
 10. validate that `user_id` is present and well formed, and that `mode`, when present, is `fg` or `bg` (section 6.1), returning `400 INVALID_REQUEST` otherwise
 11. if `request_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. If it belongs to a request of this agent, return `200 OK` with that request's accepted payload. If it belongs to another agent, return `409 REQUEST_ID_CONFLICT`
-12. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, `user_id`, and `mode`
-13. return `202 Accepted` with the accepted payload as the body
+12. return `409 SESSION_USER_MISMATCH` if the session already has a request for another `user_id`. A session is one user's conversation: its turns replay into every request on it
+13. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, `user_id`, and `mode`
+14. return `202 Accepted` with the accepted payload as the body
 
 Example error:
 
@@ -538,7 +539,7 @@ Example error:
 For `GET /agent/{agent_id}/request/{request_id}`, the server MUST:
 
 1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
-2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`
+2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`, or one accepted for another agent
 3. respond `200 OK` with `Content-Type: text/event-stream`
 4. read the request's events in order from the first event, writing each as one SSE frame with `event:` and `data:` lines
 5. stop once the runtime reports the request terminal and the terminal event has been written, or the client disconnects
@@ -550,7 +551,7 @@ When no new events arrive for 15 seconds and the request is not terminal, the se
 For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
 
 1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
-2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`
+2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`, or one accepted for another agent
 3. read the request body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
 4. validate that `interaction_id` is a non-empty string, returning `400 INVALID_REQUEST` otherwise
 5. return `404 INTERACTION_NOT_FOUND` if the request never opened `interaction_id`
@@ -562,9 +563,9 @@ For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
 For the `status`, `resume`, `cancel`, and `rerun` routes, the server MUST:
 
 1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
-2. call the runtime's corresponding operation for `request_id`
-3. return `404 REQUEST_NOT_FOUND` if the runtime does not know the request
-4. return `409 REQUEST_STALE` if a resume is refused because the session has newer turns
+2. return `404 REQUEST_NOT_FOUND` if the runtime does not know the request, or it was accepted for another agent, without running the operation
+3. call the runtime's corresponding operation for `request_id`
+4. return `409 REQUEST_STALE` if a resume is refused because the session has newer turns, and `409 SESSION_USER_MISMATCH` if a rerun's session now belongs to another user
 5. otherwise return `200 OK` with the operation's result as the body, without the host's `{data}` envelope
 
 Results and semantics are the same as the host routes in section 10.4.
@@ -572,9 +573,9 @@ Results and semantics are the same as the host routes in section 10.4.
 For `POST /agent/{agent_id}/request/{request_id}/mode`, the server MUST:
 
 1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
-2. read the body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
-3. validate that `mode` is `fg` or `bg`, returning `400 INVALID_REQUEST` otherwise
-4. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`
+2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`, or one accepted for another agent
+3. read the body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
+4. validate that `mode` is `fg` or `bg`, returning `400 INVALID_REQUEST` otherwise
 5. return `409 REQUEST_TERMINAL` if the request is terminal
 6. append `mash.request.mode_changed` and return `200 OK` with `{"request_id", "agent_id", "mode"}`
 
@@ -684,17 +685,18 @@ The caller streams and answers interactions through the agent routes using the r
 - `POST /agent/{agent_id}/request/{request_id}/rerun` starts the request over as a new request with a new `request_id`, from the original message and request metadata, against the session's current history. It works for a request in any state. Returns the new request's accepted payload.
 - `POST /agent/{agent_id}/request/{request_id}/mode`: body `{"mode": "fg" | "bg"}`. Switches a running request (section 6.6) and returns `request_id`, `agent_id` and `mode`. A terminal request returns `409 REQUEST_TERMINAL`.
 
-Unknown request ids return `404 REQUEST_NOT_FOUND` on all five routes.
+Unknown request ids, and requests accepted for another agent than the one in the path, return `404 REQUEST_NOT_FOUND` on all five routes.
 
 ### 10.5 Agent Relay
 
 A host whose agents run in separate processes MAY expose a relay that agents use to start, follow and cancel the child requests of their `RunSubAgents` calls. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
 
 - Each agent authenticates with its own bearer token. The relay returns `401 UNAUTHORIZED` for a token that matches no agent.
-- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller. `subagent_id` MUST be the caller itself, or be in the `subagents` of the request's `host` snapshot. A request without a `host` may target only the caller. Otherwise the relay returns `403 FORBIDDEN`.
+- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller. Otherwise the relay returns `403 FORBIDDEN`.
 - The relay looks up the parent request. A parent request it does not know returns `400 INVALID_PARENT`, and one that belongs to another agent returns `403 FORBIDDEN`.
+- `subagent_id` MUST be the caller itself, or be in the `subagents` of the `host` snapshot stored with the parent request; a parent without one may target only the caller. Otherwise the relay returns `403 FORBIDDEN`. The relay forwards that stored snapshot and ignores a `host` in the body, so an agent cannot widen its composition.
 - The relay sets the forwarded request's `user_id` to the parent request's. A `user_id` in the body that differs from the parent's returns `403 FORBIDDEN`. An agent cannot act for another user through its subagents.
-- An allowed request is forwarded to the subagent's client, `mode` included.
+- An allowed request is forwarded to the subagent's client, `mode` included. A `409 SESSION_USER_MISMATCH` from the subagent is returned as is.
 - `GET /agent/{subagent_id}/request/{request_id}` streams the request's events. Only the agent named in the request's `parent` may stream it.
 - `POST /agent/{subagent_id}/request/{request_id}/cancel` cancels the request through the subagent's client and returns its result (section 10.4). Only the agent named in the request's `parent` may cancel it; another caller gets `403 FORBIDDEN`, and an unknown request `404 REQUEST_NOT_FOUND`.
 

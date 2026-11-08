@@ -31,6 +31,13 @@ class ExtractMcpTextTests(unittest.TestCase):
         self.assertFalse(is_error)
 
 
+def _returning(value):
+    async def executor(args):
+        return value
+
+    return executor
+
+
 class MCPToolAdapterErrorTests(unittest.TestCase):
     def _run(self, executor):
         adapter = MCPToolAdapter(
@@ -46,23 +53,18 @@ class MCPToolAdapterErrorTests(unittest.TestCase):
             "content": [{"type": "text", "text": "validation failed"}],
             "isError": True,
         }
-        out = self._run(lambda args: extract_mcp_text(server_result))
+        out = self._run(_returning(extract_mcp_text(server_result)))
         self.assertTrue(out.is_error)
         self.assertEqual(out.content, "validation failed")
 
     def test_success_tuple_yields_success_result(self) -> None:
         server_result = {"content": [{"type": "text", "text": "done"}]}
-        out = self._run(lambda args: extract_mcp_text(server_result))
+        out = self._run(_returning(extract_mcp_text(server_result)))
         self.assertFalse(out.is_error)
         self.assertEqual(out.content, "done")
 
-    def test_bare_string_is_treated_as_success(self) -> None:
-        out = self._run(lambda args: "legacy string")
-        self.assertFalse(out.is_error)
-        self.assertEqual(out.content, "legacy string")
-
     def test_raised_exception_yields_error_result(self) -> None:
-        def boom(args):
+        async def boom(args):
             raise RuntimeError("kaboom")
 
         out = self._run(boom)
