@@ -56,12 +56,16 @@ in its token.
   `close`) and `DockerSandboxProvider`: container and volume
   `<ns>-sandbox-<key>` (`<key>` is 16 hex characters of the user id's sha256,
   since Docker names allow no `@` or `:`), labels `mash.sandbox.user` and
-  `mash.namespace`, network `<ns>-sandboxes`, restart policy `unless-stopped`.
+  `mash.namespace`, restart policy `unless-stopped`. Each running sandbox has
+  a network of the same name with a /28 from `MASH_SANDBOX_SUBNETS` (default
+  `10.213.0.0/16`); `stop_sandbox` disconnects everything and removes it, and
+  `prepare` removes those of sandboxes that are not running. A container made
+  for another network is replaced like one made from another image.
   Sandboxes run `ghcr.io/imsid/mash-sandbox:<mashpy version>`
   (`Dockerfile.sandbox`), pulled on first start, or `MASH_SANDBOX_IMAGE`. A
   container whose `Config.Image` is another image, as after a mashpy upgrade,
   is removed and created again; the user's files stay in the volume. A
-  host in a container joins the network and reaches daemons by name; a host on
+  host in a container joins each running sandbox's network and reaches daemons by name; a host on
   the Docker host publishes each daemon's port on `127.0.0.1`. `MASH_SANDBOX_MOUNTS`
   adds `source:target[:ro]` bind mounts; `MASH_SANDBOX_NAMESPACE` replaces
   `mash` in the names.
