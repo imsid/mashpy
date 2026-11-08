@@ -492,6 +492,91 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.is_request_terminal(self.request_id))
 
 
+    async def test_checkpoint_images_are_stored_once_out_of_line(self) -> None:
+        import hashlib
+
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
+                payload={},
+            )
+        )
+        data = (uuid.uuid4().hex * 200)[:5000]
+        sha = hashlib.sha256(data.encode()).hexdigest()
+
+        def _delete_blob() -> None:
+            with psycopg.connect(self.database_url, autocommit=True) as conn:
+                conn.execute("DELETE FROM runtime_blob WHERE sha256 = %s", (sha,))
+
+        self.addCleanup(_delete_blob)
+        image = {"media_type": "image/png", "data": data}
+        checkpoint = {
+            "trace_id": "t-1",
+            "memo": {},
+            "state": {
+                "context": {
+                    "messages": [
+                        {"role": "user", "content": [
+                            {"type": "tool_result", "content": "shot", "images": [dict(image)]},
+                            {"type": "image", "source": {"type": "base64", **image}},
+                        ]}
+                    ]
+                },
+                "result_payloads": [{"result": {"images": [{"media_type": "image/png", "data": "c2hvcnQ="}]}}],
+            },
+        }
+
+        await self.store.save_checkpoint(self.request_id, checkpoint)
+
+        with psycopg.connect(self.database_url, autocommit=True, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT checkpoint::text AS raw, blob_refs FROM runtime_request WHERE request_id = %s",
+                (self.request_id,),
+            ).fetchone()
+            first_used = conn.execute(
+                "SELECT last_used_at FROM runtime_blob WHERE sha256 = %s", (sha,)
+            ).fetchone()["last_used_at"]
+        self.assertNotIn(data, row["raw"])
+        self.assertIn("c2hvcnQ=", row["raw"])  # short data stays inline
+        self.assertEqual(row["blob_refs"], [sha])
+        self.assertEqual(await self.store.get_checkpoint(self.request_id), checkpoint)
+
+        await self.store.save_checkpoint(self.request_id, checkpoint)
+        with psycopg.connect(self.database_url, autocommit=True, row_factory=dict_row) as conn:
+            blobs = conn.execute(
+                "SELECT last_used_at FROM runtime_blob WHERE sha256 = %s", (sha,)
+            ).fetchall()
+        self.assertEqual(len(blobs), 1)
+        self.assertGreaterEqual(blobs[0]["last_used_at"], first_used)
+
+    async def test_checkpoint_with_a_missing_blob_fails_loudly(self) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
+                payload={},
+            )
+        )
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE runtime_request SET checkpoint = %s::jsonb WHERE request_id = %s",
+                ('{"state": {"img": {"media_type": "image/png", "mash_blob": "' + "0" * 64 + '"}}}', self.request_id),
+            )
+        with self.assertRaisesRegex(RuntimeError, "missing blobs"):
+            await self.store.get_checkpoint(self.request_id)
+
+
 class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCase):
     """The store must survive the server closing its connections (issue #133)."""
 

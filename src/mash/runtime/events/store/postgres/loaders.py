@@ -7,7 +7,9 @@ query column lists.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from typing import Any
 
 from ...types import (
@@ -625,14 +627,109 @@ async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None
     return RequestStatus(str(row["status"])) if row is not None else None
 
 
+# An image in a checkpoint is a dict with a string ``media_type`` and its
+# base64 ``data``: a tool result's ``{"media_type", "data"}``, or a provider's
+# image ``source``. Data this long or longer moves to ``runtime_blob``.
+BLOB_MIN_CHARS = 1024
+BLOB_KEY = "mash_blob"
+
+
+def _externalize(value: Any, blobs: dict[str, tuple[str, str]]) -> Any:
+    """A copy of ``value`` with each image's data replaced by its blob key."""
+    if isinstance(value, dict):
+        data = value.get("data")
+        media_type = value.get("media_type")
+        if (
+            isinstance(data, str)
+            and isinstance(media_type, str)
+            and len(data) >= BLOB_MIN_CHARS
+        ):
+            sha = hashlib.sha256(data.encode("utf-8")).hexdigest()
+            blobs[sha] = (media_type, data)
+            slim = {key: item for key, item in value.items() if key != "data"}
+            slim[BLOB_KEY] = sha
+            return slim
+        return {key: _externalize(item, blobs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_externalize(item, blobs) for item in value]
+    return value
+
+
+def _blob_refs(value: Any, refs: set[str]) -> None:
+    if isinstance(value, dict):
+        sha = value.get(BLOB_KEY)
+        if isinstance(sha, str) and "data" not in value:
+            refs.add(sha)
+            return
+        for item in value.values():
+            _blob_refs(item, refs)
+    elif isinstance(value, list):
+        for item in value:
+            _blob_refs(item, refs)
+
+
+def _rehydrate(value: Any, data_by_sha: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        sha = value.get(BLOB_KEY)
+        if isinstance(sha, str) and "data" not in value:
+            full = {key: item for key, item in value.items() if key != BLOB_KEY}
+            full["data"] = data_by_sha[sha]
+            return full
+        return {key: _rehydrate(item, data_by_sha) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_rehydrate(item, data_by_sha) for item in value]
+    return value
+
+
 async def save_checkpoint(
     pool: Any, request_id: str, checkpoint: dict[str, Any]
 ) -> None:
+    """Overwrite the request's checkpoint, with its images stored once each.
+
+    The blobs are written, or their ``last_used_at`` bumped, before the
+    checkpoint that references them, so a reader never finds a reference to
+    a missing blob and retention never deletes one a save is about to use.
+    """
+    blobs: dict[str, tuple[str, str]] = {}
+    slim = _externalize(checkpoint, blobs)
+    now = time.time()
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
+            if blobs:
+                await cursor.execute(
+                    """
+                    UPDATE runtime_blob SET last_used_at = %s
+                    WHERE sha256 = ANY(%s)
+                    RETURNING sha256
+                    """,
+                    (now, list(blobs)),
+                )
+                present = {row["sha256"] for row in await cursor.fetchall()}
+                missing = [
+                    (sha, media_type, data, now)
+                    for sha, (media_type, data) in blobs.items()
+                    if sha not in present
+                ]
+                if missing:
+                    await cursor.executemany(
+                        """
+                        INSERT INTO runtime_blob (sha256, media_type, data, last_used_at)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (sha256) DO UPDATE
+                            SET last_used_at = EXCLUDED.last_used_at
+                        """,
+                        missing,
+                    )
             await cursor.execute(
-                "UPDATE runtime_request SET checkpoint = %s::jsonb WHERE request_id = %s",
-                (json.dumps(checkpoint, ensure_ascii=True, default=str), request_id),
+                """
+                UPDATE runtime_request SET checkpoint = %s::jsonb, blob_refs = %s
+                WHERE request_id = %s
+                """,
+                (
+                    json.dumps(slim, ensure_ascii=True, default=str),
+                    sorted(blobs),
+                    request_id,
+                ),
             )
 
 
@@ -644,9 +741,25 @@ async def get_checkpoint(pool: Any, request_id: str) -> dict[str, Any] | None:
                 (request_id,),
             )
             row = await cursor.fetchone()
-    if row is None or not isinstance(row["checkpoint"], dict):
-        return None
-    return dict(row["checkpoint"])
+            if row is None or not isinstance(row["checkpoint"], dict):
+                return None
+            checkpoint = dict(row["checkpoint"])
+            refs: set[str] = set()
+            _blob_refs(checkpoint, refs)
+            if not refs:
+                return checkpoint
+            await cursor.execute(
+                "SELECT sha256, data FROM runtime_blob WHERE sha256 = ANY(%s)",
+                (sorted(refs),),
+            )
+            data_by_sha = {r["sha256"]: r["data"] for r in await cursor.fetchall()}
+    lost = refs - set(data_by_sha)
+    if lost:
+        raise RuntimeError(
+            f"request '{request_id}' checkpoint references missing blobs: "
+            + ", ".join(sorted(lost))
+        )
+    return _rehydrate(checkpoint, data_by_sha)
 
 
 async def list_running_requests(pool: Any, agent_id: str) -> list[str]:

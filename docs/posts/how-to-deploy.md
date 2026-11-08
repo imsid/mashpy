@@ -323,7 +323,8 @@ mash sandbox stop u-42                        # stop now and remove its network;
 ## Durability
 
 - A request checkpoints its loop state to its `runtime_request` row after
-  every step. After a crash, a restart, or being enabled again, an agent
+  every step. Images in it, such as browser screenshots, are stored once
+  each in `runtime_blob`, and the checkpoint keeps a reference. After a crash, a restart, or being enabled again, an agent
   process continues its own agent's `running` requests from their
   checkpoints. A request continued 10 times without finishing fails.
 - The host continues the workflow runs under its runner id that are queued
