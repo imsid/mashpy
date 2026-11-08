@@ -15,7 +15,7 @@ class MCPToolAdapter:
         name: str,
         description: str,
         parameters: Dict[str, Any],
-        executor: Callable[[Dict[str, Any]], Awaitable[Any]],
+        executor: Callable[[Dict[str, Any]], Awaitable[tuple[str, bool]]],
     ) -> None:
         """Initialize MCP tool adapter.
 
@@ -23,7 +23,7 @@ class MCPToolAdapter:
             name: Tool name.
             description: Tool description.
             parameters: JSON schema for parameters.
-            executor: Async function that runs the tool.
+            executor: Async function returning ``(text, is_error)``.
         """
         self.name = name
         self.description = description
@@ -41,26 +41,12 @@ class MCPToolAdapter:
             ToolResult with execution output.
         """
         try:
-            result = await self._executor(args)
-            text, is_error = self._unpack(result)
-            if is_error:
-                return ToolResult.error(text)
-            return ToolResult.success(text)
+            text, is_error = await self._executor(args)
         except Exception as e:
             return ToolResult.error(f"Error executing MCP tool: {str(e)}")
-
-    @staticmethod
-    def _unpack(result: Any) -> tuple[str, bool]:
-        """Normalize an executor return into ``(text, is_error)``.
-
-        Executors may return a ``(text, is_error)`` tuple (so a server-reported
-        MCP error surfaces as a failed tool result) or a bare string, which is
-        treated as a success.
-        """
-        if isinstance(result, tuple) and len(result) == 2:
-            text, is_error = result
-            return str(text), bool(is_error)
-        return str(result), False
+        if is_error:
+            return ToolResult.error(text)
+        return ToolResult.success(text)
 
     def to_llm_format(self) -> Dict[str, Any]:
         """Convert tool definition to LLM API format."""
@@ -74,20 +60,18 @@ class MCPToolAdapter:
     def from_mcp_tool(
         cls,
         mcp_tool: Dict[str, Any],
-        executor: Callable[[Dict[str, Any]], Awaitable[Any]],
-        prefix: str = "mcp_",
+        executor: Callable[[Dict[str, Any]], Awaitable[tuple[str, bool]]],
     ) -> MCPToolAdapter:
         """Create an adapter from an MCP tool definition.
 
         Args:
             mcp_tool: MCP tool definition dictionary.
-            executor: Async function that runs the tool.
-            prefix: Prefix to add to tool name (default: "mcp_").
+            executor: Async function returning ``(text, is_error)``.
 
         Returns:
             MCPToolAdapter instance.
         """
-        name = f"{prefix}{mcp_tool.get('name', 'unknown')}"
+        name = mcp_tool.get('name', 'unknown')
         description = mcp_tool.get('description', '')
         parameters = mcp_tool.get('inputSchema', {})
 

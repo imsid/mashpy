@@ -123,12 +123,7 @@ async def _run_in_daemon_thread(fn: Any, *args: Any) -> Any:
             pass
 
     threading.Thread(target=_target, name="mash-code-step", daemon=True).start()
-    result = await future
-    # A sync ``run`` may still hand back an awaitable (e.g. a lambda over an
-    # async function); finish it on the loop.
-    if inspect.isawaitable(result):
-        result = await result
-    return result
+    return await future
 
 
 async def _record_step(

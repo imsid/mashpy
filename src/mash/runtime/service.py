@@ -125,9 +125,6 @@ class AgentRuntime:
     def get_max_steps(self) -> int:
         return self.agent.config.max_steps
 
-    def get_mcp_servers(self) -> Sequence[MCPServerConfig]:
-        return self._mcp_servers
-
     def get_web_search_server(self) -> MCPServerConfig | None:
         return self._web_search_server
 
@@ -357,11 +354,11 @@ class AgentRuntime:
     async def open(self) -> None:
         if self._is_open:
             return
-        await self._connect_mcp_servers()
         await self.store.open()
         await self.runtime_store.open()
         if self._cortex is not None:
             await self._cortex.open()
+        await self._connect_mcp_servers()
         await self.engine.open()
         self._is_open = True
 

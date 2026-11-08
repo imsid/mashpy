@@ -12,10 +12,9 @@
 
 ## Main Components
 - `types.py`: canonical typed MCP config structures.
-- `manager.py`: MCP manager lifecycle and server coordination.
-- `client.py`: client-side MCP communication helpers.
-- `server.py`: server behavior and protocol handling.
-- `host.py`: host-facing integration helpers.
+- `manager.py`: connects each server, keeps its tool list, routes tool calls, and answers elicitation requests.
+- `client.py`: the async MCP HTTP client.
+- `server.py`: one connected client and its `allowed_tools` filter.
 
 ## Role In The System
 - `runtime` and `tools` should consume MCP behavior through this package.

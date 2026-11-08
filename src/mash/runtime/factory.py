@@ -240,14 +240,13 @@ def register_mcp_tools(self: "AgentRuntime", agent: Agent) -> None:
     if manager is None:
         return
     web_search = self.get_web_search_server()
-    for server_name, tools in manager.get_all_tools(prefix="mcp_").items():
+    for server_name, tools in manager.get_all_tools().items():
         plain = web_search is not None and server_name == web_search.name
         for mcp_tool in tools:
             original_name = mcp_tool["metadata"]["original_name"]
             adapter = MCPToolAdapter.from_mcp_tool(
                 mcp_tool={**mcp_tool, "name": original_name} if plain else mcp_tool,
                 executor=_mcp_executor(manager, server_name, original_name),
-                prefix="",
             )
             if adapter.name not in agent.tools:
                 agent.tools.register(adapter)
@@ -255,11 +254,7 @@ def register_mcp_tools(self: "AgentRuntime", agent: Agent) -> None:
 
 def _mcp_executor(manager: MCPManager, server_name: str, tool_name: str):
     async def executor(args: dict[str, Any]) -> tuple[str, bool]:
-        try:
-            result = await manager.call_tool(server_name, tool_name, args)
-        except Exception as exc:
-            return f"Error: {exc}", True
-        return extract_mcp_text(result)
+        return extract_mcp_text(await manager.call_tool(server_name, tool_name, args))
 
     return executor
 

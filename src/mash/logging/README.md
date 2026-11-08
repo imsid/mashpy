@@ -125,7 +125,6 @@ Notes:
 ### MCP Client Events
 - `mcp.client.connect`
 - `mcp.client.connected`
-- `mcp.client.disconnect`
 - `mcp.client.error`
 
 Typical fields:

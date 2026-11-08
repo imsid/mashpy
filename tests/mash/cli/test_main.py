@@ -345,7 +345,7 @@ def test_importing_the_library_reads_no_dotenv() -> None:
         "def refuse(*args, **kwargs):\n"
         "    raise SystemExit('the library loaded .env')\n"
         "dotenv.load_dotenv = refuse\n"
-        "import mash, mash.api, mash.core.config, mash.mcp.host, mash.runtime, mash.cli.main\n"
+        "import mash, mash.api, mash.core.config, mash.mcp, mash.runtime, mash.cli.main\n"
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

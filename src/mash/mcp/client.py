@@ -58,8 +58,6 @@ class MCPHTTPClient:
         self.base_url = self._normalize_url(base_url)
         self._http: Optional[httpx.AsyncClient] = None
         self.session_id: Optional[str] = None
-        self._initialized: bool = False
-        self.server_info: Dict[str, Any] = {}
         self.client_name = client_name
         self.client_version = client_version
         self.protocol_version = protocol_version
@@ -73,7 +71,6 @@ class MCPHTTPClient:
                     continue
                 self._custom_headers[key] = str(value)
         self._sse_task: Optional[asyncio.Task[None]] = None
-        self._sse_url: Optional[str] = None
 
     async def connect(self) -> None:
         """Run the MCP handshake and start listening for server messages."""
@@ -165,13 +162,12 @@ class MCPHTTPClient:
             payload, timeout=_HANDSHAKE_TIMEOUT_S, label="initialize"
         )
         events = self._parse_events(response.text, response.headers.get("Content-Type"))
-        self.server_info = self._extract_result_payload(payload["id"], events)
+        self._extract_result_payload(payload["id"], events)
         self.session_id = response.headers.get("MCP-Session-ID")
         if not self.session_id:
             LOGGER.info(
                 "Server did not return MCP-Session-ID header; continuing in stateless mode"
             )
-        self._initialized = True
         await self._send_notification("notifications/initialized")
 
     async def _send_notification(
@@ -197,7 +193,6 @@ class MCPHTTPClient:
                 pass
             self._sse_task = None
         self.session_id = None
-        self._initialized = False
         if self._http is not None:
             await self._http.aclose()
             self._http = None
@@ -210,8 +205,6 @@ class MCPHTTPClient:
         method: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> RPCResponse:
-        if not self._initialized:
-            raise MCPClientError("Client is not initialized")
         request_id = str(uuid.uuid4())
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
@@ -289,9 +282,6 @@ class MCPHTTPClient:
     # ------------------------------------------------------------------
     # Public interface used by the host
     # ------------------------------------------------------------------
-    def get_server_info(self) -> Dict[str, Any]:
-        return self.server_info
-
     async def list_tools(self) -> List[Dict[str, Any]]:
         response = await self._make_request("tools/list")
         await self._handle_interactions(response)
@@ -341,17 +331,13 @@ class MCPHTTPClient:
     def _start_sse_listener(self) -> None:
         if self._sse_task or not self.session_id:
             return
-        self._sse_url = self._resolve_sse_url()
-        if not self._sse_url:
-            LOGGER.info("Unable to determine SSE endpoint; skipping listener")
-            return
-        LOGGER.info("Starting SSE listener at %s", self._sse_url)
+        LOGGER.info("Starting SSE listener at %s", self.base_url)
         self._sse_task = asyncio.get_running_loop().create_task(
             self._run_sse_listener(), name=f"mcp-sse-{self.client_name}"
         )
 
     async def _run_sse_listener(self) -> None:
-        if not self._sse_url or self._http is None:
+        if self._http is None:
             return
         headers = self._default_headers()
         headers["Accept"] = "text/event-stream"
@@ -359,7 +345,7 @@ class MCPHTTPClient:
             try:
                 async with self._http.stream(
                     "GET",
-                    self._sse_url,
+                    self.base_url,
                     headers=headers,
                     timeout=httpx.Timeout(None, connect=_HANDSHAKE_TIMEOUT_S),
                 ) as response:
@@ -387,9 +373,6 @@ class MCPHTTPClient:
             except httpx.HTTPError as exc:
                 LOGGER.error("SSE connection error: %r", exc)
                 await asyncio.sleep(1)
-
-    def _resolve_sse_url(self) -> Optional[str]:
-        return self.base_url
 
     async def _handle_sse_payload(self, payload: str) -> None:
         try:

@@ -63,11 +63,6 @@ class MCPToolAdapterErrorTests(unittest.TestCase):
         self.assertFalse(out.is_error)
         self.assertEqual(out.content, "done")
 
-    def test_bare_string_is_treated_as_success(self) -> None:
-        out = self._run(_returning("legacy string"))
-        self.assertFalse(out.is_error)
-        self.assertEqual(out.content, "legacy string")
-
     def test_raised_exception_yields_error_result(self) -> None:
         async def boom(args):
             raise RuntimeError("kaboom")
