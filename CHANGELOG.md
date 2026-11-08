@@ -9,6 +9,25 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.36.0](https://github.com/imsid/mashpy/compare/mashpy-v0.35.0...mashpy-v0.36.0) (2026-11-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** no per-request state on the LLM provider; bounded per-agent session list ([#270](https://github.com/imsid/mashpy/issues/270))
+* **runtime:** bounded trace, session and history reads; tools built once; running cap ([#269](https://github.com/imsid/mashpy/issues/269))
+* **storage:** bound Postgres connections, cheapen event and checkpoint writes, add retention ([#267](https://github.com/imsid/mashpy/issues/267))
+
+### Bug Fixes
+
+* **runtime:** no per-request state on the LLM provider; bounded per-agent session list ([#270](https://github.com/imsid/mashpy/issues/270)) ([e7b557b](https://github.com/imsid/mashpy/commit/e7b557bde2b6e07db4fe45023c7ee6e3caf711d0))
+
+
+### Performance
+
+* **runtime:** bounded trace, session and history reads; tools built once; running cap ([#269](https://github.com/imsid/mashpy/issues/269)) ([55cb0d4](https://github.com/imsid/mashpy/commit/55cb0d49188c973d74d4fb0a6ccf3b88407f79d7))
+* **storage:** bound Postgres connections, cheapen event and checkpoint writes, add retention ([#267](https://github.com/imsid/mashpy/issues/267)) ([5fa7455](https://github.com/imsid/mashpy/commit/5fa7455b08edd017b30e7e09224c74555916ca4f))
+
 ## [0.35.0](https://github.com/imsid/mashpy/compare/mashpy-v0.34.0...mashpy-v0.35.0) (2026-11-08)
 
 
