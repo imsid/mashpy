@@ -92,10 +92,10 @@ function ApiReference() {
         <div className="space-y-6">
           <p className="text-sm text-slate-500">
             {spec.info?.title} {spec.info?.version} · generated from{' '}
-            <a className="underline" href="/openapi.json">
-              /openapi.json
+            <a className="underline" href="/api/v1/openapi.json">
+              /api/v1/openapi.json
             </a>{' '}
-            (also at <a className="underline" href="/docs">/docs</a>).
+            (also at <a className="underline" href="/api/v1/docs">/api/v1/docs</a>).
           </p>
           {groupOperations(spec).map(([group, ops]) => (
             <section key={group}>

@@ -10,10 +10,10 @@ import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse, JSONResponse
 
-from mash.api.logging import PostgresAPIEventStore
-from mash.api.middleware import APILoggingMiddleware
+from mash.api.middleware import BodyLimitMiddleware
 from mash.api.routes.agent import build_agent_router
 from mash.api.routes.h2a import build_h2a_router
 from mash.api.routes.evals import build_evals_router
@@ -190,8 +190,6 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             )
         await pool.start()
         database_url = resolved_config.resolved_runtime_database_url() or ""
-        api_event_store = PostgresAPIEventStore(database_url)
-        await api_event_store.open()
         eval_service: EvalService | None = None
         if database_url:
             eval_store = PostgresEvalStore(database_url)
@@ -212,7 +210,6 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
                 logger.info("Exporting traces and logs over OTLP")
         application.state.runtime_state = AppRuntimeState(
             pool=pool,
-            api_event_store=api_event_store,
             eval_service=eval_service,
             api_key=resolved_config.resolved_api_key(),
             host_secret=resolved_config.resolved_host_secret(),
@@ -230,7 +227,6 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
                     await state.otel_exporter.stop()
                 if state.eval_service is not None:
                     await state.eval_service._store.close()
-                await state.api_event_store.close()
                 if getattr(state.pool, "cortex", None) is not None:
                     from mash.agents.cortex.routes import cortex_context
 
@@ -240,7 +236,15 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
                 await state.pool.close()
             application.state.runtime_state = None
 
-    app = FastAPI(title="Mash Host", version="1.0.0", lifespan=_lifespan)
+    # The API's docs are served under the API prefix, behind its key check.
+    app = FastAPI(
+        title="Mash Host",
+        version="1.0.0",
+        lifespan=_lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     mount_admin_ui(app, api_prefix=resolved_config.api_prefix)
 
     cors_origins = resolved_config.resolved_cors_origins()
@@ -253,7 +257,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             allow_credentials=False,
         )
 
-    app.add_middleware(APILoggingMiddleware, config=resolved_config)
+    app.add_middleware(BodyLimitMiddleware, prefix=resolved_config.api_prefix)
 
     @app.exception_handler(APIError)
     async def _api_error_handler(_: Request, exc: APIError) -> JSONResponse:
@@ -368,6 +372,18 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api = APIRouter(
         prefix=resolved_config.api_prefix, dependencies=[Depends(_authorize)]
     )
+
+    @api.get("/openapi.json", include_in_schema=False)
+    async def openapi_schema() -> JSONResponse:
+        return JSONResponse(app.openapi())
+
+    @api.get("/docs", include_in_schema=False)
+    async def api_docs() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url=f"{resolved_config.api_prefix}/openapi.json",
+            title="Mash Host API",
+        )
+
     api.include_router(build_thoughts_router())
     api.include_router(build_agent_router())
     api.include_router(build_host_router())
@@ -395,8 +411,8 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             "api": {
                 "version": "v1",
                 "base": resolved_config.api_prefix,
-                "openapi": "/openapi.json",
-                "docs": "/docs",
+                "openapi": f"{resolved_config.api_prefix}/openapi.json",
+                "docs": f"{resolved_config.api_prefix}/docs",
             },
         }
 

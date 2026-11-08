@@ -128,7 +128,6 @@ class LocalAgentProvider:
                 relay.include_router(build_browser_link_router())
                 relay.state.runtime_state = AppRuntimeState(
                     pool=self._pool,
-                    api_event_store=None,
                     eval_service=None,
                     api_key=None,
                     default_events_limit=2000,

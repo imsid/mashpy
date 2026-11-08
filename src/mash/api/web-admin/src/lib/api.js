@@ -99,9 +99,9 @@ async function request(path, { method = 'GET', params, body, signal } = {}) {
   return payload && 'data' in payload ? payload.data : payload;
 }
 
-// The OpenAPI schema lives at the app root, outside the /api/v1 envelope.
+// The OpenAPI schema is served under /api/v1, outside its JSON envelope.
 async function openapi() {
-  const response = await fetch('/openapi.json');
+  const response = await fetch(`${API_BASE}/openapi.json`);
   if (!response.ok) {
     throw new ApiError(`failed to load OpenAPI schema (${response.status})`, {
       status: response.status,
@@ -169,7 +169,6 @@ export const api = {
   traceAnalysis: (params) => request('/telemetry/trace/analysis', { params }),
   listEvents: (params) => request('/telemetry/events', { params }),
   usage: (params) => request('/telemetry/usage', { params }),
-  listApiEvents: (params) => request('/telemetry/api/events', { params }),
   listCommandEvents: (params) => request('/telemetry/command-events', { params }),
 
   // --- Trace actions ---
