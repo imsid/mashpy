@@ -93,6 +93,14 @@ def _delete_app_rows(database_url: str, app_id: str) -> None:
                 "DELETE FROM runtime_event_log WHERE app_id = %s",
                 (app_id,),
             )
+            cursor.execute(
+                "DELETE FROM runtime_request WHERE agent_id = %s",
+                (app_id,),
+            )
+            cursor.execute(
+                "DELETE FROM runtime_request_seq WHERE request_id LIKE %s",
+                (f"{app_id}-%",),
+            )
 
 
 def _terminate_other_backends(database_url: str) -> None:
@@ -378,10 +386,8 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([item.event_id for item in listed], [event.event_id])
 
-        latest_trace = await self.store.get_latest_trace("store-test", "session-1")
-        self.assertIsNotNone(latest_trace)
-        assert latest_trace is not None
-        self.assertEqual(latest_trace["trace_id"], "trace-1")
+        # A trace is a request's; events outside any request are not one.
+        self.assertIsNone(await self.store.get_latest_trace("store-test", "session-1"))
 
 
     async def test_request_waiter_wakes_on_append(self) -> None:
@@ -860,10 +866,13 @@ class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
             RuntimeEvent(
                 app_id=self.app_id,
                 agent_id=self.app_id,
+                request_id=f"{self.app_id}-{trace_id}",
                 session_id="session-1",
                 trace_id=trace_id,
                 host_id=host_id,
-                event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
                 created_at=created_at,
                 payload={"message": "hi"},
             )
@@ -908,10 +917,30 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         created_at: float,
         status: str | None = None,
     ) -> None:
+        # Each trace is one request; its first event is the accepted one.
+        request_id = f"{self.app_id}-{trace_id}"
+        if not await self.store.has_request(request_id):
+            accepted = RuntimeEventType.INVOKE_AGENT_START.value
+            await self.store.append_event(
+                RuntimeEvent(
+                    app_id=self.app_id,
+                    agent_id=self.app_id,
+                    request_id=request_id,
+                    session_id="session-1",
+                    trace_id=trace_id,
+                    host_id="assistant",
+                    event_type=accepted,
+                    lifecycle=seed_lifecycle(accepted),
+                    dedupe_key="request.accepted",
+                    created_at=created_at,
+                    payload={},
+                )
+            )
         await self.store.append_event(
             RuntimeEvent(
                 app_id=self.app_id,
                 agent_id=self.app_id,
+                request_id=request_id,
                 session_id="session-1",
                 trace_id=trace_id,
                 host_id="assistant",
@@ -932,9 +961,14 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             trace_id="t-failed", event_type=END, created_at=201.0, status="error"
         )
         await self._append(trace_id="t-open", event_type=started, created_at=300.0)
-        # A failure followed by a completed retry: the latest terminal wins.
+        # A failure, a resume and a completed retry: the latest terminal wins.
         await self._append(
             trace_id="t-retried", event_type=END, created_at=400.0, status="error"
+        )
+        await self._append(
+            trace_id="t-retried",
+            event_type=RuntimeEventType.REQUEST_RESUMED.value,
+            created_at=400.5,
         )
         await self._append(trace_id="t-retried", event_type=END, created_at=401.0, status="ok")
 
@@ -997,10 +1031,16 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         )
         # A trace with no request (or an unknown trace) resolves to nothing
         # rather than guessing.
-        await self._append(
-            trace_id="t-bare",
-            event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
-            created_at=200.0,
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id=self.app_id,
+                agent_id=self.app_id,
+                session_id="session-1",
+                trace_id="t-bare",
+                event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
+                created_at=200.0,
+                payload={},
+            )
         )
         self.assertIsNone(
             await self.store.get_request_id_for_trace("t-bare", app_id=self.app_id)

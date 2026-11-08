@@ -534,6 +534,19 @@ class _TestRuntimeStore:
         )
         return summaries[: max(1, int(limit))]
 
+    async def session_usage(self, session_id: str) -> dict[str, int]:
+        async with self._lock:
+            events = [e for e in self._events if e.session_id == session_id]
+        totals = {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+        for event in events:
+            if event.event_type != RuntimeEventType.CHAT_END.value:
+                continue
+            usage = semconv.token_usage(event_attributes(event.payload))
+            totals["total_tokens"] += usage["input"] + usage["output"]
+            totals["cache_read_tokens"] += usage["cache_read"]
+            totals["cache_write_tokens"] += usage["cache_write"]
+        return totals
+
     async def list_sessions(
         self,
         *,

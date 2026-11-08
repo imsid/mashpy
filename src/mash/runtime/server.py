@@ -185,15 +185,10 @@ class AgentServer:
             ) from self._startup_error
 
     async def health(self, request: Request) -> Response:
+        """Liveness only: no database call, so the host's polls stay cheap."""
         del request
-        session_info = await self.runtime.get_session_info()
         return JSONResponse(
-            {
-                "status": "ok",
-                "agent_id": self.agent_id,
-                "app_id": self.runtime.app_id,
-                "session": session_info,
-            }
+            {"status": "ok", "agent_id": self.agent_id, "app_id": self.runtime.app_id}
         )
 
     async def submit_request(self, request: Request) -> Response:

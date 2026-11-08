@@ -167,12 +167,6 @@ class AgentRuntime:
         self._browser_tools = (host_api_url, token)
         factory_helpers.register_browser_tools(self, self.agent)
 
-    async def get_session_info(
-        self,
-        session_id: str | None = None,
-    ) -> dict[str, Any]:
-        return await context_helpers.get_session_info(self, session_id)
-
     async def get_history_turns(
         self,
         session_id: str,

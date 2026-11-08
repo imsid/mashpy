@@ -21,23 +21,6 @@ if TYPE_CHECKING:
     from .service import AgentRuntime
 
 
-async def get_session_info(
-    self: "AgentRuntime",
-    session_id: str | None = None,
-) -> dict[str, Any]:
-    session_id_value = str(session_id or self.session_id).strip()
-    if not session_id_value:
-        raise ValueError("session_id is required")
-    return await sessions.session_info(
-        self.store,
-        getattr(self, "runtime_store", None),
-        app_id=self.app_id,
-        session_id=session_id_value,
-        model=self.get_model(),
-        max_steps=self.get_max_steps(),
-    )
-
-
 async def get_history_turns(
     self: "AgentRuntime",
     session_id: str,

@@ -12,6 +12,8 @@ import json
 import time
 from typing import Any
 
+from mash.otel import semconv
+
 from ...types import (
     FeedbackRecord,
     RequestIdentity,
@@ -20,6 +22,7 @@ from ...types import (
     RuntimeEventType,
     accepted_request,
     accepted_user_id,
+    event_attributes,
 )
 
 
@@ -266,7 +269,52 @@ def _event_params(event: RuntimeEvent) -> dict[str, Any]:
 def _projects_state(event: RuntimeEvent) -> bool:
     return (
         event.lifecycle is not None
-        or event.event_type == RuntimeEventType.REQUEST_MODE_CHANGED.value
+        or event.event_type
+        in (RuntimeEventType.REQUEST_MODE_CHANGED.value, RuntimeEventType.CHAT_END.value)
+    )
+
+
+def _chat_usage(event: RuntimeEvent) -> list[int]:
+    """Input, output, cache-read and cache-write tokens of a ``chat.end``."""
+    if event.event_type != RuntimeEventType.CHAT_END.value:
+        return [0, 0, 0, 0]
+    usage = semconv.token_usage(event_attributes(event.payload))
+    return [usage["input"], usage["output"], usage["cache_read"], usage["cache_write"]]
+
+
+async def _project_rollup(cursor: Any, event: RuntimeEvent, *, inserted: bool) -> None:
+    """Fold a lifecycle or ``chat.end`` event into its request's rollup columns.
+
+    Ids keep the first non-null value and ``last_event_at`` only moves
+    forward, so projecting a duplicate again changes nothing; tokens are added
+    only for an event stored for the first time.
+    """
+    if event.lifecycle is None and event.event_type != RuntimeEventType.CHAT_END.value:
+        return
+    usage = _chat_usage(event) if inserted else [0, 0, 0, 0]
+    await cursor.execute(
+        """
+        UPDATE runtime_request
+        SET trace_id = COALESCE(trace_id, %s),
+            host_id = COALESCE(host_id, %s),
+            workflow_id = COALESCE(workflow_id, %s),
+            workflow_run_id = COALESCE(workflow_run_id, %s),
+            last_event_at = GREATEST(COALESCE(last_event_at, 0), %s),
+            input_tokens = input_tokens + %s,
+            output_tokens = output_tokens + %s,
+            cache_read_tokens = cache_read_tokens + %s,
+            cache_write_tokens = cache_write_tokens + %s
+        WHERE request_id = %s
+        """,
+        (
+            event.trace_id,
+            event.host_id,
+            event.workflow_id,
+            event.workflow_run_id,
+            float(event.created_at),
+            *usage,
+            event.request_id,
+        ),
     )
 
 
@@ -307,6 +355,7 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                 # there; skipping this would leave a resumed request stuck
                 # non-terminal.
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
+                await _project_rollup(cursor, event, inserted=inserted)
                 if inserted:
                     await _project_mode(cursor, event)
     return dict_to_event(stored)
@@ -1004,6 +1053,22 @@ async def list_feedback(
     return [dict_to_feedback(row) for row in rows]
 
 
+# The API's trace statuses, by request status.
+_TRACE_STATUS_SQL = """
+    CASE status
+        WHEN 'failed' THEN 'error'
+        WHEN 'running' THEN 'in_progress'
+        ELSE status
+    END
+"""
+_REQUEST_STATUS_BY_TRACE_STATUS = {
+    "completed": "completed",
+    "error": "failed",
+    "cancelled": "cancelled",
+    "in_progress": "running",
+}
+
+
 async def list_recent_traces(
     pool: Any,
     app_id: str | None = None,
@@ -1013,12 +1078,16 @@ async def list_recent_traces(
     status: str | None = None,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
-    # app_id=None lists a session's traces across every executing agent
-    # (primary + subagents + cross-agent workflow tasks).
+    """The most recently active traces, newest first; one per request.
+
+    The page comes from ``runtime_request`` by ``last_event_at``; the event
+    log is read only for the requests on it. ``app_id=None`` lists a
+    session's traces across every agent (primary, subagents, workflow steps).
+    """
     filters = ["trace_id IS NOT NULL"]
     params: list[Any] = []
     if app_id is not None:
-        filters.append("app_id = %s")
+        filters.append("agent_id = %s")
         params.append(app_id)
     if session_id is not None:
         filters.append("session_id = %s")
@@ -1026,66 +1095,43 @@ async def list_recent_traces(
     if host_id is not None:
         filters.append("host_id = %s")
         params.append(host_id)
-    status_filter = ""
     if status is not None:
-        status_filter = "WHERE status = %s"
-        params.append(status)
+        request_status = _REQUEST_STATUS_BY_TRACE_STATUS.get(status)
+        if request_status is None:
+            return []
+        filters.append("status = %s")
+        params.append(request_status)
     params.append(max(1, int(limit)))
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
-            # The trace's latest lifecycle event wins, else it is still
-            # running: an invoke_agent.end reports its status, and a resume
-            # maps to in_progress, so a resumed request stops reporting the
-            # terminal state it was resumed out of.
             await cursor.execute(
                 f"""
-                SELECT * FROM (
-                    SELECT
-                        trace_id,
-                        session_id,
-                        MAX(host_id) AS host_id,
-                        MAX(agent_id) AS agent_id,
-                        MAX(workflow_id) AS workflow_id,
-                        MAX(workflow_run_id) AS workflow_run_id,
-                        MIN(created_at) AS started_at,
-                        MAX(created_at) AS latest_event_at,
-                        MAX(event_id) AS latest_event_id,
-                        COUNT(*) AS event_count,
-                        CASE (ARRAY_AGG(
-                                  CASE WHEN event_type = 'invoke_agent.end'
-                                       THEN payload ->> 'status' ELSE 'resumed' END
-                                  ORDER BY created_at DESC, event_id DESC)
-                              FILTER (WHERE event_type IN (
-                                  'invoke_agent.end', 'mash.request.resumed'
-                              )))[1]
-                            WHEN 'error' THEN 'error'
-                            WHEN 'ok' THEN 'completed'
-                            WHEN 'cancelled' THEN 'cancelled'
-                            ELSE 'in_progress'
-                        END AS status,
-                        COALESCE(SUM(
-                            CASE WHEN event_type = 'chat.end' THEN
-                                COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.input_tokens', '')::numeric, 0)
-                                + COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.output_tokens', '')::numeric, 0)
-                            ELSE 0 END
-                        ), 0) AS total_tokens,
-                        COALESCE(SUM(
-                            CASE WHEN event_type = 'chat.end' THEN
-                                COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_read.input_tokens', '')::numeric, 0)
-                            ELSE 0 END
-                        ), 0) AS cache_read_tokens,
-                        COALESCE(SUM(
-                            CASE WHEN event_type = 'chat.end' THEN
-                                COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_creation.input_tokens', '')::numeric, 0)
-                            ELSE 0 END
-                        ), 0) AS cache_write_tokens
-                    FROM runtime_event_log
+                WITH page AS (
+                    SELECT request_id, trace_id, session_id, host_id, agent_id,
+                           workflow_id, workflow_run_id, last_event_at,
+                           {_TRACE_STATUS_SQL} AS status,
+                           input_tokens + output_tokens AS total_tokens,
+                           cache_read_tokens, cache_write_tokens
+                    FROM runtime_request
                     WHERE {' AND '.join(filters)}
-                    GROUP BY trace_id, session_id
-                ) traces
-                {status_filter}
-                ORDER BY latest_event_at DESC, latest_event_id DESC
-                LIMIT %s
+                    ORDER BY last_event_at DESC, request_id DESC
+                    LIMIT %s
+                )
+                SELECT page.*,
+                       events.event_count,
+                       COALESCE(events.started_at, page.last_event_at) AS started_at,
+                       COALESCE(events.latest_event_at, page.last_event_at) AS latest_event_at,
+                       COALESCE(events.latest_event_id, 0) AS latest_event_id
+                FROM page
+                CROSS JOIN LATERAL (
+                    SELECT COUNT(*) AS event_count,
+                           MIN(created_at) AS started_at,
+                           MAX(created_at) AS latest_event_at,
+                           MAX(event_id) AS latest_event_id
+                    FROM runtime_event_log
+                    WHERE runtime_event_log.request_id = page.request_id
+                ) AS events
+                ORDER BY page.last_event_at DESC, page.request_id DESC
                 """,
                 tuple(params),
             )
@@ -1152,10 +1198,13 @@ async def list_sessions(
     workflow_id: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    # agent_id matches sessions the agent participated in (any event it
-    # logged), not just sessions it owns — subagent runs count. workflow_id
-    # matches sessions where any event ran under that workflow.
-    filters = ["owner_agent_id IS NOT NULL"]
+    """Sessions by latest activity, rolled up from their requests.
+
+    ``agent_id`` matches sessions the agent ran any request in, subagent runs
+    included; ``workflow_id`` matches sessions where that workflow ran. The
+    owner is the agent of the session's first request.
+    """
+    filters = ["TRUE"]
     params: list[Any] = []
     if agent_id is not None:
         filters.append("%s = ANY(sessions.agent_ids)")
@@ -1167,33 +1216,20 @@ async def list_sessions(
         SELECT *, COUNT(*) OVER () AS total_count FROM (
             SELECT
                 session_id,
-                (ARRAY_AGG(agent_id ORDER BY created_at ASC, event_id ASC))[1]
+                (ARRAY_AGG(agent_id ORDER BY COALESCE(started_at, updated_at), request_id))[1]
                     AS owner_agent_id,
                 ARRAY_AGG(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL)
                     AS agent_ids,
                 ARRAY_AGG(DISTINCT workflow_id) FILTER (WHERE workflow_id IS NOT NULL)
                     AS workflow_ids,
                 MAX(host_id) AS host_id,
-                MIN(created_at) AS started_at,
-                MAX(created_at) AS latest_event_at,
-                COUNT(DISTINCT trace_id) AS trace_count,
-                COALESCE(SUM(
-                    CASE WHEN event_type = 'chat.end' THEN
-                        COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.input_tokens', '')::numeric, 0)
-                        + COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.output_tokens', '')::numeric, 0)
-                    ELSE 0 END
-                ), 0) AS total_tokens,
-                COALESCE(SUM(
-                    CASE WHEN event_type = 'chat.end' THEN
-                        COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_read.input_tokens', '')::numeric, 0)
-                    ELSE 0 END
-                ), 0) AS cache_read_tokens,
-                COALESCE(SUM(
-                    CASE WHEN event_type = 'chat.end' THEN
-                        COALESCE(NULLIF(payload -> 'attributes' ->> 'gen_ai.usage.cache_creation.input_tokens', '')::numeric, 0)
-                    ELSE 0 END
-                ), 0) AS cache_write_tokens
-            FROM runtime_event_log
+                MIN(COALESCE(started_at, updated_at)) AS started_at,
+                COALESCE(MAX(last_event_at), MAX(updated_at)) AS latest_event_at,
+                COUNT(trace_id) AS trace_count,
+                SUM(input_tokens + output_tokens) AS total_tokens,
+                SUM(cache_read_tokens) AS cache_read_tokens,
+                SUM(cache_write_tokens) AS cache_write_tokens
+            FROM runtime_request
             WHERE session_id IS NOT NULL
             GROUP BY session_id
         ) sessions
@@ -1227,6 +1263,28 @@ async def list_sessions(
     ]
     total = int(rows[0]["total_count"]) if rows else 0
     return {"sessions": sessions, "total": total}
+
+
+async def session_usage(pool: Any, session_id: str) -> dict[str, int]:
+    """Tokens a session's requests used, across every agent."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                       COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens
+                FROM runtime_request
+                WHERE session_id = %s
+                """,
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+    return {
+        "total_tokens": int(row["total_tokens"]),
+        "cache_read_tokens": int(row["cache_read_tokens"]),
+        "cache_write_tokens": int(row["cache_write_tokens"]),
+    }
 
 
 async def aggregate_usage(

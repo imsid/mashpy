@@ -178,16 +178,7 @@ def build_agent_router() -> APIRouter:
 
     @router.get("/agent/{agent_id}")
     async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
-        state = state_from_request(request)
-        described = _described_agent(request, agent_id)
-        if not state.pool.is_agent_enabled(agent_id):
-            return success({"agent": described, "session": None})
-        client = get_client(request, agent_id)
-        health_payload = await client.health()
-        session_payload = (
-            health_payload.get("session") if isinstance(health_payload, dict) else {}
-        )
-        return success({"agent": described, "session": session_payload})
+        return success({"agent": _described_agent(request, agent_id)})
 
     @router.post("/agent/{agent_id}/request")
     async def submit_request(

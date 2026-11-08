@@ -209,7 +209,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
 `GET /api/v1/agent/{agent_id}`
-- Returns agent metadata plus current session info; `session` is null for a disabled agent.
+- Returns `{"agent": ...}`: the agent's metadata, `enabled` and `status`. It does not call the agent.
 - Path params:
   - `agent_id`
 - Returns:
@@ -692,19 +692,23 @@ messages, which can quote inputs; without it a failed span keeps its
   - `source`, `agent_id`, `session_id`, `limit`
 
 `GET /api/v1/telemetry/sessions`
-- Rolls up sessions from the runtime event log, most recent activity first. A
-  session is the container for traces; its owner is the agent of its earliest
-  event (the primary for a chat session). Traces within a session may run on
-  other agents (subagents, cross-agent workflow tasks).
+- Rolls up sessions from their requests (`runtime_request`), most recent
+  activity first. A session is the container for traces; its owner is the
+  agent of its first request (the primary for a chat session). Traces within a
+  session may run on other agents (subagents, cross-agent workflow tasks).
+  Activity is the latest lifecycle or model-call event of any request.
 - Query params:
-  - `agent_id` optional; when set, scopes to sessions owned by that agent
+  - `agent_id` optional; when set, scopes to sessions the agent ran a request in, subagent runs included
+  - `workflow_id` optional; when set, scopes to sessions where that workflow ran
   - `limit` optional, clamped to `1..2000`
 - Returns:
   - `sessions`: list of `{ session_id, owner_agent_id, host_id, started_at, latest_event_at, trace_count, total_tokens, cache_read_tokens, cache_write_tokens }`
   - `source`, `agent_id`, `limit`
 
 `GET /api/v1/telemetry/traces`
-- Lists recent traces, ordered by most recent first.
+- Lists recent traces, most recently active first. A trace is one request's:
+  the page is picked from `runtime_request` and only its requests' events are
+  read.
 - Query params:
   - `agent_id` or `session_id` required (at least one). With only `session_id`,
     lists that session's traces across every executing agent.
