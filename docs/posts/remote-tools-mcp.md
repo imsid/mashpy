@@ -79,13 +79,9 @@ Remote calls add failure modes like an unreachable server or expired auth, and t
 
 Because an MCP call is just a tool call, the durability machinery from [the durable loop post](durable-agent-loop.md) applies unchanged: each call is its own checkpoint, completed calls are skipped on resume, and transient failures get the standard retry treatment.
 
-## Remote context, beyond tools
+## Beyond tools
 
-Tools are the most-used MCP surface, and the client speaks the rest of the core protocol too:
-
-- **Resources**: `read_resource(uri)` pulls remote content (documents, records, files) into the conversation; resource templates parameterize the URIs.
-- **Prompts**: `get_prompt(name)` fetches server-defined prompt templates.
-- **Elicitation**: a server can ask for structured input mid-call, and the client surfaces those requests for the host to answer.
+Besides tools, the client handles one other MCP surface, elicitation: a server can ask for structured input mid-call, and the client surfaces those requests for the host to answer. It doesn't implement resources or prompts.
 
 The package boundary in `src/mash/mcp` keeps protocol details in one place: `types.py` for config, `client.py` for the wire protocol, and `manager.py` for server lifecycle and tool routing. Runtime and tool code consume MCP through this package, so protocol changes land in one module.
 

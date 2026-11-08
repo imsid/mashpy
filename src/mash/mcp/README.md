@@ -7,7 +7,7 @@
 - Manages MCP server lifecycle and coordination.
 - Provides client/server integration code used by runtime and tool layers.
 - Keeps protocol-specific logic isolated behind one package boundary.
-- Supports the core MCP surfaces Mash uses today: tools, resources, prompts, and elicitation.
+- Supports the MCP surfaces Mash uses: tools and elicitation. Resources and prompts are not implemented.
 - Does not implement deprecated MCP features: Roots (`roots/list`, `notifications/roots/list_changed`), Sampling (`sampling/createMessage`), or protocol-level Logging (`logging/setLevel`, `notifications/message`).
 
 ## Main Components

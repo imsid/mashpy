@@ -280,41 +280,12 @@ class MCPHTTPClient:
         return elicitation
 
     # ------------------------------------------------------------------
-    # Public interface used by the host
+    # Public interface used by the manager
     # ------------------------------------------------------------------
     async def list_tools(self) -> List[Dict[str, Any]]:
         response = await self._make_request("tools/list")
         await self._handle_interactions(response)
         return response.result.get("tools", [])
-
-    async def list_resources(self) -> List[Dict[str, Any]]:
-        response = await self._make_request("resources/list")
-        await self._handle_interactions(response)
-        return response.result.get("resources", [])
-
-    async def list_resource_templates(self) -> List[Dict[str, Any]]:
-        response = await self._make_request("resources/templates/list")
-        await self._handle_interactions(response)
-        return response.result.get("resourceTemplates", [])
-
-    async def list_prompts(self) -> List[Dict[str, Any]]:
-        response = await self._make_request("prompts/list")
-        await self._handle_interactions(response)
-        return response.result.get("prompts", [])
-
-    async def read_resource(self, uri: str) -> Dict[str, Any]:
-        response = await self._make_request("resources/read", {"uri": uri})
-        await self._handle_interactions(response)
-        return response.result
-
-    async def get_prompt(
-        self, name: str, arguments: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        response = await self._make_request(
-            "prompts/get", {"name": name, "arguments": arguments or {}}
-        )
-        await self._handle_interactions(response)
-        return response.result
 
     async def call_tool(
         self, tool_name: str, arguments: Optional[Dict[str, Any]] = None
