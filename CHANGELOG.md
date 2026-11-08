@@ -9,6 +9,31 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.35.0](https://github.com/imsid/mashpy/compare/mashpy-v0.34.0...mashpy-v0.35.0) (2026-11-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** give each agent its own uid and stream link bodies ([#265](https://github.com/imsid/mashpy/issues/265))
+* **api:** close the host-side High and Medium security items ([#264](https://github.com/imsid/mashpy/issues/264))
+* **runtime:** stop MCP calls and sync CodeSteps from blocking the event loop ([#263](https://github.com/imsid/mashpy/issues/263))
+* **runtime:** check who owns a request, a session and a composition ([#262](https://github.com/imsid/mashpy/issues/262))
+* **sandbox:** give each user's sandbox a network of its own ([#261](https://github.com/imsid/mashpy/issues/261))
+* **api:** close the security blockers from the production readiness review ([#260](https://github.com/imsid/mashpy/issues/260))
+
+### Features
+
+* **sandbox:** give each user's sandbox a network of its own ([#261](https://github.com/imsid/mashpy/issues/261)) ([ac215c8](https://github.com/imsid/mashpy/commit/ac215c8d9e1ef8172765605e173dd7dfefd2034a))
+
+
+### Bug Fixes
+
+* **api:** close the host-side High and Medium security items ([#264](https://github.com/imsid/mashpy/issues/264)) ([fc8d421](https://github.com/imsid/mashpy/commit/fc8d42182d3ccd3864ecd37e0086493dae627aa3))
+* **api:** close the security blockers from the production readiness review ([#260](https://github.com/imsid/mashpy/issues/260)) ([fc07af6](https://github.com/imsid/mashpy/commit/fc07af681a6b61bbe9d396367d0dd077efde0ca1))
+* **runtime:** check who owns a request, a session and a composition ([#262](https://github.com/imsid/mashpy/issues/262)) ([5344893](https://github.com/imsid/mashpy/commit/53448939d25cbedd085b601ed539c703c61856ce))
+* **runtime:** stop MCP calls and sync CodeSteps from blocking the event loop ([#263](https://github.com/imsid/mashpy/issues/263)) ([e482c60](https://github.com/imsid/mashpy/commit/e482c60742255524ea3bdb66a841ddfee4433264))
+* **sandbox:** give each agent its own uid and stream link bodies ([#265](https://github.com/imsid/mashpy/issues/265)) ([a17a589](https://github.com/imsid/mashpy/commit/a17a5892f5b10f2e546caebbb15651cf76850844))
+
 ## [0.34.0](https://github.com/imsid/mashpy/compare/mashpy-v0.33.0...mashpy-v0.34.0) (2026-11-02)
 
 
