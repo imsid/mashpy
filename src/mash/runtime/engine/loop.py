@@ -17,8 +17,9 @@ appends are deduped by key.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ...logging import (
@@ -87,6 +88,7 @@ class RequestRun:
         session_id: str,
         request_metadata: dict[str, Any],
         checkpoint: dict[str, Any] | None,
+        slots: asyncio.Semaphore | None = None,
     ) -> None:
         self.runtime = runtime
         self.request_id = request_id
@@ -97,6 +99,44 @@ class RequestRun:
         self.checkpoint.setdefault("memo", {})
         self.cancelled = asyncio.Event()
         self._interaction_waiters: dict[str, asyncio.Event] = {}
+        # The agent's running-request slots (MASH_AGENT_MAX_RUNNING). The loop
+        # holds one while it works and gives it back while it waits on the
+        # user or on its RunSubAgents children.
+        self._slots = slots
+        self._slot_held = False
+
+    # --- running slots -------------------------------------------------------
+
+    async def _take_slot(self) -> None:
+        """Wait for a running slot; a cancel while waiting raises RequestCancelled."""
+        if self._slots is None or self._slot_held:
+            return
+        acquire = asyncio.ensure_future(self._slots.acquire())
+        cancelled = asyncio.ensure_future(self.cancelled.wait())
+        try:
+            await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            cancelled.cancel()
+            if acquire.done() and not acquire.cancelled():
+                self._slot_held = True
+            else:
+                acquire.cancel()
+        if not self._slot_held:
+            raise RequestCancelled(self.request_id)
+
+    def _give_slot(self) -> None:
+        if self._slots is not None and self._slot_held:
+            self._slot_held = False
+            self._slots.release()
+
+    @contextlib.asynccontextmanager
+    async def _slot_released(self) -> AsyncIterator[None]:
+        """Give the slot back for a wait, and take one again after it."""
+        self._give_slot()
+        try:
+            yield
+        finally:
+            await self._take_slot()
 
     # --- checkpoint ----------------------------------------------------------
 
@@ -219,11 +259,12 @@ class RequestRun:
                 extra=extra,
             )
             interaction_id = str(opened["interaction_id"])
-            response, timed_out = await self._await_answer(
-                interaction_id,
-                deadline=float(opened["deadline"]),
-                interaction_type=interaction_type,
-            )
+            async with self._slot_released():
+                response, timed_out = await self._await_answer(
+                    interaction_id,
+                    deadline=float(opened["deadline"]),
+                    interaction_type=interaction_type,
+                )
             if response is _CANCELLED:
                 self._check_cancelled()
                 attempt += 1
@@ -375,17 +416,21 @@ class RequestRun:
             if name == "RunSubAgents"
             else None
         )
+        # A RunSubAgents call only waits on its children, which may need this
+        # agent's slots, so it gives its own back while they run.
+        wait = self._slot_released() if name == "RunSubAgents" else contextlib.nullcontext()
         with bound_subagent_id_prefix(prefix):
-            return await retry_transient(
-                lambda: run_step_tool_call(
-                    self.runtime,
-                    self.request_id,
-                    self.session_id,
-                    self.checkpoint["trace_id"],
-                    state,
-                    tool_call,
+            async with wait:
+                return await retry_transient(
+                    lambda: run_step_tool_call(
+                        self.runtime,
+                        self.request_id,
+                        self.session_id,
+                        self.checkpoint["trace_id"],
+                        state,
+                        tool_call,
+                    )
                 )
-            )
 
     async def _act(self, state: dict[str, Any]) -> dict[str, Any]:
         """Answer the action's interaction, then run its tool calls in order.
@@ -487,6 +532,7 @@ class RequestRun:
             metadata.get("workflow_id"), metadata.get("workflow_run_id")
         ), bound_request_metadata(caller_metadata_from_request_metadata(metadata)):
             try:
+                await self._take_slot()
                 await self._run()
             except RequestCancelled:
                 # The cancel path already recorded the request as cancelled.
@@ -499,6 +545,8 @@ class RequestRun:
                     self.checkpoint.get("trace_id"),
                     classify_error(exc),
                 )
+            finally:
+                self._give_slot()
 
     async def _run(self) -> None:
         runtime = self.runtime

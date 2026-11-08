@@ -21,23 +21,6 @@ if TYPE_CHECKING:
     from .service import AgentRuntime
 
 
-async def get_session_info(
-    self: "AgentRuntime",
-    session_id: str | None = None,
-) -> dict[str, Any]:
-    session_id_value = str(session_id or self.session_id).strip()
-    if not session_id_value:
-        raise ValueError("session_id is required")
-    return await sessions.session_info(
-        self.store,
-        getattr(self, "runtime_store", None),
-        app_id=self.app_id,
-        session_id=session_id_value,
-        model=self.get_model(),
-        max_steps=self.get_max_steps(),
-    )
-
-
 async def get_history_turns(
     self: "AgentRuntime",
     session_id: str,
@@ -116,49 +99,33 @@ async def build_context_with_history(
     )
 
     if self.agent.config.conversation_history_turns > 0:
-        turns = await self.store.get_turns(
+        # The latest summary checkpoint and the replayable turns after it.
+        # Workflow, subagent and command turns share the session but are not
+        # part of the user's conversation, so the store leaves them out.
+        turns_to_include = await self.store.get_replay_turns(
             session_id=session_id,
             app_id=self.app_id,
-            limit=None,
+            turns=self.agent.config.conversation_history_turns,
         )
-        # Workflow / subagent / command turns share the session but are not part
-        # of the user's conversation, so they are excluded from what the model
-        # replays as history.
-        turns = [turn for turn in turns if turn.get("replayable", True)]
-        if turns:
-            summary_index = None
-            for idx in range(len(turns) - 1, -1, -1):
-                meta = turns[idx].get("metadata") or {}
-                if meta.get("type") == "summary_checkpoint":
-                    summary_index = idx
-                    break
+        for turn in turns_to_include:
+            meta = turn.get("metadata") or {}
+            user_text = turn.get("user_message")
+            if user_text and meta.get("type") != "summary_checkpoint":
+                context.add_message(
+                    MessageRole.USER,
+                    user_text,
+                    source="history",
+                    trace_id=turn.get("trace_id"),
+                )
 
-            if summary_index is not None:
-                tail_turns = turns[summary_index + 1 :]
-                tail_turns = tail_turns[-self.agent.config.conversation_history_turns :]
-                turns_to_include = [turns[summary_index]] + tail_turns
-            else:
-                turns_to_include = turns[-self.agent.config.conversation_history_turns :]
-
-            for turn in turns_to_include:
-                meta = turn.get("metadata") or {}
-                user_text = turn.get("user_message")
-                if user_text and meta.get("type") != "summary_checkpoint":
-                    context.add_message(
-                        MessageRole.USER,
-                        user_text,
-                        source="history",
-                        trace_id=turn.get("trace_id"),
-                    )
-
-                agent_text = turn.get("agent_response")
-                if agent_text:
-                    context.add_message(
-                        MessageRole.ASSISTANT,
-                        agent_text,
-                        source="history",
-                        trace_id=turn.get("trace_id"),
-                    )
+            agent_text = turn.get("agent_response")
+            if agent_text:
+                context.add_message(
+                    MessageRole.ASSISTANT,
+                    agent_text,
+                    source="history",
+                    trace_id=turn.get("trace_id"),
+                )
 
     context.add_user_message(message)
     return context

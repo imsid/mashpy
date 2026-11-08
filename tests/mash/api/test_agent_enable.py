@@ -80,7 +80,9 @@ def test_a_disabled_agent_takes_no_requests_until_enabled() -> None:
         submitted = client.post("/api/v1/agent/solo/request", json=body)
         assert submitted.status_code == 409
         assert submitted.json()["error"]["code"] == "AGENT_DISABLED"
-        assert client.get("/api/v1/agent/solo").json()["data"]["session"] is None
+        assert client.get("/api/v1/agent/solo").json()["data"] == {
+            "agent": disabled.json()["data"]["agent"]
+        }
         host = client.put("/api/v1/hosts/solo-host", json={"primary": "solo"})
         assert host.status_code == 400
 

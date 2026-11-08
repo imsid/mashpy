@@ -53,6 +53,7 @@ from mash.browser.manager import (
     BrowserManager,
 )
 from mash.browser.provider import DockerBrowserProvider
+from mash.runtime.engine.engine import agent_max_running
 from mash.runtime.host.processes import AgentProcessProvider
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.manager import (
@@ -174,8 +175,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
-        # A bad MASH_RETENTION_DAYS fails here, before anything starts.
+        # Bad settings fail here, before anything starts; agent processes
+        # inherit MASH_AGENT_MAX_RUNNING.
         retention_days()
+        agent_max_running()
         pool.configure_runtime_database_url(
             resolved_config.resolved_runtime_database_url()
         )

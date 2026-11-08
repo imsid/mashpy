@@ -86,7 +86,11 @@ in its token.
   and no use for `MASH_SANDBOX_IDLE_SECONDS` (default 900), and keeps at most
   `MASH_SANDBOX_MAX_RUNNING` (default 20) running, stopping the least recently
   used idle one to make room or raising `SandboxCapacityError` when all are
-  busy. After a host restart, running sandboxes count as active from then.
+  busy. The stop runs outside the lock that picks it, so other users' starts
+  don't wait behind it; the stopping sandbox counts against the cap until it
+  is stopped, and a caller that finds every idle sandbox already stopping
+  waits for one. After a host restart, running sandboxes count as active from
+  then.
 - `containers.py`: `ContainerManager`, that lifecycle on its own, shared with
   the browsers' `BrowserManager` (`mash.browser`). `hold(user_id)` keeps a
   container counted as in use for the length of a block.

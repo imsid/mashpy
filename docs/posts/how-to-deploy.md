@@ -327,6 +327,11 @@ mash sandbox stop u-42                        # stop now and remove its network;
   each in `runtime_blob`, and the checkpoint keeps a reference. After a crash, a restart, or being enabled again, an agent
   process continues its own agent's `running` requests from their
   checkpoints. A request continued 10 times without finishing fails.
+- Each agent process works on at most `MASH_AGENT_MAX_RUNNING` requests at
+  once (default 32). The others stay `running` and wait for a slot, recovered
+  requests included, so a restart doesn't start every request at once. A
+  request waiting on the user or on its `RunSubAgents` children gives its slot
+  back. A waiting request's stream shows nothing until it starts.
 - The host continues the workflow runs under its runner id that are queued
   or running, from their completed steps.
 - Subagent calls and workflow agent steps submit with fixed request ids, so a
@@ -537,6 +542,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_HOST_APP` | host | none | `module:attribute` for `build_pool()`; agent processes import the same one |
 | `MASH_DATABASE_URL` | host | none | PostgreSQL connection string; agent processes inherit it |
 | `MASH_DB_POOL_MAX_SIZE` | host | `10` | Most Postgres connections each process holds: the host and every agent process |
+| `MASH_AGENT_MAX_RUNNING` | host | `32` | Most requests each agent process works on at once; agent processes inherit it |
 | `MASH_RETENTION_DAYS` | host | none | Delete finished requests, their events and finished workflow runs older than this many days; unset keeps everything |
 | `MASH_HOST_SECRET` | host | none | Derives each agent's, each sandbox's and each browser's token, and signs links; required for a pool with agents |
 | `MASH_API_KEY` | host | none | API key for `/api/v1`; required unless `MASH_API_HOST` is a loopback address |

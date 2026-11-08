@@ -339,6 +339,9 @@ class WorkflowStore:
         self._database_url = resolved
         self._pool: Any = None
         self._open_lock = asyncio.Lock()
+        # Runs execute in the host, through this store, so a step event or a
+        # finished run wakes the run's event streams in memory.
+        self._run_waiters: dict[str, set[asyncio.Event]] = {}
 
     async def open(self) -> None:
         if self._pool is not None:
@@ -347,6 +350,23 @@ class WorkflowStore:
             if self._pool is not None:
                 return
             self._pool = await acquire_pool(self._database_url)
+
+    def register_run_waiter(self, run_id: str) -> asyncio.Event:
+        """An event set when the run gets a step event or finishes."""
+        waiter = asyncio.Event()
+        self._run_waiters.setdefault(run_id, set()).add(waiter)
+        return waiter
+
+    def unregister_run_waiter(self, run_id: str, waiter: asyncio.Event) -> None:
+        waiters = self._run_waiters.get(run_id)
+        if waiters:
+            waiters.discard(waiter)
+            if not waiters:
+                del self._run_waiters[run_id]
+
+    def _wake_run(self, run_id: str) -> None:
+        for waiter in self._run_waiters.get(run_id, ()):
+            waiter.set()
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -385,6 +405,7 @@ class WorkflowStore:
                     error=error,
                     finished_at=finished_at,
                 )
+        self._wake_run(run_id)
 
     async def upsert_step(self, step: WorkflowStepRecord) -> None:
         await self.open()
@@ -406,7 +427,7 @@ class WorkflowStore:
         await self.open()
         async with self._pool.connection() as conn:
             async with conn.transaction():
-                return await append_step_event(
+                seq = await append_step_event(
                     conn,
                     run_id=run_id,
                     workflow_id=workflow_id,
@@ -416,6 +437,8 @@ class WorkflowStore:
                     attempt=attempt,
                     payload=payload,
                 )
+        self._wake_run(run_id)
+        return seq
 
     async def list_unfinished_runs(self, run_id_prefix: str) -> list[WorkflowRunRecord]:
         """Queued and running runs whose id starts with ``run_id_prefix``, oldest first."""

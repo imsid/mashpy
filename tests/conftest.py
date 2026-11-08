@@ -534,6 +534,19 @@ class _TestRuntimeStore:
         )
         return summaries[: max(1, int(limit))]
 
+    async def session_usage(self, session_id: str) -> dict[str, int]:
+        async with self._lock:
+            events = [e for e in self._events if e.session_id == session_id]
+        totals = {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+        for event in events:
+            if event.event_type != RuntimeEventType.CHAT_END.value:
+                continue
+            usage = semconv.token_usage(event_attributes(event.payload))
+            totals["total_tokens"] += usage["input"] + usage["output"]
+            totals["cache_read_tokens"] += usage["cache_read"]
+            totals["cache_write_tokens"] += usage["cache_write"]
+        return totals
+
     async def list_sessions(
         self,
         *,
@@ -711,6 +724,29 @@ class _TestMemoryStore:
         if limit is not None:
             rows = rows[-limit:]
         return rows
+
+    async def get_replay_turns(
+        self, session_id: str, app_id: str, turns: int
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in await self.get_turns(session_id=session_id, app_id=app_id)
+            if row["replayable"]
+        ]
+        for row in rows:
+            row.pop("signals", None)
+        summary_index = next(
+            (
+                index
+                for index in range(len(rows) - 1, -1, -1)
+                if rows[index]["metadata"].get("type") == "summary_checkpoint"
+            ),
+            None,
+        )
+        if summary_index is None:
+            return rows[-turns:] if turns > 0 else []
+        tail = rows[summary_index + 1 :]
+        return [rows[summary_index]] + (tail[-turns:] if turns > 0 else [])
 
     def _user_turns(self, user_id: str, after: float) -> list[dict[str, Any]]:
         rows = [
@@ -903,9 +939,22 @@ class _TestWorkflowStore:
         self._steps: dict[tuple[str, str], Any] = {}
         self._events: list[Any] = []
         self._recoveries: dict[str, int] = {}
+        self._run_waiters: dict[str, set[asyncio.Event]] = {}
 
     async def open(self) -> None:
         pass
+
+    def register_run_waiter(self, run_id: str) -> asyncio.Event:
+        waiter = asyncio.Event()
+        self._run_waiters.setdefault(run_id, set()).add(waiter)
+        return waiter
+
+    def unregister_run_waiter(self, run_id: str, waiter: asyncio.Event) -> None:
+        self._run_waiters.get(run_id, set()).discard(waiter)
+
+    def _wake_run(self, run_id: str) -> None:
+        for waiter in self._run_waiters.get(run_id, ()):
+            waiter.set()
 
     async def close(self) -> None:
         self._runs.clear()
@@ -958,6 +1007,7 @@ class _TestWorkflowStore:
             run.result = result
             run.error = error
             run.finished_at = finished_at
+        self._wake_run(run_id)
 
     async def upsert_step(self, step: Any) -> None:
         self._steps[(step.run_id, step.step_id)] = step
@@ -975,6 +1025,7 @@ class _TestWorkflowStore:
                 attempt=attempt, event_type=event_type, seq=seq, at=at, payload=payload or {},
             )
         )
+        self._wake_run(run_id)
         return seq
 
     async def get_run(self, run_id: str):

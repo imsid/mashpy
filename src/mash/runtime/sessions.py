@@ -16,18 +16,10 @@ from .events import RuntimeStore
 async def session_event_token_totals(
     runtime_store: RuntimeStore | None, session_id: str
 ) -> dict[str, int]:
-    """Sum token fields for a session across all agents from the runtime event log."""
-    if runtime_store is None or not hasattr(runtime_store, "list_recent_traces"):
+    """Tokens a session's requests used, across every agent."""
+    if runtime_store is None:
         return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
-    try:
-        traces = await runtime_store.list_recent_traces(session_id=session_id, limit=1000)
-    except Exception:
-        return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
-    return {
-        "total_tokens": sum(int(trace.get("total_tokens") or 0) for trace in traces),
-        "cache_read_tokens": sum(int(trace.get("cache_read_tokens") or 0) for trace in traces),
-        "cache_write_tokens": sum(int(trace.get("cache_write_tokens") or 0) for trace in traces),
-    }
+    return await runtime_store.session_usage(session_id)
 
 
 async def session_total_tokens(store: MemoryStore, *, app_id: str, session_id: str) -> int:

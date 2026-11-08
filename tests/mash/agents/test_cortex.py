@@ -19,7 +19,7 @@ from mash.agents.cortex import (
 )
 from mash.runtime import HostBuilder
 from mash.runtime.agent_process import build_agent_server
-from mash.runtime.factory import build_agent_instance
+from mash.runtime.factory import build_turn_agent
 from mash.testing.runtime_fixtures import build_spec, metadata
 
 TEST_URL = "postgresql://test/runtime"
@@ -122,7 +122,7 @@ class AgentProcessWiringTests(unittest.IsolatedAsyncioTestCase):
         disabled = self._server(cortex=False).runtime
 
         def tools(runtime, user_id):
-            return build_agent_instance(runtime, session_id="s-1", user_id=user_id).tools
+            return build_turn_agent(runtime, session_id="s-1", user_id=user_id).tools
 
         self.assertIn("search_cortex", tools(enabled, "u-1"))
         self.assertNotIn("search_cortex", tools(enabled, None))

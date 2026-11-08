@@ -27,6 +27,40 @@ CACHE_MIN_TOKENS = {
 DEFAULT_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
 
+# Anthropic allows this many cache_control breakpoints in one request.
+MAX_CACHE_BREAKPOINTS = 4
+
+
+def _cache_breakpoints(blocks: Any) -> int:
+    if not isinstance(blocks, list):
+        return 0
+    return sum(1 for block in blocks if isinstance(block, dict) and "cache_control" in block)
+
+
+def _cache_conversation(params: Dict[str, Any]) -> None:
+    """Mark the last block of the last message, so the next call reads the
+    conversation so far from the cache.
+
+    Each step of a tool loop sends the whole conversation again; without this
+    only the system prompt and the tools were cached. The marker is skipped
+    when the request already has the most breakpoints Anthropic allows.
+    """
+    messages = params.get("messages") or []
+    if not messages:
+        return
+    used = _cache_breakpoints(params.get("system")) + _cache_breakpoints(params.get("tools"))
+    used += sum(_cache_breakpoints(message.get("content")) for message in messages)
+    if used >= MAX_CACHE_BREAKPOINTS:
+        return
+    for block in reversed(messages[-1].get("content") or []):
+        if not isinstance(block, dict) or "cache_control" in block:
+            return
+        if block.get("type") == "text" and not block.get("text"):
+            continue  # an empty text block can't carry a breakpoint
+        block["cache_control"] = {"type": "ephemeral"}
+        return
+
+
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic Claude provider implementation."""
 
@@ -116,6 +150,9 @@ class AnthropicProvider(BaseLLMProvider):
         )
         if tools:
             params["tools"] = tools
+
+        if request.use_prompt_caching:
+            _cache_conversation(params)
 
         structured_output = request.provider_options.get("structured_output")
         if isinstance(structured_output, dict):

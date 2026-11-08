@@ -237,6 +237,13 @@ The host imports your specs too (for metadata, workflows and eval snapshots),
 but runtimes, tools, MCP connections and these hooks exist only in the agent's
 process.
 
+The agent process calls `build_tools()`, `build_skills()` and `build_llm()`
+once, when it starts. Those objects live for the process and serve every
+request at once, so a tool keeps no per-request state on `self`: it reads the
+request's context with `mash.logging.get_request_metadata()` and the other
+`mash.logging` helpers. The runtime calls a tool's `shutdown()`, `close()` or
+`aclose()` once, when the process shuts down.
+
 ## AgentConfig Fields
 
 ```python
@@ -931,7 +938,10 @@ handoff's link lasts `MASH_BROWSER_HANDOFF_SECONDS` (default 900) and uses
 live-view link) and `mash browser stop <user_id>` manage them.
 
 Each process (the host and every agent process) holds at most
-`MASH_DB_POOL_MAX_SIZE` Postgres connections (default 10). Nothing is deleted
+`MASH_DB_POOL_MAX_SIZE` Postgres connections (default 10). Each agent process
+works on at most `MASH_AGENT_MAX_RUNNING` requests at once (default 32); the
+rest wait for a slot, and a request waiting on the user or on its children
+holds none. Nothing is deleted
 until `MASH_RETENTION_DAYS` is set; then the host deletes, every hour,
 finished requests with their events and finished workflow runs older than
 that. Conversation turns, Cortex, feedback and evals are kept.

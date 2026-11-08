@@ -255,32 +255,29 @@ async def _plan_step_payload(
         user_id=user_id,
         parent_kind=parent_kind,
     )
-    try:
-        plan = await agent.plan_step(context)
-        action = plan.action
-        return {
-            "action_type": action.type.value,
-            "thought_summary": action.metadata["thought_summary"],
-            "assistant_text": action.metadata.get("assistant_text"),
-            "assistant_blocks": list(action.metadata.get("assistant_blocks") or []),
-            "stop_reason": action.metadata.get("stop_reason"),
-            "tool_calls": [
-                {
-                    "id": tool_call.id,
-                    "name": tool_call.name,
-                    "arguments": dict(tool_call.arguments or {}),
-                    "parallel_safe": agent._is_parallel_safe(tool_call),
-                }
-                for tool_call in action.tool_calls
-            ],
-            "token_usage": dict(plan.token_usage or {}),
-            "tool_usage": dict(plan.tool_usage or {}),
-            "duration_ms": int(plan.duration_ms),
-            "trace_id": plan.trace_id or trace_id,
-            "context": context_helpers.serialize_context(context),
-        }
-    finally:
-        await agent.tools.shutdown()
+    plan = await agent.plan_step(context)
+    action = plan.action
+    return {
+        "action_type": action.type.value,
+        "thought_summary": action.metadata["thought_summary"],
+        "assistant_text": action.metadata.get("assistant_text"),
+        "assistant_blocks": list(action.metadata.get("assistant_blocks") or []),
+        "stop_reason": action.metadata.get("stop_reason"),
+        "tool_calls": [
+            {
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": dict(tool_call.arguments or {}),
+                "parallel_safe": agent._is_parallel_safe(tool_call),
+            }
+            for tool_call in action.tool_calls
+        ],
+        "token_usage": dict(plan.token_usage or {}),
+        "tool_usage": dict(plan.tool_usage or {}),
+        "duration_ms": int(plan.duration_ms),
+        "trace_id": plan.trace_id or trace_id,
+        "context": context_helpers.serialize_context(context),
+    }
 
 
 async def _run_tool_call_payload(
@@ -301,11 +298,8 @@ async def _run_tool_call_payload(
         parent_kind=parent_kind,
     )
     started_at = time.time()
-    try:
-        result = await agent.execute_step_tool_call(tool_call)
-        return result, int((time.time() - started_at) * 1000)
-    finally:
-        await agent.tools.shutdown()
+    result = await agent.execute_step_tool_call(tool_call)
+    return result, int((time.time() - started_at) * 1000)
 
 
 async def _commit_step_payload(
@@ -950,7 +944,7 @@ async def finalize_structured_output(
         temperature=runtime.agent.config.temperature,
         provider_options={"structured_output": dict(structured_output_request)},
     )
-    llm = runtime._shared_llm
+    llm = runtime.agent.llm
     llm.set_event_logger(runtime.event_logger, session_id, runtime.app_id)
     llm.set_trace_id(trace_id)
     response = await llm.send(llm_request)

@@ -31,9 +31,6 @@ class _Runtime:
     async def shutdown(self) -> None:
         return None
 
-    async def get_session_info(self) -> dict:
-        return {}
-
     async def get_accepted_request(self, request_id: str) -> dict | None:
         if request_id == "other-agents":
             raise RequestIdConflictError("belongs to another agent")

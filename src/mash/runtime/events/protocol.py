@@ -165,6 +165,11 @@ class RuntimeStore(Protocol):
         self, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    async def session_usage(self, session_id: str) -> dict[str, int]:
+        """``total_tokens``, ``cache_read_tokens`` and ``cache_write_tokens`` of
+        the session's requests, across every agent."""
+        ...
+
     async def list_sessions(
         self,
         *,

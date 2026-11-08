@@ -95,6 +95,13 @@ Behavior:
 - The contract is chronological turn order.
 - `app_id` is required and scopes reads to one agent.
 
+`get_replay_turns(session_id, app_id, turns) -> list[dict]`
+- The turns a request replays into its context, oldest first: the latest
+  replayable `summary_checkpoint` turn, if any, then up to `turns` replayable
+  turns after it. Same shape as `get_turns`, without `signals`.
+- The runtime calls it with `AgentConfig.conversation_history_turns` when it
+  loads a request's context; the Postgres store reads only those rows.
+
 `get_turn_by_ids(pairs, app_id) -> list[dict] | None`
 - Bulk lookup by exact `{session_id, trace_id}` pairs.
 - Expected shape per returned item:

@@ -30,7 +30,7 @@ from mash.runtime.agent_process import HostRelay, build_agent_server
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.processes import AgentEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
-from mash.runtime.factory import build_agent_instance
+from mash.runtime.factory import build_turn_agent
 from mash.tools.sandbox import RunCodeTool, SandboxGetTool, SandboxPutTool
 from mash.testing.runtime_fixtures import build_delegating_spec, build_spec, metadata
 
@@ -124,7 +124,7 @@ class BuildAgentServerTests(unittest.TestCase):
         )
 
         self.assertIsInstance(server.runtime.tools.get("run_code"), RunCodeTool)
-        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        turn_agent = build_turn_agent(server.runtime, session_id="s-1")
         run_code = turn_agent.tools.get("run_code")
         self.assertIsInstance(run_code, RunCodeTool)
         self.assertEqual(run_code._relay.base_url, "http://host/sandbox")
@@ -142,7 +142,7 @@ class BuildAgentServerTests(unittest.TestCase):
             pool, "research", token="tok", host_api_url="http://host", sandbox_tools=True
         )
 
-        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        turn_agent = build_turn_agent(server.runtime, session_id="s-1")
         put = turn_agent.tools.get("sandbox_put")
         self.assertIsInstance(put, SandboxPutTool)
         self.assertIsInstance(turn_agent.tools.get("sandbox_get"), SandboxGetTool)
@@ -164,7 +164,7 @@ class BuildAgentServerTests(unittest.TestCase):
             pool, "research", token="tok", host_api_url="http://host", sandbox_tools=True
         )
 
-        turn_agent = build_agent_instance(server.runtime, session_id="s-1")
+        turn_agent = build_turn_agent(server.runtime, session_id="s-1")
         for name in ("run_code", "sandbox_put", "sandbox_get"):
             self.assertNotIn(name, server.runtime.tools)
             self.assertNotIn(name, turn_agent.tools)
