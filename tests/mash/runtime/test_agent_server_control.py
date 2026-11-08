@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 from mash.runtime.engine import InteractionClosedError, InvalidInteractionResponseError
 from mash.runtime.errors import RequestStaleError
+from mash.runtime.events import RequestIdentity
 from mash.runtime.server import AgentServer
 
 
@@ -17,6 +18,12 @@ class _Store:
 
     async def has_request(self, request_id: str) -> bool:
         return request_id != "missing"
+
+    async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
+        if request_id == "missing":
+            return None
+        agent_id = "agent-b" if request_id.startswith("b-") else "agent-a"
+        return RequestIdentity(agent_id=agent_id, user_id="u-1")
 
 
 class _Runtime:
@@ -53,6 +60,13 @@ class _Runtime:
 
     async def rerun_request(self, request_id: str) -> dict:
         return await self._record("rerun", request_id)
+
+    async def set_request_mode(self, request_id: str, mode: str) -> dict:
+        return await self._record("mode", request_id)
+
+    async def stream_response_events(self, request_id: str, **_: object):
+        await self._record("events", request_id)
+        return [], 0, True
 
     async def answer_interaction(
         self, request_id: str, interaction_id: str, response: object
@@ -111,6 +125,25 @@ class AgentServerControlRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.json()["error"]["code"], "ROUTE_NOT_FOUND")
         self.assertEqual(self.runtime.calls, [])
+
+    def test_another_agents_request_is_not_found_on_every_route(self) -> None:
+        # b-1 was accepted for agent-b. Resuming it here would run it under
+        # agent-a's prompt and tools.
+        routes = [
+            *ROUTES,
+            ("POST", "mode"),
+            ("POST", "interaction"),
+            ("GET", ""),
+        ]
+        bodies = {"mode": {"mode": "bg"}, "interaction": {"interaction_id": "int-1", "response": "approve"}}
+        for method, op in routes:
+            with self.subTest(op=op or "events"):
+                path = "/agent/agent-a/request/b-1" + (f"/{op}" if op else "")
+                resp = self.client.request(method, path, json=bodies.get(op))
+                self.assertEqual(resp.status_code, 404, resp.text)
+                self.assertEqual(resp.json()["error"]["code"], "REQUEST_NOT_FOUND")
+        self.assertEqual(self.runtime.calls, [])
+        self.assertEqual(self.runtime.answers, [])
 
     def test_interaction_answer_goes_to_the_runtime(self) -> None:
         resp = self.client.post(

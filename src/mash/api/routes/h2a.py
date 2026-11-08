@@ -6,9 +6,11 @@ routes, never directly. They speak H2A as ``AgentServer`` does (no
 ``{host}/h2a``. Each call authenticates with the caller's agent token; the
 host checks it against the request's ``parent`` and host snapshot, then
 forwards to the child agent's client. A child runs on the calling agent
-itself or on one of the host's subagents. The subagent request acts for the parent
-request's user: the host copies ``user_id`` from the parent's stored request,
-so a primary cannot name another user.
+itself or on one of the host's subagents. Both come from the parent's stored
+request, not from the caller's body: the host checks the target against the
+host snapshot stored with the parent and forwards that snapshot, and the
+subagent request acts for the parent request's user. So a primary can neither
+widen its composition nor name another user.
 """
 
 from __future__ import annotations
@@ -18,7 +20,11 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from mash.runtime.client import AgentClientError, AgentUnavailableError
+from mash.runtime.client import (
+    AgentClientError,
+    AgentUnavailableError,
+    SessionUserConflictError,
+)
 from mash.runtime.events import RuntimeEventType
 from mash.runtime.host.host import AgentDisabledError
 from mash.runtime.host.tokens import agent_for_token
@@ -39,6 +45,19 @@ def bearer_token(request: Request) -> str:
     if not header.lower().startswith("bearer "):
         return ""
     return header[7:].strip()
+
+
+async def _stored_host(store, request_id: str) -> dict | None:
+    """The host snapshot stored with a request's accepted event, or None."""
+    events = await store.list_request_events(request_id)
+    accepted = next(
+        (e for e in events if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value),
+        None,
+    )
+    if accepted is None:
+        return None
+    host = dict((accepted.payload or {}).get("request_metadata") or {}).get("host")
+    return dict(host) if isinstance(host, dict) else None
 
 
 def build_h2a_router() -> APIRouter:
@@ -76,25 +95,28 @@ def build_h2a_router() -> APIRouter:
             return h2a_error(
                 403, "FORBIDDEN", f"agent '{caller}' may only submit its own subagent calls"
             )
-        host = body.get("host")
-        subagents = host.get("subagents") if isinstance(host, dict) else None
-        if agent_id != caller and (
-            not isinstance(subagents, list) or agent_id not in subagents
-        ):
-            return h2a_error(
-                403, "FORBIDDEN", f"subagent '{agent_id}' is not in the request's host"
-            )
 
         state = state_from_request(request)
         store = state.pool.get_runtime_store()
         if store is None:
             return h2a_error(503, "H2A_UNAVAILABLE", "runtime store is not available")
-        identity = await store.get_request_identity(str(parent.get("request_id")))
+        parent_request_id = str(parent.get("request_id"))
+        identity = await store.get_request_identity(parent_request_id)
         if identity is None:
             return h2a_error(400, "INVALID_PARENT", "parent request not found")
         if identity.agent_id != caller:
             return h2a_error(
                 403, "FORBIDDEN", f"parent request does not belong to agent '{caller}'"
+            )
+        # The composition the parent was submitted with, as stored; the body's
+        # "host" is the caller's copy and is not trusted.
+        host = await _stored_host(store, parent_request_id)
+        subagents = host.get("subagents") if host is not None else None
+        if agent_id != caller and (
+            not isinstance(subagents, list) or agent_id not in subagents
+        ):
+            return h2a_error(
+                403, "FORBIDDEN", f"subagent '{agent_id}' is not in the request's host"
             )
         if "user_id" in body and body.get("user_id") != identity.user_id:
             return h2a_error(
@@ -135,6 +157,8 @@ def build_h2a_router() -> APIRouter:
             )
         except AgentUnavailableError as exc:
             return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
+        except SessionUserConflictError as exc:
+            return h2a_error(409, "SESSION_USER_MISMATCH", str(exc))
         except AgentClientError as exc:
             return h2a_error(502, "AGENT_ERROR", str(exc))
         return JSONResponse(

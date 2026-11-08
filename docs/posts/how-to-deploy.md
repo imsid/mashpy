@@ -139,9 +139,11 @@ of the host must pass websockets through.
 
 ## Run the host in Docker
 
-This is the production layout, and it works the same on a laptop. The host
-container creates the network `mash-sandboxes`, joins it, and reaches each
-sandbox by container name.
+This is the production layout, and it works the same on a laptop. Each
+running sandbox has a network of its own, `mash-sandbox-<key>`, named like its
+container, so one user's code cannot reach another user's sandbox. The host
+container joins each running sandbox's network and reaches the sandbox by
+container name. Stopping a sandbox removes its network.
 
 ```yaml
 # docker-compose.yml
@@ -248,9 +250,27 @@ without sandbox tools.
 5. Put TLS in front of port 8000. For SSE, disable response buffering and set
    the idle timeout to at least 3600s.
 
-CPU, memory and disk limits for sandboxes are set on the Docker daemon, and
-outbound rules on the `mash-sandboxes` network. Mash only decides which
-sandboxes exist.
+CPU, memory and disk limits for sandboxes are set on the Docker daemon. Mash
+only decides which sandboxes exist.
+
+Each sandbox network gets a /28 from `MASH_SANDBOX_SUBNETS` (default
+`10.213.0.0/16`, room for 4096), not from Docker's own address pools, which
+hold about 30 networks. Pick another range if that one is used on your
+network or VPN.
+
+Sandboxes can reach the internet, and so the cloud metadata address
+`169.254.169.254`, where a VM's instance credentials are served. Block it on
+the Docker host with a rule in the `DOCKER-USER` chain, which Docker leaves to
+you and applies to traffic from every container:
+
+```bash
+sudo iptables -I DOCKER-USER -d 169.254.169.254 -j DROP
+```
+
+Make the rule persistent with your distribution's tool (`iptables-persistent`
+or `netfilter-persistent` on Debian and Ubuntu). It also blocks the host's
+container, so give the host's credentials another way, such as environment
+variables.
 
 ## Operating agents
 
@@ -284,10 +304,10 @@ set `MASH_SANDBOX_NAMESPACE`.
 mash sandbox ls                               # user, status, uptime, container
 mash sandbox shell u-42 --agent research      # a shell as `agent` in research's folder
 mash sandbox shell u-42 --root
-mash sandbox stop u-42                        # stop now; the volume is kept
+mash sandbox stop u-42                        # stop now and remove its network; the volume is kept
 ```
 
-- `shell` starts a stopped sandbox. Commands run from it are not in the event
+- `shell` starts a stopped sandbox on its network. Commands run from it are not in the event
   log; their history is appended to `/home/agent/workspaces/.admin_history`.
 - Anything outside `/home/agent/workspaces` is on the container layer and is
   lost when the container is replaced. `pip install --user` and `npm install`
@@ -496,7 +516,8 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_SANDBOX_MOUNTS` | host | none | Comma-separated `source:target[:ro]` bind mounts added to every sandbox; sources are Docker-host paths |
 | `MASH_SANDBOX_IDLE_SECONDS` | host | `900` | Idle time before a sandbox stops |
 | `MASH_SANDBOX_MAX_RUNNING` | host | `20` | Most sandboxes running at once |
-| `MASH_SANDBOX_NAMESPACE` | host, CLI | `mash` | Prefix for sandbox and browser containers, volumes and networks (`<ns>-sandbox-<key>`, `<ns>-sandboxes`, `<ns>-browser-<key>`, `<ns>-browsers`), so deployments sharing a Docker daemon keep them separate |
+| `MASH_SANDBOX_NAMESPACE` | host, CLI | `mash` | Prefix for sandbox and browser containers, volumes and networks (`<ns>-sandbox-<key>`, `<ns>-browser-<key>`, `<ns>-browsers`), so deployments sharing a Docker daemon keep them separate |
+| `MASH_SANDBOX_SUBNETS` | host, CLI | `10.213.0.0/16` | IPv4 range each sandbox's network takes a /28 from; `/28` or wider |
 | `MASH_BROWSER_IMAGE` | host | `ghcr.io/imsid/mash-browser:<mashpy version>` | Browser image, pulled when an agent lists sites |
 | `MASH_BROWSER_IDLE_SECONDS` | host | `900` | Idle time before a browser stops; its profile is kept |
 | `MASH_BROWSER_MAX_RUNNING` | host | `10` | Most browsers running at once |

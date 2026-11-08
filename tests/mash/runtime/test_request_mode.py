@@ -70,6 +70,17 @@ class RequestModeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_a_session_takes_requests_only_for_its_user(self) -> None:
+        from mash.runtime.errors import SessionUserMismatchError
+
+        runtime = await self._runtime()
+        await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
+
+        with self.assertRaises(SessionUserMismatchError):
+            await runtime.submit_request(message="hi", session_id="s-1", user_id="u-2")
+        await runtime.submit_request(message="again", session_id="s-1", user_id="u-1")
+        await runtime.submit_request(message="hi", session_id="s-2", user_id="u-2")
+
     async def test_submit_stores_the_mode_in_the_accepted_event_and_row(self) -> None:
         runtime = await self._runtime()
         accepted = await runtime.submit_request(

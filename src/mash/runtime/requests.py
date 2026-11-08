@@ -16,7 +16,12 @@ from ..logging.trace_context import (
     get_workflow_id,
     get_workflow_run_id,
 )
-from .errors import RequestStaleError, RequestTerminalError, classify_error
+from .errors import (
+    RequestStaleError,
+    RequestTerminalError,
+    SessionUserMismatchError,
+    classify_error,
+)
 from ..otel import semconv
 from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
 from .events.types import STARTED_BY_USER, EndStatus, end_status
@@ -217,6 +222,16 @@ async def _submit_request(
         existing = await get_accepted_request(self, request_id)
         if existing is not None:
             return existing
+
+    # A session is one user's conversation: its turns replay into every
+    # request on it, so a request for another user is refused.
+    user_id = user_id_from_request_metadata(request_metadata)
+    if user_id is not None:
+        owner = await self.runtime_store.get_other_session_user(target_session_id, user_id)
+        if owner is not None:
+            raise SessionUserMismatchError(
+                f"session '{target_session_id}' belongs to another user"
+            )
 
     # Only a workflow-parented request binds workflow ids here; binding None
     # would hide ids an enclosing workflow step already bound.

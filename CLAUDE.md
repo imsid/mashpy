@@ -600,8 +600,9 @@ calling agent, with `parent_request_id` set to the calling request. Its turn
 stays out of the session's replayed history. A child gets neither
 `RunSubAgents` nor `AskUser`: splitting is one level deep, and the user talks
 to the calling agent. The calling agent's process starts children through the
-host's `/h2a` relay, which checks each against the request's composition and
-forwards it to the child agent's process. Cancelling a request cancels its
+host's `/h2a` relay, which checks each against the composition stored with
+the calling request (not one the caller sends) and forwards it to the child
+agent's process. Cancelling a request cancels its
 running children.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
@@ -638,7 +639,12 @@ validation with `422`. The host is the trust boundary: the app asserts the
 user, and the host passes it to the primary. It is stored on the request and
 its turns and never shown to the model, and the request's code runs in that
 user's sandbox. Subagent calls carry the parent request's user, set by
-the host's `/h2a` relay, so an agent cannot act for another user.
+the host's `/h2a` relay, so an agent cannot act for another user. A session
+belongs to the user of its first request: a submit that names another user's
+`session_id` returns `409 SESSION_USER_MISMATCH`, since the session's turns
+would replay into it. Request routes (status, events, interactions, resume,
+cancel, rerun, mode) answer `404 REQUEST_NOT_FOUND` for a request accepted
+for another agent than the one in the path.
 `search_conversations` offers scope `user`: the user's conversations with that
 agent.
 
@@ -879,7 +885,7 @@ export MASH_HOST_SECRET=...
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 
 # Host in a container: mount the Docker socket and add its group;
-# sandboxes then run on the `mash-sandboxes` network.
+# each sandbox then runs on a network of its own, which the host joins.
 # Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET, MASH_API_KEY, and
 # MASH_PUBLIC_URL to the address users reach the host at. The host refuses to
 # bind a non-loopback address such as 0.0.0.0 without an API key.
