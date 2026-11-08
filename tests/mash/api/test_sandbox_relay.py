@@ -153,7 +153,12 @@ class SandboxRelayTests(unittest.TestCase):
         self.assertEqual(self._exec(request_id="req-old").status_code, 403)
 
     def test_bad_bodies_are_400(self) -> None:
-        for overrides in ({"command": ""}, {"request_id": ""}, {"timeout": -1}):
+        for overrides in (
+            {"command": ""},
+            {"request_id": ""},
+            {"timeout": -1},
+            {"timeout": 1801},
+        ):
             with self.subTest(overrides=overrides):
                 self.assertEqual(self._exec(**overrides).status_code, 400)
 
@@ -288,6 +293,28 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(link=link):
                 self.assertEqual((await self.http.get(link)).status_code, 404)
         self.assertEqual(self.provider.ensure_calls, [])
+
+    async def test_a_port_link_passes_only_redirects_that_stay_on_the_host(self) -> None:
+        async def proxy(user_id, **kwargs):
+            return httpx.Response(302, headers={"location": self.location})
+
+        self.manager.proxy = proxy
+        for location, kept in (
+            ("next/", True),
+            ("/s/x/ports/8000/next", True),
+            ("?page=2", True),
+            ("https://evil.example/login", False),
+            ("//evil.example/login", False),
+            ("/\\evil.example/login", False),
+            ("\\\\evil.example", False),
+            ("/\t/evil.example", False),
+            ("javascript:alert(1)", False),
+        ):
+            with self.subTest(location=location):
+                self.location = location
+                resp = await self.http.get(f"{self.link}/ports/8000/")
+                self.assertEqual(resp.status_code, 302)
+                self.assertEqual(resp.headers.get("location"), location if kept else None)
 
     async def test_a_port_link_forwards_to_a_server_in_the_sandbox(self) -> None:
         with socket.socket() as sock:

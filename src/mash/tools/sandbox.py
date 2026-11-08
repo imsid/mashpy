@@ -35,8 +35,11 @@ import httpx
 from mash.logging.trace_context import get_request_id
 from mash.sandbox.daemon import (
     BASH_MAX_OUTPUT_CHARS,
+    BASH_MAX_TIMEOUT,
     MAX_FILE_BYTES,
+    TIMEOUT_ERROR,
     WORKSPACES_ROOT,
+    valid_timeout,
 )
 
 from .base import ToolResult
@@ -231,8 +234,12 @@ class RunCodeTool:
                 "code": {"type": "string", "description": "The code to run."},
                 "timeout": {
                     "type": "integer",
-                    "description": f"Timeout in seconds (default: {RUN_CODE_DEFAULT_TIMEOUT})",
+                    "description": (
+                        f"Timeout in seconds (default: {RUN_CODE_DEFAULT_TIMEOUT}, "
+                        f"at most {BASH_MAX_TIMEOUT})"
+                    ),
                     "default": RUN_CODE_DEFAULT_TIMEOUT,
+                    "maximum": BASH_MAX_TIMEOUT,
                 },
             },
             "required": ["language", "code"],
@@ -248,8 +255,8 @@ class RunCodeTool:
         if not isinstance(code, str) or not code.strip():
             return ToolResult.error("No code provided")
         timeout = args.get("timeout", RUN_CODE_DEFAULT_TIMEOUT)
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
-            return ToolResult.error("timeout must be a positive number of seconds")
+        if not valid_timeout(timeout):
+            return ToolResult.error(TIMEOUT_ERROR)
         request_id = _request_id()
         if not request_id:
             return ToolResult.error("run_code runs only within a request")

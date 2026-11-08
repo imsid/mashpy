@@ -55,6 +55,19 @@ class RunCodeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.content, "it's \"quoted\" {start}")
 
+    async def test_a_timeout_over_the_max_is_refused_before_the_relay(self) -> None:
+        from mash.sandbox.daemon import BASH_MAX_TIMEOUT
+
+        self.assertEqual(BASH_MAX_TIMEOUT, 1800)
+        self.assertEqual(self.tool.parameters["properties"]["timeout"]["maximum"], 1800)
+        with patch("mash.tools.sandbox.httpx.AsyncClient") as client:
+            result = await self.tool.execute(
+                {"language": "shell", "code": "true", "timeout": BASH_MAX_TIMEOUT + 1}
+            )
+        self.assertTrue(result.is_error)
+        self.assertIn("1800", result.content)
+        client.assert_not_called()
+
     def test_the_model_checks_what_is_installed(self) -> None:
         self.assertIn("check with `pip list`", self.tool.description)
 

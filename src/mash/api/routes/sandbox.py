@@ -23,6 +23,7 @@ the host's origin.
 from __future__ import annotations
 
 import mimetypes
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
@@ -30,7 +31,12 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from mash.runtime.host.tokens import agent_for_token
 from mash.sandbox.containers import UnsafePathError
-from mash.sandbox.daemon import BASH_DEFAULT_TIMEOUT, resolve_workspace_path
+from mash.sandbox.daemon import (
+    BASH_DEFAULT_TIMEOUT,
+    TIMEOUT_ERROR,
+    resolve_workspace_path,
+    valid_timeout,
+)
 from mash.sandbox.manager import SandboxCapacityError
 from mash.sandbox.provider import SandboxUnavailableError
 from mash.sandbox.tokens import derive_link_token, user_for_link_token
@@ -126,8 +132,8 @@ def build_sandbox_router() -> APIRouter:
         stdin = body.get("stdin")
         if not isinstance(command, str) or not command.strip():
             return h2a_error(400, "INVALID_REQUEST", "command is required")
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
-            return h2a_error(400, "INVALID_REQUEST", "timeout must be a positive number")
+        if not valid_timeout(timeout):
+            return h2a_error(400, "INVALID_REQUEST", TIMEOUT_ERROR)
         if stdin is not None and not isinstance(stdin, str):
             return h2a_error(400, "INVALID_REQUEST", "stdin must be a string")
         env = body.get("env") or {}
@@ -264,7 +270,7 @@ def build_link_router() -> APIRouter:
             response.content,
             response.status_code,
             media_type=response.headers.get("content-type"),
-            location=response.headers.get("location"),
+            location=_host_relative(response.headers.get("location")),
         )
 
     return router
@@ -275,6 +281,22 @@ def _daemon_message(response) -> str:
         return str(response.json()["error"]["message"])
     except (ValueError, KeyError, TypeError):
         return response.text or f"status {response.status_code}"
+
+
+def _host_relative(location: str | None) -> str | None:
+    """``location`` when it stays on this host, else None.
+
+    A server in the sandbox picks its redirects, and a link serves them from
+    the host's origin: an absolute or scheme-relative one would send the user
+    to any site. Browsers read a backslash as a slash and drop tabs and line
+    breaks, so a location with any of them is not relative either.
+    """
+    if not location or any(ch in location for ch in "\\\t\r\n"):
+        return None
+    parts = urlsplit(location)
+    if parts.scheme or parts.netloc or location.startswith("//"):
+        return None
+    return location
 
 
 def _link_error(status_code: int, message: str) -> Response:

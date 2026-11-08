@@ -216,6 +216,7 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
             {"agent_id": "research", "command": ""},
             {"agent_id": "research", "command": "ls", "timeout": 0},
             {"agent_id": "research", "command": "ls", "timeout": True},
+            {"agent_id": "research", "command": "ls", "timeout": 1801},
         ):
             with self.subTest(body=body):
                 response = await self.client.post("/exec", json=body)
