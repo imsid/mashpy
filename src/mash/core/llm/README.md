@@ -27,7 +27,7 @@
 Behavior:
 - Uses the Anthropic Messages API.
 - Requires a Claude model name.
-- Supports prompt-caching annotations on system/tool blocks.
+- With `request.use_prompt_caching`, marks `cache_control` on the last system block, the last tool and the last block of the last message, so each step of a tool loop reads the conversation so far from the cache. The message marker is left off when the request already has Anthropic's limit of 4 breakpoints, or when the last block is empty text (it goes on the block before).
 - Supports provider beta flags via `request.provider_options["betas"]`.
 - Translates `request.provider_options["structured_output"]` into the
   Messages API `output_config` json_schema format.

@@ -327,6 +327,83 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(translated[0]["category"], "shell")
         self.assertIn("cache_control", translated[0])
 
+    async def _anthropic_call(self, request: LLMRequest) -> dict:
+        provider = object.__new__(AnthropicProvider)
+        provider._model = "claude-sonnet-4-5"
+        provider._app_id = "test"
+        provider._client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock()))
+        provider._parse_anthropic_response = Mock(
+            return_value=SimpleNamespace(text="", tool_calls=[], provider_metadata={})
+        )
+        await provider.send(request)
+        return provider._client.messages.create.call_args.kwargs
+
+    def _loop_request(self, **overrides) -> LLMRequest:
+        fields = dict(
+            model="claude-sonnet-4-5",
+            system="You are helpful.",
+            messages=[
+                LLMMessage(role="user", content=[LLMContentBlock.text("find it")]),
+                LLMMessage(
+                    role="assistant",
+                    content=[LLMContentBlock.tool_call(tool_call_id="t1", name="search", arguments={})],
+                ),
+                LLMMessage(
+                    role="tool",
+                    content=[LLMContentBlock.tool_result(tool_call_id="t1", content="found")],
+                ),
+            ],
+            tools=[
+                LLMToolDefinition(
+                    name="search", description="Search", parameters_json_schema={"type": "object"}
+                )
+            ],
+            max_tokens=100,
+        )
+        fields.update(overrides)
+        return LLMRequest(**fields)
+
+    async def test_anthropic_caches_the_conversation_at_its_last_block(self) -> None:
+        call = await self._anthropic_call(self._loop_request())
+
+        messages = call["messages"]
+        self.assertEqual(messages[-1]["content"][-1]["cache_control"], {"type": "ephemeral"})
+        earlier = [block for message in messages[:-1] for block in message["content"]]
+        self.assertFalse(any("cache_control" in block for block in earlier))
+        self.assertIn("cache_control", call["system"][-1])
+        self.assertIn("cache_control", call["tools"][-1])
+
+    async def test_anthropic_conversation_cache_respects_the_breakpoint_limit(self) -> None:
+        system = [
+            {"type": "text", "text": f"part {n}", "cache_control": {"type": "ephemeral"}}
+            for n in range(3)
+        ]
+        call = await self._anthropic_call(self._loop_request(system=system))
+
+        # Three in the system prompt plus the tools' make four.
+        self.assertNotIn("cache_control", call["messages"][-1]["content"][-1])
+
+    async def test_anthropic_conversation_cache_skips_an_empty_text_block(self) -> None:
+        request = self._loop_request(
+            messages=[
+                LLMMessage(
+                    role="user",
+                    content=[LLMContentBlock.text("hi"), LLMContentBlock.text("")],
+                )
+            ]
+        )
+        call = await self._anthropic_call(request)
+
+        first, empty = call["messages"][-1]["content"]
+        self.assertEqual(first["cache_control"], {"type": "ephemeral"})
+        self.assertNotIn("cache_control", empty)
+
+    async def test_anthropic_without_prompt_caching_marks_nothing(self) -> None:
+        call = await self._anthropic_call(self._loop_request(use_prompt_caching=False))
+
+        blocks = [block for message in call["messages"] for block in message["content"]]
+        self.assertFalse(any("cache_control" in block for block in blocks))
+
     async def test_anthropic_send_maps_structured_output_to_output_config(self) -> None:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-5"
