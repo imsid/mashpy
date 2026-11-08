@@ -67,7 +67,10 @@ class AgentRuntime:
         self._browser_tools: tuple[str, str] | None = None
         self._cortex: Any = None
         self._mcp_servers: Sequence[MCPServerConfig] = definition.build_mcp_servers()
-        self.has_mcp_manager = False
+        web_search = definition.build_web_search()
+        self._web_search_server: MCPServerConfig | None = (
+            web_search.mcp_server_config() if web_search is not None else None
+        )
         self.mcp_manager: Optional[MCPManager] = None
         self._chain_renderer: Any = None
 
@@ -122,8 +125,23 @@ class AgentRuntime:
     def get_max_steps(self) -> int:
         return self.agent.config.max_steps
 
-    def get_mcp_servers(self) -> Sequence[MCPServerConfig]:
-        return self._mcp_servers
+    def get_web_search_server(self) -> MCPServerConfig | None:
+        return self._web_search_server
+
+    async def _connect_mcp_servers(self) -> None:
+        """Connect the MCP servers and the web search provider, and list their tools.
+
+        Runs once, when the runtime opens. A server that fails to connect is
+        logged and left out; the agent runs without its tools until it restarts.
+        """
+        servers = list(self._mcp_servers)
+        if self._web_search_server is not None:
+            servers.append(self._web_search_server)
+        if not servers:
+            return
+        self.mcp_manager = MCPManager(event_logger=self.event_logger, app_id=self.app_id)
+        await self.mcp_manager.connect_all(servers)
+        factory_helpers.register_mcp_tools(self, self.agent)
 
     def attach_subagent_access(self, access: SubagentAccess) -> None:
         """Give the runtime its route to subagents (the host relay in an agent process)."""
@@ -340,6 +358,7 @@ class AgentRuntime:
         await self.runtime_store.open()
         if self._cortex is not None:
             await self._cortex.open()
+        await self._connect_mcp_servers()
         await self.engine.open()
         self._is_open = True
 
@@ -350,8 +369,8 @@ class AgentRuntime:
         try:
             self._subagent_access = None
 
-            if self.has_mcp_manager and self.mcp_manager is not None:
-                self.mcp_manager.disconnect_all()
+            if self.mcp_manager is not None:
+                await self.mcp_manager.disconnect_all()
             await self.agent.tools.shutdown()
             await self.agent.llm.close()
             if self._cortex is not None:

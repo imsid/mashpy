@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any
 
-from mash.mcp.client import MCPClientError
 from mash.mcp.manager import MCPManager
-from mash.mcp.types import MCPServerConfig
 from mash.tools.mcp import MCPToolAdapter
 from mash.skills.tool import SkillTool
 
@@ -196,12 +194,7 @@ def build_agent_instance(
     cortex = self.get_cortex()
     if cortex is not None and user_id:
         agent.tools.register(cortex.search_tool(user_id))
-    mcp_servers = self.get_mcp_servers()
-    if mcp_servers:
-        configure_remote_tools(self, agent, mcp_servers)
-    web_search = self.definition.build_web_search()
-    if web_search is not None:
-        configure_web_search_tools(self, agent, web_search)
+    register_mcp_tools(self, agent)
     if for_request:
         if parent_kind == "subagent":
             for name in ("RunSubAgents", "AskUser"):
@@ -235,117 +228,35 @@ def configure_runtime_tools(
         agent.tools.register(tool)
 
 
-def configure_remote_tools(
-    self: "AgentRuntime",
-    agent: Agent,
-    mcp_servers: Sequence[MCPServerConfig],
-) -> None:
-    if self.mcp_manager is None:
-        self.mcp_manager = MCPManager(
-            event_logger=self.event_logger,
-            app_id=self.app_id,
-        )
-        self.has_mcp_manager = True
+def register_mcp_tools(self: "AgentRuntime", agent: Agent) -> None:
+    """Register the tools of the MCP servers and the web search provider.
 
-    manager = self.mcp_manager
-    try:
-        for server in mcp_servers:
-            if manager.get_server(server.name) is None:
-                manager.add_server(
-                    name=server.name,
-                    url=server.url,
-                    description=server.description,
-                    headers=server.headers,
-                    allowed_tools=server.allowed_tools,
-                    auto_connect=True,
-                )
-
-        mcp_tools = manager.get_flattened_tools(prefix="mcp_")
-        for mcp_tool in mcp_tools:
-            server_name = mcp_tool.get("metadata", {}).get("server")
-            original_name = mcp_tool.get("metadata", {}).get("original_name")
-            if not server_name or not original_name:
-                continue
-
-            def make_executor(srv_name: str, tool_name: str):
-                def executor(args):
-                    try:
-                        result = manager.call_tool(srv_name, tool_name, args)
-                        return extract_mcp_text(result)
-                    except Exception as exc:  # pragma: no cover
-                        return f"Error: {exc}", True
-
-                return executor
-
-            adapter = MCPToolAdapter.from_mcp_tool(
-                mcp_tool=mcp_tool,
-                executor=make_executor(server_name, original_name),
-                prefix="",
-            )
-            if adapter.name not in agent.tools:
-                agent.tools.register(adapter)
-    except MCPClientError:
-        return
-
-
-def configure_web_search_tools(
-    self: "AgentRuntime",
-    agent: Agent,
-    provider: Any,
-) -> None:
-    """Register a web search provider's tools under their plain names.
-
-    Reuses the MCP manager for connection, headers, and call routing, but
-    registers tools as e.g. ``web_search`` rather than the
-    ``mcp_<server>_<tool>`` names ``configure_remote_tools`` produces.
+    The tools come from the lists ``AgentRuntime.open()`` fetched, so building
+    an agent makes no network call. An MCP server's tools are named
+    ``mcp_<server>_<tool>``; the web search provider's keep their plain names
+    (``web_search``, ``web_fetch``). A server that failed to connect has none.
     """
-    server = provider.mcp_server_config()
-    if self.mcp_manager is None:
-        self.mcp_manager = MCPManager(
-            event_logger=self.event_logger,
-            app_id=self.app_id,
-        )
-        self.has_mcp_manager = True
-
     manager = self.mcp_manager
-    try:
-        if manager.get_server(server.name) is None:
-            manager.add_server(
-                name=server.name,
-                url=server.url,
-                description=server.description,
-                headers=server.headers,
-                allowed_tools=server.allowed_tools,
-                auto_connect=True,
-            )
-
-        for mcp_tool in manager.get_flattened_tools(prefix="mcp_"):
-            metadata = mcp_tool.get("metadata", {})
-            if metadata.get("server") != server.name:
-                continue
-            original_name = metadata.get("original_name")
-            if not original_name:
-                continue
-
-            def make_executor(srv_name: str, tool_name: str):
-                def executor(args):
-                    try:
-                        result = manager.call_tool(srv_name, tool_name, args)
-                        return extract_mcp_text(result)
-                    except Exception as exc:  # pragma: no cover
-                        return f"Error: {exc}", True
-
-                return executor
-
+    if manager is None:
+        return
+    web_search = self.get_web_search_server()
+    for server_name, tools in manager.get_all_tools().items():
+        plain = web_search is not None and server_name == web_search.name
+        for mcp_tool in tools:
+            original_name = mcp_tool["metadata"]["original_name"]
             adapter = MCPToolAdapter.from_mcp_tool(
-                mcp_tool={**mcp_tool, "name": original_name},
-                executor=make_executor(server.name, original_name),
-                prefix="",
+                mcp_tool={**mcp_tool, "name": original_name} if plain else mcp_tool,
+                executor=_mcp_executor(manager, server_name, original_name),
             )
             if adapter.name not in agent.tools:
                 agent.tools.register(adapter)
-    except MCPClientError:
-        return
+
+
+def _mcp_executor(manager: MCPManager, server_name: str, tool_name: str):
+    async def executor(args: dict[str, Any]) -> tuple[str, bool]:
+        return extract_mcp_text(await manager.call_tool(server_name, tool_name, args))
+
+    return executor
 
 
 def configure_run_subagents(

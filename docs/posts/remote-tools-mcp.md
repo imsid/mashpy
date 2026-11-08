@@ -32,18 +32,21 @@ The config is the whole integration surface: a `name` that namespaces everything
 
 ## Discovery at startup
 
-When the runtime builds the agent, an `MCPManager` connects to each configured server, lists its tools, and wraps every one in an adapter that satisfies the same four-attribute `Tool` protocol from [the previous post](human-in-the-loop.md):
+When the agent's process starts, the runtime opens and an `MCPManager` connects to each configured server and lists its tools once. The lists stay in memory for the life of the process. Each time the runtime builds an agent for a step, it wraps every listed tool in an adapter that satisfies the same four-attribute `Tool` protocol from [the previous post](human-in-the-loop.md), without another network call:
 
 ```python
 # src/mash/runtime/factory.py (trimmed)
-mcp_tools = manager.get_flattened_tools(prefix="mcp_")
-for mcp_tool in mcp_tools:
-    adapter = MCPToolAdapter.from_mcp_tool(
-        mcp_tool=mcp_tool,
-        executor=make_executor(server_name, original_name),
-    )
-    agent.tools.register(adapter)
+for server_name, tools in manager.get_all_tools().items():
+    for mcp_tool in tools:
+        original_name = mcp_tool["metadata"]["original_name"]
+        adapter = MCPToolAdapter.from_mcp_tool(
+            mcp_tool=mcp_tool,
+            executor=_mcp_executor(manager, server_name, original_name),
+        )
+        agent.tools.register(adapter)
 ```
+
+A server that adds tools later shows them after the agent restarts (`POST /api/v1/agent/{agent_id}/disable`, then `/enable`, or a deploy).
 
 Remote tools get namespaced names, like `mcp_github_search_issues` for a `search_issues` tool on the `github` server, with the original name and server kept in metadata for routing the call back. The prefix lets the model tell remote tools apart from local ones (and from the same tool name on two different servers), and it keeps the registry's flat namespace collision-free.
 
@@ -62,7 +65,7 @@ flowchart LR
 
 The manager runs in the agent's process, a subprocess of the host, so the URL has to be reachable from where the host runs: a service name on the `mash` Docker network, as above, for a host in a container, or `localhost` for a host on your machine. Header tokens stay in that process's environment. Agents' code runs in the user's sandbox, which never sees them.
 
-To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server, and the response text comes back as an ordinary `ToolResult`.
+To the model, a remote tool is indistinguishable from a local one; the same `{name, description, input_schema}` triple rides on [every LLM request](one-llm-contract.md). The only difference is that `execute()` crosses the network. The adapter routes the call through the manager to the owning server over an async HTTP client, so other requests in the agent's process keep running while it waits, and parallel calls overlap. The response text comes back as an ordinary `ToolResult`.
 
 ## Web search
 
@@ -72,23 +75,19 @@ Naming is the one place it diverges. These tools register under their plain name
 
 ## Failure stays inside the tool result
 
-Remote calls add failure modes like an unreachable server or expired auth, and the integration keeps all of them inside the existing tool contract. A tool call that fails returns an error `ToolResult`, the same shape a local tool produces, and the model reasons about it on the next think phase. A server that fails during startup discovery is logged and skipped, and the agent starts with the tools that did resolve.
+Remote calls add failure modes like an unreachable server or expired auth, and the integration keeps all of them inside the existing tool contract. A tool call that fails returns an error `ToolResult`, the same shape a local tool produces, and the model reasons about it on the next think phase. A server that fails during startup discovery is logged as a warning and skipped, and the agent starts with the tools that did resolve. It stays skipped until the agent restarts.
 
 Because an MCP call is just a tool call, the durability machinery from [the durable loop post](durable-agent-loop.md) applies unchanged: each call is its own checkpoint, completed calls are skipped on resume, and transient failures get the standard retry treatment.
 
-## Remote context, beyond tools
+## Beyond tools
 
-Tools are the most-used MCP surface, and the client speaks the rest of the core protocol too:
-
-- **Resources**: `read_resource(uri)` pulls remote content (documents, records, files) into the conversation; resource templates parameterize the URIs.
-- **Prompts**: `get_prompt(name)` fetches server-defined prompt templates.
-- **Elicitation**: a server can ask for structured input mid-call, and the client surfaces those requests for the host to answer.
+Besides tools, the client handles one other MCP surface, elicitation: a server can ask for structured input mid-call, and the client surfaces those requests for the host to answer. It doesn't implement resources or prompts.
 
 The package boundary in `src/mash/mcp` keeps protocol details in one place: `types.py` for config, `client.py` for the wire protocol, and `manager.py` for server lifecycle and tool routing. Runtime and tool code consume MCP through this package, so protocol changes land in one module.
 
 ## The same observability
 
-MCP activity shows up alongside everything else in the [event stream](request-lifecycle.md): the manager writes `mcp.client.connect` / `connected` / `disconnect` / `error` for its connection lifecycle, each carrying `server_name` and the current `trace_id`, and a remote tool call is the request's `execute_tool` span like any local one. In [trace analysis](reading-a-trace.md), remote calls show up as `execute_tool` spans under their `mcp_`-prefixed names, so a slow remote server surfaces in the per-tool stats table like any other expensive tool.
+MCP activity shows up alongside everything else in the [event stream](request-lifecycle.md): the manager writes `mcp.client.connect` / `connected` / `error` for its connection lifecycle, each carrying `server_name` and the current `trace_id`, and a remote tool call is the request's `execute_tool` span like any local one. In [trace analysis](reading-a-trace.md), remote calls show up as `execute_tool` spans under their `mcp_`-prefixed names, so a slow remote server surfaces in the per-tool stats table like any other expensive tool.
 
 Every registered tool, local or remote, is serialized into the `tools` list on each LLM request. The contract that carries that list across three different provider APIs is the subject of the next post.
 

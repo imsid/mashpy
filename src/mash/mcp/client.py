@@ -10,20 +10,21 @@ Logging.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
-import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-import requests
+import httpx
 
-DEFAULT_PROTOCOL_VERSION = "2025-03-26"
+_PROTOCOL_VERSION = "2025-03-26"
+_CLIENT_VERSION = "0.1.0"
 LOGGER = logging.getLogger("mash.mcp.client")
+_HANDSHAKE_TIMEOUT_S = 30.0
+_RPC_TIMEOUT_S = 60.0
 
 
 class MCPClientError(RuntimeError):
@@ -37,30 +38,26 @@ class RPCResponse:
     result: Dict[str, Any]
     elicitation_requests: List[Dict[str, Any]]
 
-T = TypeVar("T")
-
 
 class MCPHTTPClient:
-    """Minimal MCP HTTP client with elicitation hooks."""
+    """Minimal async MCP HTTP client with elicitation hooks.
+
+    Construction opens nothing; ``await connect()`` runs the handshake and
+    starts the SSE listener as a task on the running loop.
+    """
 
     def __init__(
         self,
         base_url: str,
         client_name: str,
         *,
-        client_version: str = "0.1.0",
-        protocol_version: str = DEFAULT_PROTOCOL_VERSION,
         default_headers: Optional[Dict[str, str]] = None,
         elicitation_handler: Callable[[Dict[str, Any]], Dict[str, Any]],
     ) -> None:
         self.base_url = self._normalize_url(base_url)
-        self.session = requests.Session()
+        self._http: Optional[httpx.AsyncClient] = None
         self.session_id: Optional[str] = None
-        self._initialized: bool = False
-        self.server_info: Dict[str, Any] = {}
         self.client_name = client_name
-        self.client_version = client_version
-        self.protocol_version = protocol_version
         self._elicitation_handler = elicitation_handler
         self._custom_headers: Dict[str, str] = {}
         if default_headers:
@@ -70,10 +67,12 @@ class MCPHTTPClient:
                 if value is None:
                     continue
                 self._custom_headers[key] = str(value)
-        self._sse_thread: Optional[threading.Thread] = None
-        self._sse_stop = threading.Event()
-        self._sse_url: Optional[str] = None
-        self._initialize()
+        self._sse_task: Optional[asyncio.Task[None]] = None
+
+    async def connect(self) -> None:
+        """Run the MCP handshake and start listening for server messages."""
+        self._http = httpx.AsyncClient()
+        await self._initialize()
         self._start_sse_listener()
 
     # ------------------------------------------------------------------
@@ -118,101 +117,96 @@ class MCPHTTPClient:
             headers.update(self._custom_headers)
         return headers
 
-    def _initialize(self) -> None:
+    async def _post(
+        self, payload: Dict[str, Any], *, timeout: float, label: str
+    ) -> httpx.Response:
+        if self._http is None:
+            raise MCPClientError("Client is not connected")
+        started = time.monotonic()
+        try:
+            response = await self._http.post(
+                self.base_url,
+                json=payload,
+                headers=self._default_headers(),
+                timeout=timeout,
+            )
+        except httpx.HTTPError as exc:
+            raise MCPClientError(f"{label} failed: {exc!r}") from exc
+        LOGGER.debug(
+            "MCP %s %s: HTTP %s in %d ms",
+            self.client_name,
+            label,
+            response.status_code,
+            int((time.monotonic() - started) * 1000),
+        )
+        return response
+
+    async def _initialize(self) -> None:
         payload = {
             "jsonrpc": "2.0",
             "id": "init",
             "method": "initialize",
             "params": {
-                "protocolVersion": self.protocol_version,
+                "protocolVersion": _PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
                     "name": self.client_name,
-                    "version": self.client_version,
+                    "version": _CLIENT_VERSION,
                 },
             },
         }
-        response = self.session.post(
-            self.base_url,
-            json=payload,
-            headers=self._default_headers(),
-            timeout=30,
+        response = await self._post(
+            payload, timeout=_HANDSHAKE_TIMEOUT_S, label="initialize"
         )
         events = self._parse_events(response.text, response.headers.get("Content-Type"))
-        self.server_info = self._extract_result_payload(payload["id"], events)
-        self.session_id = response.headers.get(
-            "MCP-Session-ID"
-        ) or response.headers.get("mcp-session-id")
+        self._extract_result_payload(payload["id"], events)
+        self.session_id = response.headers.get("MCP-Session-ID")
         if not self.session_id:
             LOGGER.info(
                 "Server did not return MCP-Session-ID header; continuing in stateless mode"
             )
-        self._initialized = True
-        self._send_notification("notifications/initialized")
+        await self._send_notification("notifications/initialized")
 
-    def _send_notification(
+    async def _send_notification(
         self, method: str, params: Optional[Dict[str, Any]] = None
     ) -> None:
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params:
             payload["params"] = params
-        self.session.post(
-            self.base_url,
-            json=payload,
-            headers=self._default_headers(),
-            timeout=30,
-        )
+        await self._post(payload, timeout=_HANDSHAKE_TIMEOUT_S, label=method)
 
-    def _send_rpc_response(self, request_id: Any, result: Dict[str, Any]) -> None:
+    async def _send_rpc_response(self, request_id: Any, result: Dict[str, Any]) -> None:
         if request_id is None:
             return
         payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
-        self.session.post(
-            self.base_url,
-            json=payload,
-            headers=self._default_headers(),
-            timeout=30,
-        )
+        await self._post(payload, timeout=_HANDSHAKE_TIMEOUT_S, label="response")
 
-    def shutdown(self) -> None:
-        if self._sse_thread:
-            self._sse_stop.set()
-            self._sse_thread.join(timeout=2)
-            self._sse_thread = None
+    async def aclose(self) -> None:
+        if self._sse_task is not None:
+            self._sse_task.cancel()
+            try:
+                await self._sse_task
+            except BaseException:
+                pass
+            self._sse_task = None
         self.session_id = None
-        self._initialized = False
-        self.session.close()
-
-    def close(self) -> None:
-        self.shutdown()
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     # ------------------------------------------------------------------
     # Core RPC plumbing
     # ------------------------------------------------------------------
-    def _make_request(
+    async def _make_request(
         self,
         method: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> RPCResponse:
-        if not self._initialized and method != "initialize":
-            raise MCPClientError("Client is not initialized")
         request_id = str(uuid.uuid4())
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
-        LOGGER.info("RPC request %s %s: %s", self.base_url, method, json.dumps(payload))
-        response = self.session.post(
-            self.base_url,
-            json=payload,
-            headers=self._default_headers(),
-            timeout=60,
-        )
-        LOGGER.debug(
-            "RPC response %s (status=%s): %s",
-            method,
-            response.status_code,
-            response.text,
-        )
+        response = await self._post(payload, timeout=_RPC_TIMEOUT_S, label=method)
         events = self._parse_events(response.text, response.headers.get("Content-Type"))
         rpc_result = self._extract_result_payload(request_id, events)
         elicitation = self._extract_interactions(events)
@@ -283,161 +277,78 @@ class MCPHTTPClient:
         return elicitation
 
     # ------------------------------------------------------------------
-    # Public interface used by the host
+    # Public interface used by the manager
     # ------------------------------------------------------------------
-    def get_server_info(self) -> Dict[str, Any]:
-        return self.server_info
-
-    def _run_awaitable(self, awaitable: Coroutine[Any, Any, T]) -> T:
-        """Run awaitable from sync call sites, even when an event loop is already running."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(awaitable)
-
-        result: dict[str, T] = {}
-        error: dict[str, BaseException] = {}
-        done = threading.Event()
-
-        def _runner() -> None:
-            try:
-                result["value"] = asyncio.run(awaitable)
-            except BaseException as exc:  # pragma: no cover - defensive
-                error["value"] = exc
-            finally:
-                done.set()
-
-        thread = threading.Thread(target=_runner, name="MCP-AwaitableRunner", daemon=True)
-        try:
-            thread.start()
-        except Exception:
-            if inspect.iscoroutine(awaitable):
-                awaitable.close()
-            raise
-        done.wait()
-
-        if "value" in error:
-            raise error["value"]
-        return result["value"]
-
-    def list_tools(self) -> List[Dict[str, Any]]:
-        response = self._make_request("tools/list")
-        self._run_awaitable(self._handle_interactions(response))
+    async def list_tools(self) -> List[Dict[str, Any]]:
+        response = await self._make_request("tools/list")
+        await self._handle_interactions(response)
         return response.result.get("tools", [])
 
-    def list_resources(self) -> List[Dict[str, Any]]:
-        response = self._make_request("resources/list")
-        self._run_awaitable(self._handle_interactions(response))
-        return response.result.get("resources", [])
-
-    def list_resource_templates(self) -> List[Dict[str, Any]]:
-        response = self._make_request("resources/templates/list")
-        self._run_awaitable(self._handle_interactions(response))
-        return response.result.get("resourceTemplates", [])
-
-    def list_prompts(self) -> List[Dict[str, Any]]:
-        response = self._make_request("prompts/list")
-        self._run_awaitable(self._handle_interactions(response))
-        return response.result.get("prompts", [])
-
-    def read_resource(self, uri: str) -> Dict[str, Any]:
-        response = self._make_request("resources/read", {"uri": uri})
-        self._run_awaitable(self._handle_interactions(response))
-        return response.result
-
-    def get_prompt(
-        self, name: str, arguments: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        response = self._make_request(
-            "prompts/get", {"name": name, "arguments": arguments or {}}
-        )
-        self._run_awaitable(self._handle_interactions(response))
-        return response.result
-
-    def call_tool(
+    async def call_tool(
         self, tool_name: str, arguments: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        response = self._make_request(
+        response = await self._make_request(
             "tools/call", {"name": tool_name, "arguments": arguments or {}}
         )
-        self._run_awaitable(self._handle_interactions(response))
+        await self._handle_interactions(response)
         return response.result
 
     # ------------------------------------------------------------------
     # SSE listener for server-initiated messages
     # ------------------------------------------------------------------
     def _start_sse_listener(self) -> None:
-        if self._sse_thread or not self.session_id:
+        if self._sse_task or not self.session_id:
             return
-        self._sse_url = self._resolve_sse_url()
-        if not self._sse_url:
-            LOGGER.info("Unable to determine SSE endpoint; skipping listener")
-            return
-        LOGGER.info("Starting SSE listener at %s", self._sse_url)
-        self._sse_stop.clear()
-        self._sse_thread = threading.Thread(
-            target=self._run_sse_listener, name="MCP-SSE", daemon=True
+        LOGGER.info("Starting SSE listener at %s", self.base_url)
+        self._sse_task = asyncio.get_running_loop().create_task(
+            self._run_sse_listener(), name=f"mcp-sse-{self.client_name}"
         )
-        self._sse_thread.start()
 
-    def _run_sse_listener(self) -> None:
-        if not self._sse_url:
+    async def _run_sse_listener(self) -> None:
+        if self._http is None:
             return
         headers = self._default_headers()
         headers["Accept"] = "text/event-stream"
-        while not self._sse_stop.is_set():
+        while True:
             try:
-                with self.session.get(
-                    self._sse_url,
+                async with self._http.stream(
+                    "GET",
+                    self.base_url,
                     headers=headers,
-                    stream=True,
-                    timeout=None,
+                    timeout=httpx.Timeout(None, connect=_HANDSHAKE_TIMEOUT_S),
                 ) as response:
+                    # A permanent failure (401, 403, 404, 405) stops the listener.
+                    if response.status_code in (401, 403, 404, 405):
+                        LOGGER.warning(
+                            "SSE endpoint not available (HTTP %d). "
+                            "Disabling SSE listener for this connection.",
+                            response.status_code,
+                        )
+                        return
                     response.raise_for_status()
                     buffer: List[str] = []
                     LOGGER.info("SSE stream established")
-                    for raw_line in response.iter_lines(decode_unicode=True):
-                        if self._sse_stop.is_set():
-                            break
+                    async for raw_line in response.aiter_lines():
                         if not raw_line:
                             if buffer:
                                 payload = "".join(buffer).strip()
                                 buffer = []
                                 if payload:
-                                    self._run_awaitable(self._handle_sse_payload(payload))
+                                    await self._handle_sse_payload(payload)
                             continue
                         if raw_line.startswith("data:"):
                             buffer.append(raw_line[5:].strip())
-                if self._sse_stop.is_set():
-                    break
-            except requests.RequestException as exc:
-                if self._sse_stop.is_set():
-                    break
-
-                # Check if this is a permanent failure (405, 404, 403, 401)
-                if hasattr(exc, "response") and exc.response is not None:
-                    status_code = exc.response.status_code
-                    if status_code in (401, 403, 404, 405):
-                        LOGGER.warning(
-                            "SSE endpoint not available (HTTP %d). "
-                            "Disabling SSE listener for this connection.",
-                            status_code,
-                        )
-                        break  # Stop retrying for permanent failures
-
-                LOGGER.error("SSE connection error: %s", exc)
-                time.sleep(1)
-
-    def _resolve_sse_url(self) -> Optional[str]:
-        return self.base_url
+            except httpx.HTTPError as exc:
+                LOGGER.error("SSE connection error: %r", exc)
+                await asyncio.sleep(1)
 
     async def _handle_sse_payload(self, payload: str) -> None:
         try:
             message = json.loads(payload)
-            LOGGER.info("SSE payload: %s", message)
         except json.JSONDecodeError:
             return
         method = message.get("method")
+        LOGGER.debug("MCP %s SSE message: %s", self.client_name, method)
         if method == "sampling/createMessage":
             raise MCPClientError(
                 "Server requested deprecated MCP feature 'sampling/createMessage', "
@@ -447,7 +358,7 @@ class MCPHTTPClient:
             params = message.get("params", {})
             LOGGER.info("Received elicitation request via SSE")
             reply = self.handle_elicitation_request(params)
-            self._send_rpc_response(message.get("id"), reply)
+            await self._send_rpc_response(message.get("id"), reply)
 
     # ------------------------------------------------------------------
     # Elicitation hooks
@@ -456,7 +367,7 @@ class MCPHTTPClient:
         for elicitation_req in response.elicitation_requests:
             params = elicitation_req.get("params", {})
             elicitation_reply = self.handle_elicitation_request(params)
-            self._send_rpc_response(elicitation_req.get("id"), elicitation_reply)
+            await self._send_rpc_response(elicitation_req.get("id"), elicitation_reply)
 
     def handle_elicitation_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Delegate elicitation requests to the configured handler."""

@@ -538,7 +538,11 @@ class MyAgent(AgentSpec):
 ```
 
 MCP connections open from the agent's process, so the URL resolves where the
-host runs: `localhost` is the host's machine or container.
+host runs: `localhost` is the host's machine or container. The agent connects
+each server and lists its tools once, when its process starts; a server that
+adds tools later shows them after the agent restarts. A server that can't be
+reached then is logged as a warning, and the agent runs without its tools
+until it restarts. Web search providers behave the same way.
 
 ## Multi-Agent Composition
 

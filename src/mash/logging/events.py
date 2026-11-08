@@ -229,7 +229,6 @@ class MCPEvent(LogEvent):
     Example event_types:
     - "mcp.client.connect" - Connecting to MCP server
     - "mcp.client.connected" - Successfully connected
-    - "mcp.client.disconnect" - Client disconnected
     - "mcp.client.error" - Client connection or lifecycle error
 
     Additional fields:
