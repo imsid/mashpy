@@ -117,9 +117,9 @@ async def _project_lifecycle(
     """Record the request's lifecycle state alongside the event that caused it.
 
     Runs in the append transaction, so the state row and the event it reflects
-    commit together. append_event holds an advisory lock on the request id, so
-    appends for one request are serialized and the last write is the last
-    event — no tiebreak needed here.
+    commit together. The append holds the request's ``runtime_request_seq``
+    row lock until it commits, so appends for one request are serialized and
+    the last write is the last event; no tiebreak needed here.
     """
     if event.lifecycle is None or not event.request_id:
         return
@@ -185,89 +185,128 @@ async def _project_mode(cursor: Any, event: RuntimeEvent) -> None:
     )
 
 
+_EVENT_RETURNING = """
+    event_id, request_id, seq AS request_seq, trace_id, app_id,
+    agent_id, session_id, host_id, workflow_id, workflow_run_id,
+    event_type, loop_index, step_key, dedupe_key, payload, created_at
+"""
+
+# One statement: bump the request's counter and insert the event at that seq.
+# The counter's row lock serializes the request's appends until they commit,
+# so seq order is commit order. A duplicate dedupe key inserts nothing and
+# returns no row; its counter bump leaves a gap in seq.
+_APPEND_REQUEST_EVENT = f"""
+    WITH next AS (
+        INSERT INTO runtime_request_seq AS counter (request_id, last_seq)
+        VALUES (%(request_id)s::text, 1)
+        ON CONFLICT (request_id) DO UPDATE SET last_seq = counter.last_seq + 1
+        RETURNING last_seq
+    )
+    INSERT INTO runtime_event_log (
+        request_id, trace_id, app_id, agent_id, session_id, host_id,
+        workflow_id, workflow_run_id, seq,
+        event_type, loop_index, step_key, dedupe_key, payload, created_at
+    )
+    SELECT
+        %(request_id)s::text, %(trace_id)s::text, %(app_id)s::text,
+        %(agent_id)s::text, %(session_id)s::text, %(host_id)s::text,
+        %(workflow_id)s::text, %(workflow_run_id)s::text, next.last_seq,
+        %(event_type)s::text, %(loop_index)s::integer, %(step_key)s::text,
+        %(dedupe_key)s::text, %(payload)s::jsonb, %(created_at)s::double precision
+    FROM next
+    ON CONFLICT (request_id, dedupe_key)
+        WHERE request_id IS NOT NULL AND dedupe_key IS NOT NULL
+        DO NOTHING
+    RETURNING {_EVENT_RETURNING}
+"""
+
+_APPEND_EVENT = f"""
+    INSERT INTO runtime_event_log (
+        request_id, trace_id, app_id, agent_id, session_id, host_id,
+        workflow_id, workflow_run_id, seq,
+        event_type, loop_index, step_key, dedupe_key, payload, created_at
+    )
+    VALUES (
+        NULL, %(trace_id)s, %(app_id)s, %(agent_id)s, %(session_id)s, %(host_id)s,
+        %(workflow_id)s, %(workflow_run_id)s, NULL,
+        %(event_type)s, %(loop_index)s, %(step_key)s, %(dedupe_key)s,
+        %(payload)s::jsonb, %(created_at)s
+    )
+    RETURNING {_EVENT_RETURNING}
+"""
+
+_SELECT_DEDUPED = f"""
+    SELECT {_EVENT_RETURNING}
+    FROM runtime_event_log
+    WHERE request_id = %s AND dedupe_key = %s
+"""
+
+
+def _event_params(event: RuntimeEvent) -> dict[str, Any]:
+    return {
+        "request_id": event.request_id,
+        "trace_id": event.trace_id,
+        "app_id": event.app_id,
+        "agent_id": event.agent_id,
+        "session_id": event.session_id,
+        "host_id": event.host_id,
+        "workflow_id": event.workflow_id,
+        "workflow_run_id": event.workflow_run_id,
+        "event_type": event.event_type,
+        "loop_index": event.loop_index,
+        "step_key": event.step_key,
+        "dedupe_key": event.dedupe_key,
+        "payload": json.dumps(event.payload or {}, ensure_ascii=True, default=str),
+        "created_at": float(event.created_at),
+    }
+
+
+def _projects_state(event: RuntimeEvent) -> bool:
+    return (
+        event.lifecycle is not None
+        or event.event_type == RuntimeEventType.REQUEST_MODE_CHANGED.value
+    )
+
+
+async def _insert_request_event(cursor: Any, event: RuntimeEvent) -> tuple[dict[str, Any], bool]:
+    """Insert a request's event; the stored row and whether it is new.
+
+    A duplicate dedupe key returns the row stored under it.
+    """
+    await cursor.execute(_APPEND_REQUEST_EVENT, _event_params(event))
+    stored = await cursor.fetchone()
+    if stored is not None:
+        return stored, True
+    await cursor.execute(_SELECT_DEDUPED, (event.request_id, event.dedupe_key))
+    existing = await cursor.fetchone()
+    if existing is None:
+        raise RuntimeError("failed to persist runtime event")
+    return existing, False
+
+
 async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
     async with pool.connection() as conn:
-        async with conn.transaction():
-            async with conn.cursor() as cursor:
-                if event.request_id and event.dedupe_key:
-                    await cursor.execute(
-                        """
-                        SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                               agent_id, session_id, host_id, workflow_id, workflow_run_id,
-                               event_type, loop_index, step_key,
-                               dedupe_key, payload, created_at
-                        FROM runtime_event_log
-                        WHERE request_id = %s AND dedupe_key = %s
-                        LIMIT 1
-                        """,
-                        (event.request_id, event.dedupe_key),
-                    )
-                    existing = await cursor.fetchone()
-                    if existing is not None:
-                        # Still project the state. A deduped terminal event was
-                        # already delivered at the existing row's seq, so the
-                        # request is terminal there; skipping this would leave
-                        # a resumed request stuck non-terminal.
-                        await _project_lifecycle(
-                            cursor, event, existing.get("request_seq")
-                        )
-                        return dict_to_event(existing)
-
-                next_request_seq: int | None = None
-                if event.request_id:
-                    await cursor.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (event.request_id,),
-                    )
-                    await cursor.execute(
-                        """
-                        SELECT COALESCE(MAX(seq), 0) + 1 AS next_request_seq
-                        FROM runtime_event_log
-                        WHERE request_id = %s
-                        """,
-                        (event.request_id,),
-                    )
-                    row = await cursor.fetchone()
-                    next_request_seq = (
-                        int(row["next_request_seq"]) if row is not None else 1
-                    )
-
-                await cursor.execute(
-                    """
-                    INSERT INTO runtime_event_log (
-                        request_id, trace_id, app_id, agent_id, session_id, host_id,
-                        workflow_id, workflow_run_id, seq,
-                        event_type, loop_index, step_key, dedupe_key, payload, created_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                    RETURNING event_id, request_id, seq AS request_seq, trace_id, app_id,
-                              agent_id, session_id, host_id, workflow_id, workflow_run_id,
-                              event_type, loop_index, step_key,
-                              dedupe_key, payload, created_at
-                    """,
-                    (
-                        event.request_id,
-                        event.trace_id,
-                        event.app_id,
-                        event.agent_id,
-                        event.session_id,
-                        event.host_id,
-                        event.workflow_id,
-                        event.workflow_run_id,
-                        next_request_seq,
-                        event.event_type,
-                        event.loop_index,
-                        event.step_key,
-                        event.dedupe_key,
-                        json.dumps(event.payload or {}, ensure_ascii=True, default=str),
-                        float(event.created_at),
-                    ),
-                )
+        async with conn.cursor() as cursor:
+            if not event.request_id:
+                await cursor.execute(_APPEND_EVENT, _event_params(event))
                 stored = await cursor.fetchone()
                 if stored is None:
                     raise RuntimeError("failed to persist runtime event")
+                return dict_to_event(stored)
+            if not _projects_state(event):
+                # Most events, streamed chunks among them: one autocommit
+                # statement, no transaction.
+                stored, _ = await _insert_request_event(cursor, event)
+                return dict_to_event(stored)
+            async with conn.transaction():
+                stored, inserted = await _insert_request_event(cursor, event)
+                # Project even a duplicate: a deduped terminal event was
+                # delivered at the stored row's seq, so the request is terminal
+                # there; skipping this would leave a resumed request stuck
+                # non-terminal.
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
-                await _project_mode(cursor, event)
+                if inserted:
+                    await _project_mode(cursor, event)
     return dict_to_event(stored)
 
 

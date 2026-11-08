@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # characters, or this many seconds elapse since the last flush (whichever comes
 # first). This bounds event volume (~tens per turn instead of one per token
 # chunk) while keeping the visible stream responsive.
-DEFAULT_DELTA_MAX_CHARS = 80
+DEFAULT_DELTA_MAX_CHARS = 400
 DEFAULT_DELTA_MAX_INTERVAL = 0.5
 
 
