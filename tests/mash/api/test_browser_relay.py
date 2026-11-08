@@ -7,6 +7,7 @@ import contextlib
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -232,7 +233,16 @@ class BrowserRelayTests(unittest.TestCase):
         self.assertEqual(self.http.get(f"{path}vnc.html").status_code, 404)
 
     async def _through_view(self, path: str) -> bytes:
-        """Bytes sent through the live view's websocket, echoed by the VNC stand-in.
+        """Bytes sent through the live view's websocket, echoed by the VNC stand-in."""
+
+        async def echo(ws) -> bytes:
+            await ws.send(b"RFB 003.008\n")
+            return await ws.recv()
+
+        return await self._in_view(path, echo)
+
+    async def _in_view(self, path: str, use) -> Any:
+        """``use(ws)`` on a websocket connected to the live view at ``path``.
 
         A real server, since the test client cancels a websocket handler as it
         disconnects.
@@ -249,11 +259,57 @@ class BrowserRelayTests(unittest.TestCase):
             async with websockets.connect(
                 f"ws://127.0.0.1:{port}{path}", subprotocols=["binary"]
             ) as ws:
-                await ws.send(b"RFB 003.008\n")
-                return await ws.recv()
+                return await use(ws)
         finally:
             server.should_exit = True
             await task
+
+    async def _closed_after(self, ws, action) -> bool:
+        """Whether the server closes ``ws`` within two seconds of ``action()``."""
+        await ws.send(b"RFB 003.008\n")
+        await ws.recv()
+        action()
+        try:
+            await asyncio.wait_for(ws.recv(), 2.0)
+        except websockets.ConnectionClosed:
+            return True
+        except asyncio.TimeoutError:
+            return False
+        return False
+
+    def test_ending_the_handoff_closes_a_connected_live_view(self) -> None:
+        self.navigate()
+        path = urlsplit(self.post("/handoff").json()["url"]).path
+
+        closed = self.http.portal.call(
+            self._in_view,
+            f"{path}websockify",
+            lambda ws: self._closed_after(ws, lambda: self.browsers.end_handoff("req-1")),
+        )
+
+        self.assertTrue(closed)
+
+    def test_a_connected_live_view_closes_when_its_handoff_expires(self) -> None:
+        self.navigate()
+        self.browsers.handoff_seconds = 1
+        path = urlsplit(self.post("/handoff").json()["url"]).path
+
+        closed = self.http.portal.call(
+            self._in_view, f"{path}websockify", lambda ws: self._closed_after(ws, lambda: None)
+        )
+
+        self.assertTrue(closed)
+
+    def test_an_operator_view_closes_when_its_token_expires(self) -> None:
+        token = make_view_token(SECRET, "u-1", "", int(time.time()) + 1)
+
+        closed = self.http.portal.call(
+            self._in_view,
+            f"/s/{token}/browser/websockify",
+            lambda ws: self._closed_after(ws, lambda: None),
+        )
+
+        self.assertTrue(closed)
 
     def test_a_request_token_without_an_open_handoff_is_refused(self) -> None:
         token = make_view_token(SECRET, "u-1", "req-9", 2**40)

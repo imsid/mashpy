@@ -17,7 +17,8 @@ for, on the sites the caller's spec lists. The agent names neither.
 
 The live view is for users: ``/s/<view token>/browser/`` serves noVNC's client
 and bridges its websocket to the user's browser. The view token names the
-user and the request and lapses when the handoff ends or expires.
+user and the request and lapses when the handoff ends or expires; a view
+connected then is closed.
 
 Apps read and clear a user's signed-in sites under
 ``/api/v1/browser/users/{user_id}`` (``build_browser_api_router``).
@@ -351,7 +352,11 @@ def build_browser_link_router() -> APIRouter:
                     message if isinstance(message, bytes) else message.encode()
                 )
 
-        tasks = [asyncio.ensure_future(to_browser()), asyncio.ensure_future(from_browser())]
+        tasks = [
+            asyncio.ensure_future(to_browser()),
+            asyncio.ensure_future(from_browser()),
+            asyncio.ensure_future(browsers.wait_ended(handoff)),
+        ]
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
