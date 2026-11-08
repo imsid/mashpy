@@ -177,22 +177,26 @@ class ContainerManager:
     async def _reserve(self, user_id: str) -> None:
         """Count the user's container as running, stopping another if the cap is hit."""
         async with self._capacity_lock:
-            if user_id in self._last_used:
-                self._last_used[user_id] = self._clock()
-                return
-            others = list(self._last_used)
-            if len(others) < self.max_running:
-                self._last_used[user_id] = self._clock()
-                return
-            idle = [user for user in others if self._in_flight[user] == 0]
-            if not idle:
-                raise self.capacity_error(
-                    f"all {self.max_running} {self.kinds} are busy; try again shortly"
-                )
-            victim = min(idle, key=lambda user: self._last_used[user])
-            logger.info("stopping %s for %s to make room", self.kind, victim)
-            await self._stop_locked(victim)
-            self._last_used[user_id] = self._clock()
+            while True:
+                if user_id in self._last_used or len(self._last_used) < self.max_running:
+                    self._last_used[user_id] = self._clock()
+                    return
+                idle = [user for user in self._last_used if self._in_flight[user] == 0]
+                if not idle:
+                    raise self.capacity_error(
+                        f"all {self.max_running} {self.kinds} are busy; try again shortly"
+                    )
+                victim = min(idle, key=lambda user: self._last_used[user])
+                # Stop it under its own lock, so this never runs alongside the
+                # reaper's or an explicit stop of the same container. Waiting
+                # here cannot deadlock: with nothing in flight for the victim,
+                # its lock is held only by a stop, which never takes the
+                # capacity lock. Once it is ours, look again: that stop may
+                # have freed the slot already.
+                async with self._user_locks[victim]:
+                    if victim in self._last_used and self._in_flight[victim] == 0:
+                        logger.info("stopping %s for %s to make room", self.kind, victim)
+                        await self._stop_locked(victim)
 
     async def _stop_locked(self, user_id: str) -> None:
         await self.provider.stop(user_id)
