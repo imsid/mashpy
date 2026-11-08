@@ -375,13 +375,13 @@ async def _persist_turn_payload(
             else 0
         )
         session_total_tokens = previous_total + total_tokens
-        # Workflow task and subagent turns (their request_metadata carries
-        # workflow_id/run_id/task_id or subagent_id) share the session but are
-        # kept out of the model's replayed conversation history.
+        # Workflow task turns (their request_metadata carries
+        # workflow_id/run_id/task_id) are kept out of the model's replayed
+        # conversation history. Subagent turns run in sessions of their own,
+        # so a continued child session replays them.
         workflow_id = response_metadata.get("workflow_id") or None
         workflow_run_id = response_metadata.get("workflow_run_id") or None
         task_id = response_metadata.get("task_id") or None
-        is_subagent = bool(response_metadata.get("subagent_id"))
         await runtime.store.save_turn(
             user_id=user_id_from_request_metadata(response_metadata),
             trace_id=resolved_trace_id,
@@ -395,7 +395,7 @@ async def _persist_turn_payload(
             workflow_id=workflow_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
-            replayable=workflow_id is None and not is_subagent,
+            replayable=workflow_id is None,
         )
     response_payload = {
         "text": response.text,

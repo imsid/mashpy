@@ -30,7 +30,7 @@ from mash.testing.runtime_fixtures import (
     build_spec,
     metadata,
 )
-from mash.testing.runtime_fixtures import DeterministicAgentSpec
+from mash.testing.runtime_fixtures import DeterministicAgentSpec, DeterministicLLMProvider
 from mash.tools.ask_user import AskUserTool
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
@@ -49,6 +49,31 @@ class _ForUser:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+
+class _RecordingProvider(DeterministicLLMProvider):
+    """Records the text of every message each request sends the model."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.seen: list[str] = []
+
+    async def send(self, request):
+        self.seen.append(
+            "\n".join(
+                str(block.data.get("text", ""))
+                for message in request.messages
+                for block in message.content
+                if block.type == "text"
+            )
+        )
+        return await super().send(request)
+
+
+class _RecordingSpec(DeterministicAgentSpec):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.provider = _RecordingProvider(response_text=self.response_text)
 
 
 class _AskingSpec(DeterministicAgentSpec):
@@ -685,7 +710,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                     research = _agent_runtime(pool, "research")
-                    expected_subagent_session = "s-1"
+                    expected_subagent_session = await _child_session(research, accepted["request_id"])
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
                         app_id=research.app_id,
@@ -816,7 +841,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     # The subagent request ran with the parent's caller metadata.
                     research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
-                        session_id="s-1",
+                        session_id=await _child_session(research, accepted["request_id"]),
                         app_id=research.app_id,
                         limit=1,
                     )
@@ -870,7 +895,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
-                        session_id="s-1",
+                        session_id=await _child_session(research, accepted["request_id"]),
                         app_id=research.app_id,
                         limit=1,
                     )
@@ -1179,7 +1204,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                     research = _agent_runtime(pool, "research")
-                    expected_subagent_session = "s-1"
+                    expected_subagent_session = await _child_session(research, request_id)
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
                         app_id=research.app_id,
@@ -1241,9 +1266,65 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(metadata_["subagent_id"], "research")
                     self.assertEqual(metadata_["parent"]["request_id"], "req-1")
                     turns = await research.store.get_turns(
-                        session_id="s-1", app_id="research"
+                        session_id=child_id, app_id="research"
                     )
                     self.assertEqual(len(turns), 1)
+                finally:
+                    await pool.close()
+
+    async def test_a_child_continues_its_session_and_never_sees_another(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                research_spec = _RecordingSpec(agent_id="research", response_text="research-ok")
+                pool = (
+                    HostBuilder()
+                    .agent(build_spec(agent_id="primary-app", response_text="p"), metadata=metadata())
+                    .agent(research_spec, metadata=metadata())
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    tool = RunSubAgentsTool(
+                        client_resolver=lambda agent_id: _ForUser(
+                            pool.get_client(agent_id), "u-1"
+                        ),
+                        caller_agent_id="primary-app",
+                        session_id="s-1",
+                    )
+
+                    async def _call(prefix: str, item: dict[str, Any]) -> dict[str, Any]:
+                        with bound_request_id("req-1"), bound_subagent_id_prefix(prefix):
+                            result = await tool.execute({"requests": [item]})
+                        [entry] = json.loads(result.content)
+                        self.assertEqual(entry["status"], "completed", entry)
+                        return entry
+
+                    rss = await _call("p1", {"agent_id": "research", "prompt": "build rss"})
+                    csv = await _call("p2", {"agent_id": "research", "prompt": "build csv"})
+                    self.assertNotEqual(rss["session_id"], csv["session_id"])
+                    # Each new session starts empty: the csv child saw no rss work.
+                    self.assertNotIn("build rss", research_spec.provider.seen[-1])
+
+                    follow = await _call(
+                        "p3",
+                        {"agent_id": "research", "prompt": "add a test", "session_id": rss["session_id"]},
+                    )
+
+                    self.assertEqual(follow["session_id"], rss["session_id"])
+                    self.assertTrue(follow["trace_id"])
+                    seen = research_spec.provider.seen[-1]
+                    self.assertIn("build rss", seen)
+                    self.assertIn("add a test", seen)
+                    self.assertNotIn("build csv", seen)
+                    research = _agent_runtime(pool, "research")
+                    turns = await research.store.get_turns(
+                        session_id=rss["session_id"], app_id="research"
+                    )
+                    self.assertEqual(len(turns), 2)
+                    self.assertTrue(all(turn["replayable"] for turn in turns))
+                    # Child turns are not the user's own conversation.
+                    self.assertEqual(await research.store.list_user_turns("u-1"), [])
                 finally:
                     await pool.close()
 
@@ -1268,6 +1349,14 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("boom", str(events[-1]["data"]["error"]))
                 finally:
                     await pool.close()
+
+async def _child_session(runtime, parent_request_id: str) -> str:
+    """The session the latest child of ``parent_request_id`` ran in."""
+    [*_, child] = await runtime.runtime_store.list_child_requests(parent_request_id)
+    # A child without a session_id starts one named after its request id.
+    assert child["session_id"] == child["request_id"]
+    return child["session_id"]
+
 
 def _agent_runtime(pool, agent_id: str):
     """The runtime serving ``agent_id`` in-process."""

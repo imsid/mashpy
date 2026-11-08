@@ -37,7 +37,8 @@ An agent process starts, follows and cancels its `RunSubAgents` children here.
 `POST /h2a/agent/{subagent_id}/request`
 - Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot.
 - `subagent_id` is the caller itself or one of `host.subagents`; a request without a `host` may target only the caller.
-- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id` or `subagent_id` is not an allowed target.
+- `session_id` is the child's own request id for a new session. Any other session must have no requests yet, or only requests of `subagent_id` whose turns name `parent.session_id` as their caller's session.
+- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id`, `subagent_id` is not an allowed target, or the session is not one the child may continue.
 - Forwards to the subagent's client, `mode` included, and returns `202` with the accepted payload.
 
 `GET /h2a/agent/{subagent_id}/request/{request_id}`

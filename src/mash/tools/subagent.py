@@ -83,7 +83,10 @@ class RunSubAgentsTool:
         "run at once, then write one answer from their results. Returns one "
         "entry per item, in order, with the child's request_id, its status "
         "(completed, failed, cancelled or timed_out), and its response, "
-        "structured output or error."
+        "structured output or error, plus the session_id it ran in and its "
+        "trace_id. Each item runs in a session of its own: pass an earlier "
+        "entry's session_id to continue that session, where the agent sees its "
+        "own earlier work, or leave it out to start a new one."
     )
     parameters = {
         "type": "object",
@@ -100,6 +103,13 @@ class RunSubAgentsTool:
                             "description": "This agent's own id, or a subagent of the host.",
                         },
                         "prompt": {"type": "string"},
+                        "session_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional: an earlier session of this agent to "
+                                "continue. Without it the child starts a new session."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": "Optional JSON schema for the child's structured output.",
@@ -160,8 +170,18 @@ class RunSubAgentsTool:
                 return f"requests[{index}].prompt is required"
             if output_schema is not None and not isinstance(output_schema, dict):
                 return f"requests[{index}].output_schema must be an object"
+            session_id = item.get("session_id")
+            if session_id is not None and (
+                not isinstance(session_id, str) or not session_id.strip()
+            ):
+                return f"requests[{index}].session_id must be a non-empty string"
             items.append(
-                {"agent_id": agent_id, "prompt": prompt, "output_schema": output_schema}
+                {
+                    "agent_id": agent_id,
+                    "prompt": prompt,
+                    "output_schema": output_schema,
+                    "session_id": session_id.strip() if session_id else None,
+                }
             )
         timeout = args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
         if timeout is None:
@@ -205,18 +225,24 @@ class RunSubAgentsTool:
         submitted: list[tuple[int, Any, str]] = []
         for index, item in enumerate(items):
             agent_id = item["agent_id"]
-            entry: Dict[str, Any] = {"agent_id": agent_id, "request_id": None}
+            # A new child session takes the child's request id, so a replayed
+            # call lands in the same session.
+            child_id = child_request_id(prefix, index) if prefix else str(uuid.uuid4())
+            session_id = item["session_id"] or child_id
+            entry: Dict[str, Any] = {
+                "agent_id": agent_id,
+                "request_id": None,
+                "session_id": session_id,
+            }
             entries[index] = entry
             try:
                 client = self._client_resolver(agent_id)
                 request_id = await client.post_request(
                     item["prompt"],
-                    session_id=self._session_id,
+                    session_id=session_id,
                     structured_output=item["output_schema"],
                     metadata=inherited_metadata or None,
-                    request_id=(
-                        child_request_id(prefix, index) if prefix else None
-                    ),
+                    request_id=child_id,
                     host=self._host,
                     parent=parent,
                     mode="bg",
@@ -243,7 +269,7 @@ class RunSubAgentsTool:
             agent_id=", ".join(agent_ids),
             agent_ids=agent_ids,
             primary_session_id=self._session_id,
-            subagent_session_id=self._session_id,
+            subagent_session_ids=[entry.get("session_id") for entry in entries],
             request_id=request_ids[0] if len(request_ids) == 1 else None,
             request_ids=request_ids,
             duration_ms=int((time.monotonic() - started_at) * 1000),
@@ -295,6 +321,8 @@ class RunSubAgentsTool:
                 metadata = response.get("metadata")
                 metadata = metadata if isinstance(metadata, dict) else {}
                 entry["status"] = "completed"
+                if metadata.get("trace_id"):
+                    entry["trace_id"] = str(metadata["trace_id"])
                 entry["response"] = str(response.get("text") or "")
                 if metadata.get("structured_output") is not None:
                     entry["structured_output"] = metadata["structured_output"]

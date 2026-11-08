@@ -220,11 +220,12 @@ class _RecordingClient:
 class H2ARelayAuthTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client_for_research = _RecordingClient()
-        self.store, _ = build_test_stores()
+        self.store, self.memory = build_test_stores()
         pool = SimpleNamespace(
             list_agents=lambda: ["primary-app", "research", "other"],
             get_client=lambda agent_id: self.client_for_research,
             get_runtime_store=lambda: self.store,
+            get_memory_store=lambda agent_id: self.memory,
         )
         app = FastAPI()
         app.include_router(build_h2a_router())
@@ -241,6 +242,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         user_id: str | None = None,
         parent: dict | None = None,
         host: dict | None = None,
+        session_id: str = "s-1",
     ) -> None:
         import asyncio
 
@@ -255,7 +257,7 @@ class H2ARelayAuthTests(unittest.TestCase):
                     request_id=request_id,
                     app_id=agent_id,
                     agent_id=agent_id,
-                    session_id="s-1",
+                    session_id=session_id,
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     dedupe_key="request.accepted",
                     lifecycle=RequestStatus.RUNNING,
@@ -269,7 +271,8 @@ class H2ARelayAuthTests(unittest.TestCase):
     ):
         body = {
             "message": "analyze",
-            "session_id": "s-1",
+            # A new child session is named after the child's request id.
+            "session_id": "req-1-sub-0-0",
             "request_id": "req-1-sub-0-0",
             "host": HOST_SNAPSHOT,
             "parent": _parent("req-1"),
@@ -401,6 +404,56 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(self.client_for_research.calls[0]["mode"], "bg")
 
+    def _seed_child_session(
+        self, session_id: str, *, agent_id: str = "research", primary_session_id: str = "s-1"
+    ) -> None:
+        import asyncio
+
+        self._accept(
+            f"{session_id}-req", agent_id=agent_id, user_id="u-1",
+            parent=_parent("req-1"), session_id=session_id,
+        )
+        asyncio.run(
+            self.memory.save_turn(
+                trace_id=f"{session_id}-t",
+                session_id=session_id,
+                app_id=agent_id,
+                user_message="earlier brief",
+                agent_response="earlier answer",
+                signals={},
+                session_total_tokens=0,
+                metadata={"subagent_id": agent_id, "primary_session_id": primary_session_id},
+            )
+        )
+
+    def test_a_child_may_continue_its_agents_session_from_the_same_caller_session(self) -> None:
+        self._seed_child_session("sess-a")
+
+        resp = self._submit(session_id="sess-a")
+
+        self.assertEqual(resp.status_code, 202, resp.text)
+        self.assertEqual(self.client_for_research.calls[0]["session_id"], "sess-a")
+
+    def test_a_session_with_no_requests_yet_is_accepted(self) -> None:
+        self.assertEqual(self._submit(session_id="sess-new").status_code, 202)
+
+    def test_a_session_of_another_agent_is_403(self) -> None:
+        self._seed_child_session("sess-b", agent_id="other")
+        # The caller's own session holds the primary's requests.
+        for session_id in ("sess-b", "s-1"):
+            with self.subTest(session_id=session_id):
+                resp = self._submit(session_id=session_id)
+                self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
+
+    def test_a_session_started_from_another_caller_session_is_403(self) -> None:
+        self._seed_child_session("sess-c", primary_session_id="s-other")
+
+        resp = self._submit(session_id="sess-c")
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
+
     def _cancel(self, request_id: str, *, caller: str = "primary-app"):
         return self.http.post(
             f"/h2a/agent/research/request/{request_id}/cancel",
@@ -522,8 +575,11 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
                         accepted["request_id"], timeout=10
                     )
                 ]
-                # The subagent ran in its own process, under the parent session.
-                turns = await memory_store.get_turns(session_id="s-1", app_id="research")
+                # The subagent ran in its own process, in a session of its own.
+                [child] = await runtime_store.list_child_requests(accepted["request_id"])
+                turns = await memory_store.get_turns(
+                    session_id=child["session_id"], app_id="research"
+                )
                 turn_users = {(t["app_id"], t["user_id"]) for t in memory_store._turns}
         finally:
             await primary_server.runtime.shutdown()

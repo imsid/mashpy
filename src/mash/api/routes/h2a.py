@@ -60,6 +60,41 @@ async def _stored_host(store, request_id: str) -> dict | None:
     return dict(host) if isinstance(host, dict) else None
 
 
+async def _check_continued_session(
+    pool, store, *, session_id: str, agent_id: str, caller_session_id: str
+) -> JSONResponse | None:
+    """None when a child of ``agent_id`` may continue ``session_id``.
+
+    The session must have no requests yet, or only requests of ``agent_id``
+    whose turns carry the caller's session as ``primary_session_id``.
+    """
+    requests = await store.list_session_requests(session_id)
+    if any(record.get("agent_id") != agent_id for record in requests):
+        return h2a_error(
+            403, "FORBIDDEN", f"session '{session_id}' is not a session of '{agent_id}'"
+        )
+    if not requests:
+        return None
+    memory = pool.get_memory_store(agent_id)
+    if memory is None:
+        return h2a_error(
+            403, "FORBIDDEN", f"sessions of '{agent_id}' cannot be continued"
+        )
+    turns = await memory.get_turns(session_id=session_id, app_id=agent_id)
+    for turn in turns:
+        metadata = turn.get("metadata") or {}
+        if (
+            metadata.get("subagent_id") != agent_id
+            or metadata.get("primary_session_id") != caller_session_id
+        ):
+            return h2a_error(
+                403,
+                "FORBIDDEN",
+                f"session '{session_id}' was not started from the caller's session",
+            )
+    return None
+
+
 def build_h2a_router() -> APIRouter:
     router = APIRouter(prefix="/h2a")
 
@@ -135,6 +170,18 @@ def build_h2a_router() -> APIRouter:
                 validate_request_id(request_id)
             except ValueError as exc:
                 return h2a_error(400, "INVALID_REQUEST", str(exc))
+        # A session other than the child's own new one continues earlier work:
+        # it must be one this agent ran for children of the caller's session.
+        if session_id.strip() != request_id:
+            refused = await _check_continued_session(
+                state.pool,
+                store,
+                session_id=session_id.strip(),
+                agent_id=agent_id,
+                caller_session_id=str(parent.get("session_id")),
+            )
+            if refused is not None:
+                return refused
 
         try:
             client = state.pool.get_client(agent_id)

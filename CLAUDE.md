@@ -594,21 +594,25 @@ each from its `AgentMetadata`, with guidance to split a task only when its
 parts do not depend on each other. The same agent can be primary in one
 host and a subagent in another.
 
-`RunSubAgents(requests=[{agent_id, prompt, output_schema?}], timeout_seconds)`
+`RunSubAgents(requests=[{agent_id, prompt, session_id?, output_schema?}], timeout_seconds)`
 runs each item as its own child request, all at the same time, and returns
 when all of them are done. An item's `agent_id` is one of the host's
 subagents or the calling agent itself, so one item hands a task to a subagent
 and several split a large task into parts. Without a host, the agent can run
 children only on itself. The result has one entry per item, in order: the
-child's `request_id`, its `status` (`completed`, `failed`, `cancelled` or
-`timed_out`), and its response, structured output or error. One child's
+child's `request_id`, its `session_id` and `trace_id`, its `status`
+(`completed`, `failed`, `cancelled` or `timed_out`), and its response,
+structured output or error. One child's
 failure stays in its entry. A call takes at most 16 items. `timeout_seconds`
 defaults to 360 and goes up to 3600; when it passes, the tool cancels the
 children still running.
 
-Each child is a `bg` request in the calling request's session, started by the
-calling agent, with `parent_request_id` set to the calling request. Its turn
-stays out of the session's replayed history. A child gets neither
+Each child is a `bg` request in a session of its own, started by the calling
+agent, with `parent_request_id` set to the calling request. Without
+`session_id` the child starts a new session, named after its request id. With
+the `session_id` of an earlier entry it continues that session and replays its
+turns, so the agent sees its own earlier work there; the relay accepts only a
+session of the same agent started from the caller's session. A child gets neither
 `RunSubAgents` nor `AskUser`: splitting is one level deep, and the user talks
 to the calling agent. The calling agent's process starts children through the
 host's `/h2a` relay, which checks each against the composition stored with
@@ -711,7 +715,7 @@ In the REPL:
 
 ```bash
 › /bg set a timer for 2 mins     # submit in the background, back to the prompt
-› /bg --list                     # the session's bg requests, children under parents
+› /bg --list                     # the session's bg requests
 › /bg --switch a1b2c3d4          # bring one to the foreground, replay and follow it
 › /bg --kill a1b2c3d4            # cancel it and its children
 ```

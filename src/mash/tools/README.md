@@ -69,7 +69,7 @@
   host with browsers.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
-- `subagent.py`: `RunSubAgents`. It runs one or more child requests at the same time, each on the calling agent or one of the host's subagents, and returns one entry per item, in order, with the child's `request_id`, `status`, and response, structured output or error. Each child is a `bg` request started by the calling agent. A call takes at most 16 items. `timeout_seconds` defaults to 360 and goes up to 3600; when it passes, the tool cancels the children still running. The runtime registers it on every request the user started, and children get neither it nor `AskUser`.
+- `subagent.py`: `RunSubAgents`. It runs one or more child requests at the same time, each on the calling agent or one of the host's subagents, and returns one entry per item, in order, with the child's `request_id`, `session_id`, `trace_id`, `status`, and response, structured output or error. Each child is a `bg` request started by the calling agent, in a session of its own: a new one named after its request id, or the earlier session an item names with `session_id`. A call takes at most 16 items. `timeout_seconds` defaults to 360 and goes up to 3600; when it passes, the tool cancels the children still running. The runtime registers it on every request the user started, and children get neither it nor `AskUser`.
 - `ask_user.py`: `AskUser`, lets agents request information from the user mid-execution.
 - `runtime.py`: the runtime tools `search_conversations` and
   `get_full_turn_message`. They reach the current session or the request
