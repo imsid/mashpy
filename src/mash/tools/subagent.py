@@ -17,6 +17,9 @@ from ..runtime.errors import classify_error
 from .base import ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 360
+MAX_TIMEOUT_SECONDS = 3600
+# Children one call may start: each is a request on its agent's process.
+MAX_REQUESTS = 16
 
 # Child ids are UUID5s in this namespace, so the REPL's 8-character short ids
 # stay distinct; a ``{request_id}-sub-...`` string would share the parent's
@@ -88,6 +91,7 @@ class RunSubAgentsTool:
             "requests": {
                 "type": "array",
                 "minItems": 1,
+                "maxItems": MAX_REQUESTS,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -106,7 +110,10 @@ class RunSubAgentsTool:
             },
             "timeout_seconds": {
                 "type": "integer",
-                "description": f"Defaults to {DEFAULT_TIMEOUT_SECONDS}.",
+                "description": (
+                    f"Defaults to {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS}."
+                ),
+                "maximum": MAX_TIMEOUT_SECONDS,
             },
         },
         "required": ["requests"],
@@ -138,6 +145,8 @@ class RunSubAgentsTool:
         requests = args.get("requests")
         if not isinstance(requests, list) or not requests:
             return "requests must be a non-empty array"
+        if len(requests) > MAX_REQUESTS:
+            return f"requests may have at most {MAX_REQUESTS} items"
         items: list[Dict[str, Any]] = []
         for index, item in enumerate(requests):
             if not isinstance(item, dict):
@@ -163,8 +172,8 @@ class RunSubAgentsTool:
             timeout = int(timeout)
         except (TypeError, ValueError):
             return "timeout_seconds must be a positive integer"
-        if timeout <= 0:
-            return "timeout_seconds must be a positive integer"
+        if not 0 < timeout <= MAX_TIMEOUT_SECONDS:
+            return f"timeout_seconds must be a positive integer, at most {MAX_TIMEOUT_SECONDS}"
         return items, timeout
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
