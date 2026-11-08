@@ -55,8 +55,9 @@ links the host serves.
   in that user's sandbox, in the agent's folder
   `/home/agent/workspaces/<agent_id>`.
 - A sandbox holds one user's workspaces and nothing else. It gets no
-  environment from the host and has no database credentials. Code runs as an
-  `agent` user with a clean environment. The sandbox's daemon accepts only that
+  environment from the host and has no database credentials. Each agent's code
+  runs as a uid of its own with a clean environment, in a folder only that uid
+  can use, so agents cannot read each other's files or variables. The sandbox's daemon accepts only that
   user's sandbox token, which only the host can derive.
 - Files in a workspace and servers the code started open at
   `/s/<link token>/files/<agent_id>/<path>` and `/s/<link token>/ports/<n>/`
@@ -212,7 +213,7 @@ To give every sandbox files from the Docker host, list bind mounts in
 the Docker host, even when the host runs in a container, because the daemon
 resolves it. A target inside `/home/agent/workspaces` sits on top of the
 user's volume without being copied into it. Bound files keep their owner on the
-Docker host, so add `:ro` unless the `agent` user can write them.
+Docker host, so add `:ro` unless every agent's uid may write them.
 
 ## Run the host on your laptop
 
@@ -282,7 +283,7 @@ set `MASH_SANDBOX_NAMESPACE`.
 
 ```bash
 mash sandbox ls                               # user, status, uptime, container
-mash sandbox shell u-42 --agent research      # a shell as `agent` in research's folder
+mash sandbox shell u-42 --agent research      # a shell as research's uid, in its folder
 mash sandbox shell u-42 --root
 mash sandbox stop u-42                        # stop now; the volume is kept
 ```

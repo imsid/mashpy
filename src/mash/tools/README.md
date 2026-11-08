@@ -20,7 +20,7 @@
   `/home/agent/workspaces/<agent_id>` (see `mash.sandbox`).
   - `run_code(language, code, timeout=60)`: `python`, `javascript` or `shell`. `timeout` is at most 1800 seconds.
     The code goes as stdin to a command that writes it to
-    `.mash/runs/<uuid>.<ext>` as the `agent` user, runs it with `python3`,
+    `.mash/runs/<uuid>.<ext>` as the agent's uid, runs it with `python3`,
     `node` or `bash`, and deletes it. Each call is a new process; files persist.
     The description lists what Mash's sandbox image holds and how results reach
     the user (`$MASH_FILES_URL`, `$MASH_PORTS_URL`); keep it in step with

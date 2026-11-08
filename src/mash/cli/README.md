@@ -65,7 +65,7 @@ Sandboxes
 Sandbox administration (run on the Docker host; sandboxes are found by the `mash.sandbox.user` label; `--namespace` defaults to `MASH_SANDBOX_NAMESPACE`, then `mash`)
 
 - `sandbox ls [--namespace NS]`: list sandboxes with user, status, uptime, and container name (the volume has the same name).
-- `sandbox shell <user_id> [--agent ID] [--root] [--namespace NS]`: start the sandbox if it is stopped, then `docker exec -it` a bash shell as `agent` in `/home/agent/workspaces`, or in that agent's folder with `--agent`, or as root. Needs the docker CLI. History is appended to `/home/agent/workspaces/.admin_history`; admin commands are not in the event log.
+- `sandbox shell <user_id> (--agent ID | --root) [--namespace NS]`: start the sandbox if it is stopped, then `docker exec -it` a bash shell as that agent's uid in its folder, or as root in `/home/agent/workspaces`. An agent that has not used the sandbox yet has no uid, and the command says so. Needs the docker CLI. History is appended to `/home/agent/workspaces/.admin_history`; admin commands are not in the event log.
 - `sandbox stop <user_id> [--namespace NS]`: stop the sandbox now. Its volume is kept, and the user's next call or link starts it again.
 
 Browsers

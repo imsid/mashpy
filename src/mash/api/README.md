@@ -65,7 +65,7 @@ Links open in a browser with no API key. `<link token>` is `<base64url(user_id)>
 - Serves the file from that agent's folder of the user's sandbox, with a content type from its extension. A path ending in `/` serves its `index.html`.
 
 `/s/<link token>/ports/<n>/<path>` (any method)
-- Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Responses are buffered; WebSockets are not forwarded. A `Location` header is passed on only when it is relative, so the server cannot redirect a user to another site from the host's origin.
+- Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Request and response bodies stream through without being held in memory; WebSockets are not forwarded. A `Location` header is passed on only when it is relative, so the server cannot redirect a user to another site from the host's origin.
 
 Commands get the bases as `MASH_FILES_URL` and `MASH_PORTS_URL`, under `MASH_PUBLIC_URL` (default: the bind address).
 

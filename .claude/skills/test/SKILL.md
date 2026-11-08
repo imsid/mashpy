@@ -157,8 +157,10 @@ printf '/status\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T -
 # included), so check what the code's environment holds through a run_code
 # call, not docker exec.
 docker compose -f docker-compose.pilot.yml exec -T pilot mash sandbox ls
-docker exec -u agent -w /home/agent/workspaces/<agent_id> \
-  $(docker ps -q --filter label=mash.sandbox.user=<user_id>) ls -la
+# each agent has its own uid, from the root-only map on the volume
+sb=$(docker ps -q --filter label=mash.sandbox.user=<user_id>)
+docker exec $sb cat /home/agent/workspaces/.mash/uids.json
+docker exec -u <uid>:<uid> -w /home/agent/workspaces/<agent_id> $sb ls -la
 
 # Agent processes — the host image has no ps or kill; read /proc and signal
 # from python (e.g. to kill one and watch the host restart it)

@@ -205,9 +205,9 @@ agent process ──► host /sandbox/exec ──► mash-sandbox-<key> (one per
   run_code          request → user          /home/agent/workspaces/<agent_id>
 ```
 
-Inside, a small daemon runs each piece of code as the unprivileged `agent` user
-with a clean environment, in the agent's folder at
-`/home/agent/workspaces/<agent_id>`. Each call is a new process, and files,
+Inside, a small daemon runs each piece of code as an unprivileged uid of the
+agent's own, with a clean environment, in the agent's folder at
+`/home/agent/workspaces/<agent_id>`, which no other agent can open. Each call is a new process, and files,
 SQLite databases and `pip install --user` packages persist on the sandbox's
 volume across requests and restarts. The model hands the user what its code
 made through links the host serves: a file opens at `$MASH_FILES_URL/<path>`
