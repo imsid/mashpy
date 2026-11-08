@@ -392,6 +392,10 @@ class Pool:
             await shared_runtime_store.open()
             await shared_memory_store.open()
             await shared_workflow_store.open()
+            # The host's pool plus one per agent process.
+            await shared_runtime_store.check_connection_budget(
+                processes=len(self._registered) + 1
+            )
             if self._sandboxes is not None:
                 await self._sandboxes.start()
             if self._browsers is not None:

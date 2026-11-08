@@ -345,9 +345,10 @@ read. At startup each process runs the migrations and one recovery query.
 
 Measured on a host with six agent processes, idle, on Postgres 17: no
 transactions in 30 seconds, and no open connections two minutes after
-startup. A process busy with work holds up to 20 connections, so size
-Postgres's `max_connections` for 20 per agent process plus 20 for the host
-if every agent may be busy at once.
+startup. A process busy with work holds up to `MASH_DB_POOL_MAX_SIZE`
+connections (default 10), so a host with six agent processes can open 70.
+At startup the host compares that budget with Postgres's `max_connections`
+and logs a warning when it is above it.
 
 ## Exporting traces
 
@@ -508,6 +509,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 |----------|--------|---------|---------|
 | `MASH_HOST_APP` | host | none | `module:attribute` for `build_pool()`; agent processes import the same one |
 | `MASH_DATABASE_URL` | host | none | PostgreSQL connection string; agent processes inherit it |
+| `MASH_DB_POOL_MAX_SIZE` | host | `10` | Most Postgres connections each process holds: the host and every agent process |
 | `MASH_HOST_SECRET` | host | none | Derives each agent's, each sandbox's and each browser's token, and signs links; required for a pool with agents |
 | `MASH_API_KEY` | host | none | API key for `/api/v1`; required unless `MASH_API_HOST` is a loopback address |
 | `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |

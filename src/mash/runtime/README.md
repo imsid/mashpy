@@ -263,13 +263,16 @@ lifecycle.
 
 - **`AgentServer`** (in each agent process) creates its stores in
   `from_spec()` and closes them in its lifespan shutdown, after the runtime
-  shuts down. Each agent process holds its own Postgres connections.
+  shuts down. Each agent process holds its own Postgres connections, at most
+  `MASH_DB_POOL_MAX_SIZE` (default 10) in one pool its stores share.
 
 - **`Pool`** (on the host) opens one shared `PostgresRuntimeStore`, one shared
   `PostgresStore` and one `WorkflowStore` for the host's own reads: traces,
   telemetry, sessions, feedback, and workflow runs. It runs no agent runtimes.
   Session reads cover agents that use the default `build_memory_store()`; an
   agent that overrides it keeps its store in its own process only.
+  At startup it runs `SHOW max_connections` and logs a warning when the host
+  and its agent processes, each with a full pool, could open more.
 
 ## File and Module Guide
 

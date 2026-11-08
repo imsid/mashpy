@@ -105,6 +105,9 @@ class _TestRuntimeStore:
         self._events_by_request.clear()
         self._request_state.clear()
 
+    async def check_connection_budget(self, *, processes: int) -> None:
+        del processes
+
     async def append_event(self, event: RuntimeEvent) -> RuntimeEvent:
         async with self._lock:
             request_events = (
