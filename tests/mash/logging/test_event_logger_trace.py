@@ -1,9 +1,10 @@
-"""How an emitted event acquires its trace id.
+"""How an emitted event acquires its trace and session.
 
-An LLM provider carries the trace id as an instance field, and the runtime
-shares one provider instance across every request an agent serves. Two
-requests running at once therefore overwrite each other's value, so the
-ambient trace context is the authority when it is set.
+The runtime shares one LLM provider, one set of tools and one MCP manager
+across every request an agent process serves, so none of them holds a
+request's ids. The request's context is the authority: the provider stamps
+its ``chat.delta`` chunks from it, and the logger prefers it over whatever
+the event carries.
 """
 
 from __future__ import annotations
@@ -11,9 +12,14 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from mash.core.llm import BaseLLMProvider
+from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse
 from mash.logging.events import LLMEvent
 from mash.logging.logger import EventLogger
 from mash.logging.trace_context import (
+    bound_request_id,
+    bound_session_id,
+    bound_trace_id,
     set_request_id,
     set_session_id,
     set_trace_id,
@@ -47,8 +53,6 @@ class EventLoggerTraceResolutionTests(unittest.IsolatedAsyncioTestCase):
 
         set_trace_id("trace-mine")
         set_request_id("req-mine")
-        # The shared provider still holds the trace of whichever request
-        # configured it last.
         await logger.emit(_llm_event(trace_id="trace-someone-else"))
 
         self.assertEqual(store.events[-1].trace_id, "trace-mine")
@@ -212,3 +216,46 @@ class ChatDeltaDedupeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertIsNone(store.events[0].dedupe_key)
+
+
+class _StreamingProvider(BaseLLMProvider):
+    """Writes one chat.delta chunk per call, after yielding to other tasks."""
+
+    provider_name = "test"
+
+    async def send(self, request: LLMRequest) -> LLMResponse:
+        await asyncio.sleep(0)
+        await self._emit_response_delta(request, text="hi", index=0)
+        return LLMResponse(
+            thought_summary="",
+            text="hi",
+            tool_calls=[],
+            content_blocks=[LLMContentBlock.text("hi")],
+            stop_reason="end_turn",
+        )
+
+
+class SharedProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_requests_stamp_chunks_from_their_own_context(self) -> None:
+        store = _CollectingStore()
+        provider = _StreamingProvider(app_id="agent-1", model="test-model")
+        provider.set_event_logger(EventLogger(store), "agent-1")
+        request = LLMRequest(
+            model="test-model", system="", messages=[], tools=[], max_tokens=10
+        )
+
+        async def run_request(name: str) -> None:
+            with bound_request_id(f"req-{name}"), bound_session_id(
+                f"session-{name}"
+            ), bound_trace_id(f"trace-{name}"):
+                await provider.send(request)
+
+        await asyncio.gather(*(run_request(name) for name in "abcd"))
+
+        stamped = {e.request_id: (e.session_id, e.trace_id) for e in store.events}
+        self.assertEqual(
+            stamped,
+            {f"req-{n}": (f"session-{n}", f"trace-{n}") for n in "abcd"},
+        )
+        self.assertFalse(hasattr(provider, "_session_id"))
+        self.assertFalse(hasattr(provider, "_trace_id"))

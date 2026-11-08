@@ -31,6 +31,7 @@ from .common import (
     SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
+    parse_limit,
     require_user_id,
     require_agent_id,
     require_message,
@@ -48,6 +49,9 @@ from .common import (
 logger = logging.getLogger(__name__)
 
 _REQUEST_ID_KEYS = ("request_id", "workflow_id")
+# GET /agent/{id}/sessions returns the most recently active sessions first.
+SESSIONS_DEFAULT_LIMIT = 50
+SESSIONS_MAX_LIMIT = 500
 
 
 async def _cancel_with_children(
@@ -424,10 +428,22 @@ def build_agent_router() -> APIRouter:
         return resolved_agent_id, store
 
     @router.get("/agent/{agent_id}/sessions")
-    async def list_sessions(request: Request, agent_id: str) -> dict[str, Any]:
+    async def list_sessions(
+        request: Request,
+        agent_id: str,
+        limit: Optional[int] = Query(default=None),
+    ) -> dict[str, Any]:
         resolved_agent_id, store = _session_store(request, agent_id)
+        resolved_limit = parse_limit(
+            limit, default=SESSIONS_DEFAULT_LIMIT, max_value=SESSIONS_MAX_LIMIT
+        )
         return success(
-            {"sessions": await sessions.list_sessions(store, app_id=resolved_agent_id)}
+            {
+                "sessions": await sessions.list_sessions(
+                    store, app_id=resolved_agent_id, limit=resolved_limit
+                ),
+                "limit": resolved_limit,
+            }
         )
 
     @router.get("/agent/{agent_id}/sessions/{session_id}")

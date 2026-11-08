@@ -28,6 +28,7 @@ from ...logging import (
     bound_request_metadata,
     bound_session_id,
     bound_subagent_id_prefix,
+    bound_trace_id,
 )
 from ...logging.trace_context import bound_workflow_ids
 from .. import context as context_helpers
@@ -558,53 +559,55 @@ class RequestRun:
             )
             await self._save()
         trace_id = self.checkpoint["trace_id"]
-        structured_output_request = self.request_metadata.get("structured_output_request")
+        # The provider, tools and event logger read the trace from context.
+        with bound_trace_id(trace_id):
+            structured_output_request = self.request_metadata.get("structured_output_request")
 
-        state = self.state
-        if state is None:
-            state = await load_request_context(
-                runtime, request_id, session_id, trace_id, self.message, self.request_metadata
-            )
-            await self._save(state)
-
-        while not state.get("done"):
-            self._check_cancelled()
-            if state.get("action") is None:
-                planned = state
-                state = await retry_transient(
-                    lambda: plan_request_step(
-                        runtime, request_id, session_id, trace_id, planned
-                    )
+            state = self.state
+            if state is None:
+                state = await load_request_context(
+                    runtime, request_id, session_id, trace_id, self.message, self.request_metadata
                 )
                 await self._save(state)
-            state = await self._act(state)
-            self._check_cancelled()
-            state = await commit_request_step(
-                runtime, request_id, session_id, trace_id, state, structured_output_request
-            )
-            self.checkpoint["memo"] = {}
-            await self._save(state)
 
-        if (
-            isinstance(structured_output_request, dict)
-            and state.get("structured_output") is None
-        ):
-            state = await finalize_structured_output(
-                runtime, request_id, session_id, trace_id, state, structured_output_request
+            while not state.get("done"):
+                self._check_cancelled()
+                if state.get("action") is None:
+                    planned = state
+                    state = await retry_transient(
+                        lambda: plan_request_step(
+                            runtime, request_id, session_id, trace_id, planned
+                        )
+                    )
+                    await self._save(state)
+                state = await self._act(state)
+                self._check_cancelled()
+                state = await commit_request_step(
+                    runtime, request_id, session_id, trace_id, state, structured_output_request
+                )
+                self.checkpoint["memo"] = {}
+                await self._save(state)
+
+            if (
+                isinstance(structured_output_request, dict)
+                and state.get("structured_output") is None
+            ):
+                state = await finalize_structured_output(
+                    runtime, request_id, session_id, trace_id, state, structured_output_request
+                )
+                await self._save(state)
+            turn_payload = await self._step(
+                "turn.persist",
+                persist_completed_turn,
+                runtime,
+                request_id,
+                session_id,
+                trace_id,
+                self.message,
+                state,
+                self.request_metadata,
             )
-            await self._save(state)
-        turn_payload = await self._step(
-            "turn.persist",
-            persist_completed_turn,
-            runtime,
-            request_id,
-            session_id,
-            trace_id,
-            self.message,
-            state,
-            self.request_metadata,
-        )
-        await complete_request(runtime, request_id, session_id, trace_id, turn_payload)
+            await complete_request(runtime, request_id, session_id, trace_id, turn_payload)
 
 
 __all__ = ["RequestCancelled", "RequestRun"]

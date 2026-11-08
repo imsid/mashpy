@@ -36,10 +36,7 @@ class _LLM(LLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         raise NotImplementedError
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        return None
-
-    def set_trace_id(self, trace_id) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         return None
 
 

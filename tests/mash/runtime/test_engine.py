@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from unittest.mock import patch
 
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ from mash.core.config import AgentConfig
 from mash.core.context import ToolCall
 from mash.core.llm import BaseLLMProvider, LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
+from mash.logging import get_session_id, get_trace_id
 from mash.mcp.types import MCPServerConfig
 from conftest import build_test_stores
 from mash.runtime import AgentRuntime
@@ -37,7 +38,6 @@ def _test_stores() -> dict:
 
 class _FakeLLMProvider(LLMProvider):
     def __init__(self) -> None:
-        self.last_session_id: str | None = None
         self.last_app_id: str | None = None
 
     @property
@@ -48,16 +48,9 @@ class _FakeLLMProvider(LLMProvider):
         del request
         raise NotImplementedError
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger
-        self.last_session_id = session_id
         self.last_app_id = app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class _BaseDefinition(AgentSpec):
@@ -134,11 +127,8 @@ class _ToolSignalsLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _ResponseThenFinishLLMProvider(LLMProvider):
@@ -170,11 +160,8 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _SlowFinishLLMProvider(LLMProvider):
@@ -197,11 +184,8 @@ class _SlowFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _AlwaysRespondLLMProvider(LLMProvider):
@@ -220,11 +204,8 @@ class _AlwaysRespondLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _StructuredOutputLLMProvider(LLMProvider):
@@ -258,11 +239,8 @@ class _StructuredOutputLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _SignalsDefinition(_BaseDefinition):
@@ -379,11 +357,8 @@ class _TwoToolCallLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _ParallelToolsDefinition(_BaseDefinition):
@@ -558,11 +533,8 @@ class _AlwaysToolCallingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _ExhaustsStepBudgetDefinition(_BaseDefinition):
@@ -682,11 +654,8 @@ class _WebSearchAssertingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _WebSearchDefinition(_BaseDefinition):
@@ -714,15 +683,12 @@ class _CompactionLoggingLLMProvider(BaseLLMProvider):
 
     def __init__(self, *, app_id: str) -> None:
         super().__init__(app_id=app_id, model="test-model")
-        self.trace_ids_set: list[str | None] = []
         self.trace_id_during_send: str | None = None
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        self.trace_ids_set.append(trace_id)
-        super().set_trace_id(trace_id)
+        self.session_id_during_send: str | None = None
 
     async def send(self, request: LLMRequest) -> LLMResponse:
-        self.trace_id_during_send = self._trace_id
+        self.trace_id_during_send = get_trace_id()
+        self.session_id_during_send = get_session_id()
         return LLMResponse(
             thought_summary="",
             text="Summary:\n- compacted",
@@ -736,11 +702,11 @@ class _CompactionLoggingLLMProvider(BaseLLMProvider):
 class _CompactionLoggingDefinition(_BaseDefinition):
     def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
         super().__init__(root, app_id=app_id)
-        self.last_built_llm: _CompactionLoggingLLMProvider | None = None
+        self.built_llms: list[_CompactionLoggingLLMProvider] = []
 
     def build_llm(self) -> LLMProvider:
         llm = _CompactionLoggingLLMProvider(app_id=self.app_id)
-        self.last_built_llm = llm
+        self.built_llms.append(llm)
         return llm
 
 
@@ -748,7 +714,6 @@ class _SessionBindingLLMProvider(LLMProvider):
     def __init__(self, runtime_provider, *, expected_session_id: str) -> None:
         self._runtime_provider = runtime_provider
         self._expected_session_id = expected_session_id
-        self.last_session_id: str | None = None
         self.asserted = False
 
     @property
@@ -760,9 +725,9 @@ class _SessionBindingLLMProvider(LLMProvider):
         runtime = self._runtime_provider()
         if runtime is None:
             raise AssertionError("runtime binding is required")
-        if self.last_session_id != self._expected_session_id:
+        if get_session_id() != self._expected_session_id:
             raise AssertionError(
-                f"expected llm session {self._expected_session_id}, got {self.last_session_id}"
+                f"expected llm session {self._expected_session_id}, got {get_session_id()}"
             )
         self.asserted = True
         return LLMResponse(
@@ -774,15 +739,8 @@ class _SessionBindingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger, app_id
-        self.last_session_id = session_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class _SessionBindingDefinition(_BaseDefinition):
@@ -807,7 +765,6 @@ class _SessionBindingDefinition(_BaseDefinition):
 class _MCPAssertingLLMProvider(LLMProvider):
     def __init__(self) -> None:
         self.call_count = 0
-        self.last_session_id: str | None = None
 
     @property
     def model(self) -> str:
@@ -827,15 +784,8 @@ class _MCPAssertingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger, app_id
-        self.last_session_id = session_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -1393,7 +1343,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await runtime.shutdown()
 
-    async def test_compact_session_assigns_trace_id_before_the_llm_call(self) -> None:
+    async def test_compact_session_runs_on_the_process_provider_with_its_own_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 definition = _CompactionLoggingDefinition(Path(tmp))
@@ -1416,13 +1366,12 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(summary_text, "Summary:\n- compacted")
                     self.assertIsNotNone(trace_id)
 
-                    llm = definition.last_built_llm
-                    self.assertIsNotNone(llm)
-                    assert llm is not None
-                    self.assertIsNotNone(llm.trace_id_during_send)
-                    self.assertEqual(llm.trace_ids_set[0], llm.trace_id_during_send)
-
+                    # The process's one provider runs the summary pass, with
+                    # the pass's own trace and the session in context.
+                    [llm] = definition.built_llms
+                    self.assertIs(llm, runtime.agent.llm)
                     self.assertEqual(trace_id, llm.trace_id_during_send)
+                    self.assertEqual(llm.session_id_during_send, "s-compact")
                 finally:
                     await runtime.shutdown()
 

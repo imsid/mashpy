@@ -130,8 +130,11 @@ Behavior:
 
 ### Session Listing And Trace Lookup
 
-`list_sessions(app_id) -> list[dict]`
-- Lists persisted sessions for one app.
+`list_sessions(app_id, *, limit) -> list[dict]`
+- Returns the app's `limit` most recently active sessions, newest first.
+- The Postgres store reads them from `memory_session`, one row per app and
+  session that `save_turn` updates in the turn's transaction, so the cost
+  follows `limit`, not the number of turns.
 - Expected shape per item:
   - `session_id`
   - `turn_count`
@@ -139,7 +142,7 @@ Behavior:
   - `session_total_tokens`
 
 `get_latest_session(app_id) -> dict | None`
-- Convenience wrapper returning the first item from `list_sessions(app_id)`.
+- Convenience wrapper returning the first item from `list_sessions(app_id, limit=1)`.
 
 `list_recent_traces(app_id, session_id, limit=5) -> list[dict]`
 - Returns recent turns/traces for a specific session within an app.

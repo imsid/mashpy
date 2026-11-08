@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import patch
 
 from conftest import build_test_stores
@@ -78,11 +77,8 @@ class _ToolThenDoneLLM(LLMProvider):
             usage=usage,
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _Spec(AgentSpec):

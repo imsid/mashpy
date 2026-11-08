@@ -38,19 +38,16 @@ class EventLogger:
     def _to_runtime_event(event: LogEvent) -> RuntimeEvent:
         raw = event.to_dict()
         # The ambient trace wins, matching how request_id resolves below.
-        # An LLM provider holds its trace id as an instance field and the
-        # runtime shares one provider across every request an agent serves,
-        # so concurrent requests overwrite each other's value; the event's
-        # own trace id is the fallback for emitters outside a request.
+        # Objects shared by concurrent requests (the LLM provider, tools, the
+        # MCP manager) hold no per-request ids; the event's own trace id is
+        # the fallback for emitters outside a request, such as the CLI.
         event_trace_id = raw.get("trace_id")
         resolved_trace_id = get_trace_id() or (
             event_trace_id.strip()
             if isinstance(event_trace_id, str) and event_trace_id.strip()
             else None
         )
-        # Same reasoning for the session: a provider holds it as an instance
-        # field, so two requests in different sessions would otherwise stamp
-        # each other's events and skew every session-scoped query.
+        # The session resolves the same way.
         resolved_session_id = get_session_id() or raw.get("session_id")
         payload = {
             key: value

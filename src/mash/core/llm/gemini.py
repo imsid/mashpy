@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 import warnings
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, List, Optional, cast
 
@@ -19,6 +20,7 @@ except ImportError:
     HttpOptions = None  # type: ignore[assignment,misc]
     HttpRetryOptions = None  # type: ignore[assignment,misc]
 
+from ...logging.trace_context import get_request_id, get_trace_id
 from .base import BaseLLMProvider
 from .types import (
     LLMCapabilities,
@@ -32,6 +34,8 @@ from .types import (
 from .utils import block_value
 
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+# Stateful mode remembers the last interaction of at most this many chains.
+MAX_STATEFUL_CHAINS = 1024
 
 
 def _image_steps(message: Any) -> List[Dict[str, Any]]:
@@ -65,7 +69,6 @@ class GeminiProvider(BaseLLMProvider):
         model: str = DEFAULT_GEMINI_MODEL,
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
-        session_id: Optional[str] = None,
         stateful: bool = False,
         web_search: bool = False,
     ) -> None:
@@ -80,7 +83,6 @@ class GeminiProvider(BaseLLMProvider):
             app_id=app_id,
             model=model,
             event_logger=event_logger,
-            session_id=session_id,
         )
         self._validate_model(self.model)
 
@@ -106,12 +108,15 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as exc:
             raise RuntimeError("Failed to initialize Gemini client.") from exc
 
-        # Stateful mode: chain turns via previous_interaction_id instead of resending full history.
         self._thought_summaries_enabled = False
+        # Stateful mode chains the model calls of one request (one run of the
+        # agent loop) through previous_interaction_id and sends only the new
+        # messages. The provider serves every request at once, so a chain is
+        # keyed by the request and trace in the caller's context, never by
+        # state on the provider.
         self._stateful = stateful
         self._web_search = web_search
-        self._interaction_ids: Dict[str, str] = {}
-        self._sent_message_counts: Dict[str, int] = {}
+        self._chains: OrderedDict[tuple[str, str], tuple[str, int]] = OrderedDict()
 
     def enable_thought_summaries(self) -> None:
         self._thought_summaries_enabled = True
@@ -532,12 +537,23 @@ class GeminiProvider(BaseLLMProvider):
     async def close(self) -> None:
         pass
 
+    def _chain_key(self) -> Optional[tuple[str, str]]:
+        """The stateful chain of the calling request, or None to send whole."""
+        if not self._stateful:
+            return None
+        request_id = get_request_id() or ""
+        trace_id = get_trace_id() or ""
+        if not request_id and not trace_id:
+            return None
+        return (request_id, trace_id)
+
     async def send(self, request: LLMRequest) -> LLMResponse:  # pylint: disable=too-many-locals
 
-        session_key = self._session_id or ""
-        prev_id = self._interaction_ids.get(session_key)
-        prev_count = self._sent_message_counts.get(session_key, 0)
-        use_chain = self._stateful and prev_id is not None
+        chain_key = self._chain_key()
+        prev_id, prev_count = self._chains.get(chain_key, (None, 0)) if chain_key else (None, 0)
+        # A call whose messages don't extend the chain's (structured-output
+        # finalization sends a fresh prompt) goes out whole.
+        use_chain = prev_id is not None and len(request.messages) > prev_count
 
         call_id_to_name = self._build_call_id_to_name(request)
 
@@ -593,9 +609,11 @@ class GeminiProvider(BaseLLMProvider):
                     warnings.simplefilter("ignore")
                     raw = await self._client.aio.interactions.create(**kwargs)
 
-            if self._stateful and raw.id:
-                self._interaction_ids[session_key] = raw.id
-                self._sent_message_counts[session_key] = len(request.messages)
+            if chain_key and raw.id:
+                self._chains[chain_key] = (raw.id, len(request.messages))
+                self._chains.move_to_end(chain_key)
+                while len(self._chains) > MAX_STATEFUL_CHAINS:
+                    self._chains.popitem(last=False)
 
             response = self._parse_interaction_response(raw)
 

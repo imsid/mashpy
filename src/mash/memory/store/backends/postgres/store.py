@@ -233,8 +233,11 @@ class PostgresStore(MemoryStore):
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
+                    # A turn saved again inserts nothing, so its session row
+                    # counts it once.
                     await cursor.execute(
                         """
+                        WITH turn AS (
                         INSERT INTO memory_turns (
                             trace_id,
                             session_id,
@@ -252,6 +255,22 @@ class PostgresStore(MemoryStore):
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                         ON CONFLICT (trace_id) DO NOTHING
+                        RETURNING app_id, session_id, created_at, session_total_tokens
+                        )
+                        INSERT INTO memory_session AS s (
+                            app_id, session_id, turn_count, last_activity_at,
+                            session_total_tokens
+                        )
+                        SELECT app_id, session_id, 1, created_at, session_total_tokens
+                        FROM turn
+                        ON CONFLICT (app_id, session_id) DO UPDATE
+                        SET turn_count = s.turn_count + 1,
+                            last_activity_at = GREATEST(
+                                s.last_activity_at, EXCLUDED.last_activity_at
+                            ),
+                            session_total_tokens = GREATEST(
+                                s.session_total_tokens, EXCLUDED.session_total_tokens
+                            )
                         """,
                         (
                             trace_id,
@@ -572,23 +591,19 @@ class PostgresStore(MemoryStore):
             for row in rows
         ]
 
-    async def list_sessions(self, app_id: str) -> List[Dict[str, Any]]:
+    async def list_sessions(self, app_id: str, *, limit: int) -> List[Dict[str, Any]]:
         await self.open()
         async with self._pool.connection() as conn:
             rows = await self._fetchall(
                 conn,
                 """
-                SELECT
-                    session_id,
-                    COUNT(*) AS turn_count,
-                    MAX(created_at) AS last_activity_at,
-                    MAX(session_total_tokens) AS session_total_tokens
-                FROM memory_turns
+                SELECT session_id, turn_count, last_activity_at, session_total_tokens
+                FROM memory_session
                 WHERE app_id = %s
-                GROUP BY session_id
                 ORDER BY last_activity_at DESC, session_id ASC
+                LIMIT %s
                 """,
-                (app_id,),
+                (app_id, int(limit)),
             )
 
         return [
@@ -602,7 +617,7 @@ class PostgresStore(MemoryStore):
         ]
 
     async def get_latest_session(self, app_id: str) -> Optional[Dict[str, Any]]:
-        sessions = await self.list_sessions(app_id=app_id)
+        sessions = await self.list_sessions(app_id=app_id, limit=1)
         return sessions[0] if sessions else None
 
     async def get_latest_trace(

@@ -349,10 +349,13 @@ Every call names the request it serves, and the host checks it as the sandbox re
 ### Sessions
 
 `GET /api/v1/agent/{agent_id}/sessions`
-- Lists runtime sessions for one agent.
+- Lists the agent's most recently active sessions, newest first, each with
+  `session_id`, `turn_count`, `last_activity_at` and `session_total_tokens`.
 - Path params:
   - `agent_id`
-- Returns `sessions`.
+- Query params:
+  - `limit` (default 50, at most 500)
+- Returns `sessions` and `limit`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}`
 - Returns session info for a specific session id.

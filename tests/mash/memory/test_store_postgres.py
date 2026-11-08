@@ -6,6 +6,7 @@ import math
 import os
 import unittest
 import uuid
+from pathlib import Path
 from typing import Any
 
 from mash.logging import CommandEvent
@@ -42,6 +43,7 @@ def _delete_app_rows(database_url: str, app_id: str) -> None:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM memory_logs WHERE app_id = %s", (app_id,))
             cursor.execute("DELETE FROM memory_turns WHERE app_id = %s", (app_id,))
+            cursor.execute("DELETE FROM memory_session WHERE app_id = %s", (app_id,))
 
 
 class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
@@ -451,13 +453,72 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             session_total_tokens=99,
         )
 
-        sessions = await self.store.list_sessions(app_id=self.app_id)
+        sessions = await self.store.list_sessions(app_id=self.app_id, limit=10)
         latest = await self.store.get_latest_session(app_id=self.app_id)
 
         self.assertEqual([item["session_id"] for item in sessions], ["session-b", "session-a"])
         assert latest is not None
         self.assertEqual(latest["session_id"], "session-b")
         self.assertEqual(latest["session_total_tokens"], 7)
+
+    async def test_session_rows_count_each_turn_once_and_page_by_activity(self) -> None:
+        for session_id, tokens in [("s-1", 5), ("s-2", 1), ("s-1", 9), ("s-3", 2)]:
+            await self._save_turn(
+                session_id=session_id,
+                user_message="u",
+                agent_response="a",
+                session_total_tokens=tokens,
+            )
+        # Saving a turn again (a replayed turn.persist) changes nothing.
+        await self.store.save_turn(
+            trace_id="turn-3",
+            session_id="s-1",
+            app_id=self.app_id,
+            user_message="u",
+            agent_response="a",
+            signals={},
+            session_total_tokens=100,
+        )
+
+        sessions = await self.store.list_sessions(app_id=self.app_id, limit=10)
+        self.assertEqual([s["session_id"] for s in sessions], ["s-3", "s-1", "s-2"])
+        s1 = sessions[1]
+        self.assertEqual((s1["turn_count"], s1["session_total_tokens"]), (2, 9))
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            newest_s1 = conn.execute(
+                "SELECT MAX(created_at) FROM memory_turns WHERE app_id = %s "
+                "AND session_id = 's-1'",
+                (self.app_id,),
+            ).fetchone()[0]
+        self.assertEqual(s1["last_activity_at"], newest_s1)
+
+        page = await self.store.list_sessions(app_id=self.app_id, limit=2)
+        self.assertEqual([s["session_id"] for s in page], ["s-3", "s-1"])
+
+    async def test_migration_backfills_session_rows_from_turns(self) -> None:
+        await self._save_turn(
+            session_id="old", user_message="u", agent_response="a", session_total_tokens=4
+        )
+        await self._save_turn(
+            session_id="old", user_message="u", agent_response="a", session_total_tokens=6
+        )
+        migration = (
+            Path(__file__).resolve().parents[3]
+            / "src/mash/storage/migrations/018_memory_session.sql"
+        ).read_text()
+        start = migration.index("INSERT INTO memory_session")
+        backfill = migration[start: migration.index(";", start)].replace(
+            "GROUP BY", "WHERE app_id = %s GROUP BY"
+        )
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute("DELETE FROM memory_session WHERE app_id = %s", (self.app_id,))
+            conn.execute(backfill, (self.app_id,))
+
+        [row] = await self.store.list_sessions(app_id=self.app_id, limit=10)
+        self.assertEqual(
+            (row["session_id"], row["turn_count"], row["session_total_tokens"]),
+            ("old", 2, 6),
+        )
 
     async def test_recent_and_latest_trace_lookup_are_newest_first(self) -> None:
         await self._save_turn(
