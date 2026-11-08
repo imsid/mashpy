@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Awaitable, Callable, List, Optional
 
 from ...logging import EventLogger, LLMEvent
-from ...logging.trace_context import get_loop_index
+from ...logging.trace_context import get_loop_index, get_session_id, get_trace_id
 from .types import (
     LLMCapabilities,
     LLMRequest,
@@ -79,18 +79,15 @@ class LLMProvider(ABC):
         """Send a normalized request to the provider."""
 
     @abstractmethod
-    def set_event_logger(
-        self, logger: EventLogger, session_id: str, app_id: str
-    ) -> None:
-        """Set the event logger for LLM operations."""
+    def set_event_logger(self, logger: EventLogger, app_id: str) -> None:
+        """Set the event logger the provider writes ``chat.delta`` chunks to.
 
-    @abstractmethod
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        """Set the trace ID for the current agent execution."""
-
-    def get_event_logger_session_id(self) -> Optional[str]:
-        """Return the currently bound event-logger session ID, if any."""
-        return None
+        The runtime calls this once, when the agent process starts. One
+        provider serves every request of the process at once, so it keeps no
+        per-request state: a chunk takes its session and trace from the
+        request's context (``mash.logging.get_session_id`` and
+        ``get_trace_id``).
+        """
 
     def enable_thought_summaries(self) -> None:
         """Enable exposed textual summaries when supported; otherwise a no-op."""
@@ -114,33 +111,21 @@ class BaseLLMProvider(LLMProvider):
         app_id: str,
         model: str,
         event_logger: Optional[EventLogger] = None,
-        session_id: Optional[str] = None,
     ) -> None:
         cleaned_model = model.strip()
         if not cleaned_model:
             raise ValueError("model is required")
         self._event_logger = event_logger
-        self._session_id = session_id
         self._app_id = app_id
         self._model = cleaned_model
-        self._trace_id: Optional[str] = None
 
     @property
     def model(self) -> str:
         return self._model
 
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        self._trace_id = trace_id
-
-    def set_event_logger(
-        self, logger: EventLogger, session_id: str, app_id: str
-    ) -> None:
+    def set_event_logger(self, logger: EventLogger, app_id: str) -> None:
         self._event_logger = logger
-        self._session_id = session_id
         self._app_id = app_id
-
-    def get_event_logger_session_id(self) -> Optional[str]:
-        return self._session_id
 
     def _request_betas(self, request: LLMRequest) -> Optional[List[str]]:
         betas = request.provider_options.get("betas")
@@ -161,10 +146,11 @@ class BaseLLMProvider(LLMProvider):
     ) -> None:
         """Emit one coalesced ``chat.delta`` chunk of a streamed model call.
 
-        The chunk lives in ``payload`` as ``{"text", "index"}``. Inside a
-        request the row is keyed by the bound loop step and the chunk index,
-        so a replayed model call keeps the first attempt's chunks and writes
-        none of its own.
+        The chunk lives in ``payload`` as ``{"text", "index"}``. Its session
+        and trace come from the request's context. Inside a request the row
+        is keyed by the bound loop step and the chunk index, so a replayed
+        model call keeps the first attempt's chunks and writes none of its
+        own.
         """
         if self._event_logger is None:
             return
@@ -174,10 +160,10 @@ class BaseLLMProvider(LLMProvider):
             LLMEvent(
                 event_type="chat.delta",
                 app_id=self._app_id,
-                session_id=self._session_id,
+                session_id=get_session_id(),
                 provider=self.provider_name,
                 model=request.model,
-                trace_id=self._trace_id,
+                trace_id=get_trace_id(),
                 payload={"text": text, "index": index},
                 dedupe_key=(
                     f"chat.delta.{loop_index}.{index}" if loop_index is not None else None

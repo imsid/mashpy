@@ -819,19 +819,32 @@ class _TestMemoryStore:
             rows = rows[-limit:]
         return rows
 
-    async def list_sessions(self, app_id: str) -> list[dict[str, Any]]:
+    async def list_sessions(self, app_id: str, *, limit: int) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         for t in self._turns:
             if t["app_id"] != app_id:
                 continue
-            sid = t["session_id"]
-            if sid not in seen:
-                seen[sid] = {"session_id": sid, "app_id": app_id}
-        return list(seen.values())
+            row = seen.setdefault(
+                t["session_id"],
+                {
+                    "session_id": t["session_id"],
+                    "turn_count": 0,
+                    "last_activity_at": 0.0,
+                    "session_total_tokens": 0,
+                },
+            )
+            row["turn_count"] += 1
+            row["last_activity_at"] = max(row["last_activity_at"], t["created_at"])
+            row["session_total_tokens"] = max(
+                row["session_total_tokens"], int(t["session_total_tokens"] or 0)
+            )
+        rows = sorted(seen.values(), key=lambda r: r["session_id"])
+        rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
+        return rows[:limit]
 
     async def get_latest_session(self, app_id: str) -> dict[str, Any] | None:
-        del app_id
-        return None
+        sessions = await self.list_sessions(app_id, limit=1)
+        return sessions[0] if sessions else None
 
     async def get_latest_trace(
         self, app_id: str, session_id: str

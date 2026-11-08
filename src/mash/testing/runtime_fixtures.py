@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from mash.core.config import AgentConfig
 from mash.core.context import ToolCall
@@ -32,7 +32,6 @@ class DeterministicLLMProvider(LLMProvider):
         self._fail_on_message = fail_on_message
         self._model_name = model_name
         self._delay_seconds = max(0.0, float(delay_seconds))
-        self.last_session_id: str | None = None
         self.last_system: Any = None
 
     @property
@@ -63,15 +62,8 @@ class DeterministicLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger, app_id
-        self.last_session_id = session_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class DeterministicAgentSpec(AgentSpec):
@@ -120,7 +112,6 @@ class DelegatingLLMProvider(LLMProvider):
         self._final_text = final_text
         self._subagent_id = subagent_id
         self._subagent_prompt = subagent_prompt
-        self.last_session_id: str | None = None
         self.last_system: Any = None
 
     @property
@@ -186,15 +177,8 @@ class DelegatingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger, app_id
-        self.last_session_id = session_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class DelegatingAgentSpec(AgentSpec):
@@ -238,7 +222,6 @@ class ToolCallingLLMProvider(LLMProvider):
     def __init__(self, *, tool_name: str, arguments: dict[str, Any]) -> None:
         self._tool_name = tool_name
         self._arguments = dict(arguments)
-        self.last_session_id: str | None = None
         self.last_system: Any = None
 
     @property
@@ -279,15 +262,8 @@ class ToolCallingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger, app_id
-        self.last_session_id = session_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class ToolCallingAgentSpec(DeterministicAgentSpec):

@@ -5,7 +5,7 @@ import os
 import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 from unittest.mock import patch
 
 from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
@@ -40,11 +40,8 @@ class _FakeLLMProvider(LLMProvider):
         del request
         raise NotImplementedError
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 @contextmanager

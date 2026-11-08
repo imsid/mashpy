@@ -48,11 +48,8 @@ class _LoopingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _RecordingEventLogger:
@@ -101,11 +98,8 @@ class _ToolThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _FinishImmediatelyLLMProvider(LLMProvider):
@@ -124,11 +118,8 @@ class _FinishImmediatelyLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _ResponseThenFinishLLMProvider(LLMProvider):
@@ -160,11 +151,8 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _MaxTokensLLMProvider(LLMProvider):
@@ -195,11 +183,8 @@ class _MaxTokensLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _MaxTokensToolCallLLMProvider(LLMProvider):
@@ -235,11 +220,8 @@ class _MaxTokensToolCallLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
@@ -286,11 +268,8 @@ class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class _LoggingFinishLLMProvider(BaseLLMProvider):
@@ -639,7 +618,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         )
         logger = _RecordingEventLogger()
         agent.set_event_logger(logger, session_id="s-1")
-        agent.llm.set_event_logger(logger, session_id="s-1", app_id="test")
+        agent.llm.set_event_logger(logger, app_id="test")
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("just answer")
 
@@ -905,11 +884,8 @@ class _PhasedLLMProvider(LLMProvider):
             provider_metadata=provider_metadata,
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):

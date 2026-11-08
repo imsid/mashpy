@@ -81,32 +81,25 @@ async def compact_conversation(
 
     trace_id = str(uuid.uuid4())
     conversation_text = "\n".join(lines)
-    if hasattr(llm, "set_trace_id"):
-        llm.set_trace_id(trace_id)
-    try:
-        # The session is bound alongside the trace: the summary pass runs on
-        # the shared provider, whose instance session belongs to whichever
-        # request configured it last.
-        with bound_trace_id(trace_id), bound_session_id(session_id):
-            response = await llm.send(
-                LLMRequest(
-                    model=llm.model,
-                    system=COMPACTION_SYSTEM_PROMPT,
-                    messages=[
-                        LLMMessage(
-                            role="user",
-                            content=[LLMContentBlock.text(conversation_text)],
-                        )
-                    ],
-                    tools=[],
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    use_prompt_caching=False,
-                )
+    # The summary pass is its own trace in the session; the provider reads
+    # both from context.
+    with bound_trace_id(trace_id), bound_session_id(session_id):
+        response = await llm.send(
+            LLMRequest(
+                model=llm.model,
+                system=COMPACTION_SYSTEM_PROMPT,
+                messages=[
+                    LLMMessage(
+                        role="user",
+                        content=[LLMContentBlock.text(conversation_text)],
+                    )
+                ],
+                tools=[],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                use_prompt_caching=False,
             )
-    finally:
-        if hasattr(llm, "set_trace_id"):
-            llm.set_trace_id(None)
+        )
     summary_text = response.text.strip()
 
     metadata: Dict[str, Any] = {

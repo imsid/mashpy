@@ -154,8 +154,10 @@ class MemoryStore(Protocol):
     async def list_sessions(
         self,
         app_id: str,
+        *,
+        limit: int,
     ) -> List[Dict[str, Any]]:
-        """List persisted sessions for one application."""
+        """The application's ``limit`` most recently active sessions, newest first."""
         ...
 
     async def get_latest_session(

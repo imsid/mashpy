@@ -54,7 +54,7 @@ Behavior:
 - Rejects deprecated legacy models (`gemini-2.0-*`, `gemini-1.5-*`).
 - Encodes the conversation as Interactions steps (`user_input`, `model_output`, `thought`, `function_call`, `function_result`). Thought signatures are replayed ahead of the calls they belong to, because the backend rejects a replayed tool exchange without them.
 - Automatically coerces lowercase JSON-schema types to uppercase strings (e.g. `type: "object"` -> `type: "OBJECT"`) as required by the Gemini API.
-- Stateless by default: every request carries the full history. `stateful=True` chains turns with `previous_interaction_id` and sends only new steps.
+- Stateless by default: every request carries the full history. `stateful=True` chains the model calls of one request with `previous_interaction_id` and sends only the new steps. A chain is keyed by the request and trace in the caller's context, so concurrent requests never chain onto each other; a call outside a request or trace, or one whose messages don't extend the chain's, goes out whole.
 - `web_search=True` adds Gemini's native `google_search` grounding tool to every request and drops any registered `web_search` / `web_fetch` tool in favor of it.
 - Disables the SDK's internal retry loop (`HttpRetryOptions(attempts=1)`) so retry decisions go through `retry_transient`, where they are logged.
 - Honors `request.streaming`, emitting coalesced `chat.delta` events and assembling the stream into the same response shape as a non-streamed call.
@@ -215,12 +215,14 @@ Required members:
   accumulated `LLMResponse`. The return contract is identical whether or not
   streaming is used.
 
-`set_event_logger(logger, session_id, app_id) -> None`
-- Binds structured LLM logging to the provider.
-- Used so a streamed call's `chat.delta` chunks are written with the request's session.
+`set_event_logger(logger, app_id) -> None`
+- Gives the provider the event logger its streamed `chat.delta` chunks go to.
+- The runtime calls it once, when the agent process starts.
 
-`set_trace_id(trace_id) -> None`
-- Binds the current agent trace id so provider events can be correlated with agent execution.
+One provider instance serves every request of the agent process at the same
+time, so a provider keeps no per-request state. A chunk takes its session and
+trace from the request's context (`mash.logging.get_session_id()` and
+`get_trace_id()`), which the runtime binds for each request.
 
 Optional members:
 
@@ -228,9 +230,6 @@ Optional members:
 - Releases provider resources (e.g. cached content).
 - Default implementation is a no-op.
 - Called by the runtime during shutdown.
-
-`get_event_logger_session_id() -> str | None`
-- Returns the currently bound logging session if the provider tracks it.
 
 `capabilities() -> LLMCapabilities`
 - Returns optional feature flags beyond the core contract.

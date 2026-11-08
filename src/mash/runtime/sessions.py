@@ -67,10 +67,10 @@ async def history_turns(
     return await store.get_turns(session_id=session_id, app_id=app_id, limit=limit)
 
 
-async def list_sessions(store: MemoryStore, *, app_id: str) -> list[dict[str, Any]]:
-    if not hasattr(store, "list_sessions"):
-        return []
-    return await store.list_sessions(app_id=app_id)
+async def list_sessions(
+    store: MemoryStore, *, app_id: str, limit: int
+) -> list[dict[str, Any]]:
+    return await store.list_sessions(app_id=app_id, limit=limit)
 
 
 async def session_signals(

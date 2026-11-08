@@ -168,8 +168,6 @@ class Agent:
         """Bind a trace ID for externally managed execution flows."""
         self._trace_id = trace_id
         set_trace_id(trace_id)
-        if hasattr(self.llm, "set_trace_id"):
-            self.llm.set_trace_id(trace_id)
 
     def set_trace_tool_usage(self, tool_usage: Dict[str, Dict[str, int]]) -> None:
         """Replace the accumulated per-tool trace usage for external replay flows."""
@@ -210,19 +208,15 @@ class Agent:
         """
         # Generate trace ID for this run
         self._trace_id = str(uuid.uuid4())
-        # Set trace ID + session in context for cross-component correlation
-        # (e.g. MCP events are emitted out-of-band and read both from context).
+        # The trace and session live in the task's context, where the LLM
+        # provider and out-of-band emitters (MCP) read them.
+        set_trace_id(self._trace_id)
         if self._event_logger:
-            set_trace_id(self._trace_id)
             set_session_id(self._session_id)
 
         # Reset per-run token usage accumulator
         self._run_token_usage = {"input": 0, "output": 0}
         self._trace_tool_usage = {}
-
-        # Set trace ID on LLM provider for event correlation
-        if hasattr(self.llm, "set_trace_id"):
-            self.llm.set_trace_id(self._trace_id)
 
         try:
             # Start chain rendering

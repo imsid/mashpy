@@ -84,7 +84,6 @@ class OSSCompatibleProvider(BaseLLMProvider):
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
-        session_id: Optional[str] = None,
         default_provider_options: Optional[Dict[str, Any]] = None,
         on_tool_call_leak: str = "warn",
     ) -> None:
@@ -92,7 +91,6 @@ class OSSCompatibleProvider(BaseLLMProvider):
             app_id=app_id,
             model=model or self.DEFAULT_MODEL,
             event_logger=event_logger,
-            session_id=session_id,
         )
         # Request options merged into every request's ``provider_options``, with
         # request-level values winning. Lets callers pin gateway settings (e.g.

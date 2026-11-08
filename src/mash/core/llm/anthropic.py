@@ -72,13 +72,11 @@ class AnthropicProvider(BaseLLMProvider):
         model: str = DEFAULT_ANTHROPIC_MODEL,
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
-        session_id: Optional[str] = None,
     ) -> None:
         super().__init__(
             app_id=app_id,
             model=model,
             event_logger=event_logger,
-            session_id=session_id,
         )
         self._validate_model(self.model)
         if AsyncAnthropic is None:

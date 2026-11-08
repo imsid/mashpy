@@ -395,9 +395,20 @@ def test_agent_scoped_request_and_session_routes() -> None:
             payload = _collect_terminal_response(client, "primary", request_id)
             assert payload["response"]["text"] == "primary-ok"
 
+            second = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "again", "session_id": "s2", "user_id": "u-1"},
+            )
+            _collect_terminal_response(client, "primary", second.json()["data"]["request_id"])
+
             sessions = client.get("/api/v1/agent/primary/sessions")
             assert sessions.status_code == 200
-            assert sessions.json()["data"]["sessions"][0]["session_id"] == "s1"
+            listed = sessions.json()["data"]
+            assert [s["session_id"] for s in listed["sessions"]] == ["s2", "s1"]
+            assert listed["sessions"][1]["turn_count"] == 1
+            assert listed["limit"] == 50
+            newest = client.get("/api/v1/agent/primary/sessions", params={"limit": 1})
+            assert [s["session_id"] for s in newest.json()["data"]["sessions"]] == ["s2"]
 
             history = client.get("/api/v1/agent/primary/sessions/s1/history")
             assert history.status_code == 200

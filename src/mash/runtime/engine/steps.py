@@ -308,16 +308,11 @@ async def _commit_step_payload(
     context: Context,
     action_payload: dict[str, Any],
     result_payloads: list[dict[str, Any]],
-    session_id: str,
-    trace_id: str,
     step_index: int,
     tool_usage: dict[str, Any] | None,
 ) -> dict[str, Any]:
     action = context_helpers.action_from_payload(action_payload)
     results = context_helpers.result_payloads_to_context_results(result_payloads)
-    runtime.configure_turn_context(
-        runtime.agent, session_id=session_id, trace_id=trace_id,
-    )
     commit = runtime.agent.commit_step(
         context,
         action,
@@ -831,8 +826,6 @@ async def commit_request_step(
         context=context,
         action_payload=action_payload,
         result_payloads=result_payloads,
-        session_id=session_id,
-        trace_id=trace_id,
         step_index=loop_index,
         tool_usage=dict(workflow_state.get("tool_usage") or {}),
     )
@@ -925,7 +918,9 @@ async def finalize_structured_output(
     workflow_state: dict[str, Any],
     structured_output_request: dict[str, Any],
 ) -> dict[str, Any]:
-    del request_id
+    # The loop binds the request's session and trace in context, where the
+    # provider reads them for the call's events.
+    del request_id, session_id, trace_id
     context = context_helpers.deserialize_context(
         runtime,
         workflow_state.get("context") or {},
@@ -944,10 +939,7 @@ async def finalize_structured_output(
         temperature=runtime.agent.config.temperature,
         provider_options={"structured_output": dict(structured_output_request)},
     )
-    llm = runtime.agent.llm
-    llm.set_event_logger(runtime.event_logger, session_id, runtime.app_id)
-    llm.set_trace_id(trace_id)
-    response = await llm.send(llm_request)
+    response = await runtime.agent.llm.send(llm_request)
     if response.stop_reason in {"max_tokens", "refusal", "error"}:
         raise RuntimeError(
             f"structured output finalizer failed with stop reason: {response.stop_reason}"

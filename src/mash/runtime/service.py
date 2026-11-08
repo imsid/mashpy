@@ -78,11 +78,7 @@ class AgentRuntime:
         # Built once: the spec's tools, skills and LLM serve every request.
         self.agent = factory_helpers.build_base_agent(self)
         self.agent.set_event_logger(self.event_logger, self.session_id)
-        self.agent.llm.set_event_logger(
-            self.event_logger,
-            self.session_id,
-            self.app_id,
-        )
+        self.agent.llm.set_event_logger(self.event_logger, self.app_id)
         self.system_prompt: SystemPrompt = self.agent.config.system_prompt
         self.tools = self.agent.tools
         self.skills = self.agent.skills
@@ -173,8 +169,8 @@ class AgentRuntime:
     ) -> list[dict[str, Any]]:
         return await context_helpers.get_history_turns(self, session_id, limit=limit)
 
-    async def list_sessions(self) -> list[dict[str, Any]]:
-        return await context_helpers.list_sessions(self)
+    async def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return await context_helpers.list_sessions(self, limit=limit)
 
     async def get_session_signals(
         self,
@@ -326,7 +322,6 @@ class AgentRuntime:
         self, agent: Any, *, session_id: str, trace_id: str
     ) -> None:
         agent.set_event_logger(self.event_logger, session_id)
-        agent.llm.set_event_logger(self.event_logger, session_id, self.app_id)
         agent.set_trace_id(trace_id)
 
     def build_turn_agent(

@@ -7,7 +7,7 @@ import importlib.resources
 import os
 import tempfile
 import unittest
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 from pydantic import BaseModel, ValidationError
@@ -46,11 +46,8 @@ class _FakeLLMProvider(LLMProvider):
         del request
         raise NotImplementedError
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
-        del logger, session_id, app_id
-
-    def set_trace_id(self, trace_id: Optional[str]) -> None:
-        del trace_id
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 class MasherSpecTests(unittest.TestCase):

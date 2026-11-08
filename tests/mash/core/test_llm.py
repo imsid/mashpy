@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections import OrderedDict
 from unittest.mock import AsyncMock, Mock, patch
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from mash.core.llm import (
     OSSCompatibleProvider,
 )
 from mash.core.llm.base import _DeltaStream
+from mash.logging import bound_request_id, bound_trace_id
 from mash.core.llm.types import (
     LLMCapabilities,
     LLMContentBlock,
@@ -532,20 +534,27 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
-    def _make_provider(self, session_id: str = "s-1", stateful: bool = False) -> GeminiProvider:
+    def _make_provider(self, stateful: bool = False) -> GeminiProvider:
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
         provider._model = "gemini-3.5-flash"
         provider._app_id = "test"
-        provider._session_id = session_id
         provider._stateful = stateful
         provider._thought_summaries_enabled = False
-        provider._web_search = False
         provider._event_logger = None
-        provider._trace_id = None
-        provider._interaction_ids: dict = {}
-        provider._sent_message_counts: dict = {}
+        provider._chains = OrderedDict()
         return provider
+
+    async def _send_in(self, provider, request, *, request_id="r-1", trace_id="t-1"):
+        with bound_request_id(request_id), bound_trace_id(trace_id):
+            return await provider.send(request)
+
+    def _conversation(self, *texts: str) -> list:
+        roles = ["user", "assistant"]
+        return [
+            LLMMessage(role=roles[i % 2], content=[LLMContentBlock.text(text)])
+            for i, text in enumerate(texts)
+        ]
 
     def _make_interaction(self, text=None, tool_calls=None, status="completed", usage=None):
         """Build a fake Interaction object matching the step.type discriminator shape."""
@@ -900,26 +909,82 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(call_kwargs["input"], list)
 
     async def test_stateful_second_send_chains_with_previous_interaction_id(self) -> None:
-        provider = self._make_provider(session_id="s-chain", stateful=True)
+        provider = self._make_provider(stateful=True)
         interaction = self._make_interaction(text="response")
         client, mock_create = self._make_client(interaction)
         provider._client = client
 
-        request = self._make_request()
-        await provider.send(request)
-        await provider.send(request)
+        await self._send_in(provider, self._make_request())
+        await self._send_in(
+            provider,
+            self._make_request(messages=self._conversation("Hi", "response", "More")),
+        )
 
         second_call_kwargs = mock_create.call_args_list[1].kwargs
         self.assertEqual(second_call_kwargs["previous_interaction_id"], "interaction-abc")
 
+    async def test_stateful_send_that_does_not_extend_the_chain_goes_whole(self) -> None:
+        # Structured-output finalization sends a fresh one-message prompt in
+        # the same request; it must not chain onto the loop's interaction.
+        provider = self._make_provider(stateful=True)
+        client, mock_create = self._make_client(self._make_interaction(text="r"))
+        provider._client = client
+
+        await self._send_in(
+            provider, self._make_request(messages=self._conversation("Hi", "r", "More"))
+        )
+        await self._send_in(provider, self._make_request())
+
+        self.assertNotIn("previous_interaction_id", mock_create.call_args_list[1].kwargs)
+
+    async def test_stateful_chains_are_per_request(self) -> None:
+        # One provider serves every request of the agent process at once,
+        # children in the same session included.
+        provider = self._make_provider(stateful=True)
+        ids = iter(["ia-1", "ib-1", "ia-2", "ib-2"])
+
+        async def create(**kwargs):
+            del kwargs
+            interaction = self._make_interaction(text="r")
+            interaction.id = next(ids)
+            return interaction
+
+        mock_create = AsyncMock(side_effect=create)
+        provider._client = SimpleNamespace(
+            aio=SimpleNamespace(interactions=SimpleNamespace(create=mock_create))
+        )
+        first = self._make_request()
+        second = self._make_request(messages=self._conversation("Hi", "r", "More"))
+
+        await self._send_in(provider, first, request_id="a", trace_id="t")
+        await self._send_in(provider, first, request_id="b", trace_id="t")
+        await self._send_in(provider, second, request_id="a", trace_id="t")
+        await self._send_in(provider, second, request_id="b", trace_id="t")
+
+        chained = [c.kwargs.get("previous_interaction_id") for c in mock_create.call_args_list]
+        self.assertEqual(chained, [None, None, "ia-1", "ib-1"])
+
+    async def test_stateful_send_outside_a_request_or_trace_never_chains(self) -> None:
+        provider = self._make_provider(stateful=True)
+        client, mock_create = self._make_client(self._make_interaction(text="r"))
+        provider._client = client
+
+        await provider.send(self._make_request())
+        await provider.send(
+            self._make_request(messages=self._conversation("Hi", "r", "More"))
+        )
+
+        for call in mock_create.call_args_list:
+            self.assertNotIn("previous_interaction_id", call.kwargs)
+
     async def test_stateful_second_send_sends_only_delta(self) -> None:
-        provider = self._make_provider(session_id="s-delta", stateful=True)
+        provider = self._make_provider(stateful=True)
         interaction = self._make_interaction(text="first response")
         client, mock_create = self._make_client(interaction)
         provider._client = client
 
         first_request = self._make_request()
-        await provider.send(first_request)
+        await self._send_in(provider, first_request)
 
         # Simulate runtime adding model response + new user turn
         second_request = self._make_request(
@@ -929,7 +994,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
                 LLMMessage(role="user", content=[LLMContentBlock.text("Follow-up")]),
             ]
         )
-        await provider.send(second_request)
+        await self._send_in(provider, second_request)
 
         second_input = mock_create.call_args_list[1].kwargs["input"]
         # Delta should only include the new user turn (assistant is skipped)
@@ -940,7 +1005,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_stateless_mode_never_chains(self) -> None:
         # Default stateless provider must never use previous_interaction_id,
         # even across multiple sends in the same session.
-        provider = self._make_provider(session_id="s-stateless")
+        provider = self._make_provider()
         interaction = self._make_interaction(text="resp")
         client, mock_create = self._make_client(interaction)
         provider._client = client
@@ -955,7 +1020,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_stateless_mode_ignores_use_prompt_caching_flag(self) -> None:
         # GeminiProvider is stateless by default; use_prompt_caching on the
         # request has no effect — it is an Anthropic-specific concept.
-        provider = self._make_provider(session_id="s-flag")
+        provider = self._make_provider()
         interaction = self._make_interaction(text="resp")
         client, mock_create = self._make_client(interaction)
         provider._client = client

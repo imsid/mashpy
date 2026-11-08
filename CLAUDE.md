@@ -239,9 +239,10 @@ process.
 
 The agent process calls `build_tools()`, `build_skills()` and `build_llm()`
 once, when it starts. Those objects live for the process and serve every
-request at once, so a tool keeps no per-request state on `self`: it reads the
-request's context with `mash.logging.get_request_metadata()` and the other
-`mash.logging` helpers. The runtime calls a tool's `shutdown()`, `close()` or
+request at once, so a tool or LLM provider keeps no per-request state on
+`self`: it reads the request's context with
+`mash.logging.get_request_metadata()`, `get_session_id()`, `get_trace_id()`
+and the other `mash.logging` helpers. The runtime calls a tool's `shutdown()`, `close()` or
 `aclose()` once, when the process shuts down.
 
 ## AgentConfig Fields

@@ -97,7 +97,6 @@ class _ToolCallingLLMProvider(LLMProvider):
 
     def __init__(self, *, final_text: str) -> None:
         self._final_text = final_text
-        self.last_session_id: str | None = None
         self.last_system: Any = None
 
     @property
@@ -137,15 +136,8 @@ class _ToolCallingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, session_id: str, app_id: str) -> None:
+    def set_event_logger(self, logger, app_id: str) -> None:
         del logger, app_id
-        self.last_session_id = session_id
-
-    def set_trace_id(self, trace_id) -> None:
-        del trace_id
-
-    def get_event_logger_session_id(self) -> str | None:
-        return self.last_session_id
 
 
 class _MetadataReadingAgentSpec(AgentSpec):

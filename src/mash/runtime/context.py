@@ -32,8 +32,8 @@ async def get_history_turns(
     )
 
 
-async def list_sessions(self: "AgentRuntime") -> list[dict[str, Any]]:
-    return await sessions.list_sessions(self.store, app_id=self.app_id)
+async def list_sessions(self: "AgentRuntime", *, limit: int) -> list[dict[str, Any]]:
+    return await sessions.list_sessions(self.store, app_id=self.app_id, limit=limit)
 
 
 async def get_session_signals(
@@ -70,13 +70,9 @@ async def compact_session(
     if not session_id_value:
         raise ValueError("session_id is required")
 
-    llm = self.definition.build_llm()
-    if hasattr(llm, "set_event_logger"):
-        llm.set_event_logger(self.event_logger, session_id_value, self.app_id)
-
     return await compact_conversation(
         store=self.store,
-        llm=llm,
+        llm=self.agent.llm,
         app_id=self.app_id,
         session_id=session_id_value,
         max_tokens=self.agent.config.max_tokens,
