@@ -19,6 +19,14 @@ class RequestTerminalError(RuntimeError):
     """
 
 
+class SessionUserMismatchError(RuntimeError):
+    """The session already belongs to another user.
+
+    A session is the user's conversation: its turns replay into each request
+    on it. The API maps this to HTTP 409.
+    """
+
+
 class RequestStaleError(RuntimeError):
     """A request cannot be resumed because its session has moved on.
 
