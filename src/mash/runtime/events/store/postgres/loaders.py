@@ -554,6 +554,26 @@ async def get_request_identity(pool: Any, request_id: str) -> RequestIdentity | 
     return RequestIdentity(agent_id=str(row["agent_id"]), user_id=row["user_id"])
 
 
+async def get_other_session_user(pool: Any, session_id: str, user_id: str) -> str | None:
+    """A user other than ``user_id`` with a request on the session, or None.
+
+    Requests from before user ids were recorded (NULL) belong to no one.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT user_id
+                FROM runtime_request
+                WHERE session_id = %s AND user_id IS NOT NULL AND user_id <> %s
+                LIMIT 1
+                """,
+                (session_id, user_id),
+            )
+            row = await cursor.fetchone()
+    return str(row["user_id"]) if row is not None else None
+
+
 async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None:
     """The request's recorded lifecycle state, or None if it has none."""
     async with pool.connection() as conn:
