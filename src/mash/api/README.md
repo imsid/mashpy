@@ -480,6 +480,8 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}/events`
 - Server-Sent Events stream for step lifecycle and terminal workflow events.
+  Events go out as the run's steps record them; a quiet stream gets a
+  `: keep-alive` comment every 15 seconds.
 - Path params:
   - `workflow_id`
   - `run_id`

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
@@ -181,6 +182,52 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fetched.status, "queued")
         self.assertTrue(hasattr(events, "__anext__"))
+
+    async def test_stream_follows_step_events_as_they_land(self) -> None:
+        service, store = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        run = await service.run_workflow("wf", user_id="u-1")
+        events = await service.stream_run_events("wf", run.run_id)
+
+        async def _progress() -> None:
+            await asyncio.sleep(0.05)
+            await store.append_step_event(
+                run_id=run.run_id, workflow_id="wf", step_id="s1",
+                event_type="step.started", at=1.0,
+            )
+            await asyncio.sleep(0.05)
+            await store.append_step_event(
+                run_id=run.run_id, workflow_id="wf", step_id="s1",
+                event_type="step.completed", at=2.0,
+            )
+            await store.finish_run(
+                run.run_id, status="completed", result={"ok": True}, finished_at=3.0
+            )
+
+        async def _collect() -> list[str]:
+            return [event.event async for event in events]
+
+        progress = asyncio.create_task(_progress())
+        # The keep-alive is 15 s, so this only passes if the store's writes
+        # wake the stream.
+        names = await asyncio.wait_for(_collect(), timeout=3.0)
+        await progress
+
+        self.assertEqual(names, ["step.started", "step.completed", "workflow.completed"])
+        self.assertEqual(store._run_waiters.get(run.run_id, set()), set())
+
+    async def test_a_quiet_stream_sends_keep_alives(self) -> None:
+        service, _ = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        run = await service.run_workflow("wf", user_id="u-1")
+        events = await service.stream_run_events("wf", run.run_id, keepalive_seconds=0.05)
+
+        first = await asyncio.wait_for(events.__anext__(), timeout=2.0)
+        await events.aclose()
+
+        self.assertEqual(first.comment, "keep-alive")
 
     async def test_run_of_a_workflow_with_agents_requires_a_user(self) -> None:
         service, _ = self._stored_service(

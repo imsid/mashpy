@@ -27,6 +27,10 @@ from .store import (
 if TYPE_CHECKING:
     from mash.runtime.host.host import Pool
 
+# A run's event stream sends a keep-alive comment after this long without a
+# step event.
+KEEPALIVE_SECONDS = 15.0
+
 
 @dataclass
 class WorkflowRun:
@@ -345,7 +349,7 @@ class WorkflowService:
         workflow_id: str,
         run_id: str,
         *,
-        poll_interval: float = 0.25,
+        keepalive_seconds: float = KEEPALIVE_SECONDS,
     ) -> AsyncIterator[WorkflowStreamEvent]:
         resolved_workflow_id = str(workflow_id or "").strip()
         resolved_run_id = str(run_id or "").strip()
@@ -363,7 +367,7 @@ class WorkflowService:
                 f"workflow run '{resolved_run_id}' was not found"
             )
         return self._stream_step_run_events(
-            resolved_workflow_id, resolved_run_id, store, poll_interval
+            resolved_workflow_id, resolved_run_id, store, keepalive_seconds
         )
 
     async def _stream_step_run_events(
@@ -371,44 +375,59 @@ class WorkflowService:
         workflow_id: str,
         run_id: str,
         store: Any,
-        poll_interval: float,
+        keepalive_seconds: float,
     ) -> AsyncIterator[WorkflowStreamEvent]:
+        """Emit the run's step events as they land, then its end.
+
+        The stream reads the run again only when the store says it changed (a
+        step event or the run finishing) or after ``keepalive_seconds``, when
+        it also sends a keep-alive comment.
+        """
         emitted: set[tuple[str, int, str]] = set()
-        while True:
-            for event in await store.list_step_events(run_id):
-                key = (event.step_id, event.seq, event.event_type)
-                if key in emitted:
-                    continue
-                emitted.add(key)
-                yield WorkflowStreamEvent(
-                    event=event.event_type,
-                    data={
-                        "workflow_id": workflow_id,
-                        "run_id": run_id,
-                        "step_id": event.step_id,
-                        "attempt": event.attempt,
-                        "seq": event.seq,
-                        "at": event.at,
-                        "payload": event.payload,
-                    },
-                )
-            run = await store.get_run(run_id)
-            if run is not None and run.status in RUN_TERMINAL:
-                yield WorkflowStreamEvent(
-                    event="workflow.completed"
-                    if run.status == "completed"
-                    else "workflow.error",
-                    data={
-                        "workflow_id": workflow_id,
-                        "run_id": run_id,
-                        "status": run.status,
-                        "result": run.result,
-                        "error": run.error,
-                    },
-                )
-                return
-            yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
-            await _sleep(poll_interval)
+        waiter = store.register_run_waiter(run_id)
+        try:
+            while True:
+                # Cleared before reading, so a change during the read wakes
+                # the wait below at once.
+                waiter.clear()
+                for event in await store.list_step_events(run_id):
+                    key = (event.step_id, event.seq, event.event_type)
+                    if key in emitted:
+                        continue
+                    emitted.add(key)
+                    yield WorkflowStreamEvent(
+                        event=event.event_type,
+                        data={
+                            "workflow_id": workflow_id,
+                            "run_id": run_id,
+                            "step_id": event.step_id,
+                            "attempt": event.attempt,
+                            "seq": event.seq,
+                            "at": event.at,
+                            "payload": event.payload,
+                        },
+                    )
+                run = await store.get_run(run_id)
+                if run is not None and run.status in RUN_TERMINAL:
+                    yield WorkflowStreamEvent(
+                        event="workflow.completed"
+                        if run.status == "completed"
+                        else "workflow.error",
+                        data={
+                            "workflow_id": workflow_id,
+                            "run_id": run_id,
+                            "status": run.status,
+                            "result": run.result,
+                            "error": run.error,
+                        },
+                    )
+                    return
+                try:
+                    await asyncio.wait_for(waiter.wait(), timeout=keepalive_seconds)
+                except asyncio.TimeoutError:
+                    yield WorkflowStreamEvent(event="", data={}, comment="keep-alive")
+        finally:
+            store.unregister_run_waiter(run_id, waiter)
 
     def _require_workflow(self, workflow_id: str) -> WorkflowSpec:
         try:
@@ -567,6 +586,3 @@ def _parse_time_filter(value: str | None) -> float | None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.timestamp()
 
-
-async def _sleep(duration: float) -> None:
-    await asyncio.sleep(max(0.0, float(duration)))

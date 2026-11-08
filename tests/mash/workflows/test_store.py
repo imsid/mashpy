@@ -81,6 +81,27 @@ class WorkflowStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         return replace(record, **overrides) if overrides else record
 
+    async def test_step_events_and_finishing_wake_the_run_waiters(self) -> None:
+        await self.store.create_run(self._run())
+        waiter = self.store.register_run_waiter(self.run_id)
+        other = self.store.register_run_waiter("some-other-run")
+        try:
+            await self.store.append_step_event(
+                run_id=self.run_id, workflow_id=self.workflow_id, step_id="scan",
+                event_type="step.started", at=time.time(),
+            )
+            self.assertTrue(waiter.is_set())
+            waiter.clear()
+            await self.store.finish_run(
+                self.run_id, status=RUN_COMPLETED, result={}, finished_at=time.time()
+            )
+            self.assertTrue(waiter.is_set())
+            self.assertFalse(other.is_set())
+        finally:
+            self.store.unregister_run_waiter(self.run_id, waiter)
+            self.store.unregister_run_waiter("some-other-run", other)
+        self.assertEqual(self.store._run_waiters, {})
+
     async def test_finished_runs_list_in_finish_order(self) -> None:
         await self.store.create_run(self._run())
         cursor = await self.store.latest_finished_seq()

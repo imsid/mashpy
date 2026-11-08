@@ -939,9 +939,22 @@ class _TestWorkflowStore:
         self._steps: dict[tuple[str, str], Any] = {}
         self._events: list[Any] = []
         self._recoveries: dict[str, int] = {}
+        self._run_waiters: dict[str, set[asyncio.Event]] = {}
 
     async def open(self) -> None:
         pass
+
+    def register_run_waiter(self, run_id: str) -> asyncio.Event:
+        waiter = asyncio.Event()
+        self._run_waiters.setdefault(run_id, set()).add(waiter)
+        return waiter
+
+    def unregister_run_waiter(self, run_id: str, waiter: asyncio.Event) -> None:
+        self._run_waiters.get(run_id, set()).discard(waiter)
+
+    def _wake_run(self, run_id: str) -> None:
+        for waiter in self._run_waiters.get(run_id, ()):
+            waiter.set()
 
     async def close(self) -> None:
         self._runs.clear()
@@ -994,6 +1007,7 @@ class _TestWorkflowStore:
             run.result = result
             run.error = error
             run.finished_at = finished_at
+        self._wake_run(run_id)
 
     async def upsert_step(self, step: Any) -> None:
         self._steps[(step.run_id, step.step_id)] = step
@@ -1011,6 +1025,7 @@ class _TestWorkflowStore:
                 attempt=attempt, event_type=event_type, seq=seq, at=at, payload=payload or {},
             )
         )
+        self._wake_run(run_id)
         return seq
 
     async def get_run(self, run_id: str):

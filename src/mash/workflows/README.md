@@ -178,7 +178,7 @@ span per step, and each agent step's request nested under its step. See
 - `resume_run(workflow_id, run_id)` — continue a failed or cancelled run from
   its completed steps; rejects a completed one.
 - `list_run_step_events(...)` — the step audit trail.
-- `stream_run_events(...)` — SSE from the store, so code steps are visible.
+- `stream_run_events(...)` — SSE from the store, so code steps are visible. The store wakes a run's streams when it records a step event or finishes the run; a quiet stream sends a keep-alive every 15 s.
 
 HTTP (via `mash.api`):
 
