@@ -15,6 +15,10 @@ class RuntimeStore(Protocol):
 
     async def close(self) -> None: ...
 
+    async def check_connection_budget(self, *, processes: int) -> None:
+        """Warn when ``processes`` full connection pools exceed the server's limit."""
+        ...
+
     async def append_event(self, event: RuntimeEvent) -> RuntimeEvent: ...
 
     async def list_request_events(

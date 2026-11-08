@@ -6,7 +6,7 @@ import asyncio
 from collections import defaultdict
 from typing import Any
 
-from mash.storage.pool import acquire_pool, release_pool
+from mash.storage.pool import acquire_pool, check_connection_budget, release_pool
 
 from ...protocol import RuntimeStore
 from ...types import FeedbackRecord, RequestIdentity, RequestStatus, RuntimeEvent
@@ -40,6 +40,10 @@ class PostgresRuntimeStore(RuntimeStore):
         if self._pool is not None:
             self._pool = None
             await release_pool(self._database_url)
+
+    async def check_connection_budget(self, *, processes: int) -> None:
+        await self.open()
+        await check_connection_budget(self._pool, processes=processes)
 
     def register_request_waiter(self, request_id: str) -> asyncio.Event:
         event = asyncio.Event()

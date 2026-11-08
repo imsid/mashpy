@@ -7,7 +7,9 @@ query column lists.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from typing import Any
 
 from ...types import (
@@ -117,9 +119,9 @@ async def _project_lifecycle(
     """Record the request's lifecycle state alongside the event that caused it.
 
     Runs in the append transaction, so the state row and the event it reflects
-    commit together. append_event holds an advisory lock on the request id, so
-    appends for one request are serialized and the last write is the last
-    event — no tiebreak needed here.
+    commit together. The append holds the request's ``runtime_request_seq``
+    row lock until it commits, so appends for one request are serialized and
+    the last write is the last event; no tiebreak needed here.
     """
     if event.lifecycle is None or not event.request_id:
         return
@@ -185,89 +187,128 @@ async def _project_mode(cursor: Any, event: RuntimeEvent) -> None:
     )
 
 
+_EVENT_RETURNING = """
+    event_id, request_id, seq AS request_seq, trace_id, app_id,
+    agent_id, session_id, host_id, workflow_id, workflow_run_id,
+    event_type, loop_index, step_key, dedupe_key, payload, created_at
+"""
+
+# One statement: bump the request's counter and insert the event at that seq.
+# The counter's row lock serializes the request's appends until they commit,
+# so seq order is commit order. A duplicate dedupe key inserts nothing and
+# returns no row; its counter bump leaves a gap in seq.
+_APPEND_REQUEST_EVENT = f"""
+    WITH next AS (
+        INSERT INTO runtime_request_seq AS counter (request_id, last_seq)
+        VALUES (%(request_id)s::text, 1)
+        ON CONFLICT (request_id) DO UPDATE SET last_seq = counter.last_seq + 1
+        RETURNING last_seq
+    )
+    INSERT INTO runtime_event_log (
+        request_id, trace_id, app_id, agent_id, session_id, host_id,
+        workflow_id, workflow_run_id, seq,
+        event_type, loop_index, step_key, dedupe_key, payload, created_at
+    )
+    SELECT
+        %(request_id)s::text, %(trace_id)s::text, %(app_id)s::text,
+        %(agent_id)s::text, %(session_id)s::text, %(host_id)s::text,
+        %(workflow_id)s::text, %(workflow_run_id)s::text, next.last_seq,
+        %(event_type)s::text, %(loop_index)s::integer, %(step_key)s::text,
+        %(dedupe_key)s::text, %(payload)s::jsonb, %(created_at)s::double precision
+    FROM next
+    ON CONFLICT (request_id, dedupe_key)
+        WHERE request_id IS NOT NULL AND dedupe_key IS NOT NULL
+        DO NOTHING
+    RETURNING {_EVENT_RETURNING}
+"""
+
+_APPEND_EVENT = f"""
+    INSERT INTO runtime_event_log (
+        request_id, trace_id, app_id, agent_id, session_id, host_id,
+        workflow_id, workflow_run_id, seq,
+        event_type, loop_index, step_key, dedupe_key, payload, created_at
+    )
+    VALUES (
+        NULL, %(trace_id)s, %(app_id)s, %(agent_id)s, %(session_id)s, %(host_id)s,
+        %(workflow_id)s, %(workflow_run_id)s, NULL,
+        %(event_type)s, %(loop_index)s, %(step_key)s, %(dedupe_key)s,
+        %(payload)s::jsonb, %(created_at)s
+    )
+    RETURNING {_EVENT_RETURNING}
+"""
+
+_SELECT_DEDUPED = f"""
+    SELECT {_EVENT_RETURNING}
+    FROM runtime_event_log
+    WHERE request_id = %s AND dedupe_key = %s
+"""
+
+
+def _event_params(event: RuntimeEvent) -> dict[str, Any]:
+    return {
+        "request_id": event.request_id,
+        "trace_id": event.trace_id,
+        "app_id": event.app_id,
+        "agent_id": event.agent_id,
+        "session_id": event.session_id,
+        "host_id": event.host_id,
+        "workflow_id": event.workflow_id,
+        "workflow_run_id": event.workflow_run_id,
+        "event_type": event.event_type,
+        "loop_index": event.loop_index,
+        "step_key": event.step_key,
+        "dedupe_key": event.dedupe_key,
+        "payload": json.dumps(event.payload or {}, ensure_ascii=True, default=str),
+        "created_at": float(event.created_at),
+    }
+
+
+def _projects_state(event: RuntimeEvent) -> bool:
+    return (
+        event.lifecycle is not None
+        or event.event_type == RuntimeEventType.REQUEST_MODE_CHANGED.value
+    )
+
+
+async def _insert_request_event(cursor: Any, event: RuntimeEvent) -> tuple[dict[str, Any], bool]:
+    """Insert a request's event; the stored row and whether it is new.
+
+    A duplicate dedupe key returns the row stored under it.
+    """
+    await cursor.execute(_APPEND_REQUEST_EVENT, _event_params(event))
+    stored = await cursor.fetchone()
+    if stored is not None:
+        return stored, True
+    await cursor.execute(_SELECT_DEDUPED, (event.request_id, event.dedupe_key))
+    existing = await cursor.fetchone()
+    if existing is None:
+        raise RuntimeError("failed to persist runtime event")
+    return existing, False
+
+
 async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
     async with pool.connection() as conn:
-        async with conn.transaction():
-            async with conn.cursor() as cursor:
-                if event.request_id and event.dedupe_key:
-                    await cursor.execute(
-                        """
-                        SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
-                               agent_id, session_id, host_id, workflow_id, workflow_run_id,
-                               event_type, loop_index, step_key,
-                               dedupe_key, payload, created_at
-                        FROM runtime_event_log
-                        WHERE request_id = %s AND dedupe_key = %s
-                        LIMIT 1
-                        """,
-                        (event.request_id, event.dedupe_key),
-                    )
-                    existing = await cursor.fetchone()
-                    if existing is not None:
-                        # Still project the state. A deduped terminal event was
-                        # already delivered at the existing row's seq, so the
-                        # request is terminal there; skipping this would leave
-                        # a resumed request stuck non-terminal.
-                        await _project_lifecycle(
-                            cursor, event, existing.get("request_seq")
-                        )
-                        return dict_to_event(existing)
-
-                next_request_seq: int | None = None
-                if event.request_id:
-                    await cursor.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (event.request_id,),
-                    )
-                    await cursor.execute(
-                        """
-                        SELECT COALESCE(MAX(seq), 0) + 1 AS next_request_seq
-                        FROM runtime_event_log
-                        WHERE request_id = %s
-                        """,
-                        (event.request_id,),
-                    )
-                    row = await cursor.fetchone()
-                    next_request_seq = (
-                        int(row["next_request_seq"]) if row is not None else 1
-                    )
-
-                await cursor.execute(
-                    """
-                    INSERT INTO runtime_event_log (
-                        request_id, trace_id, app_id, agent_id, session_id, host_id,
-                        workflow_id, workflow_run_id, seq,
-                        event_type, loop_index, step_key, dedupe_key, payload, created_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                    RETURNING event_id, request_id, seq AS request_seq, trace_id, app_id,
-                              agent_id, session_id, host_id, workflow_id, workflow_run_id,
-                              event_type, loop_index, step_key,
-                              dedupe_key, payload, created_at
-                    """,
-                    (
-                        event.request_id,
-                        event.trace_id,
-                        event.app_id,
-                        event.agent_id,
-                        event.session_id,
-                        event.host_id,
-                        event.workflow_id,
-                        event.workflow_run_id,
-                        next_request_seq,
-                        event.event_type,
-                        event.loop_index,
-                        event.step_key,
-                        event.dedupe_key,
-                        json.dumps(event.payload or {}, ensure_ascii=True, default=str),
-                        float(event.created_at),
-                    ),
-                )
+        async with conn.cursor() as cursor:
+            if not event.request_id:
+                await cursor.execute(_APPEND_EVENT, _event_params(event))
                 stored = await cursor.fetchone()
                 if stored is None:
                     raise RuntimeError("failed to persist runtime event")
+                return dict_to_event(stored)
+            if not _projects_state(event):
+                # Most events, streamed chunks among them: one autocommit
+                # statement, no transaction.
+                stored, _ = await _insert_request_event(cursor, event)
+                return dict_to_event(stored)
+            async with conn.transaction():
+                stored, inserted = await _insert_request_event(cursor, event)
+                # Project even a duplicate: a deduped terminal event was
+                # delivered at the stored row's seq, so the request is terminal
+                # there; skipping this would leave a resumed request stuck
+                # non-terminal.
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
-                await _project_mode(cursor, event)
+                if inserted:
+                    await _project_mode(cursor, event)
     return dict_to_event(stored)
 
 
@@ -586,14 +627,109 @@ async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None
     return RequestStatus(str(row["status"])) if row is not None else None
 
 
+# An image in a checkpoint is a dict with a string ``media_type`` and its
+# base64 ``data``: a tool result's ``{"media_type", "data"}``, or a provider's
+# image ``source``. Data this long or longer moves to ``runtime_blob``.
+BLOB_MIN_CHARS = 1024
+BLOB_KEY = "mash_blob"
+
+
+def _externalize(value: Any, blobs: dict[str, tuple[str, str]]) -> Any:
+    """A copy of ``value`` with each image's data replaced by its blob key."""
+    if isinstance(value, dict):
+        data = value.get("data")
+        media_type = value.get("media_type")
+        if (
+            isinstance(data, str)
+            and isinstance(media_type, str)
+            and len(data) >= BLOB_MIN_CHARS
+        ):
+            sha = hashlib.sha256(data.encode("utf-8")).hexdigest()
+            blobs[sha] = (media_type, data)
+            slim = {key: item for key, item in value.items() if key != "data"}
+            slim[BLOB_KEY] = sha
+            return slim
+        return {key: _externalize(item, blobs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_externalize(item, blobs) for item in value]
+    return value
+
+
+def _blob_refs(value: Any, refs: set[str]) -> None:
+    if isinstance(value, dict):
+        sha = value.get(BLOB_KEY)
+        if isinstance(sha, str) and "data" not in value:
+            refs.add(sha)
+            return
+        for item in value.values():
+            _blob_refs(item, refs)
+    elif isinstance(value, list):
+        for item in value:
+            _blob_refs(item, refs)
+
+
+def _rehydrate(value: Any, data_by_sha: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        sha = value.get(BLOB_KEY)
+        if isinstance(sha, str) and "data" not in value:
+            full = {key: item for key, item in value.items() if key != BLOB_KEY}
+            full["data"] = data_by_sha[sha]
+            return full
+        return {key: _rehydrate(item, data_by_sha) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_rehydrate(item, data_by_sha) for item in value]
+    return value
+
+
 async def save_checkpoint(
     pool: Any, request_id: str, checkpoint: dict[str, Any]
 ) -> None:
+    """Overwrite the request's checkpoint, with its images stored once each.
+
+    The blobs are written, or their ``last_used_at`` bumped, before the
+    checkpoint that references them, so a reader never finds a reference to
+    a missing blob and retention never deletes one a save is about to use.
+    """
+    blobs: dict[str, tuple[str, str]] = {}
+    slim = _externalize(checkpoint, blobs)
+    now = time.time()
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
+            if blobs:
+                await cursor.execute(
+                    """
+                    UPDATE runtime_blob SET last_used_at = %s
+                    WHERE sha256 = ANY(%s)
+                    RETURNING sha256
+                    """,
+                    (now, list(blobs)),
+                )
+                present = {row["sha256"] for row in await cursor.fetchall()}
+                missing = [
+                    (sha, media_type, data, now)
+                    for sha, (media_type, data) in blobs.items()
+                    if sha not in present
+                ]
+                if missing:
+                    await cursor.executemany(
+                        """
+                        INSERT INTO runtime_blob (sha256, media_type, data, last_used_at)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (sha256) DO UPDATE
+                            SET last_used_at = EXCLUDED.last_used_at
+                        """,
+                        missing,
+                    )
             await cursor.execute(
-                "UPDATE runtime_request SET checkpoint = %s::jsonb WHERE request_id = %s",
-                (json.dumps(checkpoint, ensure_ascii=True, default=str), request_id),
+                """
+                UPDATE runtime_request SET checkpoint = %s::jsonb, blob_refs = %s
+                WHERE request_id = %s
+                """,
+                (
+                    json.dumps(slim, ensure_ascii=True, default=str),
+                    sorted(blobs),
+                    request_id,
+                ),
             )
 
 
@@ -605,9 +741,25 @@ async def get_checkpoint(pool: Any, request_id: str) -> dict[str, Any] | None:
                 (request_id,),
             )
             row = await cursor.fetchone()
-    if row is None or not isinstance(row["checkpoint"], dict):
-        return None
-    return dict(row["checkpoint"])
+            if row is None or not isinstance(row["checkpoint"], dict):
+                return None
+            checkpoint = dict(row["checkpoint"])
+            refs: set[str] = set()
+            _blob_refs(checkpoint, refs)
+            if not refs:
+                return checkpoint
+            await cursor.execute(
+                "SELECT sha256, data FROM runtime_blob WHERE sha256 = ANY(%s)",
+                (sorted(refs),),
+            )
+            data_by_sha = {r["sha256"]: r["data"] for r in await cursor.fetchall()}
+    lost = refs - set(data_by_sha)
+    if lost:
+        raise RuntimeError(
+            f"request '{request_id}' checkpoint references missing blobs: "
+            + ", ".join(sorted(lost))
+        )
+    return _rehydrate(checkpoint, data_by_sha)
 
 
 async def list_running_requests(pool: Any, agent_id: str) -> list[str]:

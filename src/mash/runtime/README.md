@@ -263,13 +263,16 @@ lifecycle.
 
 - **`AgentServer`** (in each agent process) creates its stores in
   `from_spec()` and closes them in its lifespan shutdown, after the runtime
-  shuts down. Each agent process holds its own Postgres connections.
+  shuts down. Each agent process holds its own Postgres connections, at most
+  `MASH_DB_POOL_MAX_SIZE` (default 10) in one pool its stores share.
 
 - **`Pool`** (on the host) opens one shared `PostgresRuntimeStore`, one shared
   `PostgresStore` and one `WorkflowStore` for the host's own reads: traces,
   telemetry, sessions, feedback, and workflow runs. It runs no agent runtimes.
   Session reads cover agents that use the default `build_memory_store()`; an
   agent that overrides it keeps its store in its own process only.
+  At startup it runs `SHOW max_connections` and logs a warning when the host
+  and its agent processes, each with a full pool, could open more.
 
 ## File and Module Guide
 
@@ -309,7 +312,7 @@ lifecycle.
   - per-agent HTTP/SSE surface
 
 - [`client.py`](./client.py)
-  - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached
+  - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached. Event streams use an httpx client of their own with no connection cap and no read timeout; the other calls share a second client capped at 50 connections, so open streams never hold up a submit, a cancel or an answer
 
 - [`agent_process.py`](./agent_process.py)
   - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. With `browser_tools` (the host sets `MASH_BROWSER_ENABLED=1` when it has browsers) an agent whose spec lists `browser_sites()` also gets the browser tools (`mash.tools.browser`), and the engine turns its `browser_handoff` calls into `browser` interactions carrying a live-view link. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`

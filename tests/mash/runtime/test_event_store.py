@@ -71,6 +71,10 @@ def _delete_request_rows(database_url: str, *request_ids: str) -> None:
                 "DELETE FROM runtime_request WHERE request_id = ANY(%s)",
                 (ids,),
             )
+            cursor.execute(
+                "DELETE FROM runtime_request_seq WHERE request_id = ANY(%s)",
+                (ids,),
+            )
 
 
 def _delete_app_session_rows(database_url: str, *, app_id: str, session_id: str) -> None:
@@ -409,6 +413,168 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 payload={"status": "accepted"},
             )
         )
+
+
+    def _delta(self, index: int) -> RuntimeEvent:
+        return RuntimeEvent(
+            app_id="store-test",
+            agent_id="store-test",
+            request_id=self.request_id,
+            session_id="session-1",
+            event_type="chat.delta",
+            dedupe_key=f"chat.delta.0.{index}",
+            payload={"text": f"chunk {index}", "index": index},
+        )
+
+    async def test_concurrent_appends_get_distinct_ordered_seqs(self) -> None:
+        stored = await asyncio.gather(*(self.store.append_event(self._delta(i)) for i in range(40)))
+
+        seqs = sorted(event.request_seq for event in stored)
+        self.assertEqual(seqs, list(range(1, 41)))
+        rows = _fetch_committed_rows(self.database_url, self.request_id)
+        self.assertEqual([row["seq"] for row in rows], list(range(1, 41)))
+
+    async def test_duplicate_dedupe_key_returns_the_stored_event(self) -> None:
+        first = await self.store.append_event(self._delta(0))
+        again = await self.store.append_event(self._delta(0))
+        later = await self.store.append_event(self._delta(1))
+
+        self.assertEqual(again.event_id, first.event_id)
+        self.assertEqual(again.request_seq, first.request_seq)
+        self.assertEqual(len(_fetch_committed_rows(self.database_url, self.request_id)), 2)
+        # The duplicate used a number; seq stays increasing.
+        self.assertGreater(later.request_seq, first.request_seq)
+
+    async def test_events_without_a_request_have_no_seq(self) -> None:
+        event = await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                session_id="session-1",
+                event_type="chat.delta",
+                payload={"text": "x"},
+            )
+        )
+        self.assertIsNone(event.request_seq)
+        self.assertIsNone(event.request_id)
+
+    async def test_duplicate_terminal_event_still_projects(self) -> None:
+        def _event(event_type: str, dedupe: str, *args: str) -> RuntimeEvent:
+            return RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=event_type,
+                lifecycle=seed_lifecycle(event_type, *args),
+                dedupe_key=dedupe,
+                payload={"status": args[0]} if args else {},
+            )
+
+        await self.store.append_event(
+            _event(RuntimeEventType.INVOKE_AGENT_START.value, "request.accepted")
+        )
+        completed = await self.store.append_event(
+            _event(END, "request.completed", "ok")
+        )
+        self.assertTrue(await self.store.is_request_terminal(self.request_id))
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE runtime_request SET status = 'running', terminal_seq = NULL "
+                "WHERE request_id = %s",
+                (self.request_id,),
+            )
+        self.assertFalse(await self.store.is_request_terminal(self.request_id))
+
+        again = await self.store.append_event(_event(END, "request.completed", "ok"))
+
+        self.assertEqual(again.request_seq, completed.request_seq)
+        self.assertTrue(await self.store.is_request_terminal(self.request_id))
+
+
+    async def test_checkpoint_images_are_stored_once_out_of_line(self) -> None:
+        import hashlib
+
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
+                payload={},
+            )
+        )
+        data = (uuid.uuid4().hex * 200)[:5000]
+        sha = hashlib.sha256(data.encode()).hexdigest()
+
+        def _delete_blob() -> None:
+            with psycopg.connect(self.database_url, autocommit=True) as conn:
+                conn.execute("DELETE FROM runtime_blob WHERE sha256 = %s", (sha,))
+
+        self.addCleanup(_delete_blob)
+        image = {"media_type": "image/png", "data": data}
+        checkpoint = {
+            "trace_id": "t-1",
+            "memo": {},
+            "state": {
+                "context": {
+                    "messages": [
+                        {"role": "user", "content": [
+                            {"type": "tool_result", "content": "shot", "images": [dict(image)]},
+                            {"type": "image", "source": {"type": "base64", **image}},
+                        ]}
+                    ]
+                },
+                "result_payloads": [{"result": {"images": [{"media_type": "image/png", "data": "c2hvcnQ="}]}}],
+            },
+        }
+
+        await self.store.save_checkpoint(self.request_id, checkpoint)
+
+        with psycopg.connect(self.database_url, autocommit=True, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT checkpoint::text AS raw, blob_refs FROM runtime_request WHERE request_id = %s",
+                (self.request_id,),
+            ).fetchone()
+            first_used = conn.execute(
+                "SELECT last_used_at FROM runtime_blob WHERE sha256 = %s", (sha,)
+            ).fetchone()["last_used_at"]
+        self.assertNotIn(data, row["raw"])
+        self.assertIn("c2hvcnQ=", row["raw"])  # short data stays inline
+        self.assertEqual(row["blob_refs"], [sha])
+        self.assertEqual(await self.store.get_checkpoint(self.request_id), checkpoint)
+
+        await self.store.save_checkpoint(self.request_id, checkpoint)
+        with psycopg.connect(self.database_url, autocommit=True, row_factory=dict_row) as conn:
+            blobs = conn.execute(
+                "SELECT last_used_at FROM runtime_blob WHERE sha256 = %s", (sha,)
+            ).fetchall()
+        self.assertEqual(len(blobs), 1)
+        self.assertGreaterEqual(blobs[0]["last_used_at"], first_used)
+
+    async def test_checkpoint_with_a_missing_blob_fails_loudly(self) -> None:
+        await self.store.append_event(
+            RuntimeEvent(
+                app_id="store-test",
+                agent_id="store-test",
+                request_id=self.request_id,
+                session_id="session-1",
+                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
+                dedupe_key="request.accepted",
+                payload={},
+            )
+        )
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE runtime_request SET checkpoint = %s::jsonb WHERE request_id = %s",
+                ('{"state": {"img": {"media_type": "image/png", "mash_blob": "' + "0" * 64 + '"}}}', self.request_id),
+            )
+        with self.assertRaisesRegex(RuntimeError, "missing blobs"):
+            await self.store.get_checkpoint(self.request_id)
 
 
 class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCase):

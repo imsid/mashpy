@@ -127,6 +127,13 @@ class AgentClientLike(Protocol):
     async def close(self) -> None: ...
 
 
+# Calls that answer at once: submit, status, cancel, resume, answers, health.
+CONTROL_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+# Event streams: one open connection per watcher, no cap.
+STREAM_LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=20)
+STREAM_CONNECT_TIMEOUT = 5.0
+
+
 class AgentClient:
     """Dedicated HTTP client bound to exactly one agent runtime."""
 
@@ -154,14 +161,29 @@ class AgentClient:
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
         self._client: httpx.AsyncClient | None = None
+        self._stream_client: httpx.AsyncClient | None = None
+
+    # Two httpx clients for the AgentClient's lifetime: building one per call
+    # costs ~15ms (a fresh TLS context). Event streams stay open for as long
+    # as a request runs, hours when it waits on the user, so they get a client
+    # of their own: however many streams are open, submits, cancels and
+    # answers still find a connection.
 
     @contextlib.asynccontextmanager
     async def _session(self) -> AsyncIterator[httpx.AsyncClient]:
-        # One httpx client for the AgentClient's lifetime: building one per
-        # call costs ~15ms (a fresh TLS context) on every request and stream.
         if self._client is None:
-            self._client = httpx.AsyncClient(headers=self._headers)
+            self._client = httpx.AsyncClient(
+                headers=self._headers, limits=CONTROL_LIMITS
+            )
         yield self._client
+
+    @contextlib.asynccontextmanager
+    async def _stream_session(self) -> AsyncIterator[httpx.AsyncClient]:
+        if self._stream_client is None:
+            self._stream_client = httpx.AsyncClient(
+                headers=self._headers, limits=STREAM_LIMITS
+            )
+        yield self._stream_client
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
@@ -423,10 +445,18 @@ class AgentClient:
     ) -> AsyncIterator[Dict[str, Any]]:
         headers = dict(self._headers)
         headers["Accept"] = "text/event-stream"
-        timeout_config = None if timeout is None else httpx.Timeout(timeout)
+        # No read timeout by default: a stream is quiet while the request
+        # waits on the user. Connecting and getting a connection still fail
+        # fast.
+        timeout_config = httpx.Timeout(
+            connect=STREAM_CONNECT_TIMEOUT,
+            read=timeout,
+            write=STREAM_CONNECT_TIMEOUT,
+            pool=STREAM_CONNECT_TIMEOUT,
+        )
 
         try:
-            async with self._session() as client:
+            async with self._stream_session() as client:
                 async with client.stream(
                     "GET",
                     self._request_stream_url(request_id),
@@ -589,9 +619,11 @@ class AgentClient:
         return response.json()
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        for client in (self._client, self._stream_client):
+            if client is not None:
+                await client.aclose()
+        self._client = None
+        self._stream_client = None
 
 
 __all__ = [

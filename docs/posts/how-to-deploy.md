@@ -323,7 +323,8 @@ mash sandbox stop u-42                        # stop now and remove its network;
 ## Durability
 
 - A request checkpoints its loop state to its `runtime_request` row after
-  every step. After a crash, a restart, or being enabled again, an agent
+  every step. Images in it, such as browser screenshots, are stored once
+  each in `runtime_blob`, and the checkpoint keeps a reference. After a crash, a restart, or being enabled again, an agent
   process continues its own agent's `running` requests from their
   checkpoints. A request continued 10 times without finishing fails.
 - The host continues the workflow runs under its runner id that are queued
@@ -335,6 +336,30 @@ mash sandbox stop u-42                        # stop now and remove its network;
 - A host restart restarts every agent process, and each continues its
   running requests. Running sandboxes count as active from the restart.
 
+## Retention
+
+The host keeps every request, event and workflow run until you set
+`MASH_RETENTION_DAYS`. With it set, the host deletes, when it starts and every
+hour after:
+
+- requests that finished (completed, failed or cancelled) more than that many
+  days ago, with their events;
+- events that belong to no request, older than the window;
+- workflow runs that finished before the window, with their steps and step
+  events, unless an eval experiment points at the run;
+- checkpoint images no remaining request references.
+
+A request that is still running is kept however old it is. A deleted request
+can't be resumed or rerun, and its trace is gone from the admin UI and the
+telemetry API. Conversation turns (`memory_turns`), Cortex, feedback and evals
+are never deleted, so history replay, `search_conversations` and
+`cortex-build` keep working. Deletes run in batches of 100 requests or runs,
+so no statement holds locks for long.
+
+```yaml
+      MASH_RETENTION_DAYS: "30"
+```
+
 ## Idle cost
 
 An idle host and its agent processes make no queries to Postgres and keep no
@@ -342,12 +367,15 @@ connections open. Each process has one connection pool, shared by its stores,
 that holds no connections at rest and closes one unused for 60 seconds. A
 process opens connections when it has work: a request, a workflow run, an API
 read. At startup each process runs the migrations and one recovery query.
+With `MASH_RETENTION_DAYS` set, the host also runs one retention pass an
+hour.
 
 Measured on a host with six agent processes, idle, on Postgres 17: no
 transactions in 30 seconds, and no open connections two minutes after
-startup. A process busy with work holds up to 20 connections, so size
-Postgres's `max_connections` for 20 per agent process plus 20 for the host
-if every agent may be busy at once.
+startup. A process busy with work holds up to `MASH_DB_POOL_MAX_SIZE`
+connections (default 10), so a host with six agent processes can open 70.
+At startup the host compares that budget with Postgres's `max_connections`
+and logs a warning when it is above it.
 
 ## Exporting traces
 
@@ -508,6 +536,8 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 |----------|--------|---------|---------|
 | `MASH_HOST_APP` | host | none | `module:attribute` for `build_pool()`; agent processes import the same one |
 | `MASH_DATABASE_URL` | host | none | PostgreSQL connection string; agent processes inherit it |
+| `MASH_DB_POOL_MAX_SIZE` | host | `10` | Most Postgres connections each process holds: the host and every agent process |
+| `MASH_RETENTION_DAYS` | host | none | Delete finished requests, their events and finished workflow runs older than this many days; unset keeps everything |
 | `MASH_HOST_SECRET` | host | none | Derives each agent's, each sandbox's and each browser's token, and signs links; required for a pool with agents |
 | `MASH_API_KEY` | host | none | API key for `/api/v1`; required unless `MASH_API_HOST` is a loopback address |
 | `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |
