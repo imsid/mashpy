@@ -112,7 +112,7 @@ class OtlpExporterTests(unittest.IsolatedAsyncioTestCase):
         [record] = self.logs.get_finished_logs()
         log = record.log_record
         self.assertEqual(log.event_name, "exception")
-        self.assertEqual(log.attributes["exception.message"], "boom")
+        self.assertNotIn("exception.message", log.attributes)
         chat = next(s for s in self.spans.get_finished_spans() if s.name.startswith("chat"))
         self.assertEqual(log.span_id, chat.context.span_id)
         self.assertEqual(log.trace_id, chat.context.trace_id)

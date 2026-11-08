@@ -122,14 +122,33 @@ class FailureTests(unittest.TestCase):
         self.assertEqual((chat.status, chat.end_time), ("ERROR", 101.0))
         self.assertEqual(chat.attributes["error.type"], "RuntimeError")
         self.assertEqual(root.status, "ERROR")
-        self.assertEqual(root.status_message, "rate limited")
         step = next(s for s in projection.spans if s.key == "step.0")
         self.assertEqual(step.end_time, 101.0)
         [exception] = projection.logs
         self.assertEqual(exception.event_name, "exception")
         self.assertEqual(exception.span_id, chat.span_id)
-        self.assertEqual(exception.attributes["exception.message"], "rate limited")
         self.assertEqual(exception.severity_text, "ERROR")
+
+    def test_error_messages_are_content(self) -> None:
+        events = (
+            RequestEvents()
+            .accepted(100.0)
+            .chat_start(0, 100.1)
+            .end(101.0, "error", error="input_value='secret'")
+            .events
+        )
+        hidden = project_request(events, capture_content=False)
+        self.assertTrue(all(s.status_message is None for s in hidden.spans))
+        [exception] = hidden.logs
+        self.assertEqual(exception.attributes, {"exception.type": "RuntimeError"})
+
+        shown = project_request(events, capture_content=True)
+        root = shown.span(shown.root_span_id)
+        self.assertEqual(root.status_message, "input_value='secret'")
+        chat = next(s for s in shown.spans if s.key == "chat.0")
+        self.assertEqual(chat.status_message, "input_value='secret'")
+        [exception] = shown.logs
+        self.assertEqual(exception.attributes["exception.message"], "input_value='secret'")
 
     def test_a_failed_tool_call_is_an_error_span_with_an_exception_record(self) -> None:
         events = (
@@ -273,6 +292,25 @@ class TraceParentTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_workflow_and_step_errors_are_content(self) -> None:
+        run = WorkflowRunRecord(
+            run_id="run-1", workflow_id="changelog", status="failed",
+            created_at=99.0, started_at=99.5, finished_at=106.0, error="input_value='secret'",
+        )
+        steps = [
+            WorkflowStepRecord(run_id="run-1", workflow_id="changelog", step_id="scan",
+                               ordinal=0, kind="code", status="failed",
+                               started_at=99.6, finished_at=99.9, error="input_value='secret'"),
+        ]
+        hidden = project_workflow_run(run, steps, {}, capture_content=False)
+        self.assertTrue(all(s.status == "ERROR" for s in hidden.spans))
+        self.assertTrue(all(s.status_message is None for s in hidden.spans))
+
+        shown = project_workflow_run(run, steps, {}, capture_content=True)
+        self.assertEqual(
+            [s.status_message for s in shown.spans], ["input_value='secret'"] * 2
+        )
+
     def test_an_agent_step_parents_the_request_it_submitted(self) -> None:
         run = WorkflowRunRecord(
             run_id="run-1", workflow_id="changelog", status="completed",

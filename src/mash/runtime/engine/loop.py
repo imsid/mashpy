@@ -359,7 +359,9 @@ class RequestRun:
         tool_call: dict[str, Any],
     ) -> dict[str, Any]:
         name = str(tool_call.get("name") or "")
-        if name == "AskUser":
+        # A child has no AskUser (the user talks to the calling agent), so its
+        # call takes the tool path and fails there as an unknown tool.
+        if name == "AskUser" and state.get("parent_kind") != "subagent":
             return await self._ask_user(state, tool_call=tool_call, loop_index=loop_index)
         if name == "browser_handoff":
             return await self._browser_handoff(

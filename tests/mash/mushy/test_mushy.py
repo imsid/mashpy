@@ -61,7 +61,7 @@ def api_client():
             raise ValueError("Agent not found")
         return agent_id
     pool = SimpleNamespace(get_runtime_store=lambda: store, require_agent=require_agent)
-    app = create_app(pool, config=MashHostConfig(api_logging_enabled=False))
+    app = create_app(pool, config=MashHostConfig())
     app.state.runtime_state = SimpleNamespace(pool=pool, api_key="secret")
     return TestClient(app), store
 

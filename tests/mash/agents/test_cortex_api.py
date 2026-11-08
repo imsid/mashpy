@@ -23,7 +23,7 @@ def _client(*, cortex: bool = True) -> Iterator[tuple[TestClient, object]]:
     builder = HostBuilder().agent(build_spec(agent_id="assistant"), metadata=metadata())
     pool = (builder.enable_cortex() if cortex else builder).build()
     config = MashHostConfig(
-        runtime_database_url="postgresql://test/runtime", api_logging_enabled=False
+        runtime_database_url="postgresql://test/runtime"
     )
     # The pool's built-in agents build their LLM providers at startup.
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):

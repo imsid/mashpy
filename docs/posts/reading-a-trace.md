@@ -89,7 +89,7 @@ The exporter runs in the host. It tails the event log and, when a request's `inv
 
 A caller that sends a W3C `traceparent` header on submit gets the request inside its own trace: the root `invoke_agent` span takes the caller's span as its parent.
 
-Prompts, completions and tool arguments and results stay out of the export unless `MASH_OTEL_CAPTURE_CONTENT=1` is set. With it, each model call adds a `gen_ai.client.inference.operation.details` record with its output messages, and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`.
+Prompts, completions, tool arguments and results, and error messages stay out of the export unless `MASH_OTEL_CAPTURE_CONTENT=1` is set. An error's text can quote the input that caused it, so without the flag a failed span keeps its `error.type` and drops the message. With it, each model call adds a `gen_ai.client.inference.operation.details` record with its output messages, and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`.
 
 ## Wrapping up
 

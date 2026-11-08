@@ -316,11 +316,24 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
             {"requests": [{"agent_id": "research", "prompt": "a", "output_schema": "x"}]},
             {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 0},
             {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": "soon"},
+            {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 3601},
+            {"requests": [{"agent_id": "research", "prompt": "a"}] * 17},
         ):
             with self.subTest(args=args):
                 result = await self.tool.execute(args)
                 self.assertTrue(result.is_error)
         self.assertEqual(self.children.submitted, [])
+
+    def test_the_schema_states_the_limits(self) -> None:
+        properties = self.tool.parameters["properties"]
+        self.assertEqual(properties["requests"]["maxItems"], 16)
+        self.assertEqual(properties["timeout_seconds"]["maximum"], 3600)
+
+    async def test_the_limits_themselves_are_accepted(self) -> None:
+        result = await self.tool.execute(
+            {"requests": [{"agent_id": "research", "prompt": "a"}] * 16, "timeout_seconds": 3600}
+        )
+        self.assertEqual(len(self.children.submitted), 16, result.content)
 
     async def test_the_description_names_the_callers_own_id(self) -> None:
         self.assertIn("'planner'", self.tool.description)

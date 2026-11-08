@@ -10,7 +10,6 @@ from typing import Any, Literal, Optional
 from fastapi import Request
 from pydantic import BaseModel, Field
 
-from mash.api.logging import build_api_event_filter
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
 from mash.runtime import Pool
@@ -45,7 +44,6 @@ class APIError(RuntimeError):
 @dataclass
 class AppRuntimeState:
     pool: Pool
-    api_event_store: Any
     eval_service: Any
     api_key: Optional[str]
     default_events_limit: int
@@ -114,19 +112,6 @@ class CommandEventIngest(BaseModel):
     error: Optional[str] = None
     trace_id: Optional[str] = None
     ts: Optional[float] = None
-
-
-class APIEventSearchRequest(BaseModel):
-    method: Optional[str] = None
-    path: Optional[str] = None
-    path_prefix: Optional[str] = None
-    status_code: Optional[int] = None
-    status_code_min: Optional[int] = None
-    status_code_max: Optional[int] = None
-    from_ts: Optional[float] = None
-    to_ts: Optional[float] = None
-    after_event_id: int = 0
-    limit: Optional[int] = None
 
 
 def success(data: Any) -> dict[str, Any]:
@@ -205,10 +190,6 @@ def build_runtime_event_sse_payload(event_name: str, payload: Any) -> str:
     return f"event: {event_name}\ndata: {data}\n\n"
 
 
-def build_observability_sse_payload(payload: str) -> str:
-    return f"data: {payload}\n\n"
-
-
 def get_client(request: Request, agent_id: str) -> AgentClientLike:
     state = state_from_request(request)
     try:
@@ -250,20 +231,12 @@ def telemetry_event_source() -> str:
     return "runtime_event_log"
 
 
-def api_event_source() -> str:
-    return "api_event_log"
-
-
 def build_memory_search_service(memory_store: MemoryStore) -> MemorySearchService:
     return MemorySearchService(
         memory_store,
         retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         fusion_weights=FusionWeights(keyword_weight=1.0, semantic_weight=0.0),
     )
-
-
-def build_api_filters(**kwargs: Any):
-    return build_api_event_filter(**kwargs)
 
 
 def api_key_from_request(request: Request) -> Optional[str]:

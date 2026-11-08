@@ -20,7 +20,7 @@ The API is REST plus SSE, composed in `src/mash/api`. Three conventions apply ac
 
 **Auth.** With no API key configured, routes are open, which suits local development, and the host binds only a loopback address: `mash host serve --host 0.0.0.0` without a key refuses to start. With `MASH_API_KEY` set, every `/api/v1/*` route requires `Authorization: Bearer <key>` or `X-API-Key: <key>`. The admin dashboard asks for the key once per browser session and keeps it in a `mash_api_key` cookie that only the API routes see.
 
-**Discovery.** `GET /` returns service discovery info, `/openapi.json` is the generated schema, and `/docs` serves Swagger UI. `GET /api/v1/health` reports the deployment shape, including the primary agent id and the agent list, and doubles as the liveness and readiness probe in [deployment](how-to-deploy.md).
+**Discovery.** `GET /` returns service discovery info, `/api/v1/openapi.json` is the generated schema, and `/api/v1/docs` serves Swagger UI. Both need the API key, like the rest of `/api/v1`. `GET /api/v1/health` reports the deployment shape, including the primary agent id and the agent list, and doubles as the liveness and readiness probe in [deployment](how-to-deploy.md).
 
 ## The endpoint groups
 
@@ -67,9 +67,6 @@ Each group of endpoints projects one subsystem from earlier in the series.
 | `GET /usage` | token and request usage aggregated by time bucket |
 | `GET /sessions` | session listing scoped to the runtime store |
 | `GET /memory/search` | keyword search over conversation turns |
-| `GET /api/events` | backend HTTP request log (when API logging is enabled) |
-| `POST /api/events/search` | filtered search over the HTTP request log |
-| `GET /api/events/stream` | live SSE tail of the HTTP request log |
 | `POST /command-events` | ingest CLI command lifecycle events from the REPL |
 | `GET /command-events` | list ingested command events |
 

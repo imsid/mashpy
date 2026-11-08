@@ -4,11 +4,9 @@ import { PageHeader } from '../components/Page.jsx';
 import { Async, Empty, Loading } from '../components/State.jsx';
 import { Table } from '../components/Table.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
-import { Drawer } from '../components/Drawer.jsx';
 import { Tabs } from '../components/Tabs.jsx';
 import { FilterBar, FilterField, FilterActions } from '../components/Filters.jsx';
 import { TextInput, Select, Button } from '../components/Form.jsx';
-import { JsonBlock } from '../components/Json.jsx';
 import { CopyId } from '../components/CopyId.jsx';
 import { TraceDrawer } from '../components/TraceDrawer.jsx';
 import { api } from '../lib/api.js';
@@ -19,7 +17,6 @@ import { TRACE_STATUS } from '../lib/trace.js';
 
 const TABS = [
   { id: 'sessions', label: 'Sessions' },
-  { id: 'api', label: 'API' },
   { id: 'cli', label: 'CLI' },
 ];
 
@@ -39,12 +36,6 @@ function RefreshButton({ state }) {
       Refresh
     </Button>
   );
-}
-
-function statusTone(code) {
-  if (code >= 500) return 'rose';
-  if (code >= 400) return 'amber';
-  return 'emerald';
 }
 
 // A workflow trace shows its workflow + run id; other traces show a dash.
@@ -443,68 +434,6 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   );
 }
 
-function ApiAccessTab() {
-  const state = useApi(() => api.listApiEvents({ limit: 200 }), []);
-  const [selected, setSelected] = useState(null);
-
-  const columns = [
-    { key: 'time', header: 'Time', render: (r) => formatTime(r.created_at) },
-    { key: 'method', header: 'Method', render: (r) => <Mono>{r.method}</Mono> },
-    {
-      key: 'path',
-      header: 'Path',
-      primary: true,
-      render: (r) => <span className="break-all font-mono text-xs">{r.path}</span>,
-    },
-    {
-      key: 'status_code',
-      header: 'Status',
-      render: (r) => <Chip tone={statusTone(r.status_code)}>{r.status_code}</Chip>,
-    },
-    {
-      key: 'duration_ms',
-      header: 'Latency',
-      align: 'right',
-      render: (r) => formatDuration(r.duration_ms),
-    },
-  ];
-
-  return (
-    <>
-      <div className="mb-3 flex justify-end">
-        <RefreshButton state={state} />
-      </div>
-      <Async state={state} empty={(d) => !d.events?.length}>
-        {(data) => (
-          <Table
-            columns={columns}
-            rows={data.events}
-            getRowKey={(r) => r.api_event_id}
-            activeKey={selected?.api_event_id}
-            onRowClick={setSelected}
-          />
-        )}
-      </Async>
-      <Drawer
-        open={selected !== null}
-        onClose={() => setSelected(null)}
-        title={selected ? `${selected.method} ${selected.path}` : ''}
-        subtitle={selected ? `status ${selected.status_code} · ${formatDuration(selected.duration_ms)}` : ''}
-      >
-        {selected ? (
-          <div className="space-y-4">
-            <Section title="Query params" value={selected.query_params} />
-            <Section title="Request headers" value={selected.request_headers} />
-            <Section title="Request body" value={selected.request_body} />
-            <Section title="Response headers" value={selected.response_headers} />
-            <Section title="Response body" value={selected.response_body} />
-          </div>
-        ) : null}
-      </Drawer>
-    </>
-  );
-}
-
 // CLI command events for one agent, or merged across the pool when `agentId`
 // is empty (matching the Sessions tab's all-agents default).
 function CliTab({ agentId, agents }) {
@@ -591,17 +520,6 @@ function CliTab({ agentId, agents }) {
   );
 }
 
-function Section({ title, value }) {
-  return (
-    <div>
-      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
-        {title}
-      </div>
-      <JsonBlock value={value} />
-    </div>
-  );
-}
-
 export default function Logs() {
   const [params, setParams] = useSearchParams();
   const agentsState = useApi(() => api.listAgents(), []);
@@ -627,7 +545,7 @@ export default function Logs() {
     <div>
       <PageHeader
         title="Logs"
-        description="Sessions, traces, API access, and CLI activity across the pool."
+        description="Sessions, traces, and CLI activity across the pool."
       />
 
       <FilterBar className="mb-4">
@@ -665,7 +583,6 @@ export default function Logs() {
           initialTrace={params.get('trace') || ''}
         />
       ) : null}
-      {tab === 'api' ? <ApiAccessTab /> : null}
       {tab === 'cli' ? <CliTab agentId={agentId} agents={agents} /> : null}
     </div>
   );

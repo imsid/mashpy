@@ -8,14 +8,17 @@ on first use and stops after ``idle_seconds`` without one.
 A handoff gives the user a live view of their browser while a request waits
 for them to sign in. ``start_handoff`` mints a view token for the request
 (``tokens.py``) and remembers it; ``end_handoff`` forgets it, so the link stops
-working as soon as the user is done, or when it expires.
+working as soon as the user is done, or when it expires. A live view already
+connected closes then too (``wait_ended``).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 import httpx
@@ -46,6 +49,8 @@ class Handoff:
     request_id: str
     token: str
     expires_at: int
+    # Set when the handoff ends, to close the live views connected to it.
+    ended: asyncio.Event = field(default_factory=asyncio.Event, compare=False, repr=False)
 
 
 class BrowserManager(ContainerManager):
@@ -203,6 +208,13 @@ class BrowserManager(ContainerManager):
         for token, handoff in list(self._handoffs.items()):
             if handoff.request_id == request_id:
                 del self._handoffs[token]
+                handoff.ended.set()
+
+    async def wait_ended(self, handoff: Handoff) -> None:
+        """Return when ``handoff`` ends or expires, whichever comes first."""
+        remaining = max(0.0, handoff.expires_at - self._wall_clock())
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(handoff.ended.wait(), remaining)
 
     def handoff_for(self, token: str) -> Handoff | None:
         """The live view a view token opens, or None.

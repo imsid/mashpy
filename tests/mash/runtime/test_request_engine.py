@@ -177,6 +177,29 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(KeyError):
             await runtime.answer_interaction(request_id, "itr_unknown", "x")
 
+    async def test_a_child_cannot_ask_the_user(self) -> None:
+        runtime = await self._runtime(self._ask_spec())
+        accepted = await runtime.submit_request(
+            message="ask",
+            session_id="s-1",
+            user_id="u-1",
+            parent={
+                "kind": "subagent",
+                "request_id": "parent-1",
+                "agent_id": "engine-app",
+                "session_id": "s-1",
+                "started_by": "engine-app",
+                "parent_request_id": "parent-1",
+            },
+        )
+        request_id = accepted["request_id"]
+        end = await self._terminal(request_id)
+
+        self.assertEqual(await self._events(request_id, RuntimeEventType.INTERACTION_START.value), [])
+        [tool_end] = await self._events(request_id, RuntimeEventType.EXECUTE_TOOL_END.value)
+        self.assertIn("Tool 'AskUser' not found", str(tool_end.payload))
+        self.assertEqual(end.payload["status"], "ok")
+
     async def _approval(self) -> tuple[_GatedTool, AgentRuntime, str, str]:
         tool = _GatedTool()
         runtime = await self._runtime(_Spec(tool, tool_name="deploy", arguments={}))

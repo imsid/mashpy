@@ -497,7 +497,6 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
             config=MashHostConfig(
                 runtime_database_url="postgresql://test/runtime",
                 host_secret=SECRET,
-                api_logging_enabled=False,
             ),
         )
         network = _Network(

@@ -445,8 +445,8 @@ export OTEL_SERVICE_NAME=my-agent
 
 A request is exported when it ends, with its log records (`exception` on
 failures) and the GenAI client metrics. Send a W3C `traceparent` header on
-submit to put the request inside your service's trace. Prompts, completions
-and tool I/O are left out unless `MASH_OTEL_CAPTURE_CONTENT=1`.
+submit to put the request inside your service's trace. Prompts, completions,
+tool I/O and error messages are left out unless `MASH_OTEL_CAPTURE_CONTENT=1`.
 
 ## Deployment
 

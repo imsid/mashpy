@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import time
 from dataclasses import asdict
-from typing import Any, AsyncIterator, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import StreamingResponse
 
-from mash.api.logging import serialize_api_event
 from mash.otel.loading import load_request_tree
 from mash.otel.projection import project_request, serialize_projection
 from mash.runtime.events import analyze_projection, serialize_runtime_event
@@ -19,12 +15,8 @@ from mash.runtime.events.types import RuntimeEvent
 
 from .common import (
     APIError,
-    APIEventSearchRequest,
     CommandEventIngest,
-    api_event_source,
-    build_api_filters,
     build_memory_search_service,
-    build_observability_sse_payload,
     get_runtime_store,
     normalize_optional_text,
     parse_limit,
@@ -70,110 +62,6 @@ def build_telemetry_router() -> APIRouter:
                 "host_id": normalize_optional_text(host_id),
                 "limit": resolved_limit,
             }
-        )
-
-    @router.get("/telemetry/api/events")
-    async def get_api_events(
-        request: Request,
-        method: Optional[str] = Query(default=None),
-        path: Optional[str] = Query(default=None),
-        status_code: Optional[int] = Query(default=None),
-        from_ts: Optional[float] = Query(default=None),
-        to_ts: Optional[float] = Query(default=None),
-        limit: Optional[int] = Query(default=None),
-        after_event_id: int = Query(default=0),
-    ) -> dict[str, Any]:
-        state = state_from_request(request)
-        filters = build_api_filters(
-            method=method,
-            path=path,
-            status_code=status_code,
-            from_ts=from_ts,
-            to_ts=to_ts,
-            limit=limit or state.default_events_limit,
-            after_event_id=after_event_id,
-        )
-        events = [serialize_api_event(item) for item in await state.api_event_store.list_events(filters)]
-        return success(
-            {
-                "events": events,
-                "source": api_event_source(),
-                "limit": filters.limit,
-            }
-        )
-
-    @router.post("/telemetry/api/events/search")
-    async def search_api_events(request: Request, body: APIEventSearchRequest) -> dict[str, Any]:
-        state = state_from_request(request)
-        filters = build_api_filters(
-            method=body.method,
-            path=body.path,
-            path_prefix=body.path_prefix,
-            status_code=body.status_code,
-            status_code_min=body.status_code_min,
-            status_code_max=body.status_code_max,
-            from_ts=body.from_ts,
-            to_ts=body.to_ts,
-            limit=body.limit or state.default_events_limit,
-            after_event_id=body.after_event_id,
-        )
-        events = [serialize_api_event(item) for item in await state.api_event_store.list_events(filters)]
-        return success(
-            {
-                "events": events,
-                "source": api_event_source(),
-                "limit": filters.limit,
-            }
-        )
-
-    @router.get("/telemetry/api/events/stream")
-    async def stream_api_events(
-        request: Request,
-        method: Optional[str] = Query(default=None),
-        path: Optional[str] = Query(default=None),
-        status_code: Optional[int] = Query(default=None),
-        from_ts: Optional[float] = Query(default=None),
-        to_ts: Optional[float] = Query(default=None),
-    ) -> StreamingResponse:
-        state = state_from_request(request)
-        async def _generate() -> AsyncIterator[str]:
-            latest_filters = build_api_filters(
-                method=method,
-                path=path,
-                status_code=status_code,
-                from_ts=from_ts,
-                to_ts=to_ts,
-                limit=1,
-            )
-            latest = await state.api_event_store.list_events(latest_filters)
-            last_seen = int(latest[-1].api_event_id) if latest else 0
-            while True:
-                if await request.is_disconnected():
-                    break
-                filters = build_api_filters(
-                    method=method,
-                    path=path,
-                    status_code=status_code,
-                    from_ts=from_ts,
-                    to_ts=to_ts,
-                    after_event_id=last_seen,
-                    limit=state.default_events_limit,
-                )
-                events = await state.api_event_store.list_events(filters)
-                if not events:
-                    yield ": keep-alive\n\n"
-                    await asyncio.sleep(0.25)
-                    continue
-                for event in events:
-                    last_seen = max(last_seen, int(event.api_event_id))
-                    yield build_observability_sse_payload(
-                        json.dumps(serialize_api_event(event), ensure_ascii=True)
-                    )
-
-        return StreamingResponse(
-            _generate(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
     @router.get("/telemetry/memory/search")

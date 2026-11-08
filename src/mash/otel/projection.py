@@ -284,12 +284,17 @@ def _project_into(
             span.attributes.update(attributes)
         return span
 
+    def error_message(payload: Mapping[str, Any]) -> str | None:
+        # An error's text can quote inputs (pydantic's ``input_value=...``),
+        # so it is content.
+        return _clean(payload.get("error")) if builder.capture_content else None
+
     def close_span(span: Span, at: float, payload: Mapping[str, Any]) -> None:
         span.end_time = at
         span.attributes.update(event_attributes(dict(payload)))
         if _end_status(payload) == EndStatus.ERROR.value:
             span.status = STATUS_ERROR
-            span.status_message = _clean(payload.get("error"))
+            span.status_message = error_message(payload)
         else:
             span.status = STATUS_UNSET
             span.status_message = None
@@ -359,10 +364,10 @@ def _project_into(
                 error_type = str(attributes.get(semconv.ERROR_TYPE) or "error")
                 if innermost is not root:
                     innermost.status = STATUS_ERROR
-                    innermost.status_message = _clean(payload.get("error"))
+                    innermost.status_message = error_message(payload)
                     innermost.attributes[semconv.ERROR_TYPE] = error_type
                 exception = {semconv.EXCEPTION_TYPE: error_type}
-                message = _clean(payload.get("error"))
+                message = error_message(payload)
                 if message:
                     exception[semconv.EXCEPTION_MESSAGE] = message
                 builder.log(

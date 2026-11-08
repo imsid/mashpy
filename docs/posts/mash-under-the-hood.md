@@ -175,10 +175,10 @@ required `agent_id` and `after` timestamp plus optional `before`, `session_id`,
 
 **Persistence**
 
-Mash persists to Postgres, and four areas write their own tables: the runtime
+Mash persists to Postgres, and three areas write their own tables: the runtime
 store behind the loop's resumability and observability, the per-agent memory
-store behind context loading, the workflow store behind workflow runs, and the
-backend API request log. The main tables:
+store behind context loading, and the workflow store behind workflow runs. The
+main tables:
 
 | Table | Store | Purpose |
 |---|---|---|
@@ -187,7 +187,6 @@ backend API request log. The main tables:
 | `memory_turns` | memory | One row per turn (user message, agent response, running token total). The replayable turns are the conversation history context loading feeds into a request; workflow and subagent turns are stored here too but excluded from replay. |
 | `memory_signals` | memory | Named signals emitted on a turn, stored as values keyed to that turn. |
 | `workflow_runs`, `workflow_steps`, `workflow_step_events` | workflow | One row per workflow run, per-step input/output snapshots, and the append-only step lifecycle audit behind durable resume and the step audit trail. |
-| `api_event_log` | api | HTTP request and response log for the backend API: method, path, status, duration, and bodies. |
 
 ### Sandboxes
 
@@ -437,7 +436,6 @@ The telemetry API exposes both raw events and structured analysis:
 GET /telemetry/events                  # flat runtime events
 GET /telemetry/traces                  # list recent traces (lightweight)
 GET /telemetry/trace/analysis          # OpenTelemetry projection + latency analysis
-GET /telemetry/api/events              # backend API request logs
 GET /telemetry/memory/search           # search agent memory
 ```
 

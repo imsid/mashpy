@@ -40,6 +40,8 @@ SANDBOX_PORT = 9000
 WORKSPACES_ROOT = "/home/agent/workspaces"
 
 BASH_DEFAULT_TIMEOUT = 30
+# Longest a command may run: one call holds a sandbox slot that long.
+BASH_MAX_TIMEOUT = 1800
 # Enough to read a whole source file in one call.
 BASH_MAX_OUTPUT_CHARS = 30_000
 # Largest file /files reads or writes.
@@ -140,6 +142,18 @@ def build_bash_env(
     }
     env.update(extra or {})
     return env
+
+
+TIMEOUT_ERROR = f"timeout must be a positive number of seconds, at most {BASH_MAX_TIMEOUT}"
+
+
+def valid_timeout(timeout: Any) -> bool:
+    """Whether ``timeout`` is a number of seconds a command may run for."""
+    return (
+        not isinstance(timeout, bool)
+        and isinstance(timeout, (int, float))
+        and 0 < timeout <= BASH_MAX_TIMEOUT
+    )
 
 
 def truncate_output(text: str) -> str:
@@ -356,8 +370,8 @@ class SandboxDaemon:
         if not isinstance(command, str) or not command.strip():
             return _json_error(400, "INVALID_REQUEST", "command is required")
         timeout = payload.get("timeout", BASH_DEFAULT_TIMEOUT)
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
-            return _json_error(400, "INVALID_REQUEST", "timeout must be a positive number")
+        if not valid_timeout(timeout):
+            return _json_error(400, "INVALID_REQUEST", TIMEOUT_ERROR)
         stdin = payload.get("stdin")
         if stdin is not None and not isinstance(stdin, str):
             return _json_error(400, "INVALID_REQUEST", "stdin must be a string")
@@ -473,6 +487,7 @@ def resolve_sandbox_token(explicit_value: str | None = None) -> str | None:
 __all__ = [
     "AGENT_USER",
     "BASH_DEFAULT_TIMEOUT",
+    "BASH_MAX_TIMEOUT",
     "BASH_MAX_OUTPUT_CHARS",
     "ExecResult",
     "FileNotFound",
@@ -480,6 +495,7 @@ __all__ = [
     "MAX_FILE_BYTES",
     "SANDBOX_PORT",
     "SandboxDaemon",
+    "TIMEOUT_ERROR",
     "WORKSPACES_ROOT",
     "build_bash_env",
     "read_file",
@@ -488,5 +504,6 @@ __all__ = [
     "resolve_workspace_path",
     "run_command",
     "truncate_output",
+    "valid_timeout",
     "write_file",
 ]

@@ -24,6 +24,27 @@ from .routes.common import (
 )
 
 
+# The dashboard runs only its own scripts and loads its fonts from Google
+# Fonts. No other site may frame it.
+ADMIN_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+ADMIN_HEADERS = {
+    "Content-Security-Policy": ADMIN_CSP,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
 class AdminSessionRequest(BaseModel):
     api_key: str
 
@@ -94,12 +115,12 @@ def mount_admin_ui(app: FastAPI, *, api_prefix: str) -> None:
     @app.get("/admin", include_in_schema=False)
     @app.get("/admin/", include_in_schema=False)
     def admin_index() -> FileResponse:
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=ADMIN_HEADERS)
 
     @app.get("/admin/{path:path}", include_in_schema=False)
     def admin_spa(path: str) -> FileResponse:
         del path
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=ADMIN_HEADERS)
 
 
 __all__ = ["admin_assets_available", "get_admin_static_dir", "mount_admin_ui"]
