@@ -9,6 +9,7 @@ picks a deployment's sandboxes.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from mash.sandbox.daemon import (
     SandboxDaemon,
     resolve_sandbox_token,
 )
+from mash.sandbox.agent_users import UID_MAP
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.provider import (
     NAMESPACE_LABEL,
@@ -60,7 +62,9 @@ def add_sandbox_parser(subparsers) -> None:
         "shell", help="Open a shell in a user's sandbox, starting it if stopped"
     )
     shell.add_argument("user_id")
-    shell.add_argument("--agent", default=None, help="Start in this agent's folder")
+    shell.add_argument(
+        "--agent", default=None, help="Run as this agent's uid, in its folder"
+    )
     shell.add_argument("--root", action="store_true", help="Open a root shell")
     _add_namespace_argument(shell)
     shell.set_defaults(handler=_run_shell)
@@ -152,6 +156,9 @@ async def _start(name: str) -> None:
 
 def _run_shell(args) -> int:
     renderer = RichRenderer()
+    if not args.agent and not args.root:
+        renderer.error("name an agent with --agent, or open a root shell with --root")
+        return 1
     if shutil.which("docker") is None:
         renderer.error("the docker CLI is required for `mash sandbox shell`")
         return 1
@@ -161,24 +168,48 @@ def _run_shell(args) -> int:
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1
-    # Pre-create the history file as `agent`, so a root session cannot leave it
-    # root-owned and unwritable for the next agent session.
+    uid = None
+    if not args.root:
+        mapped = subprocess.run(
+            ["docker", "exec", "-u", "root", name, "cat", f"{WORKSPACES_ROOT}/{UID_MAP}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        uid = agent_uid_from_map(mapped.stdout, args.agent)
+        if uid is None:
+            renderer.error(f"agent '{args.agent}' has not used this sandbox yet")
+            return 1
+    # Every shell, root's or an agent's, appends to one history file.
     subprocess.run(
-        ["docker", "exec", "-u", "agent", name, "touch", ADMIN_HISTORY],
+        [
+            "docker", "exec", "-u", "root", name, "sh", "-c",
+            f'touch "{ADMIN_HISTORY}" && chmod 0666 "{ADMIN_HISTORY}"',
+        ],
         check=False,
     )
-    os.execvp("docker", _shell_argv(name, args.agent, args.root))
+    os.execvp("docker", _shell_argv(name, args.agent, uid=uid))
     return 0  # pragma: no cover - execvp does not return
 
 
-def _shell_argv(name: str, agent_id: str | None, root: bool) -> list[str]:
+def agent_uid_from_map(text: str, agent_id: str) -> int | None:
+    """The agent's uid in the sandbox's uid map, or None when it has none."""
+    try:
+        uid = json.loads(text or "{}").get(agent_id)
+    except (ValueError, AttributeError):
+        return None
+    return int(uid) if isinstance(uid, int) else None
+
+
+def _shell_argv(name: str, agent_id: str | None, *, uid: int | None) -> list[str]:
+    """A shell as ``uid`` in the agent's folder, or as root when ``uid`` is None."""
     folder = f"{WORKSPACES_ROOT}/{agent_id}" if agent_id else WORKSPACES_ROOT
     # docker exec copies the container's environment, token included. Drop it,
-    # or code running as `agent` could read it from this shell's
-    # /proc/<pid>/environ while the session is open.
+    # or the agent's code could read it from this shell's /proc/<pid>/environ
+    # while the session is open.
     return [
         "docker", "exec", "-it",
-        "-u", "root" if root else "agent",
+        "-u", "root" if uid is None else f"{uid}:{uid}",
         "-w", folder,
         "-e", f"HISTFILE={ADMIN_HISTORY}",
         "-e", "PROMPT_COMMAND=history -a",

@@ -262,7 +262,7 @@ class RunCodeTool:
             return ToolResult.error("run_code runs only within a request")
 
         extension, interpreter, options = _LANGUAGES[language]
-        # The code arrives on stdin and is written to a file as the agent user,
+        # The code arrives on stdin and is written to a file as the agent's uid,
         # so it needs no quoting and errors name a real file and line. The code
         # itself gets /dev/null as stdin, as a command would.
         script = f".mash/runs/{uuid.uuid4().hex}.{extension}"

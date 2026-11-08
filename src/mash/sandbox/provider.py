@@ -301,7 +301,8 @@ class DockerSandboxProvider:
             }
         return {
             "Image": self._image,
-            "User": "mash",
+            # Root, to run each agent's code as a uid of its own.
+            "User": "root",
             "Cmd": ["mash", "sandbox", "serve", "--host", "0.0.0.0", "--port", str(SANDBOX_PORT)],
             # The sandbox's only variable: nothing from the host's environment.
             "Env": [f"{MASH_SANDBOX_TOKEN_ENV}={token}"],

@@ -144,7 +144,7 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(container["State"]["Running"])
         create = container["_create"]
         self.assertEqual(create["Image"], "mash-app:dev")
-        self.assertEqual(create["User"], "mash")
+        self.assertEqual(create["User"], "root")
         self.assertEqual(
             create["Cmd"], ["mash", "sandbox", "serve", "--host", "0.0.0.0", "--port", "9000"]
         )
