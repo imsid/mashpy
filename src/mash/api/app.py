@@ -257,7 +257,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             allow_credentials=False,
         )
 
-    app.add_middleware(BodyLimitMiddleware, prefix=resolved_config.api_prefix)
+    # The API and the admin sign-in both read a body before checking the key.
+    app.add_middleware(
+        BodyLimitMiddleware, prefixes=(resolved_config.api_prefix, "/admin/session")
+    )
 
     @app.exception_handler(APIError)
     async def _api_error_handler(_: Request, exc: APIError) -> JSONResponse:

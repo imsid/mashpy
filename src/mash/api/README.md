@@ -22,7 +22,7 @@ This README lists the exposed routes, the common request/response conventions, a
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
 - The OpenAPI schema and Swagger UI sit under `/api/v1`, so they need the key too.
-- A request body under `/api/v1` may be at most 4 MiB (`MAX_API_BODY_BYTES` in `middleware.py`). FastAPI reads a body before it checks the key, so `BodyLimitMiddleware` answers a larger one with `413 BODY_TOO_LARGE` first: at once when `Content-Length` says so, otherwise once the body passes the cap.
+- A request body under `/api/v1`, or to `POST /admin/session`, may be at most 4 MiB (`MAX_API_BODY_BYTES` in `middleware.py`). FastAPI reads a body before it checks the key, so `BodyLimitMiddleware` answers a larger one with `413 BODY_TOO_LARGE` first: at once when `Content-Length` says so, otherwise once the body passes the cap.
 - Serving `/admin` sets no cookie. The SPA asks for the key when the API answers `401` and posts it to `POST /admin/session` as `{"api_key": "..."}`. A wrong key is `401 UNAUTHORIZED`; the right one sets the `mash_api_key` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1`, and `Secure` over HTTPS). With no key configured it answers `200` and sets nothing.
 - `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 - `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.

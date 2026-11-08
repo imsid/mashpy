@@ -2,9 +2,10 @@
 
 FastAPI reads a route's body before it runs the route's dependencies, the API
 key check among them, so without a cap anyone who can reach the host can make
-it hold any amount of data. ``BodyLimitMiddleware`` refuses an ``/api/v1``
-body over ``MAX_API_BODY_BYTES`` with 413 before the route sees it: at once
-when ``Content-Length`` says so, otherwise after reading at most that much.
+it hold any amount of data. ``BodyLimitMiddleware`` refuses a body over
+``MAX_API_BODY_BYTES`` on ``/api/v1`` and ``POST /admin/session`` with 413
+before the route sees it: at once when ``Content-Length`` says so, otherwise
+after reading at most that much.
 """
 
 from __future__ import annotations
@@ -21,18 +22,22 @@ MAX_API_BODY_BYTES = 4 * 1024 * 1024
 
 
 class BodyLimitMiddleware:
-    """Refuse a request body over ``max_bytes`` on paths under ``prefix``."""
+    """Refuse a request body over ``max_bytes`` on paths under ``prefixes``."""
 
     def __init__(
-        self, app: ASGIApp, *, prefix: str, max_bytes: int = MAX_API_BODY_BYTES
+        self,
+        app: ASGIApp,
+        *,
+        prefixes: tuple[str, ...],
+        max_bytes: int = MAX_API_BODY_BYTES,
     ) -> None:
         self.app = app
-        self.prefix = prefix
+        self.prefixes = prefixes
         self.max_bytes = max_bytes
 
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
         if scope.get("type") != "http" or not str(scope.get("path") or "").startswith(
-            self.prefix
+            self.prefixes
         ):
             await self.app(scope, receive, send)
             return

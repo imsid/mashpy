@@ -784,6 +784,21 @@ def test_an_api_body_over_the_cap_is_refused_before_auth() -> None:
             assert at_cap.status_code != 413
 
 
+def test_an_admin_sign_in_body_over_the_cap_is_refused() -> None:
+    from mash.api.middleware import MAX_API_BODY_BYTES
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret") as client:
+            resp = client.post(
+                "/admin/session",
+                content=b"x" * (MAX_API_BODY_BYTES + 1),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status_code == 413
+            assert resp.json()["error"]["code"] == "BODY_TOO_LARGE"
+
+
 def test_a_chunked_api_body_under_the_cap_reaches_the_route() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
