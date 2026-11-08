@@ -77,7 +77,7 @@ class RunSubAgentsTool:
                     "required": ["agent_id", "prompt"],
                 },
             },
-            "timeout_seconds": {"type": "integer", ...},  # defaults to 360
+            "timeout_seconds": {"type": "integer", ...},  # defaults to 360, at most 3600
         },
         "required": ["requests"],
     }

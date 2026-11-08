@@ -354,8 +354,8 @@ log, so requests and runs that finished before you set the endpoint are not
 exported.
 
 Headers, protocol and timeouts come from the standard `OTEL_EXPORTER_OTLP_*`
-variables. Prompts, completions and tool arguments and results stay out of the
-export unless `MASH_OTEL_CAPTURE_CONTENT=1` is set. The admin UI shows the
+variables. Prompts, completions, tool arguments and results, and error
+messages stay out of the export unless `MASH_OTEL_CAPTURE_CONTENT=1` is set. The admin UI shows the
 same spans whether or not export is on.
 
 ## Accessing the host from applications
@@ -517,4 +517,4 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | host | none | OTLP/HTTP collector address; setting it (or a per-signal `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT`) turns the exporter on. Needs `mashpy[otel]` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | host | none | Headers for the collector, such as an API key |
 | `OTEL_SERVICE_NAME` | host | `mash` | `service.name` on every exported span, log record and metric |
-| `MASH_OTEL_CAPTURE_CONTENT` | host | off | `1` adds prompts, completions and tool arguments and results to the export |
+| `MASH_OTEL_CAPTURE_CONTENT` | host | off | `1` adds prompts, completions, tool arguments and results, and error messages to the export |

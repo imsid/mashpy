@@ -66,7 +66,8 @@ workflow code ─────► ctx.browser() ───────────
   `MASH_BROWSER_IDLE_SECONDS` (default 900) and `MASH_BROWSER_MAX_RUNNING`
   (default 10). It also keeps the open handoffs: `start_handoff` mints a view
   token valid for `MASH_BROWSER_HANDOFF_SECONDS` (default 900) and
-  `end_handoff` revokes it.
+  `end_handoff` revokes it. `wait_ended` returns when a handoff ends or
+  expires, and the live view closes its websocket then.
 
 `mash.testing.browsers` has `FakeBrowser`, an in-memory stand-in for Chromium
 and Playwright MCP that keeps their sharing of tabs, snapshot files and

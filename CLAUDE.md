@@ -384,7 +384,7 @@ declares file roots also gets `sandbox_put` and `sandbox_get`. They act in the s
 user the request acts for, in `/home/agent/workspaces/<agent_id>`:
 
 - `run_code(language, code, timeout=60)` runs `python`, `javascript` or `shell`
-  code there as a new process. Files persist between calls and across requests
+  code there as a new process, for at most 1800 seconds. Files persist between calls and across requests
   for that user; variables do not. `pip install --user` and `npm install`
   persist in the folder. Its description tells the model what is installed and
   how to hand results to the user.
@@ -464,7 +464,8 @@ request acts for, in a tab of the request's own:
   payload carries `url`, a live view of the browser, and `expires_at`. The
   user signs in there and answers `done` (the REPL opens the link and waits for
   Enter; an app shows the link and posts the answer). The profile keeps the
-  session for later requests. In a workflow run it fails at once.
+  session for later requests. When the handoff ends or expires, the live view
+  closes. In a workflow run it fails at once.
 
 ```python
 class BillingAgent(AgentSpec):
@@ -588,8 +589,9 @@ and several split a large task into parts. Without a host, the agent can run
 children only on itself. The result has one entry per item, in order: the
 child's `request_id`, its `status` (`completed`, `failed`, `cancelled` or
 `timed_out`), and its response, structured output or error. One child's
-failure stays in its entry. `timeout_seconds` defaults to 360; when it passes,
-the tool cancels the children still running.
+failure stays in its entry. A call takes at most 16 items. `timeout_seconds`
+defaults to 360 and goes up to 3600; when it passes, the tool cancels the
+children still running.
 
 Each child is a `bg` request in the calling request's session, started by the
 calling agent, with `parent_request_id` set to the calling request. Its turn
@@ -627,6 +629,9 @@ context for code, never shown to the model (the inverse of `context`, which is
 prompt text). It is stored on the request, so a crash-replayed request reruns
 with the same metadata; tools read it during execution via
 `mash.logging.get_request_metadata()`, and subagent requests inherit it.
+
+A body under `/api/v1`, a submit's included, may be at most 4 MiB; a larger
+one gets `413 BODY_TOO_LARGE` before the API key is checked.
 
 Every submit body carries a `user_id`: the end user the request acts for (1 to
 255 letters, digits, `.`, `_`, `:`, `@` or `-`). A body without one fails
@@ -864,8 +869,8 @@ export OTEL_SERVICE_NAME=my-agent
 
 A request is exported when it ends, with its log records (`exception` on
 failures) and the GenAI client metrics. Send a W3C `traceparent` header on
-submit to put the request inside your service's trace. Prompts, completions
-and tool I/O are left out unless `MASH_OTEL_CAPTURE_CONTENT=1`.
+submit to put the request inside your service's trace. Prompts, completions,
+tool I/O and error messages are left out unless `MASH_OTEL_CAPTURE_CONTENT=1`.
 
 ## Serving and Deployment
 

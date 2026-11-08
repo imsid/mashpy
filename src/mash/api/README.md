@@ -8,11 +8,10 @@ This README lists the exposed routes, the common request/response conventions, a
 ## Base Surface
 - Default bind: `http://127.0.0.1:8000`
 - API prefix: `/api/v1`
-- OpenAPI JSON: `/openapi.json`
-- Swagger UI: `/docs`
-- ReDoc: `/redoc`
+- OpenAPI JSON: `/api/v1/openapi.json`
+- Swagger UI: `/api/v1/docs`
 - Root discovery: `/`
-- Admin dashboard SPA: `/admin`, `/admin/`, `/admin/{path:path}` (mounted only when its bundle is built into `static/admin`)
+- Admin dashboard SPA: `/admin`, `/admin/`, `/admin/{path:path}` (mounted only when its bundle is built into `static/admin`). Its pages carry a `Content-Security-Policy` that allows only its own scripts and Google Fonts, `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`.
 - Admin static assets: `/admin/assets/...`
 - Admin sign-in: `POST /admin/session` (mounted with the SPA)
 
@@ -22,10 +21,12 @@ This README lists the exposed routes, the common request/response conventions, a
   - `Authorization: Bearer <token>`
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
+- The OpenAPI schema and Swagger UI sit under `/api/v1`, so they need the key too.
+- A request body under `/api/v1` may be at most 4 MiB (`MAX_API_BODY_BYTES` in `middleware.py`). FastAPI reads a body before it checks the key, so `BodyLimitMiddleware` answers a larger one with `413 BODY_TOO_LARGE` first: at once when `Content-Length` says so, otherwise once the body passes the cap.
 - Serving `/admin` sets no cookie. The SPA asks for the key when the API answers `401` and posts it to `POST /admin/session` as `{"api_key": "..."}`. A wrong key is `401 UNAUTHORIZED`; the right one sets the `mash_api_key` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1`, and `Secure` over HTTPS). With no key configured it answers `200` and sets nothing.
 - `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 - `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.
-- `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are users' live views of their browser during a sign-in (see Browser Live Views); the view token names the user and the request, and lapses when the handoff ends.
+- `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are users' live views of their browser during a sign-in (see Browser Live Views); the view token names the user and the request, and lapses when the handoff ends; a view connected then is closed.
 
 ## H2A Relay
 
@@ -50,7 +51,7 @@ An agent process starts, follows and cancels its `RunSubAgents` children here.
 Every relay call names the request it serves. The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`. It acts in the sandbox of the request's user, in the caller's folder, starting the sandbox if needed. `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy. No `{data}` envelope.
 
 `POST /sandbox/exec`
-- Body: `{request_id, command, timeout, stdin?}`; `timeout` defaults to 30 seconds. Sent by `run_code` with the agent's token.
+- Body: `{request_id, command, timeout, stdin?}`; `timeout` defaults to 30 seconds and may be at most 1800. Sent by `run_code` with the agent's token.
 - Runs the command with `stdin` as its input and returns `{output, exit_code, timed_out}`. The command sees `MASH_FILES_URL` (the user's link to the caller's folder) and `MASH_PORTS_URL`.
 
 `PUT /sandbox/files?request_id=&path=` and `GET /sandbox/files?request_id=&path=`
@@ -64,7 +65,7 @@ Links open in a browser with no API key. `<link token>` is `<base64url(user_id)>
 - Serves the file from that agent's folder of the user's sandbox, with a content type from its extension. A path ending in `/` serves its `index.html`.
 
 `/s/<link token>/ports/<n>/<path>` (any method)
-- Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Responses are buffered; WebSockets are not forwarded.
+- Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Responses are buffered; WebSockets are not forwarded. A `Location` header is passed on only when it is relative, so the server cannot redirect a user to another site from the host's origin.
 
 Commands get the bases as `MASH_FILES_URL` and `MASH_PORTS_URL`, under `MASH_PUBLIC_URL` (default: the bind address).
 
@@ -96,7 +97,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Serves noVNC's client files from the user's browser.
 
 `WS /s/<view token>/browser/websockify`
-- Bridges noVNC to the VNC server on the display Chromium draws to. No `frame-ancestors` restriction, so an app can embed the view.
+- Bridges noVNC to the VNC server on the display Chromium draws to. No `frame-ancestors` restriction, so an app can embed the view. The host closes the socket when the handoff ends or its token expires.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -646,9 +647,9 @@ request when its `invoke_agent.end` is stored (spans, log records, and the
 exports a workflow run when it finishes, and keeps its position in
 `otel_export_cursor`. Its first run starts at the end of the log, so what
 finished before the endpoint was set is not exported. `OTEL_SERVICE_NAME` sets `service.name`;
-`MASH_OTEL_CAPTURE_CONTENT=1` adds prompts, completions and tool I/O.
-
-Backend API request logs are persisted separately in `api_event_log` when `api_logging_enabled = True`.
+`MASH_OTEL_CAPTURE_CONTENT=1` adds prompts, completions, tool I/O and error
+messages, which can quote inputs; without it a failed span keeps its
+`error.type` and no message.
 
 `GET /api/v1/telemetry/events`
 - Reads recent canonical runtime events for one agent.
@@ -663,35 +664,6 @@ Backend API request logs are persisted separately in `api_event_log` when `api_l
   - `agent_id`
   - `session_id`, `trace_id`, `host_id`
   - `limit`
-
-`GET /api/v1/telemetry/api/events`
-- Reads recent backend API request/response events.
-- Query params:
-  - `method` optional
-  - `path` optional exact path
-  - `status_code` optional
-  - `from_ts`, `to_ts` optional Unix timestamp bounds
-  - `after_event_id` optional cursor
-  - `limit` optional, clamped to `1..20000`
-- Returns:
-  - `events`
-  - `source = "api_event_log"`
-  - `limit`
-
-`POST /api/v1/telemetry/api/events/search`
-- Searches backend API request/response events with structured filters.
-- Body fields:
-  - same fields as `GET /telemetry/api/events`
-  - `path_prefix` optional
-  - `status_code_min`, `status_code_max` optional
-
-`GET /api/v1/telemetry/api/events/stream`
-- Tails backend API request/response events as SSE.
-- Query params:
-  - same filters as `GET /telemetry/api/events`
-- Emits:
-  - `data: <serialized API event>`
-- Emits `: keep-alive` frames while idle.
 
 `POST /api/v1/telemetry/command-events`
 - Ingests one CLI command lifecycle event from the REPL into the agent's runtime
