@@ -725,6 +725,29 @@ class _TestMemoryStore:
             rows = rows[-limit:]
         return rows
 
+    async def get_replay_turns(
+        self, session_id: str, app_id: str, turns: int
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in await self.get_turns(session_id=session_id, app_id=app_id)
+            if row["replayable"]
+        ]
+        for row in rows:
+            row.pop("signals", None)
+        summary_index = next(
+            (
+                index
+                for index in range(len(rows) - 1, -1, -1)
+                if rows[index]["metadata"].get("type") == "summary_checkpoint"
+            ),
+            None,
+        )
+        if summary_index is None:
+            return rows[-turns:] if turns > 0 else []
+        tail = rows[summary_index + 1 :]
+        return [rows[summary_index]] + (tail[-turns:] if turns > 0 else [])
+
     def _user_turns(self, user_id: str, after: float) -> list[dict[str, Any]]:
         rows = [
             t

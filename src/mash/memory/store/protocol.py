@@ -90,6 +90,19 @@ class MemoryStore(Protocol):
         """Get conversation turns for a session."""
         ...
 
+    async def get_replay_turns(
+        self,
+        session_id: str,
+        app_id: str,
+        turns: int,
+    ) -> List[Dict[str, Any]]:
+        """The turns a request replays into its context, oldest first.
+
+        The latest replayable ``summary_checkpoint`` turn, if any, then up to
+        ``turns`` replayable turns after it. Turns carry no signals.
+        """
+        ...
+
     async def list_user_turns(
         self,
         user_id: str,

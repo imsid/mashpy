@@ -355,6 +355,62 @@ class PostgresStore(MemoryStore):
             )
         return turns
 
+    async def get_replay_turns(
+        self,
+        session_id: str,
+        app_id: str,
+        turns: int,
+    ) -> List[Dict[str, Any]]:
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                """
+                WITH summary AS (
+                    SELECT trace_id, created_at FROM memory_turns
+                    WHERE session_id = %s AND app_id = %s
+                      AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
+                    ORDER BY created_at DESC, trace_id DESC
+                    LIMIT 1
+                ),
+                tail AS (
+                    SELECT trace_id FROM memory_turns AS turn
+                    WHERE session_id = %s AND app_id = %s
+                      AND replayable
+                      AND (
+                          NOT EXISTS (SELECT 1 FROM summary)
+                          OR (turn.created_at, turn.trace_id)
+                              > (SELECT created_at, trace_id FROM summary)
+                      )
+                    ORDER BY created_at DESC, trace_id DESC
+                    LIMIT %s
+                )
+                SELECT trace_id, user_message, agent_response, session_total_tokens,
+                       replayable, metadata, created_at
+                FROM memory_turns
+                WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
+                ORDER BY created_at ASC, trace_id ASC
+                """,
+                (session_id, app_id, session_id, app_id, max(0, int(turns))),
+            )
+        replay: List[Dict[str, Any]] = []
+        for row in rows:
+            metadata = self._load_json_value(row["metadata"])
+            replay.append(
+                {
+                    "trace_id": str(row["trace_id"]),
+                    "user_message": "" if row["user_message"] is None else str(row["user_message"]),
+                    "agent_response": (
+                        "" if row["agent_response"] is None else str(row["agent_response"])
+                    ),
+                    "session_total_tokens": int(row["session_total_tokens"] or 0),
+                    "replayable": bool(row["replayable"]),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                    "created_at": float(row["created_at"] or 0.0),
+                }
+            )
+        return replay
+
     _USER_TURNS_FILTER = """
         user_id = %s
         AND workflow_id IS NULL

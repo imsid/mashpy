@@ -94,6 +94,71 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         return turn_id
 
+    async def _replay_fixture(self, session_id: str, spec: list[tuple[str, bool, bool]]) -> None:
+        """Save turns (name, replayable, summary) at created_at 1, 2, 3, ..."""
+        for index, (name, replayable, summary) in enumerate(spec, start=1):
+            trace_id = f"{self.app_id}-{name}"
+            await self.store.save_turn(
+                trace_id=trace_id,
+                session_id=session_id,
+                app_id=self.app_id,
+                user_message=f"u-{name}",
+                agent_response=f"a-{name}",
+                signals={"s": 1},
+                session_total_tokens=0,
+                metadata={"type": "summary_checkpoint"} if summary else None,
+                replayable=replayable,
+            )
+            with psycopg.connect(self.database_url, autocommit=True) as conn:
+                conn.execute(
+                    "UPDATE memory_turns SET created_at = %s WHERE trace_id = %s",
+                    (float(index), trace_id),
+                )
+
+    def _names(self, turns: list[dict[str, Any]]) -> list[str]:
+        return [turn["trace_id"].removeprefix(f"{self.app_id}-") for turn in turns]
+
+    async def test_replay_turns_without_a_summary_are_the_last_n_replayable(self) -> None:
+        await self._replay_fixture(
+            "replay-1",
+            [("t1", True, False), ("t2", True, False), ("wf", False, False), ("t3", True, False)],
+        )
+
+        turns = await self.store.get_replay_turns("replay-1", self.app_id, 2)
+
+        self.assertEqual(self._names(turns), ["t2", "t3"])
+        self.assertNotIn("signals", turns[0])
+        self.assertEqual(turns[0]["user_message"], "u-t2")
+        self.assertEqual(await self.store.get_replay_turns("replay-1", self.app_id, 0), [])
+
+    async def test_replay_turns_start_at_the_latest_summary(self) -> None:
+        await self._replay_fixture(
+            "replay-2",
+            [
+                ("t1", True, False),
+                ("sum-old", True, True),
+                ("t2", True, False),
+                ("sum-new", True, True),
+                ("t3", True, False),
+                ("wf", False, False),
+                ("t4", True, False),
+                ("t5", True, False),
+            ],
+        )
+
+        self.assertEqual(
+            self._names(await self.store.get_replay_turns("replay-2", self.app_id, 2)),
+            ["sum-new", "t4", "t5"],
+        )
+        self.assertEqual(
+            self._names(await self.store.get_replay_turns("replay-2", self.app_id, 10)),
+            ["sum-new", "t3", "t4", "t5"],
+        )
+        self.assertEqual(
+            self._names(await self.store.get_replay_turns("replay-2", self.app_id, 0)),
+            ["sum-new"],
+        )
+
     async def test_save_turn_is_a_no_op_for_an_existing_trace_id(self) -> None:
         trace_id = f"replayed-{uuid.uuid4().hex}"
         for total in (42, 99):
