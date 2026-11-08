@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 from ..core.llm import LLMProvider
 from ..core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ..logging import bound_session_id, bound_trace_id
+from .ledger import merge_ledgers
 from .store import MemoryStore
 
 COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor.
@@ -54,6 +55,13 @@ async def compact_conversation(
         if meta.get("type") == "summary_checkpoint":
             summary_index = idx
             break
+
+    # The checkpoint replaces every turn from the previous one on, and keeps
+    # their ledgers so the session ids they name stay exact.
+    replaced = turns[summary_index:] if summary_index is not None else turns
+    ledger = merge_ledgers(
+        (turn.get("metadata") or {}).get("ledger") or [] for turn in replaced
+    )
 
     if summary_index is not None:
         base_turns = turns[summary_index:]
@@ -110,6 +118,8 @@ async def compact_conversation(
         "app_id": app_id,
         "token_usage": {"input": 0, "output": 0},
     }
+    if ledger:
+        metadata["ledger"] = ledger
     saved_trace_id = await store.save_turn(
         trace_id=trace_id,
         session_id=session_id,

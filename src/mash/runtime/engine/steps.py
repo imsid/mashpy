@@ -14,6 +14,7 @@ import httpx
 from ...core.context import Context, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
+from ...memory.ledger import build_ledger
 from ...logging.trace_context import (
     bound_loop_index,
     get_subagent_id_prefix,
@@ -898,6 +899,11 @@ async def persist_completed_turn(
     structured_output = workflow_state.get("structured_output")
     if structured_output is not None:
         response.metadata["structured_output"] = structured_output
+    # What this request's RunSubAgents and RunWorkflow calls returned, read
+    # from the context the save already holds; replay shows it to the model.
+    ledger = build_ledger(dict(workflow_state.get("context") or {}), session_id)
+    if ledger:
+        response.metadata["ledger"] = ledger
     turn_payload = await _persist_turn_payload(
         runtime,
         message=message,

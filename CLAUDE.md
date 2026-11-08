@@ -612,7 +612,10 @@ agent, with `parent_request_id` set to the calling request. Without
 `session_id` the child starts a new session, named after its request id. With
 the `session_id` of an earlier entry it continues that session and replays its
 turns, so the agent sees its own earlier work there; the relay accepts only a
-session of the same agent started from the caller's session. A child gets neither
+session of the same agent started from the caller's session. The caller's
+saved turn keeps a ledger of its children (agent, session, trace, status, brief
+and answer, clipped), which replay shows to the model under the reply, so a
+follow-up can go back to the session that answered. A child gets neither
 `RunSubAgents` nor `AskUser`: splitting is one level deep, and the user talks
 to the calling agent. The calling agent's process starts children through the
 host's `/h2a` relay, which checks each against the composition stored with
