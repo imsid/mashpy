@@ -19,6 +19,7 @@ from .projection import (
     STATUS_ERROR,
     Projection,
     Span,
+    capture_content_enabled,
     default_resource,
     project_request,
 )
@@ -37,6 +38,8 @@ def project_workflow_run(
 ) -> Projection:
     """``run`` and ``steps`` are workflow store records; ``requests`` maps an
     agent step's request id to its events and its children's."""
+    if capture_content is None:
+        capture_content = capture_content_enabled()
     trace_hex = trace_id_hex(run.run_id)
     start = float(run.started_at or run.created_at or 0.0)
     root = Span(
@@ -56,7 +59,8 @@ def project_workflow_run(
     )
     if run.status == _FAILED:
         root.status = STATUS_ERROR
-        root.status_message = run.error
+        # An error's text can quote inputs, so it is content.
+        root.status_message = run.error if capture_content else None
         root.attributes[semconv.ERROR_TYPE] = "workflow_failed"
     spans: list[Span] = [root]
     logs = []
@@ -80,7 +84,7 @@ def project_workflow_run(
         )
         if step.status == _FAILED:
             span.status = STATUS_ERROR
-            span.status_message = step.error
+            span.status_message = step.error if capture_content else None
             span.attributes[semconv.ERROR_TYPE] = "step_failed"
         if span.end_time is None and root.end_time is not None:
             span.end_time = root.end_time
