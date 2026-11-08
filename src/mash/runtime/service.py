@@ -12,6 +12,7 @@ from ..core.config import SystemPrompt
 from ..logging import EventLogger
 from ..memory.signals import build_default_signal_collector
 from ..memory.store import MemoryStore
+from ..tools.runtime import RuntimeToolBuilder
 from . import context as context_helpers
 from . import factory as factory_helpers
 from . import requests as request_helpers
@@ -74,11 +75,8 @@ class AgentRuntime:
         self.mcp_manager: Optional[MCPManager] = None
         self._chain_renderer: Any = None
 
-        self.agent = factory_helpers.build_agent_instance(
-            self,
-            session_id=self.session_id,
-        )
-        self._shared_llm = self.agent.llm
+        # Built once: the spec's tools, skills and LLM serve every request.
+        self.agent = factory_helpers.build_base_agent(self)
         self.agent.set_event_logger(self.event_logger, self.session_id)
         self.agent.llm.set_event_logger(
             self.event_logger,
@@ -245,10 +243,17 @@ class AgentRuntime:
         return await request_helpers.set_request_mode(self, request_id, mode)
 
     def describe(self) -> dict[str, Any]:
-        """The agent's registered tools and skills."""
+        """The agent's tools and skills: its shared tools, then the
+        conversation tools every request adds."""
+        listed = [self.tools.get(name) for name in self.tools.list_tools()]
+        if self.definition.enable_runtime_tools():
+            listed.extend(
+                RuntimeToolBuilder(
+                    store=self.memory_store, app_id=self.app_id, session_id=self.session_id
+                ).build_tools()
+            )
         tools = []
-        for name in self.tools.list_tools():
-            tool = self.tools.get(name)
+        for tool in listed:
             if tool is None:
                 continue
             tools.append(
@@ -333,14 +338,12 @@ class AgentRuntime:
         user_id: str | None = None,
         parent_kind: str | None = None,
     ) -> Any:
-        agent = factory_helpers.build_agent_instance(
+        agent = factory_helpers.build_turn_agent(
             self,
             session_id=session_id,
-            shared_llm=self._shared_llm,
             host=host,
             user_id=user_id,
             parent_kind=parent_kind,
-            for_request=True,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)
         return agent

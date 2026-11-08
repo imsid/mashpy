@@ -37,6 +37,15 @@ class ToolRegistry:
         """
         self._tools.pop(name, None)
 
+    def copy(self) -> "ToolRegistry":
+        """A new registry holding the same tool objects.
+
+        Registering or unregistering on the copy leaves this one unchanged.
+        """
+        copied = ToolRegistry()
+        copied._tools = dict(self._tools)
+        return copied
+
     def get(self, name: str) -> Optional[Tool]:
         """Get a tool by name.
 

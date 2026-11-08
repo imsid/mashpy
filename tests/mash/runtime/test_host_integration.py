@@ -980,19 +980,16 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     own_child = primary.build_turn_agent(
                         session_id="s-1", trace_id="t-3", host=host, parent_kind="subagent"
                     )
-                    try:
-                        self.assertIn("RunSubAgents", primary_agent.tools)
-                        self.assertIn("AskUser", primary_agent.tools)
-                        for child in (research_agent, own_child):
-                            self.assertNotIn("RunSubAgents", child.tools)
-                            self.assertNotIn("AskUser", child.tools)
-                            self.assertNotIn("SUBAGENTS", str(child.config.system_prompt))
-                        self.assertIn("SUBAGENTS", str(primary_agent.config.system_prompt))
-                        self.assertIn("- primary-app (you)", str(primary_agent.config.system_prompt))
-                    finally:
-                        await primary_agent.tools.shutdown()
-                        await research_agent.tools.shutdown()
-                        await own_child.tools.shutdown()
+                    self.assertIn("RunSubAgents", primary_agent.tools)
+                    self.assertIn("AskUser", primary_agent.tools)
+                    for child in (research_agent, own_child):
+                        self.assertNotIn("RunSubAgents", child.tools)
+                        self.assertNotIn("AskUser", child.tools)
+                        self.assertNotIn("SUBAGENTS", str(child.config.system_prompt))
+                    self.assertIn("SUBAGENTS", str(primary_agent.config.system_prompt))
+                    self.assertIn("- primary-app (you)", str(primary_agent.config.system_prompt))
+                    # A child's removals stay on its own registry.
+                    self.assertIn("AskUser", primary.agent.tools)
                 finally:
                     await pool.close()
 

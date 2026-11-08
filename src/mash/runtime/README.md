@@ -284,7 +284,12 @@ lifecycle.
   - includes session history reads, session signal reads, and signal definition reads
 
 - [`factory.py`](./factory.py)
-  - builds/configures the in-process `Agent`
+  - builds/configures the in-process `Agent`: `build_base_agent` once per
+    runtime (the spec's tools, skills and LLM, then the sandbox, browser and
+    MCP tools), and `build_turn_agent` for each step, a cheap agent over a copy
+    of the base registry plus the tools bound to the request (conversation
+    tools, `search_cortex`, `RunSubAgents`); tools shut down once, with the
+    runtime
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)

@@ -11,7 +11,6 @@ from mash.skills.tool import SkillTool
 
 from ..core.agent import Agent
 from ..core.config import SystemPrompt
-from ..memory.signals import build_default_signal_collector
 from ..browser.sites import check_sites
 from ..tools.browser import browser_tool_names, build_browser_tools
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
@@ -138,54 +137,59 @@ def register_browser_tools(self: "AgentRuntime", agent: Agent) -> None:
         agent.tools.register(tool)
 
 
-def build_agent_instance(
-    self: "AgentRuntime",
-    *,
-    session_id: str,
-    shared_llm: Any = None,
-    host: dict[str, Any] | None = None,
-    user_id: str | None = None,
-    parent_kind: str | None = None,
-    for_request: bool = False,
-) -> Agent:
-    """Build an agent; ``for_request`` builds one for a request's turn.
+def build_base_agent(self: "AgentRuntime") -> Agent:
+    """The agent the runtime builds once, when it is created.
 
-    A request's agent gets ``RunSubAgents`` unless a ``RunSubAgents`` call
-    started the request, in which case it gets neither ``RunSubAgents`` nor
-    ``AskUser``: the user talks to the calling agent, not its children.
+    Its tools are the spec's ``build_tools()``, the ``Skill`` tool, and later
+    the sandbox and browser tools (``enable_sandbox_tools``,
+    ``enable_browser_tools``) and the MCP and web search tools (``open()``).
+    They live for the process and serve every request at once; the runtime
+    shuts them down when it shuts down. Tools bound to one request are added
+    per step by :func:`build_turn_agent`.
     """
     tools = self.definition.build_tools()
-    skills = getattr(self, "skills", None) or self.definition.build_skills()
-    llm = shared_llm if shared_llm is not None else self.definition.build_llm()
+    skills = self.definition.build_skills()
+    llm = self.definition.build_llm()
     llm.enable_thought_summaries()
-    if hasattr(self, "agent"):
-        config = replace(self.agent.config)
-    else:
-        config = self.definition.build_agent_config()
+    config = self.definition.build_agent_config()
     if config.app_id != self.app_id:
         raise ValueError(
             "AgentSpec.get_agent_id() must match build_agent_config().app_id "
             f"(got {self.app_id!r} vs {config.app_id!r})"
         )
-    # During AgentRuntime.__init__ the base prompt is not set yet; fall back
-    # to the spec config's own prompt.
-    base_prompt = getattr(self, "system_prompt", None)
-    if base_prompt is not None:
-        config.system_prompt = base_prompt
+    agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
+    if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
+        agent.tools.register(SkillTool(skills))
+    agent.set_signal_collector(self.signal_collector)
+    return agent
+
+
+def build_turn_agent(
+    self: "AgentRuntime",
+    *,
+    session_id: str,
+    host: dict[str, Any] | None = None,
+    user_id: str | None = None,
+    parent_kind: str | None = None,
+) -> Agent:
+    """An agent for one step of a request, over the runtime's shared tools.
+
+    It shares the base agent's LLM, skills and tool objects, and adds the
+    tools bound to the request: the conversation tools for its session and
+    user, ``search_cortex`` for its user, and ``RunSubAgents`` unless a
+    ``RunSubAgents`` call started the request, in which case it gets neither
+    ``RunSubAgents`` nor ``AskUser``: the user talks to the calling agent, not
+    its children.
+    """
+    base = self.agent
+    config = replace(base.config)
+    config.system_prompt = self.system_prompt
     host_subagents = resolve_host_subagents(self, host, parent_kind)
     if host_subagents:
         config.system_prompt = _with_directory(self, config.system_prompt, host_subagents)
 
-    agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
-    register_sandbox_tools(self, agent)
-    register_browser_tools(self, agent)
-    if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
-        agent.tools.register(SkillTool(skills))
-    collector = getattr(self, "signal_collector", None)
-    if collector is None:
-        collector = build_default_signal_collector()
-        self.signal_collector = collector
-    agent.set_signal_collector(collector)
+    agent = Agent(llm=base.llm, tools=base.tools.copy(), skills=base.skills, config=config)
+    agent.set_signal_collector(self.signal_collector)
     chain_renderer = self.get_chain_renderer()
     if chain_renderer is not None:
         agent.set_chain_renderer(chain_renderer)
@@ -194,20 +198,18 @@ def build_agent_instance(
     cortex = self.get_cortex()
     if cortex is not None and user_id:
         agent.tools.register(cortex.search_tool(user_id))
-    register_mcp_tools(self, agent)
-    if for_request:
-        if parent_kind == "subagent":
-            for name in ("RunSubAgents", "AskUser"):
-                if name in agent.tools:
-                    agent.tools.unregister(name)
-        else:
-            configure_run_subagents(
-                self,
-                agent,
-                session_id=session_id,
-                host=host,
-                subagent_ids=set(host_subagents),
-            )
+    if parent_kind == "subagent":
+        for name in ("RunSubAgents", "AskUser"):
+            if name in agent.tools:
+                agent.tools.unregister(name)
+    else:
+        configure_run_subagents(
+            self,
+            agent,
+            session_id=session_id,
+            host=host,
+            subagent_ids=set(host_subagents),
+        )
     return agent
 
 

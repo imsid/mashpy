@@ -116,10 +116,7 @@ def test_agents_get_sandbox_and_browser_tools() -> None:
                     trace_id="trace-1",
                     host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
                 )
-                try:
-                    assert "RunSubAgents" in turn_agent.tools
-                finally:
-                    await turn_agent.tools.shutdown()
+                assert "RunSubAgents" in turn_agent.tools
 
                 builder = _agent_runtime(pool, BUILDER_AGENT_ID)
                 assert "Skill" in builder.agent.tools
