@@ -181,5 +181,95 @@ class EvictionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.running(), ["u-2"])
 
 
+class _CountingProvider:
+    """Tracks running containers and concurrent stops; stops wait on ``release``."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.running: set[str] = set()
+        self.most_running = 0
+        self.stopping = 0
+        self.most_stopping = 0
+
+    async def ensure(self, user_id: str) -> SandboxEndpoint:
+        self.running.add(user_id)
+        self.most_running = max(self.most_running, len(self.running))
+        return SandboxEndpoint(user_id=user_id, base_url=f"http://{user_id}", token="t")
+
+    async def stop(self, user_id: str) -> None:
+        self.stopping += 1
+        self.most_stopping = max(self.most_stopping, self.stopping)
+        try:
+            await self.release.wait()
+        finally:
+            self.stopping -= 1
+            self.running.discard(user_id)
+
+    async def list(self) -> list[SandboxInfo]:
+        return []
+
+    async def close(self) -> None:
+        return None
+
+
+class ParallelEvictionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_making_room_for_two_users_stops_two_containers_at_once(self) -> None:
+        clock = _Clock()
+        provider = _CountingProvider()
+        manager = SandboxManager(provider, idle_seconds=900, max_running=2, clock=clock)
+        await manager.endpoint("u-1")
+        clock.now += 1
+        await manager.endpoint("u-2")
+
+        starts = [asyncio.create_task(manager.endpoint(user)) for user in ("u-3", "u-4")]
+        for _ in range(50):
+            if provider.stopping == 2:
+                break
+            await asyncio.sleep(0)
+        # Both stops run while neither has finished: the capacity lock is not
+        # held across a stop.
+        self.assertEqual(provider.stopping, 2)
+        provider.release.set()
+
+        self.assertEqual(
+            sorted(endpoint.user_id for endpoint in await asyncio.gather(*starts)),
+            ["u-3", "u-4"],
+        )
+        self.assertEqual(provider.most_stopping, 2)
+        self.assertLessEqual(provider.most_running, 2)
+        self.assertEqual(sorted(manager.running()), ["u-3", "u-4"])
+
+    async def test_a_caller_waits_for_a_stop_already_making_room(self) -> None:
+        clock = _Clock()
+        provider = _CountingProvider()
+        manager = SandboxManager(provider, idle_seconds=900, max_running=1, clock=clock)
+        await manager.endpoint("u-1")
+
+        first = asyncio.create_task(manager.endpoint("u-2"))
+        for _ in range(50):
+            if provider.stopping:
+                break
+            await asyncio.sleep(0)
+        # u-1 is the only idle container and it is already being stopped, so
+        # u-3 waits for that stop rather than failing at the cap.
+        second = asyncio.create_task(manager.endpoint("u-3"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        self.assertFalse(second.done())
+        provider.release.set()
+
+        self.assertEqual((await first).user_id, "u-2")
+        self.assertEqual((await second).user_id, "u-3")
+        self.assertLessEqual(provider.most_running, 1)
+        self.assertEqual(manager.running(), ["u-3"])
+
+    async def test_a_full_pool_of_busy_containers_still_refuses(self) -> None:
+        provider = _CountingProvider()
+        manager = SandboxManager(provider, idle_seconds=900, max_running=1, clock=_Clock())
+        async with manager.hold("u-1"):
+            with self.assertRaises(SandboxCapacityError):
+                await manager.endpoint("u-2")
+
+
 if __name__ == "__main__":
     unittest.main()
