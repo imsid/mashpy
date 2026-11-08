@@ -339,7 +339,7 @@ lifecycle.
 ### `engine/`
 
 - [`engine/engine.py`](./engine/engine.py)
-  - `RequestEngine`: starts, recovers, cancels and continues requests, stores interaction answers
+  - `RequestEngine`: starts, recovers, cancels and continues requests, stores interaction answers; works on at most `MASH_AGENT_MAX_RUNNING` requests at once (default 32), and a request gives its slot back while it waits on an interaction or on its `RunSubAgents` children
 
 - [`engine/loop.py`](./engine/loop.py)
   - `RequestRun`: the request loop and its checkpoint
@@ -613,7 +613,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 **Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
-**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the request stays `running` in `runtime_request`. The host restarts the process, and on startup its engine reads the agent's `running` requests and continues each from its checkpoint; the step that was running runs again. Only the agent's own process continues its requests, since recovery selects by `agent_id`. A host restart restarts every agent the same way, and a disabled agent's running requests continue when it is enabled. This is one query at startup; an idle process makes no others.
+**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the request stays `running` in `runtime_request`. The host restarts the process, and on startup its engine reads the agent's `running` requests and continues each from its checkpoint; the step that was running runs again. Only the agent's own process continues its requests, since recovery selects by `agent_id`. A host restart restarts every agent the same way, and a disabled agent's running requests continue when it is enabled. This is one query at startup; an idle process makes no others. Recovered requests take running slots like new ones, so at most `MASH_AGENT_MAX_RUNNING` continue at once.
 
 ### Request Status, Cancel, Resume, and Rerun APIs
 

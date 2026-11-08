@@ -6,6 +6,9 @@ events, so the engine holds nothing that a restart would lose:
 
 - ``open`` continues every request of the agent whose status is ``running``.
   That one query is all recovery costs; an idle engine makes no others.
+- At most ``MASH_AGENT_MAX_RUNNING`` requests (default 32) work at once; the
+  others wait for a slot, recovered requests included. A request gives its
+  slot back while it waits on the user or on its ``RunSubAgents`` children.
 - ``cancel_request`` records the request cancelled and stops its loop at the
   next step boundary.
 - ``continue_request`` runs a cancelled or failed request again from its
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from ..events import RequestStatus, RuntimeEventType
@@ -39,6 +43,25 @@ logger = logging.getLogger(__name__)
 # so a request that crashes its process every time cannot loop forever.
 MAX_RECOVERIES = 10
 
+MASH_AGENT_MAX_RUNNING_ENV = "MASH_AGENT_MAX_RUNNING"
+DEFAULT_AGENT_MAX_RUNNING = 32
+
+
+def agent_max_running() -> int:
+    """Requests one agent process works on at once, from ``MASH_AGENT_MAX_RUNNING``."""
+    raw = (os.environ.get(MASH_AGENT_MAX_RUNNING_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_AGENT_MAX_RUNNING
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(
+            f"{MASH_AGENT_MAX_RUNNING_ENV} must be a positive integer, got {raw!r}"
+        )
+    return value
+
 
 class InteractionClosedError(RuntimeError):
     """Raised when an answer names an interaction that is not open."""
@@ -53,6 +76,11 @@ class RequestEngine:
         self._runtime = runtime
         self._runs: dict[str, RequestRun] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # At most this many requests work at once; the rest stay running in
+        # storage and wait for a slot, recovered requests included. A request
+        # waiting on the user or on its children holds no slot.
+        self.max_running = agent_max_running()
+        self._slots = asyncio.Semaphore(self.max_running)
 
     @property
     def _store(self) -> Any:
@@ -92,6 +120,7 @@ class RequestEngine:
             session_id=session_id,
             request_metadata=request_metadata,
             checkpoint=None,
+            slots=self._slots,
         )
         self._runs[request_id] = run
         self._spawn(request_id, run.run())
@@ -250,6 +279,7 @@ class RequestEngine:
             session_id=accepted["session_id"],
             request_metadata=accepted["request_metadata"],
             checkpoint=await self._store.get_checkpoint(request_id),
+            slots=self._slots,
         )
         self._runs[request_id] = run
         await run.run()
@@ -269,8 +299,11 @@ class RequestEngine:
 
 
 __all__ = [
+    "DEFAULT_AGENT_MAX_RUNNING",
+    "MASH_AGENT_MAX_RUNNING_ENV",
     "InteractionClosedError",
     "InvalidInteractionResponseError",
     "MAX_RECOVERIES",
     "RequestEngine",
+    "agent_max_running",
 ]
