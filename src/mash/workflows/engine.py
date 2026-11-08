@@ -21,9 +21,11 @@ runs when the host starts.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -87,6 +89,43 @@ async def _with_timeout(awaitable: Any, timeout_s: float | None, step_id: str) -
         ) from exc
 
 
+async def _run_in_daemon_thread(fn: Any, *args: Any) -> Any:
+    """Run a sync step body in a thread of its own, off the host's loop.
+
+    A thread can't be stopped, so when the step's timeout passes the step
+    fails and the body keeps running until it returns. The thread is a daemon,
+    so a body that never returns doesn't hold up host shutdown. The body sees
+    the caller's context variables.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+    context = contextvars.copy_context()
+
+    def _settle(outcome: Any, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(outcome)
+
+    def _target() -> None:
+        try:
+            outcome = context.run(fn, *args)
+        except BaseException as exc:  # reported to the awaiting step
+            error: BaseException | None = exc
+            outcome = None
+        else:
+            error = None
+        try:
+            loop.call_soon_threadsafe(_settle, outcome, error)
+        except RuntimeError:  # the loop closed while the body ran
+            pass
+
+    threading.Thread(target=_target, name="mash-code-step", daemon=True).start()
+    return await future
+
+
 async def _record_step(
     store: WorkflowStore,
     *,
@@ -148,11 +187,11 @@ async def _run_code_step(
         browsers=getattr(ctx.pool, "get_browsers", lambda: None)(),
     )
 
-    async def _invoke() -> Any:
-        result = step.run(inp, step_ctx)
-        return await result if inspect.isawaitable(result) else result
-
-    out = await _with_timeout(_invoke(), step.timeout_s, step.step_id)
+    if inspect.iscoroutinefunction(step.run):
+        invocation = step.run(inp, step_ctx)
+    else:
+        invocation = _run_in_daemon_thread(step.run, inp, step_ctx)
+    out = await _with_timeout(invocation, step.timeout_s, step.step_id)
     if not isinstance(out, step.output):
         out = step.output.model_validate(out)
     return out.model_dump(mode="json")

@@ -344,6 +344,17 @@ class _TestRuntimeStore:
             state.recoveries += 1
             return state.recoveries
 
+    async def get_other_session_user(self, session_id: str, user_id: str) -> str | None:
+        async with self._lock:
+            for state in self._request_state.values():
+                if (
+                    state.session_id == session_id
+                    and state.user_id is not None
+                    and state.user_id != user_id
+                ):
+                    return state.user_id
+        return None
+
     async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
         async with self._lock:
             state = self._request_state.get(request_id)

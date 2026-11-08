@@ -4,7 +4,7 @@
 - MCP client, server, manager, and configuration behavior stay in this package.
 - MCP types remain the canonical typed surface for protocol configuration.
 - Runtime and tool integrations should consume MCP behavior through this module boundary.
-- Supported MCP behavior is limited to the surfaces Mash actively uses: tools, resources, prompts, and elicitation.
+- Supported MCP behavior is limited to the surfaces Mash actively uses: tools and elicitation.
 - Deprecated MCP Roots, Sampling, and protocol Logging remain unsupported unless a future compatibility decision explicitly changes that.
 
 ## Change Rules

@@ -24,6 +24,10 @@ class RequestModeConflictError(AgentClientError):
     """The request has finished, so its mode cannot change (HTTP 409)."""
 
 
+class SessionUserConflictError(AgentClientError):
+    """The session belongs to another user, so the request was refused (HTTP 409)."""
+
+
 class InteractionClosedError(AgentClientError):
     """The interaction already has an answer, a timeout or a cancel (HTTP 409)."""
 
@@ -206,6 +210,16 @@ class AgentClient:
         return AgentClientError(f"{operation}: {exc}")
 
     @staticmethod
+    def _error_code(response: httpx.Response) -> str | None:
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        error = payload.get("error") if isinstance(payload, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        return code if isinstance(code, str) else None
+
+    @staticmethod
     def _extract_message(response: httpx.Response) -> str:
         try:
             payload = response.json()
@@ -352,6 +366,8 @@ class AgentClient:
         except httpx.HTTPError as exc:
             raise self._http_error("POST request failed", exc) from exc
 
+        if response.status_code == 409 and self._error_code(response) == "SESSION_USER_MISMATCH":
+            raise SessionUserConflictError(self._extract_message(response))
         if response.status_code not in (200, 202):
             raise AgentClientError(
                 f"POST request failed (status={response.status_code}): {self._extract_message(response)}"
@@ -584,4 +600,5 @@ __all__ = [
     "AgentClientLike",
     "AgentUnavailableError",
     "RequestModeConflictError",
+    "SessionUserConflictError",
 ]

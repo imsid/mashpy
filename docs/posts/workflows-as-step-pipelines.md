@@ -85,7 +85,7 @@ The host runs each run as a task. A run's durable state is its rows in the workf
 
 An interrupted run resumes. `resume_run(run_id)` replays the completed steps from their stored outputs and re-drives the pipeline from where it stopped, under the same `run_id`. Agent steps interlock with their own durable request through a deterministic `request_id`, so a resumed agent step continues mid-loop rather than resubmitting the request.
 
-`resume_run` puts a failed or cancelled run back in the queue under the same run id, and it reruns from the first step that did not complete. An agent step's request id includes the attempt, so the resumed step starts a new request instead of reattaching to the one that failed. A completed run is rejected with a 409. A step may declare `timeout_s`; exceeding it fails the step.
+`resume_run` puts a failed or cancelled run back in the queue under the same run id, and it reruns from the first step that did not complete. An agent step's request id includes the attempt, so the resumed step starts a new request instead of reattaching to the one that failed. A completed run is rejected with a 409. A step may declare `timeout_s`; exceeding it fails the step. A sync `CodeStep` body runs in its own thread, and a thread can't be stopped, so the step fails at the deadline while the body runs on until it returns. A resume can start the step again before the old body finishes, which is one more reason to key its effects on `ctx.run_id` and `ctx.attempt`.
 
 A `dedup_key` on submission is unique among a workflow's queued and running runs, so a second trigger while a run is active is rejected. That makes workflows safe to fire from schedules and webhooks.
 
