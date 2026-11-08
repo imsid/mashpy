@@ -12,7 +12,6 @@ import os
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from conftest import build_test_stores

@@ -20,7 +20,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-DEFAULT_PROTOCOL_VERSION = "2025-03-26"
+_PROTOCOL_VERSION = "2025-03-26"
+_CLIENT_VERSION = "0.1.0"
 LOGGER = logging.getLogger("mash.mcp.client")
 _HANDSHAKE_TIMEOUT_S = 30.0
 _RPC_TIMEOUT_S = 60.0
@@ -50,8 +51,6 @@ class MCPHTTPClient:
         base_url: str,
         client_name: str,
         *,
-        client_version: str = "0.1.0",
-        protocol_version: str = DEFAULT_PROTOCOL_VERSION,
         default_headers: Optional[Dict[str, str]] = None,
         elicitation_handler: Callable[[Dict[str, Any]], Dict[str, Any]],
     ) -> None:
@@ -59,8 +58,6 @@ class MCPHTTPClient:
         self._http: Optional[httpx.AsyncClient] = None
         self.session_id: Optional[str] = None
         self.client_name = client_name
-        self.client_version = client_version
-        self.protocol_version = protocol_version
         self._elicitation_handler = elicitation_handler
         self._custom_headers: Dict[str, str] = {}
         if default_headers:
@@ -150,11 +147,11 @@ class MCPHTTPClient:
             "id": "init",
             "method": "initialize",
             "params": {
-                "protocolVersion": self.protocol_version,
+                "protocolVersion": _PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
                     "name": self.client_name,
-                    "version": self.client_version,
+                    "version": _CLIENT_VERSION,
                 },
             },
         }

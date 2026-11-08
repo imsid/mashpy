@@ -31,19 +31,11 @@ class MCPManager:
         self,
         app_id: str,
         event_logger: Optional[EventLogger] = None,
-        session_id: Optional[str] = None,
     ) -> None:
         self._servers: Dict[str, MCPServer] = {}
         self._tools: Dict[str, List[Dict[str, Any]]] = {}
         self._event_logger = event_logger
-        self._session_id = session_id
         self._app_id = app_id
-
-    def _current_session_id(self) -> Optional[str]:
-        """Session of the in-flight request, falling back to the construction-time
-        value. The manager is shared across requests, so events must follow the
-        bound per-request session rather than a fixed field."""
-        return get_session_id() or self._session_id
 
     async def _emit_event(self, event: MCPEvent) -> None:
         if self._event_logger is not None:
@@ -85,7 +77,7 @@ class MCPManager:
             MCPEvent(
                 event_type="mcp.client.connect",
                 app_id=self._app_id,
-                session_id=self._current_session_id(),
+                session_id=get_session_id(),
                 server_name=name,
                 server_url=config.url,
                 trace_id=get_trace_id(),
@@ -100,7 +92,7 @@ class MCPManager:
                 MCPEvent(
                     event_type="mcp.client.error",
                     app_id=self._app_id,
-                    session_id=self._current_session_id(),
+                    session_id=get_session_id(),
                     server_name=name,
                     server_url=config.url,
                     error=str(e),
@@ -114,7 +106,7 @@ class MCPManager:
             MCPEvent(
                 event_type="mcp.client.connected",
                 app_id=self._app_id,
-                session_id=self._current_session_id(),
+                session_id=get_session_id(),
                 server_name=name,
                 server_url=config.url,
                 duration_ms=int((time.time() - connect_start) * 1000),

@@ -34,7 +34,7 @@ class _RecordingEventLogger:
 class MCPManagerEventTests(unittest.TestCase):
     def test_add_server_connection_failure_emits_client_error(self) -> None:
         logger = _RecordingEventLogger()
-        manager = MCPManager(app_id="primary", event_logger=logger, session_id="session-1")
+        manager = MCPManager(app_id="primary", event_logger=logger)
 
         with patch(
             "mash.mcp.manager.MCPHTTPClient.connect",
@@ -52,7 +52,7 @@ class MCPManagerEventTests(unittest.TestCase):
         # A tool call is the request's execute_tool span; the manager only
         # records its connection lifecycle.
         logger = _RecordingEventLogger()
-        manager = MCPManager(app_id="primary", event_logger=logger, session_id="session-1")
+        manager = MCPManager(app_id="primary", event_logger=logger)
         manager._servers["demo"] = _OkToolServer()  # type: ignore[assignment]
         manager._servers["broken"] = _FailingToolServer()  # type: ignore[assignment]
 
