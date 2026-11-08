@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
@@ -17,6 +18,17 @@ _DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
 )
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether ``host`` is an address only this machine can reach."""
+    value = str(host or "").strip().lower()
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -54,6 +66,18 @@ class MashHostConfig:
     def resolved_api_key(self) -> Optional[str]:
         value = (self.api_key or "").strip()
         return value or None
+
+    def check_bind(self) -> None:
+        """Refuse to serve the API on a non-loopback address without a key.
+
+        Without a key ``/api/v1`` takes every request, so it may only listen
+        where nothing but this machine can reach it.
+        """
+        if self.resolved_api_key() is None and not is_loopback_host(self.bind_host):
+            raise ValueError(
+                f"an API key is required to bind {self.bind_host!r}: set MASH_API_KEY "
+                "(or --api-key), or bind 127.0.0.1"
+            )
 
     def resolved_host_secret(self) -> Optional[str]:
         return resolve_host_secret(self.host_secret)

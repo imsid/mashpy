@@ -166,7 +166,7 @@ services:
       MASH_HOST_APP: my_agent.spec:build_pool
       MASH_DATABASE_URL: postgresql://mash:mash@postgres:5432/mash
       MASH_HOST_SECRET: ${MASH_HOST_SECRET}
-      MASH_API_KEY: ${MASH_API_KEY:-dev-key}
+      MASH_API_KEY: ${MASH_API_KEY:?set MASH_API_KEY}
       # Where users' browsers reach the host, for sandbox links.
       MASH_PUBLIC_URL: http://127.0.0.1:8000
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -365,7 +365,9 @@ interact with it.
 
 ### Authentication
 
-If `MASH_API_KEY` is set, include it in requests:
+Without `MASH_API_KEY` the host refuses to bind anything but a loopback
+address, so a container, which binds `0.0.0.0`, needs one. Include the key in
+requests:
 
 ```
 Authorization: Bearer <api-key>
@@ -486,7 +488,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_HOST_APP` | host | none | `module:attribute` for `build_pool()`; agent processes import the same one |
 | `MASH_DATABASE_URL` | host | none | PostgreSQL connection string; agent processes inherit it |
 | `MASH_HOST_SECRET` | host | none | Derives each agent's, each sandbox's and each browser's token, and signs links; required for a pool with agents |
-| `MASH_API_KEY` | host | none | API key for `/api/v1` |
+| `MASH_API_KEY` | host | none | API key for `/api/v1`; required unless `MASH_API_HOST` is a loopback address |
 | `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |
 | `MASH_API_PORT` | host | `8000` | Bind port |
 | `MASH_PUBLIC_URL` | host | the bind address | Where users reach the host; the base of sandbox links and sign-in links |

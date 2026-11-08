@@ -13,7 +13,12 @@ import unittest
 
 from conftest import build_test_stores
 from mash.runtime import AgentRuntime
-from mash.runtime.engine.steps import emit_interaction_ack, open_interaction
+from mash.runtime.engine.steps import (
+    INTERACTION_SCHEMAS,
+    emit_interaction_ack,
+    interaction_response_error,
+    open_interaction,
+)
 from mash.runtime.events import RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec
 
@@ -113,6 +118,25 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
         payload = acks[0].payload or {}
         self.assertNotIn("cancelled", payload)
         self.assertEqual(payload.get("response"), "approve")
+
+
+
+class InteractionResponseTests(unittest.TestCase):
+    def test_each_schema_takes_only_its_own_answers(self) -> None:
+        choice = INTERACTION_SCHEMAS["choice"](["red", "blue"])
+        cases = [
+            (INTERACTION_SCHEMAS["approval"], ["approve", "deny", "skip"], ["no", "Approve", None, ["approve"]]),
+            (INTERACTION_SCHEMAS["browser"], ["done", "cancel"], ["ok", "", None]),
+            (INTERACTION_SCHEMAS["info"], ["anything", ""], [None, 3, ["x"]]),
+            (choice, [[], ["red"], ["red", "blue"]], ["red", ["green"], [1], None]),
+        ]
+        for schema, allowed, refused in cases:
+            for answer in allowed:
+                with self.subTest(schema=schema, answer=answer):
+                    self.assertIsNone(interaction_response_error(schema, answer))
+            for answer in refused:
+                with self.subTest(schema=schema, answer=answer):
+                    self.assertIsNotNone(interaction_response_error(schema, answer))
 
 
 if __name__ == "__main__":

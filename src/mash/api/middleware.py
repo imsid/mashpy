@@ -188,12 +188,16 @@ async def _capture_receive_body(receive: Receive) -> tuple[bytes, Receive]:
     index = 0
 
     async def replay_receive() -> dict[str, Any]:
+        # Replay the buffered body, then hand over to the server's own
+        # receive, which waits for the next event (a disconnect). Answering
+        # with empty bodies instead would never yield, and a streaming
+        # response's disconnect listener would spin the event loop.
         nonlocal index
         if index < len(messages):
             message = messages[index]
             index += 1
             return message
-        return {"type": "http.request", "body": b"", "more_body": False}
+        return await receive()
 
     return b"".join(chunks), replay_receive
 

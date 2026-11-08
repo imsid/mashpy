@@ -27,8 +27,9 @@ feeds it, without duplicating component source. For HTTP route internals see
   sidebar is pinned at and above it). Breakpoint logic lives in the shared
   components, not in route files.
 - All data is read through `src/lib/api.js`, a thin client over the host API at
-  `/api/v1`. Auth rides the same-origin `mash_api_key` cookie that the `/admin`
-  index response sets — requests carry no explicit Authorization header. The
+  `/api/v1`. Auth rides the same-origin `mash_api_key` cookie. When the API answers
+  `401`, `components/AuthGate.jsx` shows a sign-in screen that posts the key to
+  `POST /admin/session`, which checks it and sets the cookie — requests carry no explicit Authorization header. The
   success envelope `{ "data": ... }` is unwrapped to `data`; failures raise a
   typed `ApiError`.
 

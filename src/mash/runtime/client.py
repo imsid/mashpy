@@ -28,6 +28,10 @@ class InteractionClosedError(AgentClientError):
     """The interaction already has an answer, a timeout or a cancel (HTTP 409)."""
 
 
+class InvalidInteractionResponseError(AgentClientError):
+    """The answer is not one the interaction's schema allows (HTTP 400)."""
+
+
 class AgentClientLike(Protocol):
     """Shared transport contract for one addressable agent runtime."""
 
@@ -385,6 +389,8 @@ class AgentClient:
             raise AgentClientError(
                 f"POST interaction failed (status=404): {self._extract_message(resp)}"
             )
+        if resp.status_code == 400:
+            raise InvalidInteractionResponseError(self._extract_message(resp))
         if resp.status_code == 409:
             raise InteractionClosedError(self._extract_message(resp))
         if resp.status_code != 200:

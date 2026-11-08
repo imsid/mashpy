@@ -6,7 +6,7 @@ import unittest
 
 from starlette.testclient import TestClient
 
-from mash.runtime.engine import InteractionClosedError
+from mash.runtime.engine import InteractionClosedError, InvalidInteractionResponseError
 from mash.runtime.errors import RequestStaleError
 from mash.runtime.server import AgentServer
 
@@ -61,6 +61,8 @@ class _Runtime:
             raise KeyError(interaction_id)
         if interaction_id == "int-closed":
             raise InteractionClosedError("interaction 'int-closed' is no longer open")
+        if response == "no":
+            raise InvalidInteractionResponseError("response must be one of ['approve', 'deny', 'skip']")
         self.answers.append((request_id, interaction_id, response))
 
 
@@ -126,6 +128,15 @@ class AgentServerControlRouteTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.json()["error"]["code"], "INTERACTION_CLOSED")
+
+    def test_answer_outside_the_schema_returns_400(self) -> None:
+        resp = self.client.post(
+            "/agent/agent-a/request/req-1/interaction",
+            json={"interaction_id": "int-1", "response": "no"},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "INVALID_RESPONSE")
+        self.assertEqual(self.runtime.answers, [])
 
     def test_answer_to_an_unknown_interaction_returns_404(self) -> None:
         resp = self.client.post(

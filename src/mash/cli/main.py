@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from typing import Callable, Sequence
+
+from dotenv import find_dotenv, load_dotenv
 
 from mash import __version__, get_docs_url
 from mash.api.main import add_agent_serve_parser, add_serve_parser
@@ -330,7 +333,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_env_file(argv: Sequence[str]) -> None:
+    """Load the nearest ``.env`` from the working directory up; set variables win.
+
+    ``mash agent serve`` is the exception: an agent process runs in the host's
+    working directory but takes its environment from the host, which leaves
+    out the host secret and the API key. Reading ``.env`` again would put
+    them back.
+    """
+    if list(argv[:2]) == ["agent", "serve"]:
+        return
+    load_dotenv(find_dotenv(usecwd=True))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Before the parser: its defaults read the environment.
+    load_env_file(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
 

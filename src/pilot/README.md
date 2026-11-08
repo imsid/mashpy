@@ -25,6 +25,7 @@ Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
 | `GEMINI_API_KEY` | Key for the guide (required) | — |
 | `OPENROUTER_API_KEY` | Key for the builder and the changelog summarizer (required) | — |
 | `MASH_HOST_SECRET` | Derives each agent's token (required; `openssl rand -hex 32`) | — |
+| `MASH_API_KEY` | The host's API key; the host binds `0.0.0.0` in its container, so it is required (`openssl rand -hex 32`) | — |
 | `PILOT_PRIMARY_MODEL` | Override the guide's model | `gemini-3.5-flash` |
 | `PILOT_SUBAGENT_MODEL` | Override the builder's and summarizer's model | `google/gemma-4-31b-it` |
 
@@ -41,12 +42,14 @@ images: `mash-sandbox:pilot` from `Dockerfile.sandbox` and
 ```bash
 # 1. Clone the repo and put the keys in .env
 git clone https://github.com/imsid/mashpy.git && cd mashpy
-printf 'GEMINI_API_KEY=...\nOPENROUTER_API_KEY=sk-or-...\nMASH_HOST_SECRET=%s\n' "$(openssl rand -hex 32)" > .env
+printf 'GEMINI_API_KEY=...\nOPENROUTER_API_KEY=sk-or-...\nMASH_HOST_SECRET=%s\nMASH_API_KEY=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
 
 # 2. Start Postgres and the host, from the repo root
 docker compose -f docker-compose.pilot.yml up -d --build
 
-# 3. Install the CLI, save who you are, and ask
+# 3. Install the CLI, save who you are, and ask. From the repo root,
+#    `mash connect` reads MASH_API_KEY from .env and saves it.
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
 mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot repl --host guide

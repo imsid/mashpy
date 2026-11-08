@@ -544,7 +544,7 @@ Interactions allow an agent to pause mid-execution and request information or ap
 
 ### Durability
 
-An interaction's answer is its `mash.interaction.end` event. If the process restarts while a request waits, the recovered loop finds the interaction in its checkpoint, reads the answer from the log if one arrived, and otherwise waits out the rest of the deadline. An answer to an interaction that is already closed returns `409 INTERACTION_CLOSED`.
+An interaction's answer is its `mash.interaction.end` event. If the process restarts while a request waits, the recovered loop finds the interaction in its checkpoint, reads the answer from the log if one arrived, and otherwise waits out the rest of the deadline. An answer to an interaction that is already closed returns `409 INTERACTION_CLOSED`, and an answer its `schema` does not allow returns `400 INVALID_RESPONSE` and leaves it open. An approval runs its tools only on `"approve"`.
 
 ### Timeout Defaults
 

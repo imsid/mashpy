@@ -106,9 +106,11 @@ An interaction's answer is its `mash.interaction.end` event, keyed
   `mash.interaction.start`, and records the deadline.
 - It waits on an in-process event until the deadline, then reads the log.
 - `engine.answer_interaction(...)`, behind the agent server's interaction
-  route, appends the answer and wakes the loop. An answer to an interaction
-  that already has one, a timeout or a cancel raises `InteractionClosedError`
-  (`409`).
+  route, checks the answer against the interaction's `schema`, appends it and
+  wakes the loop. An answer the schema does not allow raises
+  `InvalidInteractionResponseError` (`400`); an answer to an interaction that
+  already has one, a timeout or a cancel raises `InteractionClosedError`
+  (`409`). The tool phase runs approval-gated tools only on `"approve"`.
 - At the deadline the loop appends the type's default answer with
   `timed_out`. An answer and a timeout that race write under the same key, so
   the first row wins and both sides read it.

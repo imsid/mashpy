@@ -29,6 +29,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from mash.runtime.host.tokens import agent_for_token
+from mash.sandbox.containers import UnsafePathError
 from mash.sandbox.daemon import BASH_DEFAULT_TIMEOUT, resolve_workspace_path
 from mash.sandbox.manager import SandboxCapacityError
 from mash.sandbox.provider import SandboxUnavailableError
@@ -183,6 +184,8 @@ def build_sandbox_router() -> APIRouter:
                 response = await sandboxes.read_file(
                     caller.user_id, agent_id=caller.agent_id, path=path
                 )
+        except UnsafePathError as exc:
+            return h2a_error(400, "INVALID_REQUEST", str(exc))
         except (SandboxCapacityError, SandboxUnavailableError) as exc:
             return _sandbox_error(exc)
         if response.status_code != 200 or request.method == "PUT":
@@ -219,6 +222,8 @@ def build_link_router() -> APIRouter:
             response = await state_from_request(request).pool.get_sandboxes().read_file(
                 user_id, agent_id=agent_id, path=resolved
             )
+        except UnsafePathError:
+            return _link_error(404, "no such file")
         except (SandboxCapacityError, SandboxUnavailableError) as exc:
             return _link_error(503, str(exc))
         if response.status_code != 200:
@@ -251,6 +256,8 @@ def build_link_router() -> APIRouter:
                 headers=headers,
                 body=await request.body(),
             )
+        except UnsafePathError:
+            return _link_error(400, "invalid path")
         except (SandboxCapacityError, SandboxUnavailableError) as exc:
             return _link_error(503, str(exc))
         return _link_response(

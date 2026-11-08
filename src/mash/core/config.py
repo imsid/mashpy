@@ -5,10 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 SystemPrompt = str | List[Dict[str, Any]]
 
 

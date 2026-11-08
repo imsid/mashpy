@@ -102,3 +102,26 @@ class StreamErrorTests(unittest.IsolatedAsyncioTestCase):
                 pass
         self.assertIn("status=404", str(raised.exception))
         self.assertIn("Request not found", str(raised.exception))
+
+
+class InteractionErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def _answer(self, status: int, code: str) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, json={"error": {"code": code, "message": code}})
+
+        client_patch = patch(
+            "mash.runtime.client.httpx.AsyncClient",
+            functools.partial(httpx.AsyncClient, transport=httpx.MockTransport(handler)),
+        )
+        client_patch.start()
+        self.addCleanup(client_patch.stop)
+        client = AgentClient("http://agent", "agent-a", token="tok-1")
+        await client.post_interaction("req-1", interaction_id="itr_1", response="no")
+
+    async def test_each_refusal_raises_its_own_error(self) -> None:
+        from mash.runtime.client import InteractionClosedError, InvalidInteractionResponseError
+
+        with self.assertRaises(InvalidInteractionResponseError):
+            await self._answer(400, "INVALID_RESPONSE")
+        with self.assertRaises(InteractionClosedError):
+            await self._answer(409, "INTERACTION_CLOSED")

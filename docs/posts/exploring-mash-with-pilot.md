@@ -25,8 +25,9 @@ A Pilot deployment is Postgres and a Mash host, run with Docker Compose from a
 checkout of the repo. The host runs each agent as a process inside its
 container. Through the Docker socket it starts a sandbox per user, where the
 agents' code runs, and mounts the checkout read-only into each one at
-`/home/agent/mashpy`. Put `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and
-`MASH_HOST_SECRET` (`openssl rand -hex 32`) in `.env`, then:
+`/home/agent/mashpy`. Put `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
+`MASH_HOST_SECRET` and `MASH_API_KEY` (each `openssl rand -hex 32`) in `.env`,
+then:
 
 ```bash
 git clone https://github.com/imsid/mashpy.git && cd mashpy
@@ -37,6 +38,8 @@ mash connect --api-base-url http://127.0.0.1:8000 --user-id me
 pilot browse
 ```
 
+Run from the checkout, `mash connect` reads `MASH_API_KEY` from `.env` and
+saves it with the connection, and `pilot` uses it from there.
 `pilot browse` renders the catalog: the `pilot` guide, the `builder`, and
 masher's eval agents, each listed through the `AgentMetadata` it registered
 with. The same metadata becomes the delegation directory when an agent serves

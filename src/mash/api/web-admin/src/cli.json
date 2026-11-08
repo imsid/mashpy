@@ -726,7 +726,7 @@
                   "--api-key"
                 ],
                 "name": "api_key",
-                "help": "Optional API key (or set MASH_API_KEY)",
+                "help": "API key (or set MASH_API_KEY); required unless --host is a loopback address",
                 "positional": false,
                 "required": false,
                 "default": null,

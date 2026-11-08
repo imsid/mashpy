@@ -14,14 +14,15 @@ This README lists the exposed routes, the common request/response conventions, a
 - Root discovery: `/`
 - Admin dashboard SPA: `/admin`, `/admin/`, `/admin/{path:path}` (mounted only when its bundle is built into `static/admin`)
 - Admin static assets: `/admin/assets/...`
+- Admin sign-in: `POST /admin/session` (mounted with the SPA)
 
 ## Auth
-- If `MashHostConfig.api_key` is unset, API routes are open.
-- If `api_key` is set, every `/api/v1/*` route requires one of:
+- If `MashHostConfig.api_key` is unset, API routes are open, so `run_host` and `mash host serve` refuse to bind anything but a loopback address (`127.0.0.1`, `::1`, `localhost`) without one.
+- If `api_key` is set, every `/api/v1/*` route requires one of, compared in constant time:
   - `Authorization: Bearer <token>`
   - `X-API-Key: <token>`
   - `mash_api_key` cookie
-- `/admin` sets the `mash_api_key` cookie when an API key is configured so the SPA can call protected API routes.
+- Serving `/admin` sets no cookie. The SPA asks for the key when the API answers `401` and posts it to `POST /admin/session` as `{"api_key": "..."}`. A wrong key is `401 UNAUTHORIZED`; the right one sets the `mash_api_key` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1`, and `Secure` over HTTPS). With no key configured it answers `200` and sets nothing.
 - `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 - `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.
 - `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are users' live views of their browser during a sign-in (see Browser Live Views); the view token names the user and the request, and lapses when the handoff ends.
@@ -266,6 +267,8 @@ Every call names the request it serves, and the host checks it as the sandbox re
     then answer `done` when they finish or `cancel`.
 - `request.interaction.ack` follows with the `response`, plus `timed_out` or
   `cancelled` when set.
+- The `response` must fit the interaction's `schema`, else `400 INVALID_RESPONSE`
+  and the interaction stays open. An approval runs the tool only on `approve`.
 - `404 INTERACTION_NOT_FOUND` for an interaction the request never opened, and
   `409 INTERACTION_CLOSED` once it has an answer, a timeout or a cancel.
 

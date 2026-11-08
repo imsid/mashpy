@@ -41,6 +41,7 @@ from mash.browser.manager import BrowserCapacityError
 from mash.browser.provider import BrowserUnavailableError
 from mash.browser.sites import check_sites
 from mash.runtime.host.tokens import agent_for_token
+from mash.sandbox.containers import UnsafePathError
 from mash.sandbox.daemon import resolve_workspace_path
 from mash.sandbox.manager import SandboxCapacityError
 from mash.sandbox.provider import SandboxUnavailableError
@@ -48,8 +49,8 @@ from mash.sandbox.provider import SandboxUnavailableError
 from .common import APIError, AppRuntimeState, state_from_request, success
 from .h2a import bearer_token, h2a_error
 
-_BROWSER_ERRORS = (BrowserCapacityError, BrowserUnavailableError)
-_SANDBOX_ERRORS = (SandboxCapacityError, SandboxUnavailableError)
+_BROWSER_ERRORS = (BrowserCapacityError, BrowserUnavailableError, UnsafePathError)
+_SANDBOX_ERRORS = (SandboxCapacityError, SandboxUnavailableError, UnsafePathError)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,8 @@ async def _body(request: Request) -> dict[str, Any] | JSONResponse:
 
 
 def _browser_error(exc: Exception) -> JSONResponse:
+    if isinstance(exc, UnsafePathError):
+        return h2a_error(400, "INVALID_REQUEST", str(exc))
     if isinstance(exc, BrowserCapacityError):
         return h2a_error(503, "BROWSER_CAPACITY", str(exc))
     return h2a_error(503, "BROWSER_UNAVAILABLE", str(exc))
@@ -291,6 +294,8 @@ def build_browser_link_router() -> APIRouter:
             response = await state_from_request(request).pool.get_browsers().view(
                 handoff.user_id, path=path, query=request.url.query
             )
+        except UnsafePathError:
+            return Response(b"no such file", status_code=404, media_type="text/plain")
         except _BROWSER_ERRORS as exc:
             return Response(str(exc).encode(), status_code=503, media_type="text/plain")
         media_type = (
@@ -382,6 +387,8 @@ def build_browser_api_router() -> APIRouter:
     async def clear_site(request: Request, user_id: str, domain: str) -> dict[str, Any]:
         try:
             cleared = await _browsers(request).clear_site(user_id, domain)
+        except UnsafePathError as exc:
+            raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
         except _BROWSER_ERRORS as exc:
             raise APIError(code="BROWSER_UNAVAILABLE", message=str(exc), status_code=503) from exc
         return success({"user_id": user_id, **cleared})

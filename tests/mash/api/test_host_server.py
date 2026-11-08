@@ -687,19 +687,72 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
                     assert names[-1] == "request.completed"
 
 
-def test_admin_ui_bootstraps_auth_cookie() -> None:
+def test_admin_ui_never_hands_out_the_api_key() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, api_key="secret") as client:
-            unauthorized = client.get("/api/v1/health")
-            assert unauthorized.status_code == 401
-
             admin = client.get("/admin")
             assert admin.status_code == 200
-            assert client.cookies.get(API_KEY_COOKIE) == "secret"
+            assert "set-cookie" not in admin.headers
+            assert client.get("/admin/logs").headers.get("set-cookie") is None
+            assert client.cookies.get(API_KEY_COOKIE) is None
+            assert client.get("/api/v1/health").status_code == 401
 
-            authorized = client.get("/api/v1/health")
-            assert authorized.status_code == 200
+
+def test_admin_session_checks_the_key_before_setting_the_cookie() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret") as client:
+            wrong = client.post("/admin/session", json={"api_key": "guess"})
+            assert wrong.status_code == 401
+            assert wrong.json()["error"]["code"] == "UNAUTHORIZED"
+            assert client.cookies.get(API_KEY_COOKIE) is None
+
+            signed_in = client.post("/admin/session", json={"api_key": "secret"})
+            assert signed_in.status_code == 200
+            cookie = signed_in.headers["set-cookie"]
+            assert "HttpOnly" in cookie
+            assert "SameSite=strict" in cookie
+            assert "Path=/api/v1" in cookie
+            assert "Secure" not in cookie
+            assert client.get("/api/v1/health").status_code == 200
+
+
+def test_admin_session_cookie_is_secure_over_https() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret") as client:
+            signed_in = client.post(
+                "https://testserver/admin/session", json={"api_key": "secret"}
+            )
+            assert signed_in.status_code == 200
+            assert "Secure" in signed_in.headers["set-cookie"]
+
+
+def test_admin_session_without_a_configured_key_sets_no_cookie() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root) as client:
+            signed_in = client.post("/admin/session", json={"api_key": "anything"})
+            assert signed_in.status_code == 200
+            assert "set-cookie" not in signed_in.headers
+
+
+def test_api_key_is_checked_on_every_credential() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with _build_test_client(root, api_key="secret") as client:
+            for headers in (
+                {"Authorization": "Bearer nope"},
+                {"X-API-Key": "nope"},
+                {"Cookie": f"{API_KEY_COOKIE}=nope"},
+            ):
+                assert client.get("/api/v1/health", headers=headers).status_code == 401
+            for headers in (
+                {"Authorization": "Bearer secret"},
+                {"X-API-Key": "secret"},
+            ):
+                assert client.get("/api/v1/health", headers=headers).status_code == 200
 
 
 def test_telemetry_events_filter_by_agent() -> None:
@@ -1697,10 +1750,17 @@ def _collect_sse_events(stream) -> list[dict[str, Any]]:
 
 
 def test_answer_to_a_closed_interaction_is_a_conflict() -> None:
-    from mash.runtime.client import AgentClient, InteractionClosedError
+    from mash.runtime.client import (
+        AgentClient,
+        InteractionClosedError,
+        InvalidInteractionResponseError,
+    )
 
     async def _closed(*_args, **_kwargs):
         raise InteractionClosedError("interaction 'itr_1' is no longer open")
+
+    async def _invalid(*_args, **_kwargs):
+        raise InvalidInteractionResponseError("response must be one of ['approve', 'deny', 'skip']")
 
     async def _missing(*_args, **_kwargs):
         from mash.runtime import AgentClientError
@@ -1715,8 +1775,12 @@ def test_answer_to_a_closed_interaction_is_a_conflict() -> None:
                 closed = client.post(url, json=body)
             with patch.object(AgentClient, "post_interaction", _missing):
                 missing = client.post(url, json=body)
+            with patch.object(AgentClient, "post_interaction", _invalid):
+                invalid = client.post(url, json=body)
 
     assert closed.status_code == 409
     assert closed.json()["error"]["code"] == "INTERACTION_CLOSED"
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "INTERACTION_NOT_FOUND"
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["code"] == "INVALID_RESPONSE"
