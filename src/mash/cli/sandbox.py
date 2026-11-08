@@ -28,6 +28,8 @@ from mash.sandbox.provider import (
     USER_LABEL,
     resolve_namespace,
     sandbox_name,
+    start_sandbox,
+    stop_sandbox,
 )
 
 from .render import RichRenderer
@@ -140,12 +142,10 @@ def _run_ls(args) -> int:
     return 0
 
 
-async def _start(name: str) -> None:
+async def _start(user_id: str, namespace: str) -> None:
     engine = DockerEngine()
     try:
-        if await engine.inspect_container(name) is None:
-            raise ValueError(f"no sandbox named {name}")
-        await engine.start_container(name)
+        await start_sandbox(engine, user_id, namespace=namespace)
     finally:
         await engine.close()
 
@@ -156,8 +156,9 @@ def _run_shell(args) -> int:
         renderer.error("the docker CLI is required for `mash sandbox shell`")
         return 1
     try:
-        name = sandbox_name(args.user_id, resolve_namespace(args.namespace))
-        asyncio.run(_start(name))
+        namespace = resolve_namespace(args.namespace)
+        name = sandbox_name(args.user_id, namespace)
+        asyncio.run(_start(args.user_id, namespace))
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1
@@ -189,20 +190,21 @@ def _shell_argv(name: str, agent_id: str | None, root: bool) -> list[str]:
 def _run_stop(args) -> int:
     renderer = RichRenderer()
 
-    async def _stop(name: str) -> None:
+    async def _stop(user_id: str, namespace: str) -> None:
         engine = DockerEngine()
         try:
-            await engine.stop_container(name)
+            await stop_sandbox(engine, user_id, namespace=namespace)
         finally:
             await engine.close()
 
     try:
-        name = sandbox_name(args.user_id, resolve_namespace(args.namespace))
-        asyncio.run(_stop(name))
+        namespace = resolve_namespace(args.namespace)
+        name = sandbox_name(args.user_id, namespace)
+        asyncio.run(_stop(args.user_id, namespace))
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1
-    renderer.info(f"Stopped {name}; its volume is kept.")
+    renderer.info(f"Stopped {name} and removed its network; its volume is kept.")
     return 0
 
 

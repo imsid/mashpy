@@ -6,6 +6,7 @@ import asyncio
 import unittest
 
 from mash.sandbox.manager import SandboxCapacityError, SandboxManager
+from mash.sandbox.provider import SandboxEndpoint, SandboxInfo
 from mash.testing.sandboxes import LocalSandboxProvider
 
 
@@ -123,6 +124,61 @@ class SandboxManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await manager.reap_idle(), ["u-9"])
         finally:
             await manager.close()
+
+
+class _SlowStopProvider:
+    """Records overlapping ensure/stop calls per user; stops wait on ``release``."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.stopping: set[str] = set()
+        self.stop_calls: list[str] = []
+        self.overlaps: list[str] = []
+
+    async def ensure(self, user_id: str) -> SandboxEndpoint:
+        if user_id in self.stopping:
+            self.overlaps.append(f"ensure {user_id}")
+        return SandboxEndpoint(user_id=user_id, base_url=f"http://{user_id}", token="t")
+
+    async def stop(self, user_id: str) -> None:
+        if user_id in self.stopping:
+            self.overlaps.append(f"stop {user_id}")
+        self.stop_calls.append(user_id)
+        self.stopping.add(user_id)
+        try:
+            await self.release.wait()
+        finally:
+            self.stopping.discard(user_id)
+
+    async def list(self) -> list[SandboxInfo]:
+        return []
+
+    async def close(self) -> None:
+        return None
+
+
+class EvictionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_making_room_waits_for_a_stop_already_running(self) -> None:
+        clock = _Clock()
+        provider = _SlowStopProvider()
+        manager = SandboxManager(provider, idle_seconds=900, max_running=1, clock=clock)
+        await manager.endpoint("u-1")
+        clock.now += 900
+
+        reaping = asyncio.create_task(manager.reap_idle())
+        while not provider.stopping:
+            await asyncio.sleep(0)
+        # The reaper is stopping u-1; u-2 needs u-1's slot.
+        starting = asyncio.create_task(manager.endpoint("u-2"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        provider.release.set()
+
+        self.assertEqual(await reaping, ["u-1"])
+        self.assertEqual((await starting).user_id, "u-2")
+        self.assertEqual(provider.overlaps, [])
+        self.assertEqual(provider.stop_calls, ["u-1"])
+        self.assertEqual(manager.running(), ["u-2"])
 
 
 if __name__ == "__main__":

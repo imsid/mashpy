@@ -23,7 +23,8 @@
 #           watch it.
 #
 # This checkout is mounted read-only at /home/agent/mashpy in the host and in
-# every sandbox, so the agents see your edits as you make them. Pilot's own
+# every sandbox, so the agents see your edits as you make them. In sandboxes,
+# where code the model writes runs, an empty file covers .env. Pilot's own
 # code is baked into the images: after changing src/pilot or src/mash, run
 # `up -d --build`. Sandboxes and browsers keep the image they were created
 # from; remove them with
@@ -84,8 +85,9 @@ services:
       MASH_BROWSER_IMAGE: mash-browser:pilot
       # Where your browser reaches this host, for the links agents hand out.
       MASH_PUBLIC_URL: http://127.0.0.1:8000
-      # A Docker-host path, since the daemon resolves it for each sandbox.
-      MASH_SANDBOX_MOUNTS: ${PWD}:/home/agent/mashpy:ro
+      # Docker-host paths, since the daemon resolves them for each sandbox.
+      # /dev/null covers .env, which holds the host secret and the LLM keys.
+      MASH_SANDBOX_MOUNTS: ${PWD}:/home/agent/mashpy:ro,/dev/null:/home/agent/mashpy/.env:ro
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The changelog workflow's code step reads CHANGELOG.md on the host.

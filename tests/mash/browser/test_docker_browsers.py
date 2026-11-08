@@ -76,7 +76,7 @@ class DockerBrowserProviderTests(unittest.IsolatedAsyncioTestCase):
             endpoint = await self._provider(in_container=True).ensure("u-1")
 
         self.assertEqual(endpoint.base_url, f"http://{browser_name('u-1', 'mash')}:9000")
-        self.assertIn("id-myhost", self.daemon.networks["mash-browsers"])
+        self.assertIn("myhost", self.daemon.attached("mash-browsers"))
 
     async def test_delete_removes_the_container_and_the_profile_volume(self) -> None:
         provider = self._provider()

@@ -103,12 +103,18 @@ class DockerEngine:
         response = await self._call("GET", f"/containers/{name}/json", allow=(404,))
         return None if response.status_code == 404 else response.json()
 
-    async def list_containers(self, *, labels: list[str]) -> list[dict[str, Any]]:
-        """Containers, running or not, that carry every one of ``labels``."""
+    async def list_containers(
+        self, *, labels: list[str] | None = None, network: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Containers, running or not, that carry every one of ``labels`` and
+        name ``network`` in their config."""
+        filters: dict[str, list[str]] = {}
+        if labels:
+            filters["label"] = list(labels)
+        if network:
+            filters["network"] = [network]
         response = await self._call(
-            "GET",
-            "/containers/json",
-            params={"all": "1", "filters": json.dumps({"label": list(labels)})},
+            "GET", "/containers/json", params={"all": "1", "filters": json.dumps(filters)}
         )
         return list(response.json())
 
@@ -174,14 +180,57 @@ class DockerEngine:
                 body={"Name": name, "Driver": "bridge", "Labels": labels},
             )
 
+    async def inspect_network(self, name: str) -> dict[str, Any] | None:
+        """The network, with ``Containers``: the running containers on it."""
+        response = await self._call("GET", f"/networks/{name}", allow=(404,))
+        return None if response.status_code == 404 else response.json()
+
+    async def list_networks(self, *, labels: list[str] | None = None) -> list[dict[str, Any]]:
+        """Networks that carry every one of ``labels``; every network without them."""
+        params = {"filters": json.dumps({"label": list(labels)})} if labels else None
+        response = await self._call("GET", "/networks", params=params)
+        return list(response.json())
+
+    async def create_network(self, name: str, *, labels: dict[str, str], subnet: str) -> str:
+        """A bridge network on ``subnet``; raises 403 when the subnet overlaps one in use."""
+        response = await self._call(
+            "POST",
+            "/networks/create",
+            body={
+                "Name": name,
+                "Driver": "bridge",
+                "Labels": labels,
+                "IPAM": {"Config": [{"Subnet": subnet}]},
+            },
+        )
+        return str(response.json()["Id"])
+
     async def connect_network(self, network: str, container: str) -> None:
-        # 403: already connected.
+        # 403: a running container already connected. A stopped one answers 200.
         await self._call(
             "POST",
             f"/networks/{network}/connect",
             body={"Container": container},
             allow=(403,),
         )
+
+    async def disconnect_network(self, network: str, container: str) -> None:
+        """Disconnect ``container``, running or stopped; a no-op when it is not connected."""
+        try:
+            await self._call(
+                "POST",
+                f"/networks/{network}/disconnect",
+                body={"Container": container, "Force": True},
+                allow=(404,),
+            )
+        except DockerEngineError as exc:
+            # The daemon answers 500 for a container that is not connected.
+            if "is not connected" not in str(exc):
+                raise
+
+    async def remove_network(self, name: str) -> None:
+        # 404: already gone. 403 (a running container is attached) is raised.
+        await self._call("DELETE", f"/networks/{name}", allow=(404,))
 
 
 __all__ = ["DEFAULT_DOCKER_SOCKET", "DockerEngine", "DockerEngineError"]

@@ -875,7 +875,7 @@ export MASH_HOST_SECRET=...
 mash host serve --host-app my_agent.spec:build_pool --port 8000
 
 # Host in a container: mount the Docker socket and add its group;
-# sandboxes then run on the `mash-sandboxes` network.
+# each sandbox then runs on a network of its own, which the host joins.
 # Set MASH_HOST_APP, MASH_DATABASE_URL, MASH_HOST_SECRET, MASH_API_KEY, and
 # MASH_PUBLIC_URL to the address users reach the host at. The host refuses to
 # bind a non-loopback address such as 0.0.0.0 without an API key.
