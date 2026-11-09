@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 import unittest
-from typing import Optional
+from typing import Any, Optional
 
 from mash.core.agent import Agent, MaxStepsExhaustedError, TruncatedToolCallError
 from mash.core.config import AgentConfig
@@ -860,6 +860,7 @@ class _PhasedLLMProvider(LLMProvider):
         return "test-model"
 
     async def send(self, request: LLMRequest) -> LLMResponse:
+        self.last_request = request
         provider_metadata = {}
         if self._phase:
             provider_metadata["phase"] = self._phase
@@ -891,7 +892,7 @@ class _PhasedLLMProvider(LLMProvider):
 class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):
     """Tests for phase and reasoning_tokens propagation added in #94."""
 
-    def _build_agent(self, llm: LLMProvider) -> Agent:
+    def _build_agent(self, llm: LLMProvider, **config: Any) -> Agent:
         async def noop(_args) -> ToolResult:
             return ToolResult.success("ok")
 
@@ -912,6 +913,7 @@ class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):
                 app_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=2,
+                **config,
             ),
         )
 
@@ -952,6 +954,18 @@ class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):
         plan = await agent.plan_step(context)
 
         self.assertEqual(plan.token_usage.get("reasoning"), 380)
+
+    async def test_config_provider_options_go_with_every_model_call(self) -> None:
+        llm = _PhasedLLMProvider()
+        agent = self._build_agent(llm, provider_options={"thinking_level": "low"})
+        context = Context(system_prompt="You are a test agent.")
+        context.add_user_message("do the thing")
+
+        await agent.plan_step(context)
+
+        self.assertEqual(llm.last_request.provider_options, {"thinking_level": "low"})
+        # The request gets a copy: the config's dict is never changed by a call.
+        self.assertIsNot(llm.last_request.provider_options, agent.config.provider_options)
 
     async def test_reasoning_tokens_absent_from_token_usage_when_none(self) -> None:
         agent = self._build_agent(_PhasedLLMProvider(reasoning_tokens=None))

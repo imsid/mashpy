@@ -27,6 +27,10 @@ class AgentConfig:
     compaction_token_threshold: int = 0
     compaction_turn_limit: int = 50
     compaction_temperature: float = 0.0
+    # Sent with every model call of the agent, e.g. {"thinking_level": "low"}
+    # for Gemini. Options are provider-specific: OpenAI, Anthropic and the
+    # open-model providers pass keys they don't handle to their API.
+    provider_options: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

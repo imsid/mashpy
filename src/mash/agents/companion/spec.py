@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from mash.agents.masher.spec import _build_eval_llm, _select_eval_agent_provider_kind
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
@@ -52,6 +54,18 @@ def build_companion_metadata() -> AgentMetadata:
     )
 
 
+def _routing_provider_options() -> dict:
+    """Low thinking on Gemini: routing needs little, and each call is ~1.5-2s faster.
+
+    ``COMPANION_AGENT_THINKING_LEVEL`` overrides the level; other providers
+    get no options.
+    """
+    if _select_eval_agent_provider_kind() != "gemini":
+        return {}
+    level = os.getenv("COMPANION_AGENT_THINKING_LEVEL", "low").strip()
+    return {"thinking_level": level} if level else {}
+
+
 class CompanionSpec(AgentSpec):
     """Routes with RunSubAgents and RunWorkflow, which the runtime registers,
     and reads its agents' logs with its own tools."""
@@ -94,6 +108,7 @@ class CompanionSpec(AgentSpec):
             system_prompt=COMPANION_PROMPT,
             # Ledger entries are short, so the companion keeps more turns.
             conversation_history_turns=10,
+            provider_options=_routing_provider_options(),
         )
 
     def enable_runtime_tools(self) -> bool:

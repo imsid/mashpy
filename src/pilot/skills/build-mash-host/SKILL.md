@@ -61,7 +61,8 @@ choose it. See `build-mash-workflow` for defining them.
 
 The companion needs a model: it picks a provider from `GEMINI_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `OSS_BASE_URL`, and
-`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model.
+`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model. On Gemini it routes
+with `thinking_level` `low`; `COMPANION_AGENT_THINKING_LEVEL` sets another.
 
 ## How Host Routing Works
 

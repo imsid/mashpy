@@ -265,6 +265,7 @@ AgentConfig(
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
+    provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
@@ -637,9 +638,11 @@ The companion reads what its agents did with three tools, each keyed by an
 session that is not a child of the companion in the user's current session.
 
 `companion` picks its provider like masher's agents;
-`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model. Without any provider
-key it still starts, and a host request fails with an error that names the
-keys to set.
+`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model. On Gemini it routes
+with `thinking_level` `low` (about 1.5-2s faster per model call than the
+default); `COMPANION_AGENT_THINKING_LEVEL` sets another level, and an empty
+value leaves the model's default. Without any provider key it still starts,
+and a host request fails with an error that names the keys to set.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:

@@ -385,13 +385,15 @@ class GeminiProvider(BaseLLMProvider):
         usage = None
         u = getattr(interaction, "usage", None)
         if u is not None:
+            # Thought tokens are the model's thinking; they become the
+            # call's reasoning tokens on its chat.end.
             thought_tokens = getattr(u, "total_thought_tokens", None)
             usage = LLMTokenUsage(
                 input_tokens=getattr(u, "total_input_tokens", None),
                 output_tokens=getattr(u, "total_output_tokens", None),
                 total_tokens=getattr(u, "total_tokens", None),
                 cache_read_tokens=getattr(u, "total_cached_tokens", None),
-                metadata={"thought_tokens": thought_tokens} if thought_tokens else {},
+                reasoning_tokens=int(thought_tokens) if thought_tokens is not None else None,
             )
 
         return LLMResponse(

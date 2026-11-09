@@ -63,6 +63,21 @@ class CompanionSpecTests(unittest.TestCase):
         self.assertIn("session_id", config.system_prompt)
         self.assertTrue(build_companion_metadata().description)
 
+    def test_low_thinking_on_gemini_only(self) -> None:
+        base = {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": "", "OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": "", "OSS_BASE_URL": ""}
+        cases = [
+            ({"GEMINI_API_KEY": "k"}, {"thinking_level": "low"}),
+            ({"GEMINI_API_KEY": "k", "COMPANION_AGENT_THINKING_LEVEL": "medium"}, {"thinking_level": "medium"}),
+            ({"GEMINI_API_KEY": "k", "COMPANION_AGENT_THINKING_LEVEL": ""}, {}),
+            ({"OPENAI_API_KEY": "k"}, {}),
+            ({"ANTHROPIC_API_KEY": "k"}, {}),
+            ({}, {}),
+        ]
+        for env, expected in cases:
+            with self.subTest(env=env), patch.dict(os.environ, {**base, **env}):
+                os.environ.pop("COMPANION_AGENT_THINKING_LEVEL", None) if "COMPANION_AGENT_THINKING_LEVEL" not in env else None
+                self.assertEqual(CompanionSpec().build_agent_config().provider_options, expected)
+
     def test_model_override(self) -> None:
         env = {
             "ANTHROPIC_API_KEY": "k",

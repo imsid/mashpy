@@ -29,6 +29,7 @@ Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
 | `PILOT_GUIDE_MODEL` | Override the guide's model | `gemini-3.5-flash` |
 | `PILOT_OPEN_MODEL` | Override the builder's and summarizer's model | `google/gemma-4-31b-it` |
 | `COMPANION_AGENT_GEMINI_MODEL` | Override the companion's model (it uses `GEMINI_API_KEY`) | `gemini-3.5-flash` |
+| `COMPANION_AGENT_THINKING_LEVEL` | The companion's Gemini thinking level; empty for the model's default | `low` |
 
 ## Quick start
 

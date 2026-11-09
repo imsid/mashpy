@@ -300,6 +300,7 @@ AgentConfig(
     compaction_token_threshold=0,         # summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # how many recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
+    provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```

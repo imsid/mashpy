@@ -1099,7 +1099,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.content_blocks[0].data["thinking"], "I need to think...")
         self.assertEqual(parsed.content_blocks[1].type, "text")
         self.assertEqual(parsed.text, "Here is my answer.")
-        self.assertEqual(parsed.usage.metadata["thought_tokens"], 50)
+        self.assertEqual(parsed.usage.reasoning_tokens, 50)
 
     async def test_stream_response_text(self) -> None:
         provider = self._make_provider()
@@ -1255,7 +1255,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.thought_summary, "thinking hard")
         thinking_block = next(b for b in response.content_blocks if b.type == "thinking")
         self.assertEqual(thinking_block.data["thinking"], "thinking hard")
-        self.assertEqual(response.usage.metadata["thought_tokens"], 20)
+        self.assertEqual(response.usage.reasoning_tokens, 20)
 
     # --- web_search constructor flag ---
 
@@ -1439,6 +1439,7 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
                 completion_tokens=5,
                 total_tokens=15,
                 prompt_tokens_details=SimpleNamespace(cached_tokens=2),
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=3),
             ),
         )
 
@@ -1455,6 +1456,8 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         assert parsed.usage is not None
         self.assertEqual(parsed.usage.input_tokens, 10)
         self.assertEqual(parsed.usage.cache_read_tokens, 2)
+        # OpenRouter reports a reasoning model's thinking here.
+        self.assertEqual(parsed.usage.reasoning_tokens, 3)
 
     def test_parse_maps_length_finish_reason_to_max_tokens(self) -> None:
         provider = object.__new__(OSSCompatibleProvider)
