@@ -12,6 +12,11 @@
   eval workflows, registered by `HostBuilder.enable_evals()`. See
   [`masher/README.md`](masher/README.md).
 
+- `companion`: the built-in router `CompanionSpec`, registered by
+  `HostBuilder.enable_companion()`. It becomes the primary of every host
+  defined without one and routes each user message among the host's subagents
+  and workflows.
+
 ## Package Boundary
 - Built-in agents should compose `mash.runtime`, `mash.tools`, `mash.memory`, and `mash.logging`.
 - They should not reimplement generic runtime primitives inside this package.

@@ -26,18 +26,22 @@ class Host:
     A session is never bound to a host; the client addresses a host
     explicitly per request, and the request carries a snapshot of this
     composition for durable replay.
+
+    A host without a ``primary`` gets the built-in ``companion`` agent as its
+    primary when the pool defines it, and the companion routes among the
+    subagents and workflows.
     """
 
     host_id: str
-    primary: str
+    primary: Optional[str] = None
     subagents: tuple[str, ...] = ()
     workflows: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.host_id.strip():
             raise ValueError("host_id is required")
-        if not self.primary.strip():
-            raise ValueError("host primary agent id is required")
+        if self.primary is not None and not self.primary.strip():
+            raise ValueError("host primary agent id must be non-empty")
         seen: set[str] = set()
         for agent_id in self.subagents:
             if not str(agent_id).strip():

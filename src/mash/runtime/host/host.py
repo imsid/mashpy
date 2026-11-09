@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
@@ -185,6 +185,15 @@ class Pool:
         return resolved_agent_id
 
     def define_host(self, host: Host) -> Host:
+        if host.primary is None:
+            from mash.agents.companion import COMPANION_AGENT_ID
+
+            if COMPANION_AGENT_ID not in self._registered:
+                raise ValueError(
+                    f"host '{host.host_id}' has no primary; name one or call "
+                    "HostBuilder.enable_companion()"
+                )
+            host = replace(host, primary=COMPANION_AGENT_ID)
         merged_workflows = tuple(
             dict.fromkeys((*host.workflows, *self._default_workflow_ids))
         )

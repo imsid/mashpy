@@ -623,6 +623,28 @@ the calling request (not one the caller sends) and forwards it to the child
 agent's process. Cancelling a request cancels its
 running children.
 
+A host defined in code may leave out `primary` when the pool calls
+`HostBuilder().enable_companion()`. The pool then registers the built-in
+`companion` agent and makes it the host's primary. For each user message the
+companion decides which subagents run, how many, and whether each continues an
+earlier session of that agent or starts a new one. It waits for them and
+writes the answer. Without `enable_companion()`, a host without a primary
+fails to define. The control API and `mash compose` still require `primary`.
+
+```python
+pool = (
+    HostBuilder()
+    .agent(PilotAgent(), metadata=AgentMetadata(...))
+    .agent(BuilderAgent(), metadata=AgentMetadata(...))
+    .enable_companion()
+    .host(Host(host_id="guide", subagents=("pilot", "builder")))
+    .build()
+)
+```
+
+`companion` picks its provider like masher's agents;
+`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model.
+
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
 
