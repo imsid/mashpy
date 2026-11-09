@@ -395,7 +395,7 @@ class MashRemoteShell:
         if isinstance(origin, dict) and origin.get("agent_id"):
             prompt = f"[{origin['agent_id']}] {prompt}"
 
-        self.renderer.info(f"\n{prompt}")
+        self.renderer.info(escape(f"\n{prompt}"))
 
         if interaction_type == "browser":
             url = str(payload.get("url") or "")

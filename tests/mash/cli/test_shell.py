@@ -936,18 +936,18 @@ class MashRemoteShellTests(unittest.TestCase):
             seen.append(f"asked: {args[0] if args else ''}")
             return "blue"
 
+        console = shell.renderer.console
+        console.record = True
         _fake(shell).stream_request = stream
         with patch.object(
             shell.chain_renderer, "render_subagent_event", side_effect=render_sub
-        ), patch.object(shell.renderer, "info") as info, patch(
-            "builtins.input", side_effect=answer
-        ):
+        ), patch("builtins.input", side_effect=answer):
             shell.handle_repl_message(shell.context, "hello")
 
         # The child stops at its interaction; the parent's relayed copy is
         # asked and answered; the child then shows only what came after.
         self.assertEqual(seen, ["research: before", "asked:   > ", "research: after"])
-        self.assertIn("[research] Which one?", " ".join(str(c.args[0]) for c in info.call_args_list))
+        self.assertIn("[research] Which one?", console.export_text())
         self.assertEqual(
             _fake(shell).interactions,
             [{"agent_id": "primary", "request_id": "req-1", "interaction_id": "itr_r", "response": "blue"}],
