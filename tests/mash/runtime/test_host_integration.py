@@ -31,7 +31,12 @@ from mash.testing.runtime_fixtures import (
     metadata,
     patch_companion_llm,
 )
-from mash.testing.runtime_fixtures import DeterministicAgentSpec, DeterministicLLMProvider
+from mash.testing.runtime_fixtures import (
+    DeterministicAgentSpec,
+    DeterministicLLMProvider,
+    ToolCallingAgentSpec,
+)
+from mash.runtime.engine.loop import relayed_interaction_id
 from mash.tools.ask_user import AskUserTool
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
@@ -83,6 +88,47 @@ class _AskingSpec(DeterministicAgentSpec):
     def build_tools(self) -> ToolRegistry:
         tools = ToolRegistry()
         tools.register(AskUserTool())
+        return tools
+
+
+class _AskingChildSpec(ToolCallingAgentSpec):
+    """Asks the user one question with AskUser, then answers with the reply."""
+
+    def __init__(self, *, agent_id: str) -> None:
+        super().__init__(agent_id=agent_id, tool_name="AskUser", arguments={"question": "Which one?"})
+
+    def build_tools(self) -> ToolRegistry:
+        tools = ToolRegistry()
+        tools.register(AskUserTool())
+        return tools
+
+
+class _DeployTool:
+    """A tool that needs the user's approval."""
+
+    name = "deploy"
+    description = "Deploy."
+    requires_approval = True
+    parallel_safe = False
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, args: dict[str, Any]) -> ToolResult:
+        del args
+        return ToolResult.success("deployed")
+
+    def to_llm_format(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description, "input_schema": self.parameters}
+
+
+class _DeployingChildSpec(ToolCallingAgentSpec):
+    """Calls the approval-gated deploy tool, then answers with its result."""
+
+    def __init__(self, *, agent_id: str) -> None:
+        super().__init__(agent_id=agent_id, tool_name="deploy", arguments={})
+
+    def build_tools(self) -> ToolRegistry:
+        tools = ToolRegistry()
+        tools.register(_DeployTool())
         return tools
 
 
@@ -930,7 +976,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_only_the_companion_routes_and_a_child_gets_no_ask_user(self) -> None:
+    async def test_only_the_companion_routes_and_a_child_keeps_ask_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 pool = (
@@ -961,10 +1007,126 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     for agent in (direct, child):
                         self.assertNotIn("RunSubAgents", agent.tools)
                         self.assertNotIn("AGENTS\n", str(agent.config.system_prompt))
+                    # A child asks the user through the companion, which relays it.
                     self.assertIn("AskUser", direct.tools)
-                    self.assertNotIn("AskUser", child.tools)
-                    # A child's removals stay on its own registry.
-                    self.assertIn("AskUser", research.agent.tools)
+                    self.assertIn("AskUser", child.tools)
+                finally:
+                    await pool.close()
+
+    async def _relay_one(
+        self, child_spec: AgentSpec, answer: Any
+    ) -> tuple[Any, str, dict[str, Any], list[dict[str, Any]]]:
+        """Run a host request whose child opens one interaction; answer it on the companion.
+
+        Returns the pool, the companion's request id, the relayed
+        ``request.interaction.create`` and the companion's stream.
+        """
+        self._route("research")
+        pool = (
+            HostBuilder()
+            .agent(child_spec, metadata=metadata())
+            .host(Host(host_id="assistant", agents=("research",)))
+            .build()
+        )
+        pool.configure_runtime_database_url("postgresql://test/runtime")
+        await pool.start()
+        accepted = await pool.submit_host_request(
+            "assistant", message="delegate", session_id="s-1", user_id="u-1"
+        )
+        request_id = accepted["request_id"]
+        client = pool.get_client("companion")
+        relayed: dict[str, Any] = {}
+        events: list[dict[str, Any]] = []
+        async for event in client.stream_response(request_id, timeout=10):
+            events.append(event)
+            if event.get("event") == "request.interaction.create":
+                relayed = event["data"]
+                await client.post_interaction(
+                    request_id, interaction_id=relayed["interaction_id"], response=answer
+                )
+            if event.get("event") in {"request.completed", "request.error"}:
+                break
+        return pool, request_id, relayed, events
+
+    async def _run_subagents_entries(self, pool: Any, request_id: str) -> list[dict[str, Any]]:
+        companion = _agent_runtime(pool, "companion")
+        [tool_end] = [
+            event
+            for event in await companion.runtime_store.list_request_events(request_id)
+            if event.event_type == "execute_tool.end"
+        ]
+        return json.loads(tool_end.payload["result"]["content"])
+
+    async def test_a_childs_question_is_relayed_through_the_companion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool, request_id, relayed, events = await self._relay_one(
+                    _AskingChildSpec(agent_id="research"), "the blue one"
+                )
+                try:
+                    self.assertEqual(events[-1]["event"], "request.completed")
+                    child_id = child_request_id(f"{request_id}-sub-0-0", 0)
+                    origin = relayed["origin"]
+                    self.assertEqual(origin["agent_id"], "research")
+                    self.assertEqual(origin["request_id"], child_id)
+                    self.assertEqual(origin["session_id"], child_id)
+                    self.assertTrue(origin["trace_id"])
+                    self.assertEqual(
+                        relayed["interaction_id"],
+                        relayed_interaction_id(child_id, origin["interaction_id"]),
+                    )
+                    self.assertEqual(relayed["type"], "info")
+                    self.assertEqual(relayed["prompt"], "Which one?")
+
+                    # The user's answer reached the child, which answered with it.
+                    [entry] = await self._run_subagents_entries(pool, request_id)
+                    self.assertEqual(entry["status"], "completed")
+                    self.assertEqual(entry["response"], "the blue one")
+                    self.assertEqual(
+                        entry["interactions"],
+                        [
+                            {
+                                "interaction_id": origin["interaction_id"],
+                                "type": "info",
+                                "prompt": "Which one?",
+                                "response": "the blue one",
+                            }
+                        ],
+                    )
+                    research = _agent_runtime(pool, "research")
+                    [child_ack] = [
+                        event
+                        for event in await research.runtime_store.list_request_events(child_id)
+                        if event.event_type == "mash.interaction.end"
+                    ]
+                    self.assertEqual(child_ack.payload["response"], "the blue one")
+                    # The companion's copy closed with the same answer.
+                    acks = [e["data"] for e in events if e["event"] == "request.interaction.ack"]
+                    self.assertEqual(
+                        [(a["interaction_id"], a["response"]) for a in acks],
+                        [(relayed["interaction_id"], "the blue one")],
+                    )
+                finally:
+                    await pool.close()
+
+    async def test_a_childs_approval_is_relayed_through_the_companion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                pool, request_id, relayed, events = await self._relay_one(
+                    _DeployingChildSpec(agent_id="research"), "approve"
+                )
+                try:
+                    self.assertEqual(events[-1]["event"], "request.completed")
+                    self.assertEqual(relayed["type"], "approval")
+                    self.assertEqual(relayed["prompt"], "Approve execution of: deploy?")
+                    self.assertEqual(relayed["schema"]["options"], ["approve", "deny", "skip"])
+                    [entry] = await self._run_subagents_entries(pool, request_id)
+                    # The tool ran only because the user's approve reached the child.
+                    self.assertEqual(entry["response"], "deployed")
+                    self.assertEqual(
+                        [(i["type"], i["response"]) for i in entry["interactions"]],
+                        [("approval", "approve")],
+                    )
                 finally:
                     await pool.close()
 

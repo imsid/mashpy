@@ -1,7 +1,7 @@
 """Unit tests for the interaction step primitives.
 
-``open_interaction`` mints the id and emits the create event, and the ack
-carries the ``cancelled`` marker. The loop's waiting, recovery and cancel
+Interaction ids derive from their keys, the create event is emitted once per
+id, and the ack carries the ``cancelled`` marker. The loop's waiting, recovery and cancel
 behavior is covered in ``test_request_engine.py``.
 """
 
@@ -15,9 +15,11 @@ from conftest import build_test_stores
 from mash.runtime import AgentRuntime
 from mash.runtime.engine.steps import (
     INTERACTION_SCHEMAS,
+    derive_interaction_id,
     emit_interaction_ack,
+    emit_interaction_create,
     interaction_response_error,
-    open_interaction,
+    interaction_schema,
 )
 from mash.runtime.events import RuntimeEventType
 from mash.testing.runtime_fixtures import build_spec
@@ -42,19 +44,21 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(runtime.shutdown)
         return runtime
 
-    async def test_open_interaction_mints_id_and_emits_create(self) -> None:
+    async def test_create_is_emitted_once_per_id(self) -> None:
         runtime = await self._with_runtime()
-        interaction_id = await open_interaction(
-            runtime,
-            "req-1",
-            "s-1",
-            "trace-1",
-            interaction_type="choice",
-            prompt="Pick one",
-            options=["a", "b"],
-            timeout_seconds=120,
-        )
-        self.assertTrue(interaction_id.startswith("itr_"))
+        for _ in range(2):
+            await emit_interaction_create(
+                runtime,
+                "req-1",
+                "s-1",
+                "trace-1",
+                interaction_id="itr_one",
+                interaction_type="choice",
+                prompt="Pick one",
+                schema=interaction_schema("choice", ["a", "b"]),
+                timeout_seconds=120,
+                extra={"origin": {"agent_id": "research"}},
+            )
 
         events = await runtime.runtime_store.list_request_events("req-1")
         creates = [
@@ -64,22 +68,19 @@ class InteractionStepEventTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(creates), 1)
         payload = creates[0].payload or {}
-        self.assertEqual(payload["interaction_id"], interaction_id)
+        self.assertEqual(payload["interaction_id"], "itr_one")
         self.assertEqual(payload["type"], "choice")
         self.assertEqual(payload["prompt"], "Pick one")
         self.assertEqual(payload["schema"]["options"], ["a", "b"])
+        self.assertEqual(payload["origin"], {"agent_id": "research"})
 
-    async def test_open_interaction_ids_are_unique_per_call(self) -> None:
-        runtime = await self._with_runtime()
-        first = await open_interaction(
-            runtime, "req-2", "s-1", "trace-1",
-            interaction_type="info", prompt="?",
-        )
-        second = await open_interaction(
-            runtime, "req-2", "s-1", "trace-1",
-            interaction_type="info", prompt="?",
-        )
-        self.assertNotEqual(first, second)
+    def test_ids_derive_from_their_keys(self) -> None:
+        first = derive_interaction_id("req-1:interaction.open.0.0")
+        self.assertTrue(first.startswith("itr_"))
+        self.assertEqual(len(first), len("itr_") + 12)
+        self.assertEqual(first, derive_interaction_id("req-1:interaction.open.0.0"))
+        self.assertNotEqual(first, derive_interaction_id("req-1:interaction.open.0.1"))
+        self.assertNotEqual(first, derive_interaction_id("req-2:interaction.open.0.0"))
 
     async def test_ack_records_cancelled_marker(self) -> None:
         runtime = await self._with_runtime()

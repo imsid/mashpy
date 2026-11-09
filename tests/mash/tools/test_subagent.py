@@ -14,7 +14,8 @@ from mash.logging import (
     clear_trace_id,
     set_trace_id,
 )
-from mash.tools.subagent import RunSubAgentsTool, child_request_id
+from mash.runtime.client import InteractionClosedError
+from mash.tools.subagent import RunSubAgentsTool, bound_interaction_relay, child_request_id
 
 
 def _completed(request_id: str, text: str, **metadata: Any) -> Dict[str, Any]:
@@ -31,9 +32,10 @@ def _completed(request_id: str, text: str, **metadata: Any) -> Dict[str, Any]:
 class _Children:
     """A fake H2A client for every agent, keyed by child request id.
 
-    Each child's script is a list of events, or a float: seconds to wait
-    before completing. Submissions are idempotent on request_id, as the real
-    agent server's are.
+    Each child's script is a list of events, a float (seconds to wait before
+    completing), or a function of the client and the request id that returns
+    an async iterator of events. Submissions are idempotent on request_id, as
+    the real agent server's are.
     """
 
     def __init__(self) -> None:
@@ -45,6 +47,9 @@ class _Children:
         self.running = 0
         self.max_running = 0
         self.fail_submit_for: set[str] = set()
+        self.answers: list[tuple[str, str, Any]] = []
+        self.answered = asyncio.Event()
+        self.closed_interactions: set[str] = set()
         self._counter = 0
 
     def client(self, agent_id: str) -> "_Client":
@@ -104,6 +109,10 @@ class _Client:
                 await asyncio.sleep(float(script))
                 yield _completed(request_id, f"{self.agent_id} done")
                 return
+            if callable(script):
+                async for event in script(self, request_id):
+                    yield event
+                return
             for event in script or [_completed(request_id, f"{self.agent_id} done")]:
                 await asyncio.sleep(0)
                 yield event
@@ -113,6 +122,84 @@ class _Client:
     async def cancel_request(self, request_id: str) -> Dict[str, Any]:
         self._children.cancelled.append(request_id)
         return {"request_id": request_id, "status": "cancelled"}
+
+    async def post_interaction(
+        self, request_id: str, *, interaction_id: str, response: Any
+    ) -> Dict[str, Any]:
+        children = self._children
+        if interaction_id in children.closed_interactions:
+            raise InteractionClosedError(f"interaction '{interaction_id}' is no longer open")
+        children.answers.append((request_id, interaction_id, response))
+        children.answered.set()
+        return {"ok": True, "interaction_id": interaction_id}
+
+
+def _create(request_id: str, interaction_id: str, prompt: str = "Which one?") -> Dict[str, Any]:
+    return {
+        "event": "request.interaction.create",
+        "data": {
+            "request_id": request_id,
+            "agent_id": "research",
+            "session_id": request_id,
+            "trace_id": "trace-child",
+            "interaction_id": interaction_id,
+            "type": "info",
+            "prompt": prompt,
+            "schema": {"type": "text"},
+            "timeout_seconds": 300,
+        },
+    }
+
+
+def _ack(interaction_id: str, response: Any, **flags: Any) -> Dict[str, Any]:
+    return {
+        "event": "request.interaction.ack",
+        "data": {"interaction_id": interaction_id, "response": response, **flags},
+    }
+
+
+def _asking_child(*, wait_seconds: float = 0.0):
+    """A child that asks once, takes the answer, works ``wait_seconds``, then completes."""
+
+    async def script(client: "_Client", request_id: str):
+        yield _create(request_id, "itr_child")
+        await client._children.answered.wait()
+        [(_, _, response)] = client._children.answers
+        yield _ack("itr_child", response)
+        await asyncio.sleep(wait_seconds)
+        yield _completed(request_id, f"answered {response}")
+
+    return script
+
+
+class _Relay:
+    """A fake calling request: relayed interactions the test answers by hand."""
+
+    def __init__(self) -> None:
+        self.opened: list[Dict[str, Any]] = []
+        self.closed: Dict[str, Dict[str, Any]] = {}
+        self._ends: Dict[str, asyncio.Future] = {}
+
+    def _end(self, interaction_id: str) -> asyncio.Future:
+        return self._ends.setdefault(
+            interaction_id, asyncio.get_running_loop().create_future()
+        )
+
+    async def open(self, interaction: Dict[str, Any]) -> str:
+        self.opened.append(interaction)
+        return f"relayed-{interaction['interaction_id']}"
+
+    async def wait(self, interaction_id: str) -> Dict[str, Any]:
+        return await self._end(interaction_id)
+
+    async def close(self, interaction_id: str, ack: Dict[str, Any]) -> None:
+        self.closed.setdefault(interaction_id, dict(ack))
+        end = self._end(interaction_id)
+        if not end.done():
+            end.set_result(dict(ack))
+
+    def answer(self, interaction_id: str, response: Any) -> None:
+        self._end(interaction_id).set_result({"response": response})
 
 
 class _RecordingEventLogger:
@@ -137,8 +224,12 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         clear_trace_id()
 
-    async def _run(self, args: Dict[str, Any]) -> tuple[Any, list[Dict[str, Any]]]:
-        with bound_request_id("req-1"), bound_subagent_id_prefix("req-1-sub-0-0"):
+    async def _run(
+        self, args: Dict[str, Any], *, relay: Optional[_Relay] = None
+    ) -> tuple[Any, list[Dict[str, Any]]]:
+        with bound_request_id("req-1"), bound_subagent_id_prefix(
+            "req-1-sub-0-0"
+        ), bound_interaction_relay(relay):
             result = await self.tool.execute(args)
         entries = json.loads(result.content) if not result.is_error else []
         return result, entries
@@ -261,6 +352,159 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.is_error)
         self.assertEqual([e["status"] for e in entries], ["timed_out", "completed"])
         self.assertEqual(self.children.cancelled, [entries[0]["request_id"]])
+
+    async def _answer_when_opened(self, relay: _Relay, response: Any, delay: float = 0.0) -> None:
+        while not relay.opened:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(delay)
+        relay.answer("relayed-itr_child", response)
+
+    async def test_a_childs_interaction_is_relayed_and_the_answer_forwarded(self) -> None:
+        self.children.default_script = _asking_child()
+        relay = _Relay()
+        answering = asyncio.ensure_future(self._answer_when_opened(relay, "blue"))
+        _, entries = await self._run(
+            {"requests": [{"agent_id": "research", "prompt": "ask"}]}, relay=relay
+        )
+        await answering
+
+        child_id = child_request_id("req-1-sub-0-0", 0)
+        [opened] = relay.opened
+        self.assertEqual(opened["request_id"], child_id)
+        self.assertEqual(opened["trace_id"], "trace-child")
+        self.assertEqual(self.children.answers, [(child_id, "itr_child", "blue")])
+        # The child's ack closes the relayed copy (a no-op on the real store,
+        # where the user's answer is already there).
+        self.assertEqual(
+            relay.closed,
+            {"relayed-itr_child": {"interaction_id": "itr_child", "response": "blue"}},
+        )
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertEqual(entries[0]["response"], "answered blue")
+        self.assertEqual(
+            entries[0]["interactions"],
+            [
+                {
+                    "interaction_id": "itr_child",
+                    "type": "info",
+                    "prompt": "Which one?",
+                    "response": "blue",
+                }
+            ],
+        )
+
+    async def test_the_clock_stops_while_a_child_waits_on_the_user(self) -> None:
+        # The user takes 1.5s on a 1s budget; the child then works 0.5s more.
+        self.children.default_script = _asking_child(wait_seconds=0.5)
+        relay = _Relay()
+        answering = asyncio.ensure_future(self._answer_when_opened(relay, "blue", delay=1.5))
+        _, entries = await self._run(
+            {"requests": [{"agent_id": "research", "prompt": "ask"}], "timeout_seconds": 1},
+            relay=relay,
+        )
+        await answering
+
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertEqual(self.children.cancelled, [])
+
+    async def test_the_clock_runs_again_once_the_user_answers(self) -> None:
+        # The child works 1.5s after the answer, past its 1s budget.
+        self.children.default_script = _asking_child(wait_seconds=1.5)
+        relay = _Relay()
+        answering = asyncio.ensure_future(self._answer_when_opened(relay, "blue"))
+        _, entries = await self._run(
+            {"requests": [{"agent_id": "research", "prompt": "ask"}], "timeout_seconds": 1},
+            relay=relay,
+        )
+        await answering
+
+        self.assertEqual(entries[0]["status"], "timed_out")
+        self.assertEqual(self.children.cancelled, [entries[0]["request_id"]])
+
+    async def test_a_child_timeout_closes_the_relayed_interaction(self) -> None:
+        async def script(client: "_Client", request_id: str):
+            yield _create(request_id, "itr_child", prompt="Approve?")
+            yield _ack("itr_child", "deny", timed_out=True)
+            yield _completed(request_id, "not deployed")
+
+        self.children.default_script = script
+        relay = _Relay()
+        _, entries = await self._run(
+            {"requests": [{"agent_id": "research", "prompt": "ship"}]}, relay=relay
+        )
+
+        self.assertEqual(
+            relay.closed,
+            {
+                "relayed-itr_child": {
+                    "interaction_id": "itr_child",
+                    "response": "deny",
+                    "timed_out": True,
+                }
+            },
+        )
+        # Nothing is forwarded for a timed-out interaction.
+        self.assertEqual(self.children.answers, [])
+        self.assertEqual(
+            entries[0]["interactions"],
+            [
+                {
+                    "interaction_id": "itr_child",
+                    "type": "info",
+                    "prompt": "Approve?",
+                    "response": "deny",
+                    "timed_out": True,
+                }
+            ],
+        )
+
+    async def test_an_answer_the_child_already_has_is_not_an_error(self) -> None:
+        # A rerun call replays the stream: the answer was forwarded before.
+        async def script(client: "_Client", request_id: str):
+            yield _create(request_id, "itr_child")
+            await asyncio.sleep(0.05)
+            yield _ack("itr_child", "blue")
+            yield _completed(request_id, "answered blue")
+
+        self.children.default_script = script
+        self.children.closed_interactions.add("itr_child")
+        relay = _Relay()
+        relay.answer("relayed-itr_child", "blue")
+        _, entries = await self._run(
+            {"requests": [{"agent_id": "research", "prompt": "ask"}]}, relay=relay
+        )
+
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertEqual(entries[0]["interactions"][0]["response"], "blue")
+
+    async def test_a_relayed_interaction_left_open_is_closed_cancelled(self) -> None:
+        async def script(client: "_Client", request_id: str):
+            yield _create(request_id, "itr_child")
+            yield {"event": "request.error", "data": {"error": "boom"}}
+
+        self.children.default_script = script
+        relay = _Relay()
+        _, entries = await self._run(
+            {"requests": [{"agent_id": "research", "prompt": "ask"}]}, relay=relay
+        )
+
+        self.assertEqual(entries[0]["status"], "failed")
+        self.assertEqual(
+            relay.closed, {"relayed-itr_child": {"response": None, "cancelled": True}}
+        )
+        self.assertNotIn("interactions", entries[0])
+
+    async def test_without_a_relay_interactions_are_not_relayed(self) -> None:
+        async def script(client: "_Client", request_id: str):
+            yield _create(request_id, "itr_child")
+            yield _ack("itr_child", "", timed_out=True)
+            yield _completed(request_id, "done")
+
+        self.children.default_script = script
+        _, entries = await self._run({"requests": [{"agent_id": "research", "prompt": "ask"}]})
+
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertNotIn("interactions", entries[0])
 
     async def test_output_schema_becomes_the_childs_structured_output(self) -> None:
         schema = {"type": "object", "properties": {"score": {"type": "number"}}}
