@@ -16,8 +16,9 @@ from ..logging import (
 from ..runtime.errors import classify_error
 from .base import ToolResult
 
-DEFAULT_TIMEOUT_SECONDS = 360
-MAX_TIMEOUT_SECONDS = 3600
+# The default and the ceiling of a call's timeout_seconds; an agent sets its
+# own with AgentConfig.subagent_timeout_seconds.
+DEFAULT_TIMEOUT_SECONDS = 3600
 # Children one call may start: each is a request on its agent's process.
 MAX_REQUESTS = 16
 
@@ -83,7 +84,10 @@ class RunSubAgentsTool:
         "run at once, then write one answer from their results. Returns one "
         "entry per item, in order, with the child's request_id, its status "
         "(completed, failed, cancelled or timed_out), and its response, "
-        "structured output or error."
+        "structured output or error, plus the session_id it ran in and its "
+        "trace_id. Each item runs in a session of its own: pass an earlier "
+        "entry's session_id to continue that session, where the agent sees its "
+        "own earlier work, or leave it out to start a new one."
     )
     parameters = {
         "type": "object",
@@ -100,6 +104,13 @@ class RunSubAgentsTool:
                             "description": "This agent's own id, or a subagent of the host.",
                         },
                         "prompt": {"type": "string"},
+                        "session_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional: an earlier session of this agent to "
+                                "continue. Without it the child starts a new session."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": "Optional JSON schema for the child's structured output.",
@@ -107,13 +118,6 @@ class RunSubAgentsTool:
                     },
                     "required": ["agent_id", "prompt"],
                 },
-            },
-            "timeout_seconds": {
-                "type": "integer",
-                "description": (
-                    f"Defaults to {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS}."
-                ),
-                "maximum": MAX_TIMEOUT_SECONDS,
             },
         },
         "required": ["requests"],
@@ -126,6 +130,7 @@ class RunSubAgentsTool:
         client_resolver: Callable[[str], SupportsChildClient],
         session_id: str,
         host: Optional[Dict[str, Any]] = None,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         if client_resolver is None:
             raise ValueError("client_resolver is required")
@@ -139,9 +144,20 @@ class RunSubAgentsTool:
         self._client_resolver = client_resolver
         self._session_id = str(session_id).strip()
         self._host = dict(host) if host is not None else None
+        if isinstance(timeout_seconds, bool) or int(timeout_seconds) <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self._timeout_seconds = int(timeout_seconds)
+        properties = dict(type(self).parameters["properties"])
+        properties["timeout_seconds"] = {
+            "type": "integer",
+            "description": (
+                f"Defaults to {self._timeout_seconds}, at most {self._timeout_seconds}."
+            ),
+            "maximum": self._timeout_seconds,
+        }
+        self.parameters = {**type(self).parameters, "properties": properties}
 
-    @staticmethod
-    def _parse(args: Dict[str, Any]) -> tuple[list[Dict[str, Any]], int] | str:
+    def _parse(self, args: Dict[str, Any]) -> tuple[list[Dict[str, Any]], int] | str:
         requests = args.get("requests")
         if not isinstance(requests, list) or not requests:
             return "requests must be a non-empty array"
@@ -160,20 +176,30 @@ class RunSubAgentsTool:
                 return f"requests[{index}].prompt is required"
             if output_schema is not None and not isinstance(output_schema, dict):
                 return f"requests[{index}].output_schema must be an object"
+            session_id = item.get("session_id")
+            if session_id is not None and (
+                not isinstance(session_id, str) or not session_id.strip()
+            ):
+                return f"requests[{index}].session_id must be a non-empty string"
             items.append(
-                {"agent_id": agent_id, "prompt": prompt, "output_schema": output_schema}
+                {
+                    "agent_id": agent_id,
+                    "prompt": prompt,
+                    "output_schema": output_schema,
+                    "session_id": session_id.strip() if session_id else None,
+                }
             )
-        timeout = args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+        timeout = args.get("timeout_seconds", self._timeout_seconds)
         if timeout is None:
-            timeout = DEFAULT_TIMEOUT_SECONDS
+            timeout = self._timeout_seconds
         if isinstance(timeout, bool):
             return "timeout_seconds must be a positive integer"
         try:
             timeout = int(timeout)
         except (TypeError, ValueError):
             return "timeout_seconds must be a positive integer"
-        if not 0 < timeout <= MAX_TIMEOUT_SECONDS:
-            return f"timeout_seconds must be a positive integer, at most {MAX_TIMEOUT_SECONDS}"
+        if not 0 < timeout <= self._timeout_seconds:
+            return f"timeout_seconds must be a positive integer, at most {self._timeout_seconds}"
         return items, timeout
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
@@ -205,18 +231,24 @@ class RunSubAgentsTool:
         submitted: list[tuple[int, Any, str]] = []
         for index, item in enumerate(items):
             agent_id = item["agent_id"]
-            entry: Dict[str, Any] = {"agent_id": agent_id, "request_id": None}
+            # A new child session takes the child's request id, so a replayed
+            # call lands in the same session.
+            child_id = child_request_id(prefix, index) if prefix else str(uuid.uuid4())
+            session_id = item["session_id"] or child_id
+            entry: Dict[str, Any] = {
+                "agent_id": agent_id,
+                "request_id": None,
+                "session_id": session_id,
+            }
             entries[index] = entry
             try:
                 client = self._client_resolver(agent_id)
                 request_id = await client.post_request(
                     item["prompt"],
-                    session_id=self._session_id,
+                    session_id=session_id,
                     structured_output=item["output_schema"],
                     metadata=inherited_metadata or None,
-                    request_id=(
-                        child_request_id(prefix, index) if prefix else None
-                    ),
+                    request_id=child_id,
                     host=self._host,
                     parent=parent,
                     mode="bg",
@@ -243,7 +275,7 @@ class RunSubAgentsTool:
             agent_id=", ".join(agent_ids),
             agent_ids=agent_ids,
             primary_session_id=self._session_id,
-            subagent_session_id=self._session_id,
+            subagent_session_ids=[entry.get("session_id") for entry in entries],
             request_id=request_ids[0] if len(request_ids) == 1 else None,
             request_ids=request_ids,
             duration_ms=int((time.monotonic() - started_at) * 1000),
@@ -295,6 +327,8 @@ class RunSubAgentsTool:
                 metadata = response.get("metadata")
                 metadata = metadata if isinstance(metadata, dict) else {}
                 entry["status"] = "completed"
+                if metadata.get("trace_id"):
+                    entry["trace_id"] = str(metadata["trace_id"])
                 entry["response"] = str(response.get("text") or "")
                 if metadata.get("structured_output") is not None:
                     entry["structured_output"] = metadata["structured_output"]

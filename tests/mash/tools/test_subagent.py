@@ -149,13 +149,15 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
             {"requests": [{"agent_id": "research", "prompt": "find papers"}]}
         )
 
+        child_id = child_request_id("req-1-sub-0-0", 0)
         self.assertFalse(result.is_error)
         self.assertEqual(
             entries,
             [
                 {
                     "agent_id": "research",
-                    "request_id": child_request_id("req-1-sub-0-0", 0),
+                    "request_id": child_id,
+                    "session_id": child_id,
                     "status": "completed",
                     "response": "research done",
                 }
@@ -163,7 +165,8 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         )
         [call] = self.children.submitted
         self.assertEqual(call["message"], "find papers")
-        self.assertEqual(call["session_id"], "s1")
+        # A child without a session_id starts a session named after itself.
+        self.assertEqual(call["session_id"], child_id)
         self.assertEqual(call["mode"], "bg")
         self.assertEqual(call["host"]["host_id"], "assistant")
         self.assertEqual(
@@ -179,7 +182,8 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.metadata["agent_id"], "research")
         self.assertEqual(result.metadata["request_id"], entries[0]["request_id"])
-        self.assertEqual(result.metadata["subagent_session_id"], "s1")
+        self.assertEqual(result.metadata["primary_session_id"], "s1")
+        self.assertEqual(result.metadata["subagent_session_ids"], [child_id])
 
     async def test_several_children_run_at_the_same_time_and_report_in_order(self) -> None:
         self.children.scripts = {"research": 0.2, "planner": 0.05}
@@ -291,20 +295,53 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [e["request_id"] for e in first], [e["request_id"] for e in second]
         )
+        self.assertEqual(
+            [e["session_id"] for e in first], [e["session_id"] for e in second]
+        )
         self.assertEqual(len(self.children.started), 2)
+
+    async def test_session_id_continues_an_earlier_session(self) -> None:
+        _, entries = await self._run(
+            {
+                "requests": [
+                    {"agent_id": "research", "prompt": "follow up", "session_id": "sess-a"},
+                    {"agent_id": "research", "prompt": "new work"},
+                ]
+            }
+        )
+
+        sessions = [call["session_id"] for call in self.children.submitted]
+        self.assertEqual(sessions, ["sess-a", child_request_id("req-1-sub-0-0", 1)])
+        self.assertEqual([e["session_id"] for e in entries], sessions)
+        # Both children still name the caller's session as their parent's.
+        self.assertEqual(
+            {call["parent"]["session_id"] for call in self.children.submitted}, {"s1"}
+        )
+
+    async def test_entries_carry_the_childs_trace_id(self) -> None:
+        self.children.default_script = [
+            {
+                "event": "request.completed",
+                "data": {"response": {"text": "ok", "metadata": {"trace_id": "t-child"}}},
+            }
+        ]
+        _, entries = await self._run({"requests": [{"agent_id": "research", "prompt": "a"}]})
+        self.assertEqual(entries[0]["trace_id"], "t-child")
 
     async def test_forwards_the_bound_request_metadata(self) -> None:
         with bound_request_metadata({"tenant": "acme"}):
             await self._run({"requests": [{"agent_id": "research", "prompt": "a"}]})
         self.assertEqual(self.children.submitted[0]["metadata"], {"tenant": "acme"})
 
-    async def test_without_a_prefix_the_server_picks_the_ids(self) -> None:
+    async def test_without_a_prefix_each_child_gets_a_fresh_id_and_session(self) -> None:
         with bound_request_id("req-1"):
             result = await self.tool.execute(
-                {"requests": [{"agent_id": "research", "prompt": "a"}]}
+                {"requests": [{"agent_id": "research", "prompt": "a"}] * 2}
             )
-        [entry] = json.loads(result.content)
-        self.assertEqual(entry["request_id"], "child-1")
+        entries = json.loads(result.content)
+        self.assertEqual(len({e["request_id"] for e in entries}), 2)
+        for entry in entries:
+            self.assertEqual(entry["session_id"], entry["request_id"])
 
     async def test_invalid_arguments_are_errors(self) -> None:
         for args in (
@@ -314,6 +351,8 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
             {"requests": [{"agent_id": "", "prompt": "a"}]},
             {"requests": [{"agent_id": "research", "prompt": " "}]},
             {"requests": [{"agent_id": "research", "prompt": "a", "output_schema": "x"}]},
+            {"requests": [{"agent_id": "research", "prompt": "a", "session_id": " "}]},
+            {"requests": [{"agent_id": "research", "prompt": "a", "session_id": 7}]},
             {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 0},
             {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": "soon"},
             {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 3601},
@@ -323,6 +362,51 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.tool.execute(args)
                 self.assertTrue(result.is_error)
         self.assertEqual(self.children.submitted, [])
+
+    async def test_the_agents_timeout_is_the_default_and_the_ceiling(self) -> None:
+        self.assertEqual(self.tool.parameters["properties"]["timeout_seconds"]["maximum"], 3600)
+        tool = RunSubAgentsTool(
+            caller_agent_id="planner",
+            client_resolver=self.children.client,
+            session_id="s1",
+            timeout_seconds=1,
+        )
+        self.children.scripts = {"research": 30.0}
+        with bound_request_id("req-1"), bound_subagent_id_prefix("req-1-sub-0-0"):
+            result = await tool.execute({"requests": [{"agent_id": "research", "prompt": "slow"}]})
+            refused = await tool.execute(
+                {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 2}
+            )
+        self.assertEqual(json.loads(result.content)[0]["status"], "timed_out")
+        self.assertTrue(refused.is_error)
+        self.assertIn("at most 1", refused.content)
+        self.assertEqual(tool.parameters["properties"]["timeout_seconds"]["maximum"], 1)
+        # The class schema is untouched by an instance's limit.
+        self.assertNotIn("timeout_seconds", RunSubAgentsTool.parameters["properties"])
+
+    def test_configure_run_subagents_uses_the_agents_config(self) -> None:
+        from types import SimpleNamespace
+
+        from mash.core.config import AgentConfig
+        from mash.runtime.factory import configure_run_subagents
+        from mash.tools.registry import ToolRegistry
+
+        access = SimpleNamespace(get_client=lambda agent_id: None)
+        runtime = SimpleNamespace(app_id="planner", get_subagent_access=lambda: access)
+        for config, expected in (
+            (AgentConfig(app_id="planner", system_prompt="p"), 3600),
+            (AgentConfig(app_id="planner", system_prompt="p", subagent_timeout_seconds=7200), 7200),
+        ):
+            agent = SimpleNamespace(tools=ToolRegistry(), config=config)
+            configure_run_subagents(runtime, agent, session_id="s1", host=None, subagent_ids=set())
+            schema = agent.tools.get("RunSubAgents").parameters["properties"]["timeout_seconds"]
+            self.assertEqual(schema["maximum"], expected)
+
+    def test_a_non_positive_timeout_is_refused(self) -> None:
+        from mash.core.config import AgentConfig
+
+        with self.assertRaises(ValueError):
+            AgentConfig(app_id="a", system_prompt="p", subagent_timeout_seconds=0)
 
     def test_the_schema_states_the_limits(self) -> None:
         properties = self.tool.parameters["properties"]

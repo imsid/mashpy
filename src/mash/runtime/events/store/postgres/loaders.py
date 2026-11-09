@@ -79,6 +79,7 @@ def dict_to_feedback(row: dict[str, Any]) -> FeedbackRecord:
 def trace_row_to_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "trace_id": str(row["trace_id"]),
+        "request_id": str(row["request_id"]) if row.get("request_id") else None,
         "session_id": str(row["session_id"]) if row.get("session_id") else None,
         "host_id": str(row["host_id"]) if row.get("host_id") else None,
         "agent_id": str(row["agent_id"]) if row.get("agent_id") else None,
@@ -631,17 +632,25 @@ async def set_export_cursor(pool: Any, name: str, event_id: int) -> None:
 
 
 async def get_request_identity(pool: Any, request_id: str) -> RequestIdentity | None:
-    """The agent and user a request was accepted for, or None if unknown."""
+    """The agent, user, session and parent of a request, or None if unknown."""
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "SELECT agent_id, user_id FROM runtime_request WHERE request_id = %s",
+                """
+                SELECT agent_id, user_id, session_id, parent_request_id
+                FROM runtime_request WHERE request_id = %s
+                """,
                 (request_id,),
             )
             row = await cursor.fetchone()
     if row is None or row["agent_id"] is None:
         return None
-    return RequestIdentity(agent_id=str(row["agent_id"]), user_id=row["user_id"])
+    return RequestIdentity(
+        agent_id=str(row["agent_id"]),
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        parent_request_id=row["parent_request_id"],
+    )
 
 
 async def get_other_session_user(pool: Any, session_id: str, user_id: str) -> str | None:

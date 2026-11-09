@@ -77,7 +77,7 @@ class RunSubAgentsTool:
                     "required": ["agent_id", "prompt"],
                 },
             },
-            "timeout_seconds": {"type": "integer", ...},  # defaults to 360, at most 3600
+            "timeout_seconds": {"type": "integer", ...},  # defaults to AgentConfig.subagent_timeout_seconds (3600), at most that
         },
         "required": ["requests"],
     }
@@ -89,7 +89,7 @@ Each agent runs in its own process, so starting a child is an HTTP call. The pri
 
 Two details keep this delegation well-behaved:
 
-**One session, separate memory.** The child runs under the *primary's* `session_id`: the delegation is a trace within the caller's session, executed by the subagent. There's no per-agent or per-delegation session. The specialist still keeps its own [memory](memory-and-compaction.md) scope (memory is keyed by `app_id`), and its turns are recorded but marked non-replayable, so they never enter the primary's replayed conversation.
+**A session per child.** Each child runs in a session of its own. Without a `session_id` in its item, the child starts a new session named after its request id, so a replayed call lands in the same one. With the `session_id` of an earlier entry, it continues that session and replays its own earlier briefs and answers. Two runs of one agent in two sessions never see each other's work, and the primary's conversation never replays a child's turns, since memory is keyed by session and `app_id`. The relay lets a child continue only a session of the same agent that was started from the caller's session.
 
 **Traces stay connected.** The child's events stay in its own log, under its own request id. The parent's `execute_tool.start` for `RunSubAgents` names each child's agent and request id, so a client streaming the primary's request can open each child's stream and watch the delegation happen live, which is what the REPL does. The [trace projection](reading-a-trace.md) uses the same ids to nest each child's `invoke_agent` span under the call that started it, so the admin UI, trace analysis and an OTLP export all show the whole delegation as one trace.
 

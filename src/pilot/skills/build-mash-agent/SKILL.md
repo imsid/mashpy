@@ -296,6 +296,7 @@ AgentConfig(
     streaming_enabled=True,               # stream tokens and emit chat.delta events
     conversation_history_turns=3,         # prior turns replayed into context
     max_parallel_tools=8,                 # cap on parallel-safe tool calls run concurrently per turn
+    subagent_timeout_seconds=3600,       # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=0,         # summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # how many recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass

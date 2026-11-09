@@ -15,6 +15,7 @@ from ..core.context import (
 )
 from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
+from ..memory.ledger import format_ledger
 from . import sessions
 
 if TYPE_CHECKING:
@@ -115,6 +116,10 @@ async def build_context_with_history(
                 )
 
             agent_text = turn.get("agent_response")
+            # Only the model sees the ledger: the stored reply stays its text.
+            ledger_text = format_ledger(meta.get("ledger") or [])
+            if agent_text and ledger_text:
+                agent_text = f"{agent_text}\n\n{ledger_text}"
             if agent_text:
                 context.add_message(
                     MessageRole.ASSISTANT,

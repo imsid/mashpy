@@ -14,8 +14,10 @@ import httpx
 from ...core.context import Context, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
+from ...memory.ledger import build_ledger
 from ...logging.trace_context import (
     bound_loop_index,
+    bound_subagent_id_prefix,
     get_subagent_id_prefix,
     get_workflow_id,
 )
@@ -375,13 +377,13 @@ async def _persist_turn_payload(
             else 0
         )
         session_total_tokens = previous_total + total_tokens
-        # Workflow task and subagent turns (their request_metadata carries
-        # workflow_id/run_id/task_id or subagent_id) share the session but are
-        # kept out of the model's replayed conversation history.
+        # Workflow task turns (their request_metadata carries
+        # workflow_id/run_id/task_id) are kept out of the model's replayed
+        # conversation history. Subagent turns run in sessions of their own,
+        # so a continued child session replays them.
         workflow_id = response_metadata.get("workflow_id") or None
         workflow_run_id = response_metadata.get("workflow_run_id") or None
         task_id = response_metadata.get("task_id") or None
-        is_subagent = bool(response_metadata.get("subagent_id"))
         await runtime.store.save_turn(
             user_id=user_id_from_request_metadata(response_metadata),
             trace_id=resolved_trace_id,
@@ -395,7 +397,7 @@ async def _persist_turn_payload(
             workflow_id=workflow_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
-            replayable=workflow_id is None and not is_subagent,
+            replayable=workflow_id is None,
         )
     response_payload = {
         "text": response.text,
@@ -779,21 +781,22 @@ async def run_step_tool_batch(
     tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
-    result_payloads = await _run_bounded(
-        max_parallel,
-        len(tool_calls),
-        lambda index: _execute_and_record_tool_call(
-            runtime,
-            request_id=request_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            loop_index=loop_index,
-            tool_call=tool_calls[index],
-            host=host,
-            user_id=user_id,
-            parent_kind=parent_kind,
-        ),
-    )
+    async def _run_one(index: int) -> dict[str, Any]:
+        # A RunWorkflow call in the batch gets the dedup key of its position.
+        with bound_subagent_id_prefix(tool_call_payloads[index].get("call_prefix")):
+            return await _execute_and_record_tool_call(
+                runtime,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                loop_index=loop_index,
+                tool_call=tool_calls[index],
+                host=host,
+                user_id=user_id,
+                parent_kind=parent_kind,
+            )
+
+    result_payloads = await _run_bounded(max_parallel, len(tool_calls), _run_one)
 
     tool_usage = workflow_state.get("tool_usage")
     for tool_call in tool_calls:
@@ -898,6 +901,11 @@ async def persist_completed_turn(
     structured_output = workflow_state.get("structured_output")
     if structured_output is not None:
         response.metadata["structured_output"] = structured_output
+    # What this request's RunSubAgents and RunWorkflow calls returned, read
+    # from the context the save already holds; replay shows it to the model.
+    ledger = build_ledger(dict(workflow_state.get("context") or {}), session_id)
+    if ledger:
+        response.metadata["ledger"] = ledger
     turn_payload = await _persist_turn_payload(
         runtime,
         message=message,

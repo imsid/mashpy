@@ -191,5 +191,12 @@ def build_changelog_workflow_spec(repo_root: Path = REPO_ROOT) -> WorkflowSpec:
                 output=ChangelogSummary,
             ),
         ],
-        metadata={"source": "pilot", "kind": "changelog"},
+        metadata={
+            "source": "pilot",
+            "kind": "changelog",
+            "display_name": "Changelog summary",
+            "description": (
+                "Reads the latest release sections of CHANGELOG.md and summarizes them."
+            ),
+        },
     )

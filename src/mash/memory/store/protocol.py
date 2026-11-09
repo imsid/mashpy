@@ -90,6 +90,20 @@ class MemoryStore(Protocol):
         """Get conversation turns for a session."""
         ...
 
+    async def get_turn(
+        self,
+        trace_id: str,
+        app_id: str,
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """One turn by its trace id (the primary key), or None.
+
+        Only a turn of ``app_id``, and of ``session_id`` when given. The row has
+        ``trace_id``, ``session_id``, ``user_message``, ``agent_response``,
+        ``metadata`` and ``created_at``.
+        """
+        ...
+
     async def get_replay_turns(
         self,
         session_id: str,

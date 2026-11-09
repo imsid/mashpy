@@ -259,6 +259,7 @@ AgentConfig(
     streaming_enabled=True,               # stream tokens + emit chat.delta events
     conversation_history_turns=3,         # prior turns replayed into context
     max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
+    subagent_timeout_seconds=3600,        # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
@@ -594,27 +595,72 @@ each from its `AgentMetadata`, with guidance to split a task only when its
 parts do not depend on each other. The same agent can be primary in one
 host and a subagent in another.
 
-`RunSubAgents(requests=[{agent_id, prompt, output_schema?}], timeout_seconds)`
+`RunSubAgents(requests=[{agent_id, prompt, session_id?, output_schema?}], timeout_seconds)`
 runs each item as its own child request, all at the same time, and returns
 when all of them are done. An item's `agent_id` is one of the host's
 subagents or the calling agent itself, so one item hands a task to a subagent
 and several split a large task into parts. Without a host, the agent can run
 children only on itself. The result has one entry per item, in order: the
-child's `request_id`, its `status` (`completed`, `failed`, `cancelled` or
-`timed_out`), and its response, structured output or error. One child's
+child's `request_id`, its `session_id` and `trace_id`, its `status`
+(`completed`, `failed`, `cancelled` or `timed_out`), and its response,
+structured output or error. One child's
 failure stays in its entry. A call takes at most 16 items. `timeout_seconds`
-defaults to 360 and goes up to 3600; when it passes, the tool cancels the
-children still running.
+defaults to the calling agent's `AgentConfig.subagent_timeout_seconds` (3600
+unless the spec sets it), which is also the most a call may ask for; when it
+passes, the tool cancels the children still running.
 
-Each child is a `bg` request in the calling request's session, started by the
-calling agent, with `parent_request_id` set to the calling request. Its turn
-stays out of the session's replayed history. A child gets neither
+Each child is a `bg` request in a session of its own, started by the calling
+agent, with `parent_request_id` set to the calling request. Without
+`session_id` the child starts a new session, named after its request id. With
+the `session_id` of an earlier entry it continues that session and replays its
+turns, so the agent sees its own earlier work there; the relay accepts only a
+session of the same agent started from the caller's session. The caller's
+saved turn keeps a ledger of its children (agent, session, trace, status, brief
+and answer, clipped), which replay shows to the model under the reply, so a
+follow-up can go back to the session that answered. A child gets neither
 `RunSubAgents` nor `AskUser`: splitting is one level deep, and the user talks
 to the calling agent. The calling agent's process starts children through the
 host's `/h2a` relay, which checks each against the composition stored with
 the calling request (not one the caller sends) and forwards it to the child
 agent's process. Cancelling a request cancels its
 running children.
+
+A host defined in code may leave out `primary` when the pool calls
+`HostBuilder().enable_companion()`. The pool then registers the built-in
+`companion` agent and makes it the host's primary. For each user message the
+companion decides which subagents run, how many, and whether each continues an
+earlier session of that agent or starts a new one. It waits for them and
+writes the answer. Without `enable_companion()`, a host without a primary
+fails to define. The control API and `mash compose` still require `primary`.
+
+```python
+pool = (
+    HostBuilder()
+    .agent(PilotAgent(), metadata=AgentMetadata(...))
+    .agent(BuilderAgent(), metadata=AgentMetadata(...))
+    .enable_companion()
+    .host(Host(host_id="guide", subagents=("pilot", "builder")))
+    .build()
+)
+```
+
+When the companion's host lists workflows (its own, not the pool defaults that
+`enable_evals()` adds), each request gets a `WORKFLOWS` list in its context:
+every workflow's id, `metadata["display_name"]`, `metadata["description"]` and
+input schema. The companion runs one with
+`RunWorkflow(workflow_id, input, timeout_seconds)`, which starts a run for the
+request's user through the host's `/h2a` relay and waits for its result. On a
+timeout it returns `timed_out` with the `run_id`, and the run keeps going.
+
+The companion reads what its agents did with three tools, each keyed by an
+`agent_id` with a `session_id` and/or `trace_id` from its ledger:
+`ListAgentTraces` (an agent session's recent requests), `InspectAgentTrace`
+(one trace's analysis by default, or its events with `view="events"`) and
+`GetAgentTurns` (what an agent was asked and answered). Each refuses a trace or
+session that is not a child of the companion in the user's current session.
+
+`companion` picks its provider like masher's agents;
+`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
@@ -711,7 +757,7 @@ In the REPL:
 
 ```bash
 › /bg set a timer for 2 mins     # submit in the background, back to the prompt
-› /bg --list                     # the session's bg requests, children under parents
+› /bg --list                     # the session's bg requests
 › /bg --switch a1b2c3d4          # bring one to the foreground, replay and follow it
 › /bg --kill a1b2c3d4            # cancel it and its children
 ```

@@ -16,6 +16,7 @@ from ..tools.browser import browser_tool_names, build_browser_tools
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import RunSubAgentsTool
+from ..tools.workflow import RunWorkflowTool
 from .host.subagents import (
     AgentMetadata,
     append_context_block,
@@ -199,7 +200,7 @@ def build_turn_agent(
     if cortex is not None and user_id:
         agent.tools.register(cortex.search_tool(user_id))
     if parent_kind == "subagent":
-        for name in ("RunSubAgents", "AskUser"):
+        for name in ("RunSubAgents", "RunWorkflow", "AskUser"):
             if name in agent.tools:
                 agent.tools.unregister(name)
     else:
@@ -210,6 +211,7 @@ def build_turn_agent(
             host=host,
             subagent_ids=set(host_subagents),
         )
+        configure_run_workflow(self, agent, host=host)
     return agent
 
 
@@ -303,7 +305,32 @@ def configure_run_subagents(
             caller_agent_id=self.app_id,
             session_id=session_id,
             host=host,
+            timeout_seconds=agent.config.subagent_timeout_seconds,
         )
+    )
+
+
+def configure_run_workflow(
+    self: "AgentRuntime", agent: Agent, *, host: dict[str, Any] | None
+) -> None:
+    """Register ``RunWorkflow`` for a companion primary whose host has workflows."""
+    from mash.agents.companion import COMPANION_AGENT_ID
+
+    if "RunWorkflow" in agent.tools:
+        agent.tools.unregister("RunWorkflow")
+    workflow_ids = [str(value) for value in (host or {}).get("workflows") or []]
+    if (
+        self.app_id != COMPANION_AGENT_ID
+        or (host or {}).get("primary") != self.app_id
+        or not workflow_ids
+    ):
+        return
+    access = self.get_subagent_access()
+    get_workflow_client = getattr(access, "get_workflow_client", None)
+    if get_workflow_client is None:
+        return
+    agent.tools.register(
+        RunWorkflowTool(relay=get_workflow_client(), workflow_ids=workflow_ids)
     )
 
 

@@ -374,6 +374,44 @@ class PostgresStore(MemoryStore):
             )
         return turns
 
+    async def get_turn(
+        self,
+        trace_id: str,
+        app_id: str,
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        await self.open()
+        # By primary key; app_id and session_id only narrow the one row.
+        clauses = ["trace_id = %s", "app_id = %s"]
+        params: list[Any] = [trace_id, app_id]
+        if session_id is not None:
+            clauses.append("session_id = %s")
+            params.append(session_id)
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                f"""
+                SELECT trace_id, session_id, user_message, agent_response, metadata, created_at
+                FROM memory_turns
+                WHERE {' AND '.join(clauses)}
+                """,
+                params,
+            )
+        if not rows:
+            return None
+        row = rows[0]
+        metadata = self._load_json_value(row["metadata"])
+        return {
+            "trace_id": str(row["trace_id"]),
+            "session_id": str(row["session_id"]),
+            "user_message": "" if row["user_message"] is None else str(row["user_message"]),
+            "agent_response": (
+                "" if row["agent_response"] is None else str(row["agent_response"])
+            ),
+            "metadata": metadata if isinstance(metadata, dict) else {},
+            "created_at": float(row["created_at"] or 0.0),
+        }
+
     async def get_replay_turns(
         self,
         session_id: str,

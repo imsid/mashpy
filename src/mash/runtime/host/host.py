@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
@@ -185,6 +185,15 @@ class Pool:
         return resolved_agent_id
 
     def define_host(self, host: Host) -> Host:
+        if host.primary is None:
+            from mash.agents.companion import COMPANION_AGENT_ID
+
+            if COMPANION_AGENT_ID not in self._registered:
+                raise ValueError(
+                    f"host '{host.host_id}' has no primary; name one or call "
+                    "HostBuilder.enable_companion()"
+                )
+            host = replace(host, primary=COMPANION_AGENT_ID)
         merged_workflows = tuple(
             dict.fromkeys((*host.workflows, *self._default_workflow_ids))
         )
@@ -243,10 +252,16 @@ class Pool:
         }
 
     def snapshot_for(self, host: Host) -> dict[str, Any]:
+        # The host's own workflows, without the pool defaults every host gets.
         return {
             "host_id": host.host_id,
             "primary": host.primary,
             "subagents": list(host.subagents),
+            "workflows": [
+                workflow_id
+                for workflow_id in host.workflows
+                if workflow_id not in self._default_workflow_ids
+            ],
         }
 
     def snapshot_host_agent_specs(self, host_id: str) -> dict[str, dict[str, Any]]:
@@ -307,14 +322,26 @@ class Pool:
         traceparent: str | None = None,
         tracestate: str | None = None,
     ) -> dict[str, Any]:
+        from mash.agents.companion import COMPANION_AGENT_ID
+        from mash.agents.companion.workflows import format_workflow_list
+
         host = self.get_host(host_id)
+        snapshot = self.snapshot_for(host)
+        if host.primary == COMPANION_AGENT_ID and snapshot["workflows"]:
+            # The companion's workflow directory, built from the registered
+            # specs.
+            listing = format_workflow_list(
+                self._workflow_registry.get(workflow_id)
+                for workflow_id in snapshot["workflows"]
+            )
+            context = "\n\n".join(part for part in (context, listing) if part)
         request_id = await self.get_client(host.primary).post_request(
             message,
             session_id=session_id,
             structured_output=structured_output,
             metadata=metadata,
             context=context,
-            host=self.snapshot_for(host),
+            host=snapshot,
             user_id=user_id,
             mode=mode,
             traceparent=traceparent,

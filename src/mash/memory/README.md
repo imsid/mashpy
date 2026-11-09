@@ -11,7 +11,8 @@
 ## Main Components
 - `store/`: storage protocol and concrete Postgres backend.
 - `search/`: retrieval service, parser/rerank logic, and typed search results.
-- `compaction.py`: memory compaction support.
+- `compaction.py`: memory compaction support. A summary checkpoint keeps the ledgers of the turns it replaces, the latest entry per agent session or workflow run, at most 30.
+- `ledger.py`: the ledger. When a turn is saved, each `RunSubAgents` item and `RunWorkflow` call the request made becomes an entry in the turn's `metadata["ledger"]`: who did the work, its session or run, its trace, its status, the brief clipped to 200 characters and the answer clipped to 500. Replay appends the entries to the turn's assistant message as a `[ledger]` block that only the model sees.
 - `signals.py`: memory-related signaling hooks plus typed signal definitions.
 
 ## Public Exports

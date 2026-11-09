@@ -22,6 +22,8 @@ class AgentConfig:
     streaming_enabled: bool = True
     conversation_history_turns: int = 3
     max_parallel_tools: int = 8
+    # How long a RunSubAgents call waits for its children, by default and at most.
+    subagent_timeout_seconds: int = 3600
     compaction_token_threshold: int = 0
     compaction_turn_limit: int = 50
     compaction_temperature: float = 0.0
@@ -44,6 +46,8 @@ class AgentConfig:
             raise ValueError("conversation_history_turns must be >= 0")
         if self.max_parallel_tools < 1:
             raise ValueError("max_parallel_tools must be >= 1")
+        if isinstance(self.subagent_timeout_seconds, bool) or self.subagent_timeout_seconds <= 0:
+            raise ValueError("subagent_timeout_seconds must be positive")
         if self.compaction_token_threshold < 0:
             raise ValueError("compaction_token_threshold must be >= 0")
         if self.compaction_turn_limit <= 0:

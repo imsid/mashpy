@@ -100,7 +100,7 @@ Notes
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the shell's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
 - `/bg <message>`: submit the message with `mode: bg` and return to the prompt.
-- `/bg --list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child is indented under the request that started it.
+- `/bg --list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child runs in a session of its own, so it is not listed here; `/bg --kill` still cancels it with its parent.
 - `/bg --switch <id>`: switch a request to `fg`, replay its events from the start, then follow it live and answer its interactions. Switching to a child shows its events and leaves it `bg`.
 - `/bg --kill <id>`: cancel a request and its children.
 

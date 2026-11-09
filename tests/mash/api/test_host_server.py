@@ -279,6 +279,7 @@ def test_host_snapshot_route_returns_live_composition_and_specs() -> None:
                 "host_id": "assistant",
                 "primary": "primary",
                 "subagents": ["research"],
+                "workflows": [],
             }
             assert set(payload["agent_spec_snapshot"]) == {"primary", "research"}
 
