@@ -878,6 +878,81 @@ class MashRemoteShellTests(unittest.TestCase):
         self.assertEqual(output.count("┌ pilot"), 2)
         self.assertNotIn("Step 2", output)
 
+    def test_a_child_waiting_on_the_user_is_asked_through_the_parent(self) -> None:
+        shell = self._build_shell()
+        seen: list[str] = []
+
+        def step(text: str) -> dict[str, Any]:
+            return {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "chat.end",
+                    "trace_id": "trace-sub",
+                    "session_id": "sub-1",
+                    "loop_index": 0,
+                    "created_at": 100.0,
+                    "payload": {"duration_ms": 5, "action_type": "response", "assistant_text": text},
+                },
+            }
+
+        def stream(agent_id: str, request_id: str):
+            # Both streams replay from their first event on every read.
+            if request_id == "sub-1":
+                yield step("before")
+                yield {"event": "request.interaction.create", "data": {"interaction_id": "itr_c"}}
+                yield {"event": "request.interaction.ack", "data": {"interaction_id": "itr_c"}}
+                yield step("after")
+                yield {"event": "request.completed", "data": {}}
+                return
+            yield {
+                "event": "agent.trace",
+                "data": {
+                    "event_type": "execute_tool.start",
+                    "trace_id": "trace-1",
+                    "session_id": "s-1",
+                    "loop_index": 0,
+                    "created_at": 99.0,
+                    "payload": {
+                        "attributes": {"gen_ai.tool.name": "RunSubAgents"},
+                        "subagents": [{"agent_id": "research", "request_id": "sub-1"}],
+                    },
+                },
+            }
+            yield {
+                "event": "request.interaction.create",
+                "data": {
+                    "interaction_id": "itr_r",
+                    "type": "info",
+                    "prompt": "Which one?",
+                    "origin": {"agent_id": "research", "request_id": "sub-1"},
+                },
+            }
+            yield {"event": "request.completed", "data": {"response": {"text": "done"}}}
+
+        def render_sub(event: Any, *, agent_id: str) -> None:
+            seen.append(f"{agent_id}: {event.payload['assistant_text']}")
+
+        def answer(*args: Any, **kwargs: Any) -> str:
+            seen.append(f"asked: {args[0] if args else ''}")
+            return "blue"
+
+        _fake(shell).stream_request = stream
+        with patch.object(
+            shell.chain_renderer, "render_subagent_event", side_effect=render_sub
+        ), patch.object(shell.renderer, "info") as info, patch(
+            "builtins.input", side_effect=answer
+        ):
+            shell.handle_repl_message(shell.context, "hello")
+
+        # The child stops at its interaction; the parent's relayed copy is
+        # asked and answered; the child then shows only what came after.
+        self.assertEqual(seen, ["research: before", "asked:   > ", "research: after"])
+        self.assertIn("[research] Which one?", " ".join(str(c.args[0]) for c in info.call_args_list))
+        self.assertEqual(
+            _fake(shell).interactions,
+            [{"agent_id": "primary", "request_id": "req-1", "interaction_id": "itr_r", "response": "blue"}],
+        )
+
     def test_a_failed_child_prints_its_error(self) -> None:
         shell = self._build_shell()
         parent_stream = shell.client.stream_request
