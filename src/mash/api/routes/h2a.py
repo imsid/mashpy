@@ -1,7 +1,8 @@
 """H2A relay for calls agent processes make to the host.
 
 The companion, in its process, starts its RunSubAgents children through these
-routes, never directly, and starts and reads its RunWorkflow runs here. They
+routes, never directly, answers the interactions it relays for them, and
+starts and reads its RunWorkflow runs here. They
 speak H2A as ``AgentServer`` does (no ``{data}`` envelope), so the agent uses a
 plain ``AgentClient`` pointed at ``{host}/h2a``. Each call authenticates with
 the caller's agent token; the host checks it against the request's ``parent``
@@ -21,6 +22,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from mash.runtime.client import (
     AgentClientError,
     AgentUnavailableError,
+    InteractionClosedError,
+    InvalidInteractionResponseError,
     SessionUserConflictError,
 )
 from mash.runtime.events import RuntimeEventType
@@ -259,6 +262,42 @@ def build_h2a_router() -> APIRouter:
             return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
         except AgentClientError as exc:
             return h2a_error(502, "AGENT_ERROR", str(exc))
+        return JSONResponse(result)
+
+    @router.post("/agent/{agent_id}/request/{request_id}/interaction")
+    async def answer_subagent_interaction(
+        request: Request, agent_id: str, request_id: str
+    ) -> Response:
+        refused = await _own_child(request, agent_id, request_id)
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+        except ValueError:
+            return h2a_error(400, "INVALID_JSON", "Request body must be valid JSON")
+        if not isinstance(body, dict):
+            return h2a_error(400, "INVALID_REQUEST", "Request body must be an object")
+        interaction_id = body.get("interaction_id")
+        if not isinstance(interaction_id, str) or not interaction_id.strip():
+            return h2a_error(400, "INVALID_REQUEST", "interaction_id is required")
+        try:
+            client = state_from_request(request).pool.get_client(agent_id)
+        except AgentDisabledError as exc:
+            return h2a_error(409, "AGENT_DISABLED", str(exc))
+        try:
+            result = await client.post_interaction(
+                request_id,
+                interaction_id=interaction_id.strip(),
+                response=body.get("response"),
+            )
+        except InvalidInteractionResponseError as exc:
+            return h2a_error(400, "INVALID_RESPONSE", str(exc))
+        except InteractionClosedError as exc:
+            return h2a_error(409, "INTERACTION_CLOSED", str(exc))
+        except AgentUnavailableError as exc:
+            return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
+        except AgentClientError as exc:
+            return h2a_error(404, "INTERACTION_NOT_FOUND", str(exc))
         return JSONResponse(result)
 
     @router.get("/agent/{agent_id}/request/{request_id}")
