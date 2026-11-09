@@ -16,8 +16,9 @@ from ..logging import (
 from ..runtime.errors import classify_error
 from .base import ToolResult
 
-DEFAULT_TIMEOUT_SECONDS = 360
-MAX_TIMEOUT_SECONDS = 3600
+# The default and the ceiling of a call's timeout_seconds; an agent sets its
+# own with AgentConfig.subagent_timeout_seconds.
+DEFAULT_TIMEOUT_SECONDS = 3600
 # Children one call may start: each is a request on its agent's process.
 MAX_REQUESTS = 16
 
@@ -118,13 +119,6 @@ class RunSubAgentsTool:
                     "required": ["agent_id", "prompt"],
                 },
             },
-            "timeout_seconds": {
-                "type": "integer",
-                "description": (
-                    f"Defaults to {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS}."
-                ),
-                "maximum": MAX_TIMEOUT_SECONDS,
-            },
         },
         "required": ["requests"],
     }
@@ -136,6 +130,7 @@ class RunSubAgentsTool:
         client_resolver: Callable[[str], SupportsChildClient],
         session_id: str,
         host: Optional[Dict[str, Any]] = None,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         if client_resolver is None:
             raise ValueError("client_resolver is required")
@@ -149,9 +144,20 @@ class RunSubAgentsTool:
         self._client_resolver = client_resolver
         self._session_id = str(session_id).strip()
         self._host = dict(host) if host is not None else None
+        if isinstance(timeout_seconds, bool) or int(timeout_seconds) <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self._timeout_seconds = int(timeout_seconds)
+        properties = dict(type(self).parameters["properties"])
+        properties["timeout_seconds"] = {
+            "type": "integer",
+            "description": (
+                f"Defaults to {self._timeout_seconds}, at most {self._timeout_seconds}."
+            ),
+            "maximum": self._timeout_seconds,
+        }
+        self.parameters = {**type(self).parameters, "properties": properties}
 
-    @staticmethod
-    def _parse(args: Dict[str, Any]) -> tuple[list[Dict[str, Any]], int] | str:
+    def _parse(self, args: Dict[str, Any]) -> tuple[list[Dict[str, Any]], int] | str:
         requests = args.get("requests")
         if not isinstance(requests, list) or not requests:
             return "requests must be a non-empty array"
@@ -183,17 +189,17 @@ class RunSubAgentsTool:
                     "session_id": session_id.strip() if session_id else None,
                 }
             )
-        timeout = args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+        timeout = args.get("timeout_seconds", self._timeout_seconds)
         if timeout is None:
-            timeout = DEFAULT_TIMEOUT_SECONDS
+            timeout = self._timeout_seconds
         if isinstance(timeout, bool):
             return "timeout_seconds must be a positive integer"
         try:
             timeout = int(timeout)
         except (TypeError, ValueError):
             return "timeout_seconds must be a positive integer"
-        if not 0 < timeout <= MAX_TIMEOUT_SECONDS:
-            return f"timeout_seconds must be a positive integer, at most {MAX_TIMEOUT_SECONDS}"
+        if not 0 < timeout <= self._timeout_seconds:
+            return f"timeout_seconds must be a positive integer, at most {self._timeout_seconds}"
         return items, timeout
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:

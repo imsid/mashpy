@@ -363,6 +363,51 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.is_error)
         self.assertEqual(self.children.submitted, [])
 
+    async def test_the_agents_timeout_is_the_default_and_the_ceiling(self) -> None:
+        self.assertEqual(self.tool.parameters["properties"]["timeout_seconds"]["maximum"], 3600)
+        tool = RunSubAgentsTool(
+            caller_agent_id="planner",
+            client_resolver=self.children.client,
+            session_id="s1",
+            timeout_seconds=1,
+        )
+        self.children.scripts = {"research": 30.0}
+        with bound_request_id("req-1"), bound_subagent_id_prefix("req-1-sub-0-0"):
+            result = await tool.execute({"requests": [{"agent_id": "research", "prompt": "slow"}]})
+            refused = await tool.execute(
+                {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 2}
+            )
+        self.assertEqual(json.loads(result.content)[0]["status"], "timed_out")
+        self.assertTrue(refused.is_error)
+        self.assertIn("at most 1", refused.content)
+        self.assertEqual(tool.parameters["properties"]["timeout_seconds"]["maximum"], 1)
+        # The class schema is untouched by an instance's limit.
+        self.assertNotIn("timeout_seconds", RunSubAgentsTool.parameters["properties"])
+
+    def test_configure_run_subagents_uses_the_agents_config(self) -> None:
+        from types import SimpleNamespace
+
+        from mash.core.config import AgentConfig
+        from mash.runtime.factory import configure_run_subagents
+        from mash.tools.registry import ToolRegistry
+
+        access = SimpleNamespace(get_client=lambda agent_id: None)
+        runtime = SimpleNamespace(app_id="planner", get_subagent_access=lambda: access)
+        for config, expected in (
+            (AgentConfig(app_id="planner", system_prompt="p"), 3600),
+            (AgentConfig(app_id="planner", system_prompt="p", subagent_timeout_seconds=7200), 7200),
+        ):
+            agent = SimpleNamespace(tools=ToolRegistry(), config=config)
+            configure_run_subagents(runtime, agent, session_id="s1", host=None, subagent_ids=set())
+            schema = agent.tools.get("RunSubAgents").parameters["properties"]["timeout_seconds"]
+            self.assertEqual(schema["maximum"], expected)
+
+    def test_a_non_positive_timeout_is_refused(self) -> None:
+        from mash.core.config import AgentConfig
+
+        with self.assertRaises(ValueError):
+            AgentConfig(app_id="a", system_prompt="p", subagent_timeout_seconds=0)
+
     def test_the_schema_states_the_limits(self) -> None:
         properties = self.tool.parameters["properties"]
         self.assertEqual(properties["requests"]["maxItems"], 16)

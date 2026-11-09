@@ -259,6 +259,7 @@ AgentConfig(
     streaming_enabled=True,               # stream tokens + emit chat.delta events
     conversation_history_turns=3,         # prior turns replayed into context
     max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
+    subagent_timeout_seconds=3600,        # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
@@ -604,8 +605,9 @@ child's `request_id`, its `session_id` and `trace_id`, its `status`
 (`completed`, `failed`, `cancelled` or `timed_out`), and its response,
 structured output or error. One child's
 failure stays in its entry. A call takes at most 16 items. `timeout_seconds`
-defaults to 360 and goes up to 3600; when it passes, the tool cancels the
-children still running.
+defaults to the calling agent's `AgentConfig.subagent_timeout_seconds` (3600
+unless the spec sets it), which is also the most a call may ask for; when it
+passes, the tool cancels the children still running.
 
 Each child is a `bg` request in a session of its own, started by the calling
 agent, with `parent_request_id` set to the calling request. Without

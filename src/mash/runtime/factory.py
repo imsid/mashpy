@@ -305,6 +305,7 @@ def configure_run_subagents(
             caller_agent_id=self.app_id,
             session_id=session_id,
             host=host,
+            timeout_seconds=agent.config.subagent_timeout_seconds,
         )
     )
 
