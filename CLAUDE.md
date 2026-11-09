@@ -601,11 +601,13 @@ runs each item as its own child request on one of the host's agents, all at
 the same time, and returns when all of them are done. The result has one entry
 per item, in order: the child's `request_id`, its `session_id` and
 `trace_id`, its `status` (`completed`, `failed`, `cancelled` or
-`timed_out`), and its response, structured output or error. One child's
-failure stays in its entry. A call takes at most 16 items. `timeout_seconds`
-defaults to the companion's `AgentConfig.subagent_timeout_seconds` (3600),
-which is also the most a call may ask for; when it passes, the tool cancels
-the children still running.
+`timed_out`), and its response, structured output or error, plus
+`interactions` when the child asked the user something. One child's failure
+stays in its entry. A call takes at most 16 items. `timeout_seconds` defaults
+to the companion's `AgentConfig.subagent_timeout_seconds` (3600), which is
+also the most a call may ask for. Each child gets that budget, its clock
+stopped while it waits on the user; when a child's budget runs out, the tool
+cancels it.
 
 Each child is a `bg` request in a session of its own, started by the
 companion, with `parent_request_id` set to the companion's request. Without
@@ -615,12 +617,26 @@ turns, so the agent sees its own earlier work there; the relay accepts only a
 session of the same agent started from the companion's session. The
 companion's saved turn keeps a ledger of its children (agent, session, trace,
 status, brief and answer, clipped), which replay shows to the model under the
-reply, so a follow-up can go back to the session that answered. A child gets
-no `AskUser`: the user talks to the companion. The companion's process starts
-children through the host's `/h2a` relay, which checks each against the host
-composition stored with the companion's request (not one the caller sends) and
-forwards it to the child agent's process. Cancelling a request cancels its
-running children.
+reply, so a follow-up can go back to the session that answered. The
+companion's process starts children through the host's `/h2a` relay, which
+checks each against the host composition stored with the companion's request
+(not one the caller sends) and forwards it to the child agent's process.
+Cancelling a request cancels its running children.
+
+The user talks only to the companion's request, and the companion relays its
+children's interactions there without a model call. When a child pauses on an
+approval, an `AskUser` question or a `browser_handoff`, `RunSubAgents` opens
+the same interaction on the companion's request, with an `origin` naming the
+child (`agent_id`, `request_id`, `session_id`, `trace_id`, `interaction_id`).
+Its id is derived from the child's request id and interaction id, and every
+interaction id is derived from its request and its place in the loop, so a
+recovered request arrives at the same ids. The user answers it like any other
+interaction (`POST /api/v1/agent/companion/request/{request_id}/interaction`),
+and the tool forwards the answer to the child through `/h2a`. The child keeps
+its deadline and its timeout default; when the child's interaction closes, the
+companion's copy closes with the same response. The child's entry in the
+result lists each relayed interaction with the response, so the companion's
+model knows what the user decided.
 
 When the host lists workflows (its own, not the pool defaults that
 `enable_evals()` adds), each request gets a `WORKFLOWS` list in its context:

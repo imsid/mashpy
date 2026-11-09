@@ -89,7 +89,7 @@ The whole flow is visible in `RequestRun._run_interaction`. The loop opens the i
 # src/mash/runtime/engine/loop.py (trimmed)
 opened = await self._step(
     f"{step_prefix}.open.{loop_index}.{attempt}",
-    self._open_interaction, ...,       # mints the id, appends interaction.create
+    self._open_interaction, ...,       # derives the id, appends interaction.create
 )
 response, timed_out = await self._await_answer(
     opened["interaction_id"], deadline=opened["deadline"], ...
