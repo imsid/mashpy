@@ -363,7 +363,12 @@ class _TestRuntimeStore:
             state = self._request_state.get(request_id)
         if state is None or state.agent_id is None:
             return None
-        return RequestIdentity(agent_id=state.agent_id, user_id=state.user_id)
+        return RequestIdentity(
+            agent_id=state.agent_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            parent_request_id=state.parent_request_id,
+        )
 
     async def read_request_stream(
         self,
@@ -504,6 +509,9 @@ class _TestRuntimeStore:
             summaries.append(
                 {
                     "trace_id": trace_id_value,
+                    "request_id": next(
+                        (e.request_id for e in trace_events if e.request_id), None
+                    ),
                     "session_id": session_id_value,
                     "host_id": next(
                         (e.host_id for e in trace_events if e.host_id), None
@@ -724,6 +732,25 @@ class _TestMemoryStore:
         if limit is not None:
             rows = rows[-limit:]
         return rows
+
+    async def get_turn(
+        self, trace_id: str, app_id: str, session_id: str | None = None
+    ) -> dict[str, Any] | None:
+        for t in self._turns:
+            if (
+                t["trace_id"] == trace_id
+                and t["app_id"] == app_id
+                and (session_id is None or t["session_id"] == session_id)
+            ):
+                return {
+                    "trace_id": t["trace_id"],
+                    "session_id": t["session_id"],
+                    "user_message": t.get("user_message", ""),
+                    "agent_response": t.get("agent_response", ""),
+                    "metadata": t.get("metadata") or {},
+                    "created_at": float(t.get("created_at") or 0.0),
+                }
+        return None
 
     async def get_replay_turns(
         self, session_id: str, app_id: str, turns: int

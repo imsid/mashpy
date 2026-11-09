@@ -287,7 +287,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         await self._append(END, "request.completed.0")
-        expected = RequestIdentity(agent_id="store-test", user_id="u-1")
+        expected = RequestIdentity(agent_id="store-test", user_id="u-1", session_id="session-1")
         self.assertEqual(await self.store.get_request_identity(self.request_id), expected)
 
     async def test_read_request_stream_never_reports_undelivered_terminal(self) -> None:

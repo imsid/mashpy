@@ -576,6 +576,21 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             [("s2", turn_2), ("s1", turn_1)],
         )
 
+    async def test_get_turn_reads_one_turn_by_trace_id(self) -> None:
+        trace_id = await self._save_turn(
+            session_id="s1", user_message="brief", agent_response="answer"
+        )
+
+        turn = await self.store.get_turn(trace_id, self.app_id)
+        self.assertEqual(
+            (turn["session_id"], turn["user_message"], turn["agent_response"]),
+            ("s1", "brief", "answer"),
+        )
+        self.assertIsNotNone(await self.store.get_turn(trace_id, self.app_id, session_id="s1"))
+        self.assertIsNone(await self.store.get_turn(trace_id, self.app_id, session_id="s2"))
+        self.assertIsNone(await self.store.get_turn(trace_id, self.other_app_id))
+        self.assertIsNone(await self.store.get_turn("missing", self.app_id))
+
     async def test_get_turn_by_ids_honors_optional_app_id_filter(self) -> None:
         turn_a = await self._save_turn(
             session_id="shared-session",

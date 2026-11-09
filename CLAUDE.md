@@ -650,6 +650,13 @@ input schema. The companion runs one with
 request's user through the host's `/h2a` relay and waits for its result. On a
 timeout it returns `timed_out` with the `run_id`, and the run keeps going.
 
+The companion reads what its agents did with three tools, each keyed by an
+`agent_id` with a `session_id` and/or `trace_id` from its ledger:
+`ListAgentTraces` (an agent session's recent requests), `InspectAgentTrace`
+(one trace's analysis by default, or its events with `view="events"`) and
+`GetAgentTurns` (what an agent was asked and answered). Each refuses a trace or
+session that is not a child of the companion in the user's current session.
+
 `companion` picks its provider like masher's agents;
 `COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model.
 

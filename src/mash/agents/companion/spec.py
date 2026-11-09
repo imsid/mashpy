@@ -10,6 +10,7 @@ from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
+from .logs import AgentLogReader, GetAgentTurnsTool, InspectAgentTraceTool, ListAgentTracesTool
 from .prompt import COMPANION_PROMPT
 
 COMPANION_AGENT_ID = "companion"
@@ -31,13 +32,28 @@ def build_companion_metadata() -> AgentMetadata:
 
 
 class CompanionSpec(AgentSpec):
-    """Routes with RunSubAgents and RunWorkflow, which the runtime registers."""
+    """Routes with RunSubAgents and RunWorkflow, which the runtime registers,
+    and reads its agents' logs with its own tools."""
+
+    def __init__(self) -> None:
+        self.logs = AgentLogReader(COMPANION_AGENT_ID)
 
     def get_agent_id(self) -> str:
         return COMPANION_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        return ToolRegistry()
+        tools = ToolRegistry()
+        for tool in (
+            ListAgentTracesTool(self.logs),
+            InspectAgentTraceTool(self.logs),
+            GetAgentTurnsTool(self.logs),
+        ):
+            tools.register(tool)
+        return tools
+
+    def on_startup(self, runtime) -> None:
+        # The process's own stores: the same Postgres every agent writes to.
+        self.logs.bind(runtime.runtime_store, runtime.memory_store)
 
     def build_skills(self) -> SkillRegistry:
         return SkillRegistry()

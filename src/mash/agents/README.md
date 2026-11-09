@@ -15,7 +15,10 @@
 - `companion`: the built-in router `CompanionSpec`, registered by
   `HostBuilder.enable_companion()`. It becomes the primary of every host
   defined without one and routes each user message among the host's subagents
-  and workflows.
+  and workflows. Its `logs.py` holds `ListAgentTraces`, `InspectAgentTrace`
+  and `GetAgentTurns`, which read an agent's traces and turns by agent id with
+  a session or trace id, only for the companion's own children in the current
+  session.
 
 ## Package Boundary
 - Built-in agents should compose `mash.runtime`, `mash.tools`, `mash.memory`, and `mash.logging`.

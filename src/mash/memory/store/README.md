@@ -102,6 +102,9 @@ Behavior:
 - The runtime calls it with `AgentConfig.conversation_history_turns` when it
   loads a request's context; the Postgres store reads only those rows.
 
+`get_turn(trace_id, app_id, session_id=None) -> dict | None`
+- One turn by its trace id, the primary key, when it belongs to `app_id` (and to `session_id` when given). The row has `trace_id`, `session_id`, `user_message`, `agent_response`, `metadata` and `created_at`.
+
 `get_turn_by_ids(pairs, app_id) -> list[dict] | None`
 - Bulk lookup by exact `{session_id, trace_id}` pairs.
 - Expected shape per returned item:

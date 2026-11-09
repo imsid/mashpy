@@ -141,10 +141,13 @@ class RuntimeEvent:
 
 @dataclass(frozen=True)
 class RequestIdentity:
-    """The agent a request was accepted for, and the user it acts for."""
+    """The agent a request was accepted for, the user it acts for, its
+    session, and the request that started it with RunSubAgents, if any."""
 
     agent_id: str
     user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_request_id: Optional[str] = None
 
 
 def accepted_user_id(event: RuntimeEvent) -> Optional[str]:
