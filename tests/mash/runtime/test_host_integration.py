@@ -284,6 +284,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "host_id": "assistant",
                         "primary": "primary",
                         "subagents": ["research"],
+                        "workflows": [],
                     },
                 )
                 described_host = pool.describe_host("assistant")

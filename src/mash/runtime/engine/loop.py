@@ -409,17 +409,13 @@ class RequestRun:
             return await self._browser_handoff(
                 state, tool_call=tool_call, loop_index=loop_index, call_index=call_index
             )
-        # A RunSubAgents call derives its child ids from its position, so a
-        # rerun resubmits the same ids and gets back the children already
-        # running.
-        prefix = (
-            f"{self.request_id}-sub-{loop_index}-{call_index}"
-            if name == "RunSubAgents"
-            else None
-        )
-        # A RunSubAgents call only waits on its children, which may need this
-        # agent's slots, so it gives its own back while they run.
-        wait = self._slot_released() if name == "RunSubAgents" else contextlib.nullcontext()
+        # A RunSubAgents or RunWorkflow call derives its child ids or run
+        # dedup key from its position, so a rerun gets back the children or
+        # run already started.
+        prefix = self._call_prefix(name, loop_index, call_index)
+        # Such a call only waits, on children that may need this agent's
+        # slots or on a workflow run, so it gives its own back meanwhile.
+        wait = self._slot_released() if prefix else contextlib.nullcontext()
         with bound_subagent_id_prefix(prefix):
             async with wait:
                 return await retry_transient(
@@ -432,6 +428,13 @@ class RequestRun:
                         tool_call,
                     )
                 )
+
+    def _call_prefix(self, name: str, loop_index: int, call_index: int) -> str | None:
+        if name == "RunSubAgents":
+            return f"{self.request_id}-sub-{loop_index}-{call_index}"
+        if name == "RunWorkflow":
+            return f"{self.request_id}-wf-{loop_index}-{call_index}"
+        return None
 
     async def _act(self, state: dict[str, Any]) -> dict[str, Any]:
         """Answer the action's interaction, then run its tool calls in order.
@@ -509,16 +512,26 @@ class RequestRun:
                 )
             else:
                 batch = [payload(k) for k in range(index, end)]
-                state = await retry_transient(
-                    lambda: run_step_tool_batch(
-                        self.runtime,
-                        self.request_id,
-                        self.session_id,
-                        self.checkpoint["trace_id"],
-                        state,
-                        batch,
-                    )
+                for k, call in zip(range(index, end), batch):
+                    prefix = self._call_prefix(call["name"], loop_index, k)
+                    if prefix:
+                        call["call_prefix"] = prefix
+                wait = (
+                    self._slot_released()
+                    if any("call_prefix" in call for call in batch)
+                    else contextlib.nullcontext()
                 )
+                async with wait:
+                    state = await retry_transient(
+                        lambda: run_step_tool_batch(
+                            self.runtime,
+                            self.request_id,
+                            self.session_id,
+                            self.checkpoint["trace_id"],
+                            state,
+                            batch,
+                        )
+                    )
             index = end
             await self._save(state)
         return state

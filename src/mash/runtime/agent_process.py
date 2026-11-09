@@ -24,7 +24,7 @@ import time
 import uuid
 from typing import Any
 
-from .client import AgentClient
+from .client import AgentClient, WorkflowRelayClient
 from .host.subagents import AgentMetadata
 from .server import AgentServer
 
@@ -47,9 +47,15 @@ class HostRelay:
         self._relay_url = f"{host_api_url.rstrip('/')}/h2a"
         self._token = token
         self._clients: dict[str, AgentClient] = {}
+        self._workflow_client: WorkflowRelayClient | None = None
 
     def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None:
         return self._pool.get_agent_metadata(agent_id)
+
+    def get_workflow_client(self) -> WorkflowRelayClient:
+        if self._workflow_client is None:
+            self._workflow_client = WorkflowRelayClient(self._relay_url, token=self._token)
+        return self._workflow_client
 
     def get_client(self, agent_id: str) -> AgentClient:
         client = self._clients.get(agent_id)

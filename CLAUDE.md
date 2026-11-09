@@ -642,6 +642,14 @@ pool = (
 )
 ```
 
+When the companion's host lists workflows (its own, not the pool defaults that
+`enable_evals()` adds), each request gets a `WORKFLOWS` list in its context:
+every workflow's id, `metadata["display_name"]`, `metadata["description"]` and
+input schema. The companion runs one with
+`RunWorkflow(workflow_id, input, timeout_seconds)`, which starts a run for the
+request's user through the host's `/h2a` relay and waits for its result. On a
+timeout it returns `timed_out` with the `run_id`, and the run keeps going.
+
 `companion` picks its provider like masher's agents;
 `COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model.
 

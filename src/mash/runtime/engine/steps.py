@@ -17,6 +17,7 @@ from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...memory.ledger import build_ledger
 from ...logging.trace_context import (
     bound_loop_index,
+    bound_subagent_id_prefix,
     get_subagent_id_prefix,
     get_workflow_id,
 )
@@ -780,21 +781,22 @@ async def run_step_tool_batch(
     tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
-    result_payloads = await _run_bounded(
-        max_parallel,
-        len(tool_calls),
-        lambda index: _execute_and_record_tool_call(
-            runtime,
-            request_id=request_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            loop_index=loop_index,
-            tool_call=tool_calls[index],
-            host=host,
-            user_id=user_id,
-            parent_kind=parent_kind,
-        ),
-    )
+    async def _run_one(index: int) -> dict[str, Any]:
+        # A RunWorkflow call in the batch gets the dedup key of its position.
+        with bound_subagent_id_prefix(tool_call_payloads[index].get("call_prefix")):
+            return await _execute_and_record_tool_call(
+                runtime,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                loop_index=loop_index,
+                tool_call=tool_calls[index],
+                host=host,
+                user_id=user_id,
+                parent_kind=parent_kind,
+            )
+
+    result_payloads = await _run_bounded(max_parallel, len(tool_calls), _run_one)
 
     tool_usage = workflow_state.get("tool_usage")
     for tool_call in tool_calls:

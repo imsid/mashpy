@@ -47,6 +47,14 @@ An agent process starts, follows and cancels its `RunSubAgents` children here.
 `POST /h2a/agent/{subagent_id}/request/{request_id}/cancel`
 - Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.
 
+`POST /h2a/workflow/{workflow_id}/run`
+- Body: `{parent: {request_id}, input, dedup_key?}`. Sent by `RunWorkflow` with the agent's token.
+- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's user. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another.
+- Returns `{run_id, workflow_id, status, result, error}` with `202`. An input the workflow's `input_model` refuses is `422 INVALID_INPUT` with the validation errors in `error.details`.
+
+`GET /h2a/workflow/{workflow_id}/runs/{run_id}?parent_request_id=`
+- The run's `{run_id, workflow_id, status, result, error}`, when the parent request belongs to the caller and the run acts for the parent's user; `403` otherwise.
+
 ## Sandbox Relay
 
 Every relay call names the request it serves. The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`. It acts in the sandbox of the request's user, in the caller's folder, starting the sandbox if needed. `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy. No `{data}` envelope.

@@ -626,6 +626,95 @@ class AgentClient:
         self._stream_client = None
 
 
+class WorkflowInputError(AgentClientError):
+    """The workflow's input model refused the input."""
+
+    def __init__(self, errors: list[Any]) -> None:
+        self.errors = list(errors)
+        super().__init__("workflow input validation failed")
+
+
+class WorkflowRelayClient:
+    """An agent process's calls to the host relay's workflow routes."""
+
+    def __init__(self, base_url: str, *, token: Optional[str] = None) -> None:
+        self.base_url = AgentClient._normalize_base_url(base_url)
+        self._headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if token:
+            self._headers["Authorization"] = f"Bearer {token}"
+        self._client: httpx.AsyncClient | None = None
+
+    def _session(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(headers=self._headers, limits=CONTROL_LIMITS)
+        return self._client
+
+    @staticmethod
+    def _error(operation: str, response: httpx.Response) -> AgentClientError:
+        return AgentClientError(
+            f"{operation} failed (status={response.status_code}): "
+            f"{AgentClient._extract_message(response)}"
+        )
+
+    async def post_workflow_run(
+        self,
+        workflow_id: str,
+        *,
+        parent_request_id: str,
+        workflow_input: Dict[str, Any],
+        dedup_key: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Start a run for the parent request's user; a known ``dedup_key`` returns its run."""
+        payload: Dict[str, Any] = {
+            "parent": {"request_id": parent_request_id},
+            "input": dict(workflow_input),
+        }
+        if dedup_key is not None:
+            payload["dedup_key"] = dedup_key
+        try:
+            response = await self._session().post(
+                f"{self.base_url}/workflow/{workflow_id}/run", json=payload, timeout=timeout
+            )
+        except httpx.HTTPError as exc:
+            raise AgentUnavailableError(f"POST workflow run failed: {exc}") from exc
+        if response.status_code == 422:
+            try:
+                error = response.json().get("error") or {}
+            except ValueError:
+                error = {}
+            raise WorkflowInputError(list(error.get("details") or []))
+        if response.status_code not in (200, 202):
+            raise self._error("POST workflow run", response)
+        return response.json()
+
+    async def get_workflow_run(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        parent_request_id: str,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """The run's ``status``, ``result`` and ``error``."""
+        try:
+            response = await self._session().get(
+                f"{self.base_url}/workflow/{workflow_id}/runs/{run_id}",
+                params={"parent_request_id": parent_request_id},
+                timeout=timeout,
+            )
+        except httpx.HTTPError as exc:
+            raise AgentUnavailableError(f"GET workflow run failed: {exc}") from exc
+        if response.status_code != 200:
+            raise self._error("GET workflow run", response)
+        return response.json()
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+
 __all__ = [
     "AgentClient",
     "AgentClientError",
@@ -633,4 +722,6 @@ __all__ = [
     "AgentUnavailableError",
     "RequestModeConflictError",
     "SessionUserConflictError",
+    "WorkflowInputError",
+    "WorkflowRelayClient",
 ]
