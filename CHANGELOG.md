@@ -9,6 +9,19 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.37.0](https://github.com/imsid/mashpy/compare/mashpy-v0.36.0...mashpy-v0.37.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **host:** hosts are agents and workflows, routed by the companion ([#272](https://github.com/imsid/mashpy/issues/272))
+* **runtime:** companion router MVP: per-child sessions, ledger, RunWorkflow, agent log tools ([#271](https://github.com/imsid/mashpy/issues/271))
+
+### Features
+
+* **host:** hosts are agents and workflows, routed by the companion ([#272](https://github.com/imsid/mashpy/issues/272)) ([2e9e5ca](https://github.com/imsid/mashpy/commit/2e9e5ca7d00a5db45054a121c2774dc08894ebe5))
+* **runtime:** companion router MVP: per-child sessions, ledger, RunWorkflow, agent log tools ([#271](https://github.com/imsid/mashpy/issues/271)) ([6a7608e](https://github.com/imsid/mashpy/commit/6a7608e3d7e3d1a7ee2e3e4bae165f23496d5ab9))
+
 ## [0.36.0](https://github.com/imsid/mashpy/compare/mashpy-v0.35.0...mashpy-v0.36.0) (2026-11-08)
 
 
