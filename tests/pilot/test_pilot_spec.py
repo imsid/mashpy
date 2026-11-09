@@ -9,6 +9,7 @@ from typing import Iterator
 from unittest.mock import patch
 
 from mash.agents import EvalAgentSpec, EvalJudgeAgentSpec
+from mash.agents.companion import COMPANION_AGENT_ID, CompanionSpec
 from mash.agents.masher import EVAL_AGENT_ID, EVAL_JUDGE_AGENT_ID
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMRequest, LLMResponse
@@ -55,7 +56,7 @@ def _keyless_models() -> Iterator[None]:
                 {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": "", "OPENROUTER_API_KEY": "test-key"},
             )
         )
-        for spec in (PilotSpec, EvalAgentSpec, EvalJudgeAgentSpec):
+        for spec in (PilotSpec, EvalAgentSpec, EvalJudgeAgentSpec, CompanionSpec):
             stack.enter_context(
                 patch.object(spec, "build_llm", return_value=_FakeLLMProvider())
             )
@@ -77,12 +78,15 @@ def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
                 BUILDER_AGENT_ID,
                 EVAL_AGENT_ID,
                 EVAL_JUDGE_AGENT_ID,
+                COMPANION_AGENT_ID,
             }
             assert CHANGELOG_AGENT_ID in pool.list_registered_agents()
             guide = pool.get_host(GUIDE_HOST_ID)
-            assert guide.primary == PILOT_AGENT_ID
-            assert guide.subagents == (BUILDER_AGENT_ID,)
+            # The guide names no primary, so the companion routes for it.
+            assert guide.primary == COMPANION_AGENT_ID
+            assert guide.subagents == (PILOT_AGENT_ID, BUILDER_AGENT_ID)
             assert CHANGELOG_WORKFLOW_ID in guide.workflows
+            assert pool.snapshot_for(guide)["workflows"] == [CHANGELOG_WORKFLOW_ID]
         finally:
             asyncio.run(pool.close())
 
@@ -114,6 +118,19 @@ def test_agents_get_sandbox_and_browser_tools() -> None:
                     host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
                 )
                 assert "RunSubAgents" in turn_agent.tools
+
+                companion = _agent_runtime(pool, COMPANION_AGENT_ID)
+                companion_turn = companion.build_turn_agent(
+                    session_id="s-1",
+                    trace_id="trace-2",
+                    host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
+                    user_id="u-1",
+                )
+                assert {
+                    "RunSubAgents", "RunWorkflow", "ListAgentTraces",
+                    "InspectAgentTrace", "GetAgentTurns",
+                } <= set(companion_turn.tools.list_tools())
+                assert "run_code" not in companion_turn.tools
 
                 builder = _agent_runtime(pool, BUILDER_AGENT_ID)
                 assert "Skill" in builder.agent.tools

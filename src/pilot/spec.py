@@ -21,16 +21,19 @@ GUIDE_HOST_ID = "guide"
 
 
 def build_pool() -> Pool:
-    """Build the Pilot pool: the guide, the builder, the changelog workflow, and evals."""
-    builder = HostBuilder().enable_evals()
+    """Build the Pilot pool: the guide, the builder, the changelog workflow, and evals.
+
+    The guide host names no primary, so the companion routes among pilot,
+    builder and the changelog workflow.
+    """
+    builder = HostBuilder().enable_evals().enable_companion()
     for entry in CATALOG:
         builder.agent(entry.create_spec(), metadata=entry.build_metadata())
     builder.workflow(build_changelog_workflow_spec())
     builder.host(
         Host(
             host_id=GUIDE_HOST_ID,
-            primary=PILOT_AGENT_ID,
-            subagents=(BUILDER_AGENT_ID,),
+            subagents=(PILOT_AGENT_ID, BUILDER_AGENT_ID),
             workflows=(CHANGELOG_WORKFLOW_ID,),
         )
     )

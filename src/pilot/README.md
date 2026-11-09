@@ -77,8 +77,20 @@ profiles are kept.
 | `pilot` | The guide. Answers questions about Mash from the mounted source, docs and git history, and searches the published docs site (`imsid.github.io`) and the GitHub repository in your browser. |
 | `builder` | Builds Mash apps in its folder of your sandbox (`/home/agent/workspaces/builder/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
 
-The `guide` host makes `pilot` the primary and `builder` its subagent. The
-guide delegates to the builder when you ask for an app.
+The `guide` host names no primary, so the built-in `companion` is its primary.
+For each message the companion picks `pilot`, `builder`, both, or the
+`pilot-changelog` workflow, continues an agent's earlier session when you
+follow up on its work, and writes the answer. The host config file starts
+with `guide-baseline`, the same agents with `pilot` as the primary, to compare
+against:
+
+```bash
+pilot repl --host guide-baseline
+```
+
+A `guide` entry in an older `~/.pilot/hosts.json` names `pilot` as primary and
+replaces the companion's `guide` on the deployment when `pilot repl` publishes
+the file. Remove that entry to get the companion back.
 
 ## A workflow it ships
 

@@ -4,7 +4,10 @@ The deployment is a flat pool of agents with no built-in hosts. Compositions
 live in `~/.pilot/hosts.json`: `pilot compose` writes them, `pilot hosts`
 and `pilot browse` list them, and `pilot repl --host <id>` publishes them to
 the deployment (idempotent PUTs) before connecting. On first use the file is
-seeded with the `guide` composition so the store works out of the box.
+seeded with `guide-baseline`, the guide with `pilot` as its primary. The
+`guide` host itself is defined in code without a primary, so the companion
+routes for it; the control API cannot define such a host, so the file never
+holds it.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from typing import Any, Iterable
 # Seeded into the config file on first use. Plain agent-id strings: this is
 # user-editable configuration, not code.
 DEFAULT_HOSTS: dict[str, dict[str, Any]] = {
-    "guide": {
+    "guide-baseline": {
         "primary": "pilot",
         "subagents": ["builder"],
         "workflows": ["pilot-changelog"],

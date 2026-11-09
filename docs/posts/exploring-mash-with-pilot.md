@@ -76,11 +76,14 @@ shows exactly the team you composed. To change the team, exit and re-run
 ## The featured app: the guide
 
 `pilot repl --host guide` opens the Mash codebase guide. The `guide` host is
-defined in code and is also the default entry in the host config file:
+defined in code, without a primary, so the built-in companion routes for it.
+The host config file starts with `guide-baseline`, the same agents with
+`pilot` as the primary:
 
 | Agent | Role |
 |-------|------|
-| `pilot` (primary) | answers questions about Mash from the mounted source, docs and git history |
+| `companion` (primary) | built in; routes each message to `pilot`, `builder` or the changelog workflow |
+| `pilot` | answers questions about Mash from the mounted source, docs and git history |
 | `builder` | builds Mash apps in its own workspace and checks them |
 
 ```text

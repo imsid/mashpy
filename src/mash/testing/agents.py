@@ -87,7 +87,8 @@ class LocalAgentProvider:
         runtime.attach_subagent_access(
             HostRelay(self._pool, host_api_url=relay_url, token=token)
         )
-        if self._pool.get_sandboxes() is not None:
+        # As in an agent process: a spec can opt out of the sandbox tools.
+        if self._pool.get_sandboxes() is not None and spec.enable_sandbox():
             runtime.enable_sandbox_tools(host_api_url=relay_url, token=token)
         browsers = getattr(self._pool, "get_browsers", lambda: None)()
         if browsers is not None and spec.browser_sites():
