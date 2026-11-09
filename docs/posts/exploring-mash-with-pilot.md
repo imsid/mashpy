@@ -15,7 +15,7 @@ describes: a self-hosted **app store for agents**, built with Mash itself. It li
 mashpy repo at [`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/) — the
 catalog of agents, a deployment is your store, host compositions are your
 installed apps, and a terminal CLI is the storefront. It's also the
-application behind this documentation series, so the delegation, dynamic
+application behind this documentation series, so the companion's routing, dynamic
 composition, workflows, skills, and traces from the internals posts are all
 observable in one running system.
 
@@ -42,8 +42,8 @@ Run from the checkout, `mash connect` reads `MASH_API_KEY` from `.env` and
 saves it with the connection, and `pilot` uses it from there.
 `pilot browse` renders the catalog: the `pilot` guide, the `builder`, and
 masher's eval agents, each listed through the `AgentMetadata` it registered
-with. The same metadata becomes the delegation directory when an agent serves
-as a subagent, as [the composition post](composing-agents.md) covered.
+with. The same metadata becomes the agent directory the companion routes by in
+a host, as [the composition post](composing-agents.md) covered.
 Every request acts for the user `mash connect` saved, and the code the agents
 run for that user runs in their own sandbox. `mash sandbox ls` lists the sandboxes.
 When you ask the guide about the published docs or the GitHub repository, it
@@ -55,7 +55,7 @@ use; `mash browser view <user_id>` prints a link to watch it.
 The pool is flat. Which agents work together is your configuration:
 
 ```bash
-pilot compose my-guide --primary pilot --subagents builder
+pilot compose my-guide --agents pilot,builder
 pilot repl --host my-guide
 ```
 
@@ -63,26 +63,25 @@ Compositions live in the CLI's host config file (`~/.pilot/hosts.json`),
 which ships with the `guide` composition as its default entry and is
 what `pilot hosts` lists. The deployment side is [dynamic host
 definition](building-dynamic-hosts-apis.md): a host is a few strings,
-validated synchronously, held in server memory — so the CLI publishes your
+validated synchronously, held in server memory, so the CLI publishes your
 config with idempotent `PUT`s every time it enters a REPL, and deployment
 restarts don't matter.
 
 Inside the REPL everything is scoped to the host you entered: plain messages
-route to its primary, delegation is limited to its subagents, and `/agent`
-shows exactly the team you composed. To change the team, exit and re-run
+go to the companion, which routes only to that host's agents and workflows,
+and `/agent` shows exactly the team you composed. To change the team, exit and re-run
 `pilot compose` (define-or-replace), or switch with
 `pilot repl --host <other>`.
 
 ## The featured app: the guide
 
 `pilot repl --host guide` opens the Mash codebase guide. The `guide` host is
-defined in code, without a primary, so the built-in companion routes for it.
-The host config file starts with `guide-baseline`, the same agents with
-`pilot` as the primary:
+defined in code and is also the default entry in the host config file. Every
+message goes to the built-in companion, which routes it:
 
 | Agent | Role |
 |-------|------|
-| `companion` (primary) | built in; routes each message to `pilot`, `builder` or the changelog workflow |
+| `companion` | built in; routes each message to `pilot`, `builder` or the changelog workflow |
 | `pilot` | answers questions about Mash from the mounted source, docs and git history |
 | `builder` | builds Mash apps in its own workspace and checks them |
 
@@ -95,12 +94,13 @@ The host config file starts with `guide-baseline`, the same agents with
 The guide answers from the repository with `rg` and `sed`, run as shell code
 through `run_code`,
 and its prompt carries a map of where each module and post is documented. When
-you ask for an app, it delegates to the builder. The builder follows the
+you ask for an app, the companion routes the request to the builder, which
+follows the
 `build-mash-agent`, `build-mash-workflow`, or `build-mash-host` skill, writes the
 app under `/home/agent/workspaces/builder/apps/<name>` in your sandbox, installs
 mashpy with uv, and runs the app's tests. It cannot serve the app, because a
-sandbox has no Docker; copy it out with `docker cp`. The shell renders the subagent trace frames live,
-so you watch the delegation happen.
+sandbox has no Docker; copy it out with `docker cp`. The shell renders each
+child request's trace frames live, so you watch the routing happen.
 
 ## The changelog workflow
 
@@ -117,7 +117,7 @@ own host with `--workflows pilot-changelog`.
 
 After any answer, `/trace` shows where the time went: the timing breakdown,
 per-tool stats, and slowest operations from [the trace
-post](reading-a-trace.md). For a delegated question the subagent call is its
+post](reading-a-trace.md). For a routed question each child request is its
 own span, so you can see how much latency belonged to the builder. The host
 also serves the admin dashboard, with the trace drawer and span tree, at
 `http://127.0.0.1:8000/admin`.
@@ -127,7 +127,7 @@ also serves the admin dashboard, with the trace drawer and span tree, at
 | CLI command | What it does |
 |---|---|
 | `pilot browse` | catalog listings and the hosts composed on the deployment |
-| `pilot compose <id> --primary <agent> [--subagents a,b]` | define-or-replace a composition |
+| `pilot compose <id> [--agents a,b] [--workflows w]` | define-or-replace a composition |
 | `pilot hosts` | your saved compositions, with live status |
 | `pilot repl --host <id>` | enter a host's REPL, scoped to its team (`--agent <id>` for one bare agent) |
 

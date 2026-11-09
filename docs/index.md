@@ -71,9 +71,9 @@ from mash.skills import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
 
-class ConciergeAgent(AgentSpec):
+class SupportAgent(AgentSpec):
     def get_agent_id(self):
-        return "concierge"
+        return "support"
 
     def build_tools(self):
         return ToolRegistry()
@@ -82,15 +82,12 @@ class ConciergeAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="concierge")
+        return AnthropicProvider(app_id="support")
 
     def build_agent_config(self):
         return AgentConfig(
-            app_id="concierge",
-            system_prompt=(
-                "You are the concierge. Answer the user directly, and "
-                "delegate research-heavy questions to the research subagent."
-            ),
+            app_id="support",
+            system_prompt="You answer product and account questions.",
         )
 
 
@@ -187,7 +184,7 @@ The pool is the unit of deploy: agents and workflows registered together.
 
 from mash import AgentMetadata, HostBuilder
 
-from .agents import ConciergeAgent, ResearchAgent
+from .agents import ResearchAgent, SupportAgent
 from .workflows import RESEARCH_BRIEF
 
 
@@ -195,12 +192,12 @@ def build_pool():
     pool = (
         HostBuilder()
         .agent(
-            ConciergeAgent(),
+            SupportAgent(),
             metadata=AgentMetadata(
-                display_name="Concierge",
-                description="Front-door agent that answers users and delegates.",
-                capabilities=["conversation", "delegation"],
-                usage_guidance="Default entry point for user requests.",
+                display_name="Support",
+                description="Answers product and account questions.",
+                capabilities=["product questions", "account help"],
+                usage_guidance="Questions about the product or a user's account.",
             ),
         )
         .agent(
@@ -260,9 +257,10 @@ mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
 mash browse
 ```
 
-**Compose an assistant host with primary and subagents:**
+**Compose an assistant host from agents and a workflow.** Every request to it
+goes to the built-in companion, which routes it:
 ```bash
-mash compose --host assistant --primary concierge --subagents research \
+mash compose --host assistant --agents support,research \
   --workflows research-brief
 ```
 
@@ -291,7 +289,7 @@ mash repl --host assistant
 - [**Open-source models**](posts/oss-models.md): running Gemma, Qwen, and DeepSeek on the same harness, self-hosted or hosted
 - [**Skills: Instructions on demand**](posts/skills-on-demand.md): markdown bundles loaded through one meta-tool
 - [**Memory and compaction**](posts/memory-and-compaction.md): history, summary checkpoints, and signals
-- [**Composing agents**](posts/composing-agents.md): subagents, delegation, shared plumbing
+- [**Composing agents**](posts/composing-agents.md): hosts, the companion's routing, shared plumbing
 - [**Workflows**](posts/workflows-as-step-pipelines.md): durable step pipelines mixing code steps and agent steps
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 - [**Synthetic evals**](posts/synthetic-evals.md): generated datasets and rubrics, experiments over the live host, read-time comparison

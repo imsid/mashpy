@@ -49,7 +49,7 @@ class AgentInUseError(RuntimeError):
 
 
 class Pool:
-    """Deployed pool of role-less agents, workflows, and the hosts composed over them.
+    """Deployed pool of agents, workflows, and the hosts composed over them.
 
     The pool is the unit of deploy; a :class:`Host` is the unit of
     composition. Hosts are in-memory values: define them in code at build

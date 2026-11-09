@@ -25,8 +25,8 @@ A Mash agent CLI has four layers:
    the pool over HTTP.
 3. **CLI client**: a Python entrypoint that creates a `MashRemoteShell` and
    runs the interactive REPL. This is `my-cli`.
-4. **Host composition**: a `Host` naming one agent as primary and others as
-   subagents, which `my-cli` defines on startup.
+4. **Host composition**: a `Host` naming the agents the built-in companion
+   routes to, which `my-cli` defines on startup.
 
 ```
 ┌──────────────┐         HTTP/SSE          ┌─────────────────────┐
@@ -36,15 +36,16 @@ A Mash agent CLI has four layers:
                                            └─────────────────────┘
 ```
 
-The pool is the unit of deploy. A host is the unit of composition: it picks
-a primary and a set of subagents from the pool, and the primary gets a
-routing directory for exactly that set, per request, and delegates to them
-with `RunSubAgents`. The same pool can serve several hosts at once.
+The pool is the unit of deploy. A host is the unit of composition: it picks a
+set of agents from the pool. Every request to a host runs on the built-in
+`companion`, which gets a directory of exactly that set, per request, and
+routes to them with `RunSubAgents`. The same pool can serve several hosts at
+once.
 
 ## Step 1: Define the Pool
 
 Create `my_agent/spec.py`. Every agent registers with `AgentMetadata`, the
-self-description that delegation decisions are made from:
+self-description the companion routes by:
 
 ```python
 from mash.core.config import AgentConfig
@@ -105,8 +106,8 @@ def build_pool():
     )
 ```
 
-No agent is registered as a primary or a subagent. Roles come from a host
-composition, which `my-cli` will define in Step 3. (A `.host(...)` call on
+Every agent is registered the same way. Which agents work together comes from
+a host composition, which `my-cli` will define in Step 3. (A `.host(...)` call on
 the builder can also ship a composition with the deploy; this guide defines
 it from the CLI instead.)
 
@@ -192,14 +193,14 @@ The imports this guide builds on, all from `mash.cli`:
 | `Command` | Defines a slash command (name, help text, handler) |
 | `CLIContext` | Passed to every command handler (client, renderer, session state) |
 
-What's missing from the minimal version is composition: the agent runs
-bare, with no subagents. That's the next step.
+The minimal version talks to one agent directly. Composition is the next
+step.
 
 ## Step 3: Connect and Compose
 
 `my-cli` owns its composition. On startup it defines a host over the pool
-and pins the shell to it, so every message routes through the primary with
-the right subagents wired in:
+and pins the shell to it, so every message goes to the companion with the
+host's agents wired in:
 
 ```python
 import argparse
@@ -222,18 +223,15 @@ def main():
     client = MashHostClient(args.api_base_url, api_key=args.api_key)
     try:
         if args.agent:
-            # Bare agent: no composition, no delegation
+            # Bare agent: no composition, no companion
             agent_id, host_id = args.agent, None
         else:
             # Define (or refresh) the CLI's composition, then target it.
             # The PUT is idempotent, so running this on every startup is fine
             # and also covers server restarts.
-            described = client.define_host(
-                HOST_ID,
-                primary="my-agent",
-                subagents=["docs-copilot"],
-            )
-            agent_id = described["primary"]["agent_id"]
+            client.define_host(HOST_ID, agents=["my-agent", "docs-copilot"])
+            # The companion takes every host request.
+            agent_id = "companion"
             host_id = HOST_ID
 
         target = ShellTarget(
@@ -258,9 +256,9 @@ it with a clear error before any shell starts. Hosts are in-memory on the
 server, so defining on every startup also covers deployment restarts.
 
 When `ShellTarget.host_id` is set, the shell submits every REPL message via
-`POST /v1/hosts/{host_id}/request` and streams the response from the primary
-agent the server names in its reply. When it's `None`, messages go straight
-to `POST /v1/agent/{agent_id}/request` and the agent runs without subagents.
+`POST /v1/hosts/{host_id}/request` and streams the response from the agent
+the server names in its reply, the companion. When it's `None`, messages go
+straight to `POST /v1/agent/{agent_id}/request` and that one agent answers.
 
 The target is fixed for the shell's lifetime; there is no command for
 switching it inside the REPL. A CLI that offers several teams exposes them
@@ -268,7 +266,7 @@ as entrypoint flags and starts the shell with the chosen one:
 
 ```bash
 my-cli                          # the assistant composition
-my-cli --agent docs-copilot     # one agent, no delegation
+my-cli --agent docs-copilot     # one agent, no companion
 ```
 
 The stock `mash` CLI drives the same flow generically (`mash connect`,
@@ -282,8 +280,8 @@ is a `Command` with a name, help text, and a handler function that receives
 `CLIContext` and a list of string arguments.
 
 When a command sends a message to the agent, it should respect the shell's
-target: route through the host when one is set, so the request gets the
-composition's subagents.
+target: route through the host when one is set, so the companion can route
+the request among the composition's agents.
 
 ```python
 from mash.cli import Command
@@ -360,7 +358,7 @@ Every command handler receives `ctx: CLIContext` with these attributes:
 |---|---|---|
 | `ctx.client` | `MashHostClient` | HTTP client for the host API |
 | `ctx.renderer` | `RichRenderer` | Terminal output (info, error, markdown, tables) |
-| `ctx.agent_id` | `str` | The target agent (the host's primary when a host is set) |
+| `ctx.agent_id` | `str` | The target agent (`companion` when a host is set) |
 | `ctx.host_id` | `str \| None` | The host composition the shell is pinned to, if any |
 | `ctx.session_id` | `str` | Current session id |
 | `ctx.last_request_id` | `str \| None` | The id of the most recent request submitted in this shell |
@@ -376,8 +374,7 @@ entrypoints never need raw HTTP:
 client.list_hosts()                                  # GET  /v1/hosts
 client.get_host("assistant")                         # GET  /v1/hosts/assistant
 client.define_host("assistant",                      # PUT  /v1/hosts/assistant
-                   primary="my-agent",
-                   subagents=["docs-copilot"],
+                   agents=["my-agent", "docs-copilot"],
                    workflows=[])
 client.submit_host_request("assistant",              # POST /v1/hosts/assistant/request
                            message="...",
@@ -498,7 +495,7 @@ in the mashpy repo, is a real-world example that follows this pattern. Its struc
 ```
 pilot/
   catalog/
-    agents/     # one package per agent: pilot/ (the guide primary) plus a
+    agents/     # one package per agent: pilot/ (the guide) plus a
                 # copilot per mashpy module (cli, api, mcp, runtime, workflow)
     workflows/  # workflow definitions and their REPL commands (quiz)
     __init__.py # CATALOG: the explicit registry build_pool() reads
@@ -521,8 +518,7 @@ code. The CLI entrypoint (`pilot/cli.py`):
 2. For `pilot repl --host <id>`, publish the configured host compositions
    to the deployment (`store.publish_hosts`, idempotent PUTs), fetch the
    merged view of the requested host with `get_host`, and build a
-   `ShellTarget` from its primary `agent_id` (or a bare agent id for
-   `--agent`)
+   `ShellTarget` for the companion (or a bare agent id for `--agent`)
 3. Create the `MashRemoteShell` and register Pilot's scoped commands:
    `/quiz` when the host attaches the `pilot-quiz` workflow (the stock
    `/agents` and `/workflow` commands are host-scoped natively)

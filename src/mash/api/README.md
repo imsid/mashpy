@@ -24,7 +24,7 @@ This README lists the exposed routes, the common request/response conventions, a
 - The OpenAPI schema and Swagger UI sit under `/api/v1`, so they need the key too.
 - A request body under `/api/v1`, or to `POST /admin/session`, may be at most 4 MiB (`MAX_API_BODY_BYTES` in `middleware.py`). FastAPI reads a body before it checks the key, so `BodyLimitMiddleware` answers a larger one with `413 BODY_TOO_LARGE` first: at once when `Content-Length` says so, otherwise once the body passes the cap.
 - Serving `/admin` sets no cookie. The SPA asks for the key when the API answers `401` and posts it to `POST /admin/session` as `{"api_key": "..."}`. A wrong key is `401 UNAUTHORIZED`; the right one sets the `mash_api_key` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1`, and `Secure` over HTTPS). With no key configured it answers `200` and sets nothing.
-- `/h2a/*` and `/sandbox/*` are the relays agent processes use for subagent calls and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
+- `/h2a/*` and `/sandbox/*` are the relays agent processes use for the companion's children and workflow runs and for the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 - `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.
 - `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are users' live views of their browser during a sign-in (see Browser Live Views); the view token names the user and the request, and lapses when the handoff ends; a view connected then is closed.
 
@@ -34,17 +34,17 @@ Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `Agent
 
 An agent process starts, follows and cancels its `RunSubAgents` children here.
 
-`POST /h2a/agent/{subagent_id}/request`
-- Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot.
-- `subagent_id` is the caller itself or one of `host.subagents`; a request without a `host` may target only the caller.
-- `session_id` is the child's own request id for a new session. Any other session must have no requests yet, or only requests of `subagent_id` whose turns name `parent.session_id` as their caller's session.
-- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id`, `subagent_id` is not an allowed target, or the session is not one the child may continue.
-- Forwards to the subagent's client, `mode` included, and returns `202` with the accepted payload.
+`POST /h2a/agent/{agent_id}/request`
+- Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot. The companion sends it for each `RunSubAgents` item.
+- `agent_id` must be one of the `agents` in the host snapshot stored with the parent request; a parent without a host has no targets.
+- `session_id` is the child's own request id for a new session. Any other session must have no requests yet, or only requests of `agent_id` whose turns name `parent.session_id` as their caller's session.
+- `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id`, `agent_id` is not in the host, or the session is not one the child may continue.
+- Forwards to the agent's client, `mode` included, and returns `202` with the accepted payload.
 
-`GET /h2a/agent/{subagent_id}/request/{request_id}`
-- Streams the subagent request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
+`GET /h2a/agent/{agent_id}/request/{request_id}`
+- Streams the child request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
 
-`POST /h2a/agent/{subagent_id}/request/{request_id}/cancel`
+`POST /h2a/agent/{agent_id}/request/{request_id}/cancel`
 - Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.
 
 `POST /h2a/workflow/{workflow_id}/run`
@@ -185,7 +185,8 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 `PUT /api/v1/hosts/{host_id}`
 - Defines or replaces a host composition over the pool (idempotent).
-- Body: `DefineHostRequest` (`primary`, `subagents`, `workflows`)
+- Body: `DefineHostRequest` (`agents`, `workflows`). Unknown fields fail with `422`.
+- `agents` are the agents the companion routes to; listing `companion` itself is `400 INVALID_HOST`.
 - Returns the merged host view (members joined with pool metadata).
 - Validation failures return `400 INVALID_HOST`.
 
@@ -196,16 +197,17 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Returns the merged host view; unknown ids return `404 HOST_NOT_FOUND`.
 
 `POST /api/v1/hosts/{host_id}/request`
-- Submits a request to the host: it routes to the host's primary agent with
-  the host's composition snapshotted onto the request.
+- Submits a request to the host: it runs on the built-in `companion`, which
+  routes it to the host's agents and workflows, with the host's composition
+  snapshotted onto the request.
 - Body: `HostSubmitRequest` (`message`, `session_id`, `user_id`, optional
   `structured_output`, optional `context`, optional `metadata`)
 - `user_id` is required: the end user the request acts for. It is stored on the
-  request and its turns, never reaches the prompt, and subagent calls inherit
-  it. The request's code runs in that user's sandbox. A missing value
+  request and its turns, never reaches the prompt, and the companion's
+  children inherit it. The request's code runs in that user's sandbox. A missing value
   fails validation with `422`; an invalid one returns `400 INVALID_USER_ID`.
-- `context` is a freeform string the host appends to the primary agent's
-  system prompt for this request only (after the subagent routing block).
+- `context` is a freeform string the host appends to the companion's
+  system prompt for this request only (after the agent directory).
   Use it to pass per-request/session facts like user profile, workspace
   state, or the current date.
 - `metadata` is an opaque JSON object for code, not the model: it never
@@ -213,7 +215,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   reruns with the same metadata), bound for the duration of the run so tools
   can read it via `mash.logging.get_request_metadata()`, and inherited by
   child requests made through `RunSubAgents`.
-- Returns `request_id`, `agent_id` (the primary), `session_id`, and
+- Returns `request_id`, `agent_id` (`companion`), `session_id`, and
   `user_id`. Stream
   results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
 
@@ -238,7 +240,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   `structured_output` field alongside `text`.
 - Optionally accepts a `metadata` JSON object — opaque caller context that
   never reaches the model. Readable during execution via
-  `mash.logging.get_request_metadata()` and inherited by subagent requests.
+  `mash.logging.get_request_metadata()` and inherited by `RunSubAgents` children.
 - Requires a `user_id`, as on the host route.
 - Optionally accepts `mode`: `fg` (the default) when the conversation waits on
   the request, `bg` when the user keeps talking while it runs. The mode does
@@ -580,7 +582,7 @@ the `gen-synthetic-evals` and `run-experiment` workflows through the normal
 - One experiment with aggregate results.
 - Returns:
   - `experiment`: the experiment record, including the host composition and per-agent spec snapshot captured at run start
-  - `aggregate`: `mean_score`, per-criterion means, run counts, and `operational` cost rollups (latency, steps, tokens including cache read/write, LLM/tool calls, subagent steps)
+  - `aggregate`: `mean_score`, per-criterion means, run counts, and `operational` cost rollups (latency, steps, tokens including cache read/write, LLM/tool calls, steps of the agents the companion ran)
 - `404 EXPERIMENT_NOT_FOUND` for unknown ids.
 
 `GET /api/v1/evals/{eval_id}/experiments/compare`
@@ -708,11 +710,12 @@ messages, which can quote inputs; without it a failed span keeps its
 `GET /api/v1/telemetry/sessions`
 - Rolls up sessions from their requests (`runtime_request`), most recent
   activity first. A session is the container for traces; its owner is the
-  agent of its first request (the primary for a chat session). Traces within a
-  session may run on other agents (subagents, cross-agent workflow tasks).
+  agent of its first request (the companion for a host chat session). Traces
+  within a session may run on other agents (cross-agent workflow tasks); the
+  companion's children run in sessions of their own.
   Activity is the latest lifecycle or model-call event of any request.
 - Query params:
-  - `agent_id` optional; when set, scopes to sessions the agent ran a request in, subagent runs included
+  - `agent_id` optional; when set, scopes to sessions the agent ran a request in, its runs as a child included
   - `workflow_id` optional; when set, scopes to sessions where that workflow ran
   - `limit` optional, clamped to `1..2000`
 - Returns:
@@ -759,7 +762,7 @@ messages, which can quote inputs; without it a failed span keeps its
   - `session_id` required
   - `trace_id` required
 - Returns:
-  - `analysis`: timing breakdown, tool stats, step breakdown, slowest operations, subagent traces
+  - `analysis`: timing breakdown, tool stats, step breakdown, slowest operations, the traces of the children it ran
   - `projection`: `{ trace_id, resource, semconv_version, root, span_count, log_count }`;
     `root` is the `invoke_agent` span, each span with `span_id`, `name`
     (`chat <model>`, `execute_tool <tool>`, `mash.step <n>`), `kind`, `start_time`,

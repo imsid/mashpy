@@ -121,7 +121,7 @@ uv run --extra dev pytest -q tests/pilot
 
 ## Pilot
 
-Pilot lives in `src/pilot/` and is the primary dogfood for the SDK. Every mash
+Pilot lives in `src/pilot/` and is the main dogfood for the SDK. Every mash
 change runs against the pilot test suite in CI, and you can run it locally
 during development to see how SDK changes affect a real multi-agent host.
 
@@ -190,7 +190,7 @@ Agents live under `src/pilot/catalog/agents/<name>/`. Each package needs a
    `build_skills`, `build_llm`, `build_agent_config`).
 
 2. **Write the metadata carefully.** `AgentMetadata.usage_guidance` is what
-   the primary reads when routing — vague guidance produces vague delegation.
+   the companion reads when routing — vague guidance produces vague routing.
 
 3. **Register it.** Add a `CatalogEntry` to `CATALOG` in
    `src/pilot/catalog/__init__.py`.

@@ -12,8 +12,8 @@ from ...core.config import SystemPrompt
 class AgentMetadata:
     """Self-description an agent supplies at registration.
 
-    Role-independent: the same metadata describes the agent whether a host
-    composition uses it as a primary or a subagent.
+    The companion routes by it: a host request lists each of the host's
+    agents with its metadata in the companion's agent directory.
     """
 
     display_name: str

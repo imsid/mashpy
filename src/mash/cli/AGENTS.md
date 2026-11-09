@@ -9,7 +9,7 @@
 ## Change Rules
 - Keep terminal UX and command behavior in `mash.cli`; shared agent hosting contracts belong in `mash.runtime`.
 - If output format or shell lifecycle behavior changes, update the relevant CLI tests.
-- Preserve subagent event rendering and session handoff behavior unless intentionally redesigning the CLI UX.
+- Preserve child request event rendering and session handoff behavior unless intentionally redesigning the CLI UX.
 
 ## Minimal Validation
 - `python -m compileall src/mash/cli`

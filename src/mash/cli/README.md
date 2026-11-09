@@ -12,7 +12,7 @@ Global
 Connection bootstrap
 
 - `connect --api-base-url URL [--api-key KEY] [--user-id ID]`: validate and persist the deployment connection used by the other commands. `connect` checks `GET /health` before saving, so a wrong URL or key fails here. `--user-id` saves the user that REPL requests and `/workflow run` act for; every request needs one. It saves the connection only; targeting lives in per-command `--agent`/`--host` flags and `mash compose`, which keeps the saved user.
-- `compose --host ID --primary AGENT [--subagents a,b] [--workflows w1,w2]`: define (or replace) the host composition on the deployment, then pin it as the target. The `PUT` is idempotent; re-run `compose` to recompose. `--api-base-url` falls back to env or the saved config.
+- `compose --host ID [--agents a,b] [--workflows w1,w2]`: define (or replace) the host composition on the deployment, then pin it as the target. The `PUT` is idempotent; re-run `compose` to recompose. `--api-base-url` falls back to env or the saved config.
 
 Common options shared by most host-facing commands
 
@@ -47,12 +47,12 @@ Host management
 
 Agent processes
 
-- `agent serve --agent ID [options]`: serve one agent of the pool behind its own `AgentServer`. The host runs this for every agent; you rarely run it by hand. The pool is imported but not started; subagent calls go to the host's `/h2a` relay.
+- `agent serve --agent ID [options]`: serve one agent of the pool behind its own `AgentServer`. The host runs this for every agent; you rarely run it by hand. The pool is imported but not started; the companion's `RunSubAgents` and `RunWorkflow` calls go to the host's `/h2a` relay.
 - `--host-app module:attribute` or `MASH_HOST_APP`: the same host target the host runs.
 - `--host`: bind host. Defaults to `127.0.0.1` or `MASH_AGENT_BIND_HOST`.
 - `--port`: bind port. Defaults to `9000` or `MASH_AGENT_PORT`.
 - `MASH_AGENT_TOKEN` (required): the agent's token. Every route but `/health` requires it.
-- `MASH_HOST_API_URL` (required): the host's base URL, for subagent calls and the sandbox tools.
+- `MASH_HOST_API_URL` (required): the host's base URL, for the companion's calls and the sandbox tools.
 - `MASH_SANDBOX_ENABLED=1`: the host has sandboxes, so the agent gets `run_code` and `edit_file`, and `sandbox_put` and `sandbox_get` when its spec declares file roots.
 - `MASH_BROWSER_ENABLED=1`: the host has browsers, so the agent gets the browser tools when its spec lists sites.
 - `MASH_PARENT_PID`: the process shuts down when this pid's process exits.
@@ -81,7 +81,7 @@ Browser administration (run on the Docker host; browsers are found by the `mash.
 Notes
 
 - If no command is given, the CLI prints help.
-- Agent resolution defaults to the deployment primary agent unless `--agent` overrides it.
+- A host target runs on the companion; `--agent` targets one agent directly.
 
 ## Interactive Shell Commands
 
@@ -129,10 +129,10 @@ slow or unreachable.
 ## Main Components
 - `main.py`: top-level parser, command dispatch, and command execution.
 - `client.py`: HTTP client used to talk to hosted Mash agents.
-- `shell.py`: streamed remote shell UX, runtime-event rendering, and subagent event rendering.
+- `shell.py`: streamed remote shell UX, runtime-event rendering, and rendering of the companion's child requests.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in shell commands.
 - `background.py`: `/bg` parsing, id prefixes, the `--list` tree, the Ctrl-Z handler, and the threads that follow `bg` requests while the prompt is idle.
-- `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained/subagent output.
+- `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained child output.
 - `config.py`, `repl.py`, and `types.py`: saved connection config and shell state types.
 
 ### Live token streaming

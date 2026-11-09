@@ -15,9 +15,9 @@ Do not call any workflow tool.
 The request's `input` object is the generation brief:
 
 - `host_id`, `user_guidance`, `row_count` — the trigger parameters.
-- `primary_agent_id` and `agent_profiles` — the host's actual composition;
-  each profile carries the agent's declared `capabilities`, `description`,
-  and `usage_guidance`.
+- `agent_profiles` — the host's agents, which the built-in companion routes
+  each request to; each profile carries the agent's declared `capabilities`,
+  `description`, and `usage_guidance`.
 
 Generate exactly `row_count` dataset rows and one rubric, then return them as
 your structured output: `{"dataset_rows": [...], "rubric": {...}}`.
@@ -32,7 +32,7 @@ Sampling categories for dataset rows:
 
 - `random`: general-purpose inputs
 - `multi_tool`: inputs requiring multiple tool calls
-- `multi_agent`: inputs requiring subagent delegation
+- `multi_agent`: inputs the companion should split across several agents
 - `high_tokens`: inputs likely to produce long outputs
 - `long_running`: inputs requiring many agentic steps
 - `short_running`: inputs resolved in one or two steps

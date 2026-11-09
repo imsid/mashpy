@@ -4,7 +4,7 @@
 
 ## What This Package Does
 - Defines the base tool contract and registration surface.
-- Houses built-in tools such as the sandbox tools, MCP-backed tools, and subagent invocation.
+- Houses built-in tools such as the sandbox tools, MCP-backed tools, and the companion's `RunSubAgents` and `RunWorkflow`.
 - Provides runtime-facing helpers so tool execution can stay consistent across hosted agents.
 
 ## Main Components
@@ -69,8 +69,8 @@
   host with browsers.
 - `mcp.py`: MCP-backed tool integration.
 - `web_search.py`: web search providers (`web_search`/`web_fetch`), Parallel AI by default.
-- `subagent.py`: `RunSubAgents`. It runs one or more child requests at the same time, each on the calling agent or one of the host's subagents, and returns one entry per item, in order, with the child's `request_id`, `session_id`, `trace_id`, `status`, and response, structured output or error. Each child is a `bg` request started by the calling agent, in a session of its own: a new one named after its request id, or the earlier session an item names with `session_id`. A call takes at most 16 items. `timeout_seconds` defaults to the calling agent's `AgentConfig.subagent_timeout_seconds` (3600 unless the spec sets it), which is also the most a call may ask for; when it passes, the tool cancels the children still running. The runtime registers it on every request the user started, and children get neither it nor `AskUser`.
-- `workflow.py`: `RunWorkflow(workflow_id, input, timeout_seconds)`. It starts one run of a host workflow through the host's `/h2a` relay, with a dedup key fixed by the call's position so a replayed call gets back the run it started, then reads the run's status every 2 seconds until it ends or `timeout_seconds` (default 360, at most 3600) passes. It returns `{run_id, status, result}` or `{run_id, status, error}`; on `timed_out` the run keeps going. A refused input comes back as an error naming the fields. The runtime registers it only for the `companion` primary of a host with workflows, on requests the user started.
+- `subagent.py`: `RunSubAgents`. It runs one or more child requests at the same time, each on one of the host's agents, and returns one entry per item, in order, with the child's `request_id`, `session_id`, `trace_id`, `status`, and response, structured output or error. Each child is a `bg` request started by the calling agent, in a session of its own: a new one named after its request id, or the earlier session an item names with `session_id`. A call takes at most 16 items. `timeout_seconds` defaults to the calling agent's `AgentConfig.subagent_timeout_seconds` (3600 unless the spec sets it), which is also the most a call may ask for; when it passes, the tool cancels the children still running. The runtime registers it on every request the user started, and children get neither it nor `AskUser`.
+- `workflow.py`: `RunWorkflow(workflow_id, input, timeout_seconds)`. It starts one run of a host workflow through the host's `/h2a` relay, with a dedup key fixed by the call's position so a replayed call gets back the run it started, then reads the run's status every 2 seconds until it ends or `timeout_seconds` (default 360, at most 3600) passes. It returns `{run_id, status, result}` or `{run_id, status, error}`; on `timed_out` the run keeps going. A refused input comes back as an error naming the fields. The runtime registers it only for the `companion` on a request to a host with workflows, on requests the user started.
 - `ask_user.py`: `AskUser`, lets agents request information from the user mid-execution.
 - `runtime.py`: the runtime tools `search_conversations` and
   `get_full_turn_message`. They reach the current session or the request

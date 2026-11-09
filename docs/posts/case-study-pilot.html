@@ -320,7 +320,7 @@
 
   <h2>What Pilot does</h2>
   <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a guide to the Mash codebase with two agents. The <code>pilot</code> agent answers questions from the source. The <code>builder</code> agent builds Mash apps in the user's sandbox and checks that they work. The user composes which agents work together, then enters the REPL.</p>
-  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent processes, per-user sandboxes, delegation through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
+  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent processes, per-user sandboxes, the companion's routing through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
 
   <h2>The catalog</h2>
   <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs a spec class with a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
@@ -348,8 +348,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
     builder.host(
         <span class="fn">Host</span>(
             host_id=<span class="str">"guide"</span>,
-            primary=<span class="str">"pilot"</span>,
-            subagents=(<span class="str">"builder"</span>,),
+            agents=(<span class="str">"pilot"</span>, <span class="str">"builder"</span>),
             workflows=(<span class="str">"pilot-changelog"</span>,),
         )
     )
@@ -362,22 +361,27 @@ CATALOG: tuple[CatalogEntry, ...] = (
 
   <div class="arch">
     <div class="arch-layer arch-layer-blue">
-      <div class="arch-layer-label">pilot (primary)</div>
-      <div class="arch-layer-title">Tools: bash in the mounted repo · ask_user</div>
-      <div class="arch-layer-sub">Reads source, docs and git history</div>
+      <div class="arch-layer-label">companion (built in)</div>
+      <div class="arch-layer-title">Tools: RunSubAgents · RunWorkflow · agent log tools</div>
+      <div class="arch-layer-sub">Routes each guide request to pilot, builder or the changelog workflow</div>
     </div>
     <div class="arch-connector">
       <span class="arch-connector-label">RunSubAgents through the host's /h2a relay</span>
     </div>
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-label">pilot</div>
+      <div class="arch-layer-title">Tools: bash in the mounted repo · ask_user</div>
+      <div class="arch-layer-sub">Reads source, docs and git history</div>
+    </div>
     <div class="arch-layer arch-layer-green">
-      <div class="arch-layer-label">builder (subagent)</div>
+      <div class="arch-layer-label">builder</div>
       <div class="arch-layer-title">Tools: bash in its folder of the user's sandbox · Skill</div>
       <div class="arch-layer-sub">Skills: build-mash-agent · build-mash-workflow · build-mash-host</div>
     </div>
   </div>
 
   <h2>The pilot agent</h2>
-  <p>The <code>pilot</code> agent registers an <code>AskUserTool</code> and gets <code>bash</code> from the host, like every agent on a host with sandboxes. Its prompt carries a map of where things are documented (<code>CLAUDE.md</code>, each module's <code>README.md</code> and <code>AGENTS.md</code>, the posts, the H2A RFC) rather than the documents themselves. It finds the answer with <code>rg</code>, reads the lines it needs with <code>sed</code>, and cites them as <code>path:line</code>. When the user asks for an app, it delegates to the builder.</p>
+  <p>The <code>pilot</code> agent registers an <code>AskUserTool</code> and gets <code>bash</code> from the host, like every agent on a host with sandboxes. Its prompt carries a map of where things are documented (<code>CLAUDE.md</code>, each module's <code>README.md</code> and <code>AGENTS.md</code>, the posts, the H2A RFC) rather than the documents themselves. It finds the answer with <code>rg</code>, reads the lines it needs with <code>sed</code>, and cites them as <code>path:line</code>. Requests for an app go to the builder: the companion routes them there.</p>
 
   <h2>The builder agent</h2>
   <p>The <code>builder</code> builds each app in its own directory under <code>/home/agent/workspaces/builder/apps</code> in the user's sandbox. It loads the matching skill, creates the project with <code>uv init</code>, installs mashpy with <code>uv add</code>, and writes the files. It checks the result by importing the pool and running the app's tests, and replies with the directory, the files, and the check output. The sandbox's volume outlives the container, so the apps survive a sandbox being stopped or replaced. The builder cannot serve what it builds, because a sandbox has no Docker; the user copies the app out with <code>docker cp</code>.</p>
@@ -429,7 +433,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         <td>Dynamic host composition; hosts as data</td>
       </tr>
       <tr>
-        <td>The guide delegating to the builder</td>
+        <td>The companion routing a request to the builder</td>
         <td><code>RunSubAgents</code> through the host's <code>/h2a</code> relay</td>
       </tr>
       <tr>
@@ -463,7 +467,7 @@ pilot repl --host guide       <span class="cm"># enter the default composition</
   <p>The admin dashboard is available at <code>/admin</code> on the running host. It shows the pool, active host compositions, and agent traces with a span tree drawer.</p>
 
   <h2>Adding an agent to the catalog</h2>
-  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. The host handles pool registration, the agent's process, the store listing, delegation, sessions and streaming.</p>
+  <p>A new catalog entry is a new package under <code>pilot/catalog/agents/</code> plus one <code>CatalogEntry</code> in <code>CATALOG</code>. The host handles pool registration, the agent's process, the store listing, the companion's routing, sessions and streaming.</p>
 
   <div class="steps">
     <div class="step">
@@ -480,7 +484,7 @@ pilot repl --host guide       <span class="cm"># enter the default composition</
     </div>
     <div class="step">
       <div class="step-num">4</div>
-      <div class="step-text">Compose it into a host: <code>pilot compose my-host --primary pilot --subagents my-agent</code>. Enter: <code>pilot repl --host my-host</code>.</div>
+      <div class="step-text">Compose it into a host: <code>pilot compose my-host --agents pilot,my-agent</code>. Enter: <code>pilot repl --host my-host</code>.</div>
     </div>
   </div>
 

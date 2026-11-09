@@ -10,7 +10,7 @@ tags:
 
 # The Durable Agent Loop
 
-The agent loop in Mash is a think/act/observe cycle. Almost everything the agent does flows through tool calls — skills, subagents, remote tools, memory — and the loop runs the same way regardless of which of those is happening.
+The agent loop in Mash is a think/act/observe cycle. Almost everything the agent does flows through tool calls — skills, child requests, remote tools, memory — and the loop runs the same way regardless of which of those is happening.
 
 A trace spans one user message through the full loop run to the final response, written as one row in `memory_turns` on completion. Within a trace, each iteration of the loop is a turn — one think/act/observe cycle.
 
@@ -41,7 +41,7 @@ for step in range(self.config.max_steps):
 The LLM emits tool calls during `plan_step`. The `act` phase executes them. What those calls do covers a wide range:
 
 - **Skills** — a `Skill` meta-tool fetches the relevant markdown instruction bundle and surfaces it back to the LLM as a tool result
-- **Subagent invocation** — `RunSubAgents` sends one or more requests to other agents in the pool, or to the agent itself, runs them at the same time and streams back their output
+- **Routing**: the companion's `RunSubAgents` sends one or more requests to the host's agents, runs them at the same time and streams back their output
 - **Web search and fetch** — `web_search` and `web_fetch` are registered tools when a web search provider is configured
 - **Remote MCP tools** — tools registered from MCP servers (GitHub, databases, custom servers) are called the same way as local tools
 - **Memory** — `memory_search` and `memory_store` read and write to the agent's memory store
@@ -103,7 +103,7 @@ Nothing here is written to `memory_turns` until the trace completes. Partial pro
 
 The replay that recovers a crashed process also gives a person control over a request that is running or already finished. Three verbs sit on the API: `POST .../request/{request_id}/cancel`, `.../resume`, and `.../rerun`.
 
-Cancel stops a running request at the next step boundary. The step in flight finishes and checkpoints first, so a tool call that already started completes and its result is recorded. A request parked on an approval or `AskUser` has that tool call terminated. A subagent invocation is a tool call like any other: a child that has already been invoked runs to completion, and cancel never cascades to it.
+Cancel stops a running request at the next step boundary. The step in flight finishes and checkpoints first, so a tool call that already started completes and its result is recorded. A request parked on an approval or `AskUser` has that tool call terminated. A `RunSubAgents` call is a tool call like any other: a child that has already been invoked runs to completion, and cancel never cascades to it.
 
 Resume continues a cancelled or failed request from its last checkpoint; a failed one runs its failed step again. All of its context comes from the checkpoints, so the request picks up with the model context as it stood rather than one rebuilt from the original message. A request whose session has accrued a later turn is rejected with a 409, because resume replays the original context snapshot and allowing it would persist a turn that ignores everything after it. A request cancelled while parked on an interaction resumes by issuing a fresh `AskUser` call under a new interaction id.
 

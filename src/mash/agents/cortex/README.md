@@ -42,8 +42,8 @@ On every request, for the request's user:
   entries matching every term, ranked. The user comes from the request; a
   `user_id` in the arguments is ignored, and the output does not include it.
 
-The `/h2a` relay copies the parent request's `user_id` onto subagent calls,
-so a subagent reads the same user.
+The `/h2a` relay copies the companion request's `user_id` onto its children,
+so a child reads the same user.
 
 ## `cortex-build`
 
@@ -58,7 +58,7 @@ on demand: `POST /api/v1/workflow/cortex-build/run` with
 
 - **collect** loads the user's Cortex and their turns after `built_through`
   from `MemoryStore.list_user_turns`: across agents, oldest first, without
-  workflow or subagent turns. Each turn carries the tools it ran (arguments
+  workflow or child turns. Each turn carries the tools it ran (arguments
   from `execute_tool.start`, results from `execute_tool.end`); `search_cortex` results are left out. Messages are
   clipped to 4000 characters, arguments to 500, results to 1000, 20 tool
   calls per turn, and turns stop at 60000 characters of bundle.

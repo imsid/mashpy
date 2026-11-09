@@ -22,8 +22,8 @@ Import the public API from `mash.runtime`:
 - `AgentSpec`: build contract for one agent
 - `AgentRuntime`: per-agent execution core
 - `AgentServer`: per-agent HTTP/SSE adapter; `token=` requires a bearer token on every route but `/health`
-- `Pool`: deployed pool of role-less agents and workflows
-- `Host`: immutable composition over the pool (primary + subagents + workflows)
+- `Pool`: deployed pool of agents and workflows
+- `Host`: immutable composition over the pool (agents + workflows); every request to a host runs on the built-in `companion`, which routes it to them
 - `HostBuilder`: pool construction API
 - `AgentClient`: client for one addressable runtime
 - `AgentMetadata`: agent self-description supplied at registration
@@ -32,7 +32,7 @@ Everything else under `src/mash/runtime` is internal implementation detail unles
 
 Workflow task `AgentSpec` objects passed through `HostBuilder.workflow(...)` are
 registered as workflow-only runtimes. They can be targeted by `mash.workflows`
-tasks but are hidden from public agent listings and subagent delegation.
+tasks but are hidden from public agent listings and from hosts.
 
 Related READMEs:
 
@@ -166,7 +166,7 @@ The `RuntimeStore` boundary is intentionally small:
 
 This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened.
 
-A request's lifecycle state is one such record, not an inference: the events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a subagent call's parent and copy its user. The accepted event also writes `session_id`, `mode` (`fg` or `bg`), `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`, and `mash.request.mode_changed` updates `mode` in the same transaction as its append. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log, written in the same transaction as each lifecycle event. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
+A request's lifecycle state is one such record, not an inference: the events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a child request's parent and copy its user. The accepted event also writes `session_id`, `mode` (`fg` or `bg`), `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`, and `mash.request.mode_changed` updates `mode` in the same transaction as its append. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log, written in the same transaction as each lifecycle event. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
 
 ### Runtime Durability
 
@@ -196,7 +196,7 @@ This is the execution and durability boundary. It does not replace the runtime e
 - owning one agent definition and its configured dependencies
 - exposing the public runtime operations used by server/host layers
 - coordinating the memory store, runtime event store, and request engine
-- configuring subagents and MCP-backed remote tools
+- wiring the companion's host access and MCP-backed remote tools
 
 `AgentRuntime` intentionally does **not** own:
 
@@ -288,12 +288,12 @@ lifecycle.
     runtime (the spec's tools, skills and LLM, then the sandbox, browser and
     MCP tools), and `build_turn_agent` for each step, a cheap agent over a copy
     of the base registry plus the tools bound to the request (conversation
-    tools, `search_cortex`, `RunSubAgents`); tools shut down once, with the
-    runtime
+    tools, `search_cortex`, and for the companion `RunSubAgents` and
+    `RunWorkflow`); tools shut down once, with the runtime
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)
-  - `RunSubAgents` wiring on requests the user started; a child gets neither `RunSubAgents` nor `AskUser`
+  - `RunSubAgents` and `RunWorkflow` wiring for the companion on a host request the user started, over the host's agents and workflows; no other agent routes, and a child gets no `AskUser`
 
 - [`context.py`](./context.py)
   - session history loading
@@ -321,7 +321,7 @@ lifecycle.
 
 - [`agent_process.py`](./agent_process.py)
   - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. With `browser_tools` (the host sets `MASH_BROWSER_ENABLED=1` when it has browsers) an agent whose spec lists `browser_sites()` also gets the browser tools (`mash.tools.browser`), and the engine turns its `browser_handoff` calls into `browser` interactions carrying a live-view link. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
-  - `HostRelay`: the runtime's pool access in an agent process; subagent clients point at the host's `/h2a` relay
+  - `HostRelay`: the runtime's host access in an agent process; the companion's clients for the host's agents, and its workflow client, point at the host's `/h2a` relay
   - `stop_with_parent()`: an agent process shuts down when the host whose pid is in `MASH_PARENT_PID` exits
 
 - [`sessions.py`](./sessions.py)
@@ -387,9 +387,9 @@ lifecycle.
 - `host/types.py`
   - pool registration records, the `Host` composition type, and bootstrap session ids
 
-- `host/subagents.py`
-  - subagent metadata
-  - prompt augmentation helpers
+- `host/directory.py`
+  - `AgentMetadata` and the `HostAccess` protocol
+  - the `AGENTS` directory of a host's agents for the companion's prompt, and the request-context block
 
 - `host/tokens.py`
   - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
@@ -501,7 +501,7 @@ Pydantic models are serialized client-side by
 [`src/mash/cli/client.py`](../cli/client.py) before being sent.
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/agent/primary/request \
+curl -X POST http://127.0.0.1:8000/api/v1/agent/assistant/request \
   -H "Authorization: Bearer $MASH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

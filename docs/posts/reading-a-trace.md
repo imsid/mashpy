@@ -58,12 +58,12 @@ Facts that happen at a point in time become log records with the trace id and sp
 
 `analyze_projection(projection)` reduces the spans to a few summaries:
 
-- **Timing breakdown**: total duration split across cold start, context load, model calls, tools, subagents, and idle, each with absolute and percentage values.
+- **Timing breakdown**: total duration split across cold start, context load, model calls, tools, child requests, and idle, each with absolute and percentage values.
 - **Per-tool stats**: call count, total/avg/max/min latency, error count, sorted by total time so the most expensive tool reads first.
 - **Per-step breakdown**: model call vs. tool vs. overhead for each loop iteration. The shape tells you whether a request was slow because of one bad step or uniformly heavy.
 - **Slowest operations**: top spans by duration.
 
-Delegation costs flow through the tree. A `RunSubAgents` call's `execute_tool.start` lists the request id of each child it started, and the projection nests each child's `invoke_agent` span, built from the child's own log, under that call. The analysis treats a child's spans as the child's: each one gets its own analysis, attached to the parent's, so a slow primary request whose time went into a subagent's tool call attributes the cost to that tool.
+The cost of routed work flows through the tree. A `RunSubAgents` call's `execute_tool.start` lists the request id of each child it started, and the projection nests each child's `invoke_agent` span, built from the child's own log, under that call. The analysis treats a child's spans as the child's: each one gets its own analysis, attached to the parent's, so a slow companion request whose time went into a child's tool call attributes the cost to that tool.
 
 ## Where the analysis renders
 

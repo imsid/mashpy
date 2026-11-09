@@ -9,7 +9,7 @@ tags:
 
 # Synthetic Evals
 
-Before an agent sees any real traffic, there are no traces to learn from. A developer who has just defined a host composition has declared what the agent is supposed to do (its capabilities, its tools, its subagents) but has no empirical signal on whether it actually does those things well. This is the cold-start problem: you want to evaluate your agent before rolling it out, and you have nothing to evaluate against.
+Before an agent sees any real traffic, there are no traces to learn from. A developer who has just defined a host composition has declared what the agent is supposed to do (its capabilities, its tools, the agents in its host) but has no empirical signal on whether it actually does those things well. This is the cold-start problem: you want to evaluate your agent before rolling it out, and you have nothing to evaluate against.
 
 Synthetic evals address this directly. Given a host composition and some developer guidance, the system generates a representative dataset of test cases and a scoring rubric derived from the host's declared capabilities. The developer can then run that dataset through the host at any point and get scored results, before the first user ever sends a message.
 
@@ -25,17 +25,16 @@ The system lives entirely inside Mash, opt-in per pool with `HostBuilder.enable_
 
 ### Host
 
-A host is a named composition of agents: one primary and zero or more subagents. It is the unit of deployment and the unit of evaluation. When a user request arrives, the primary agent handles it and can delegate to subagents via the `RunSubAgents` tool.
+A host is a named composition of agents and workflows. It is the unit of deployment and the unit of evaluation. When a user request arrives, the built-in companion takes it and routes it to the host's agents with the `RunSubAgents` tool.
 
 ```
 Host: travel-assistant
-  primary:   TravelConcierge
-  subagents: [FlightSearch, HotelSearch]
+  agents: [FlightSearch, HotelSearch]
 ```
 
 ### AgentSpec
 
-An AgentSpec is the implementation of one agent: its system prompt, tools, skills, and LLM model. AgentSpecs evolve: developers change system prompts, add or remove tools, swap models. The host composition can evolve too: a subagent gets added, another gets retired. Each experiment records the state of both at the moment it ran.
+An AgentSpec is the implementation of one agent: its system prompt, tools, skills, and LLM model. AgentSpecs evolve: developers change system prompts, add or remove tools, swap models. The host composition can evolve too: an agent gets added, another gets retired. Each experiment records the state of both at the moment it ran.
 
 ### Dataset
 
@@ -179,7 +178,7 @@ Generation has one SKILL, `gen-synthetic-evals`. It gives masher the instruction
 }
 ```
 
-`expected_behavior` is a prose description, not a string-match target. For example: "The primary agent should delegate flight queries to FlightSearch, synthesize the results, and respond with at least one concrete option including price and dates." The LLM judge evaluates the actual output against this description.
+`expected_behavior` is a prose description, not a string-match target. For example: "The companion should route flight queries to FlightSearch, synthesize the results, and respond with at least one concrete option including price and dates." The LLM judge evaluates the actual output against this description.
 
 ### Scoring Rubric
 
@@ -200,7 +199,7 @@ Generation has one SKILL, `gen-synthetic-evals`. It gives masher the instruction
 }
 ```
 
-Typical criteria for a multi-agent host: `task_completion`, `subagent_coordination`, `tool_selection_accuracy`, `response_quality`, `factual_grounding`. Weights reflect the host's purpose: a research host weights `factual_grounding` higher; a booking host weights `task_completion`. Weights must sum to 1.0 and are editable by the developer after generation, until the eval's first experiment locks them.
+Typical criteria for a multi-agent host: `task_completion`, `agent_routing`, `tool_selection_accuracy`, `response_quality`, `factual_grounding`. Weights reflect the host's purpose: a research host weights `factual_grounding` higher; a booking host weights `task_completion`. Weights must sum to 1.0 and are editable by the developer after generation, until the eval's first experiment locks them.
 
 ### Eval
 
@@ -227,8 +226,9 @@ The eval carries no host or AgentSpec snapshot. Whether an eval is locked is der
     "completed_at": datetime | None,    # stamped when scoring finishes
     "status": str,                      # pending | completed | failed
     "host_composition": {               # live composition at run start
-        "primary": str,                 # agent_id
-        "subagents": list[str],         # agent_ids
+        "host_id": str,
+        "agents": list[str],            # agent_ids the companion routes to
+        "workflows": list[str],         # the host's own workflow ids
     },
     "agent_spec_snapshot": {            # AgentSpec state at run start
         "<agent_id>": {
@@ -277,11 +277,11 @@ One row per dataset row per experiment. This is the leaf-level record; all scori
 
 ### Operational Metrics
 
-Every dataset row runs through the host under a single session id shared by the primary agent and all of its subagents. That session's runtime events are a self-contained record of what the run cost, independent of the qualitative score. After a row finishes, the workflow folds those events into a `metrics` object and stores it on the run:
+Every dataset row runs through the host as one companion request, plus the child requests it starts on the host's agents, each in a session of its own. The events of that request and its children are a self-contained record of what the run cost, independent of the qualitative score. After a row finishes, the workflow folds those events into a `metrics` object and stores it on the run:
 
 ```python
 {
-    "latency_ms": float | None,     # wall time across the session
+    "latency_ms": float | None,     # wall time across the request and its children
     "llm_calls": int,
     "steps": int,
     "tool_calls": int,
@@ -292,9 +292,9 @@ Every dataset row runs through the host under a single session id shared by the 
         "cache_creation": int,
     },
     "tool_call_breakdown": dict,    # tool name → call count
-    "stop_reason": str | None,      # primary agent's terminal stop reason
-    "num_subagent_steps": int,
-    "subagents": [                  # per-subagent rollup
+    "stop_reason": str | None,      # the companion's terminal stop reason
+    "num_agent_steps": int,
+    "agents": [                     # per-agent rollup of the agents it ran
         {
             "agent_id": str,
             "steps": int,
@@ -307,7 +307,7 @@ Every dataset row runs through the host under a single session id shared by the 
 }
 ```
 
-The fold is a pure function over the event list with no I/O, so it is deterministic and unit-testable against a captured session. It is best-effort: a row whose host request errored still reports the tokens and steps it spent before failing, and a metrics failure never fails the row. Metrics are rolled up at read time, so an experiment's operational aggregate always matches its persisted rows.
+The fold is a pure function over the event list with no I/O, so it is deterministic and unit-testable against a captured event list. It is best-effort: a row whose host request errored still reports the tokens and steps it spent before failing, and a metrics failure never fails the row. Metrics are rolled up at read time, so an experiment's operational aggregate always matches its persisted rows.
 
 ---
 
@@ -317,8 +317,7 @@ The fold is a pure function over the event list with no I/O, so it is determinis
 
 ```
 Host: travel-assistant
-  primary:   TravelConcierge  (system_prompt: "You are a travel planning assistant...")
-  subagents: [FlightSearch, HotelSearch]
+  agents: [FlightSearch  (system_prompt: "You search flights..."), HotelSearch]
 ```
 
 **Step 1: Generate an eval.**
@@ -333,9 +332,9 @@ The workflow runs the SKILL and produces:
   - "Find me a round-trip flight from NYC to Paris under $1000 in mid-August"
   - "Plan a 10-day trip covering Rome, Florence, and Venice with hotels under $150/night"
   - "What's the cheapest way to get from London to Tokyo next month?"
-- A rubric with four criteria: `task_completion` (0.4), `subagent_coordination` (0.3), `response_quality` (0.2), `factual_grounding` (0.1)
+- A rubric with four criteria: `task_completion` (0.4), `agent_routing` (0.3), `response_quality` (0.2), `factual_grounding` (0.1)
 
-Result: `eval_id = eval-001`. The developer bumps `task_completion` to 0.45 and trims `subagent_coordination` to 0.25; the eval has no experiments yet, so it is still editable.
+Result: `eval_id = eval-001`. The developer bumps `task_completion` to 0.45 and trims `agent_routing` to 0.25; the eval has no experiments yet, so it is still editable.
 
 **Step 2: Run the first experiment.**
 
@@ -346,9 +345,9 @@ experiment also locks `eval-001`.
 
 Result: `experiment_id = exp-001`. 100 `experiment_runs` written, one per dataset row, each carrying its score and its metrics.
 
-**Step 3: Change the primary agent's system prompt.**
+**Step 3: Change an agent's system prompt.**
 
-The developer rewrites TravelConcierge's system prompt to explicitly handle budget constraints and multi-city itineraries.
+The developer rewrites FlightSearch's system prompt to explicitly handle budget constraints and multi-city itineraries.
 
 **Step 4: Run a second experiment.**
 
@@ -369,15 +368,15 @@ eval-001  travel-assistant  100 rows  2026-07-04
   control:  exp-002
 
   agent changes (exp-001 → exp-002):
-    TravelConcierge:  system_prompt changed
-    FlightSearch:     (no changes)
+    companion:        (no changes)
+    FlightSearch:     system_prompt changed
     HotelSearch:      (no changes)
 
   aggregate score         3.6  →  4.1   (+0.5)
 
   by criterion:
     task_completion       3.4  →  4.2   (+0.8)   weight: 0.45
-    subagent_coordination 3.8  →  3.9   (+0.1)   weight: 0.25
+    agent_routing 3.8  →  3.9   (+0.1)   weight: 0.25
     response_quality      3.5  →  4.3   (+0.8)   weight: 0.2
     factual_grounding     3.2  →  3.8   (+0.6)   weight: 0.1
 

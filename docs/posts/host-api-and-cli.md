@@ -20,7 +20,7 @@ The API is REST plus SSE, composed in `src/mash/api`. Three conventions apply ac
 
 **Auth.** With no API key configured, routes are open, which suits local development, and the host binds only a loopback address: `mash host serve --host 0.0.0.0` without a key refuses to start. With `MASH_API_KEY` set, every `/api/v1/*` route requires `Authorization: Bearer <key>` or `X-API-Key: <key>`. The admin dashboard asks for the key once per browser session and keeps it in a `mash_api_key` cookie that only the API routes see.
 
-**Discovery.** `GET /` returns service discovery info, `/api/v1/openapi.json` is the generated schema, and `/api/v1/docs` serves Swagger UI. Both need the API key, like the rest of `/api/v1`. `GET /api/v1/health` reports the deployment shape, including the primary agent id and the agent list, and doubles as the liveness and readiness probe in [deployment](how-to-deploy.md).
+**Discovery.** `GET /` returns service discovery info, `/api/v1/openapi.json` is the generated schema, and `/api/v1/docs` serves Swagger UI. Both need the API key, like the rest of `/api/v1`. `GET /api/v1/health` reports the deployment shape, the agent list and the hosts, and doubles as the liveness and readiness probe in [deployment](how-to-deploy.md).
 
 ## The endpoint groups
 
@@ -46,10 +46,10 @@ Each group of endpoints projects one subsystem from earlier in the series.
 |---|---|---|
 | PUT | `/hosts/{host_id}` | define or replace a host composition (idempotent) |
 | GET | `/hosts` | list all defined hosts |
-| GET | `/hosts/{host_id}` | get one host with its primary, subagents, and workflows |
+| GET | `/hosts/{host_id}` | get one host with its agents and workflows |
 | POST | `/hosts/{host_id}/request` | submit a request through a composed host |
 
-`POST /hosts/{host_id}/request` is the primary submission path when routing through a host. The response includes the primary `agent_id` and `request_id`; events then stream from the existing `GET /agent/{agent_id}/request/{request_id}/events`. Requests snapshot the host composition at submit time, so redefining a host never affects in-flight requests.
+`POST /hosts/{host_id}/request` is the submission path when routing through a host. The request runs on the built-in companion, which routes it among the host's agents and workflows; the response includes `agent_id` (`companion`) and `request_id`; events then stream from the existing `GET /agent/{agent_id}/request/{request_id}/events`. Requests snapshot the host composition at submit time, so redefining a host never affects in-flight requests.
 
 **Sessions.** The [memory layer](memory-and-compaction.md), read over HTTP: `GET .../sessions` and `.../sessions/{session_id}` for listings, `.../history` for turns, `.../signals` for per-turn signal payloads with their definitions, and `POST .../compact` to trigger compaction manually. A reasoning endpoint (`GET .../session/{session_id}/trace/{trace_id}/reasoning`) returns the compact step-by-step trace for one turn.
 
@@ -78,7 +78,7 @@ The `mash` CLI is built entirely on this client. Nothing in it has a private pat
 
 ## The mash command
 
-`mash connect` validates a connection against `GET /health` and persists it: base URL, API key and the user requests act for (`--user-id`), with targeting left to per-command `--agent`/`--host` flags. Later commands resolve their connection from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --primary <agent>` (with optional `--subagents` and `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. With a connection in place, one-shot commands cover quick checks: `mash status`, `mash browse`, `mash agents`, `mash workflows`, `mash hosts`, `mash sessions`, and `mash history --session-id ...`.
+`mash connect` validates a connection against `GET /health` and persists it: base URL, API key and the user requests act for (`--user-id`), with targeting left to per-command `--agent`/`--host` flags. Later commands resolve their connection from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --agents a,b` (with optional `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. With a connection in place, one-shot commands cover quick checks: `mash status`, `mash browse`, `mash agents`, `mash workflows`, `mash hosts`, `mash sessions`, and `mash history --session-id ...`.
 
 `mash browse` shows the full pool in one view: agents, workflows, and defined hosts. `mash agents`, `mash workflows`, and `mash hosts` list each separately.
 

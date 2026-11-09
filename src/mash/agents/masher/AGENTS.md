@@ -24,7 +24,7 @@ attached to every host. There is no partial-registration mode.
 
 - Code steps may orchestrate deterministic inline agent requests, but their
   task IDs and persistence keys must remain stable across replay.
-- Do not add free-form chat or subagent usage behavior to the eval agent.
+- Do not add free-form chat or routing behavior to the eval agent.
 - If the generated eval or experiment result shape changes, update `README.md`,
   the Masher tests, and any API/CLI expectations that depend on completed
   workflow output shape.

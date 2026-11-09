@@ -44,9 +44,9 @@ pool = HostBuilder().agent(WriterSpec(), metadata=...).workflow(CHANGELOG).build
 
 The changelog job above has one deterministic part and one part that needs a model. Scanning the repo is Python: it should run exactly as written, and a retry should re-run the function, with no LLM in the path. Writing the summary is agent work. The two step kinds keep that boundary explicit in the definition, and two of the Masher workflows that ship with Mash (trace digest, online eval curation) are all `CodeStep`.
 
-An `AgentStep` targets an agent already in the pool by `agent_id`, or carries its own `agent_spec`, which the builder registers as a [workflow-only agent](composing-agents.md) hidden from listings and delegation. When the step runs, that agent receives a normal request and executes it through the [same durable loop](durable-agent-loop.md) as everything else.
+An `AgentStep` targets an agent already in the pool by `agent_id`, or carries its own `agent_spec`, which the builder registers as a [workflow-only agent](composing-agents.md) hidden from listings and hosts. When the step runs, that agent receives a normal request and executes it through the [same durable loop](durable-agent-loop.md) as everything else.
 
-A pool needs no agents at all. A workflow of pure `CodeStep`s references none, and `HostBuilder().workflow(spec).build()` with zero `.agent()` calls is a supported deploy that serves only workflow runs. Hosts are unchanged: a `Host` still names a primary agent, and workflow runs never go through a host.
+A pool needs no agents at all. A workflow of pure `CodeStep`s references none, and `HostBuilder().workflow(spec).build()` with zero `.agent()` calls is a supported deploy that serves only workflow runs. Hosts are unchanged, and workflow runs started over the workflow API never go through a host.
 
 ## Output threading
 

@@ -10,7 +10,7 @@
 ## Main Components
 - `events.py`: structured event types used across Mash.
 - `logger.py`: canonical event logger implementation.
-- `trace_context.py`: trace, request, session, loop-step and subagent-prefix context helpers.
+- `trace_context.py`: trace, request, session, loop-step and call-prefix context helpers.
 
 ## Role In The System
 - A request's own events (`invoke_agent.*`, `chat.*`, `execute_tool.*`, `mash.*`) are

@@ -28,7 +28,7 @@ if summary_index is not None:
 
 A **summary checkpoint** is a turn whose content is a generated summary of everything before it. When one exists, context becomes the summary plus the turns after it. The full early history is still in the store, but it stops being loaded, so the session's effective context stays bounded at one summary plus a short tail.
 
-Not every turn is a candidate. Activity that shares the session but isn't part of the conversation — a workflow run or a subagent invocation — is persisted as a **non-replayable** turn and skipped here, so delegated and pipeline work never crowds the primary's context.
+Not every turn is a candidate. A workflow run's turns share a session without being part of a conversation, so they are persisted as **non-replayable** and skipped here, and pipeline work never crowds the context. The companion's `RunSubAgents` children run in sessions of their own: each replays only its own agent's earlier work, and the companion keeps a short ledger of what they returned instead of their turns.
 
 ```mermaid
 flowchart LR
@@ -92,6 +92,6 @@ The two-step shape follows the same economics as [skills](skills-on-demand.md): 
 
 ## Per-agent scoping
 
-Everything above is scoped by `app_id`. Every read and write carries it, so an agent's memory is its own even when several agents share a store. Search is also scoped by user: every request carries a `user_id`, and it can search that user's other conversations with the agent. That matters in the next post, where a host runs a primary agent plus its specialists, each in its own process.
+Everything above is scoped by `app_id`. Every read and write carries it, so an agent's memory is its own even when several agents share a store. Search is also scoped by user: every request carries a `user_id`, and it can search that user's other conversations with the agent. That matters in the next post, where a host runs several agents, each in its own process, and the built-in companion routes between them.
 
 *Next: [Composing Agents Under One Host](composing-agents.md).*

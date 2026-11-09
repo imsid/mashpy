@@ -3,7 +3,7 @@
 ## What Must Stay True
 - Package-level exports from `src/mash/memory/__init__.py` remain stable unless intentionally changed.
 - Store, retrieval, and compaction responsibilities stay separated within this package.
-- Memory behavior remains reusable across primary agents and subagents.
+- Memory behavior remains reusable across every agent, the companion included.
 
 ## Change Rules
 - Keep persistence concerns in `store/` and retrieval concerns in `search/`.

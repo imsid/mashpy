@@ -68,8 +68,7 @@ A pool built from workflows alone is a supported deploy shape:
 `HostBuilder().workflow(spec).build()` with zero `.agent()` calls serves only
 workflow runs. A `WorkflowSpec` of pure `CodeStep`s references no agents;
 `AgentStep`s still require their `agent_id` to resolve in the pool. Hosts are
-unrelated to this shape — workflow run endpoints are pool-level, and a `Host`
-always names a primary agent.
+unrelated to this shape — workflow run endpoints are pool-level.
 
 ## Idempotency
 

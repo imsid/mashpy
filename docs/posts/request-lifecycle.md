@@ -32,7 +32,8 @@ The answer arrives as a stream of events on `GET /api/v1/agent/pilot/request/{re
 The example above targets one agent directly. Requests routed through a
 [host composition](composing-agents.md) enter at
 `POST /api/v1/hosts/{host_id}/request` instead; the server resolves the
-host's primary, snapshots the composition onto the request, and replies with
+request onto the built-in companion, which routes it among the host's agents,
+snapshots the composition onto the request, and replies with
 `{"request_id", "agent_id", "session_id", "user_id"}` so you know which agent to stream
 from. Everything after submission, the stream, the events, the terminal
 frames, is identical for both paths.
