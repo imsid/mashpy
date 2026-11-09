@@ -25,7 +25,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from ..events import RequestStatus, RuntimeEventType
-from ..requests import find_pending_interaction
+from ..requests import pending_interactions
 from .loop import RequestRun
 from .steps import (
     emit_interaction_ack,
@@ -157,15 +157,15 @@ class RequestEngine:
         events = await self._store.list_request_events(request_id)
         trace_id = next((e.trace_id for e in events if e.trace_id), None)
         session_id = next((e.session_id for e in events if e.session_id), None)
-        pending_interaction_id = find_pending_interaction(events)
-        if pending_interaction_id is not None:
-            # Clears the prompt. A later resume opens a new interaction.
+        # Clears the prompts: the request's own, and those it relays for its
+        # children. A later resume opens new ones.
+        for interaction_id in pending_interactions(events):
             await emit_interaction_ack(
                 self._runtime,
                 request_id,
                 session_id,
                 trace_id,
-                interaction_id=pending_interaction_id,
+                interaction_id=interaction_id,
                 response=None,
                 cancelled=True,
             )

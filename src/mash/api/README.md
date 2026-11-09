@@ -32,7 +32,7 @@ This README lists the exposed routes, the common request/response conventions, a
 
 Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `AgentClient` at `{host}/h2a`.
 
-An agent process starts, follows and cancels its `RunSubAgents` children here.
+An agent process starts, follows, answers and cancels its `RunSubAgents` children here.
 
 `POST /h2a/agent/{agent_id}/request`
 - Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot. The companion sends it for each `RunSubAgents` item.
@@ -46,6 +46,9 @@ An agent process starts, follows and cancels its `RunSubAgents` children here.
 
 `POST /h2a/agent/{agent_id}/request/{request_id}/cancel`
 - Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.
+
+`POST /h2a/agent/{agent_id}/request/{request_id}/interaction`
+- Body: `{interaction_id, response}`. Answers one of the child's interactions, with the answer the user gave the companion's relayed copy. Only the agent that submitted the child may answer it; others get `403`, and an unknown request `404`. `400 INVALID_RESPONSE` for an answer the schema does not allow, `409 INTERACTION_CLOSED` once the interaction has an answer.
 
 `POST /h2a/workflow/{workflow_id}/run`
 - Body: `{parent: {request_id}, input, dedup_key?}`. Sent by `RunWorkflow` with the agent's token.

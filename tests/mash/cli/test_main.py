@@ -9,6 +9,20 @@ import pytest
 from mash.cli.main import build_parser
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cli_env(tmp_path, monkeypatch) -> None:
+    """Keep the developer's environment out of the CLI under test.
+
+    ``main()`` loads the nearest ``.env`` from the working directory up, and
+    ``MASH_*`` variables win over the saved connection. Run from the repo, the
+    repo's ``.env`` would set ``MASH_API_KEY`` for this test and every later one.
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in list(os.environ):
+        if name.startswith("MASH_"):
+            monkeypatch.delenv(name)
+
+
 def test_build_parser_accepts_sessions_subcommand() -> None:
     parser = build_parser()
     args = parser.parse_args(["sessions", "--agent", "primary"])

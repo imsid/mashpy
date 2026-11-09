@@ -18,7 +18,7 @@ from conftest import build_test_stores, seed_lifecycle
 from mash.runtime import AgentRuntime
 from mash.runtime.engine import InteractionClosedError, InvalidInteractionResponseError
 from mash.runtime.engine.engine import MAX_RECOVERIES
-from mash.runtime.engine.steps import emit_interaction_ack
+from mash.runtime.engine.steps import derive_interaction_id, emit_interaction_ack
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.testing.runtime_fixtures import ToolCallingAgentSpec
 from mash.tools.ask_user import AskUserTool
@@ -177,7 +177,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(KeyError):
             await runtime.answer_interaction(request_id, "itr_unknown", "x")
 
-    async def test_a_child_cannot_ask_the_user(self) -> None:
+    async def test_a_child_asks_the_user_under_a_derived_id(self) -> None:
         runtime = await self._runtime(self._ask_spec())
         accepted = await runtime.submit_request(
             message="ask",
@@ -193,12 +193,16 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         request_id = accepted["request_id"]
-        end = await self._terminal(request_id)
+        [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
 
-        self.assertEqual(await self._events(request_id, RuntimeEventType.INTERACTION_START.value), [])
-        [tool_end] = await self._events(request_id, RuntimeEventType.EXECUTE_TOOL_END.value)
-        self.assertIn("Tool 'AskUser' not found", str(tool_end.payload))
-        self.assertEqual(end.payload["status"], "ok")
+        # The first loop's first call, first attempt: the id names that place.
+        self.assertEqual(
+            opened.payload["interaction_id"],
+            derive_interaction_id(f"{request_id}:ask_user.0.open.0.0"),
+        )
+        await runtime.answer_interaction(request_id, opened.payload["interaction_id"], "red")
+        end = await self._terminal(request_id)
+        self.assertEqual(end.payload["response"]["text"], "red")
 
     async def _approval(self) -> tuple[_GatedTool, AgentRuntime, str, str]:
         tool = _GatedTool()

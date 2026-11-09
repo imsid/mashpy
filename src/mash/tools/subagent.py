@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import logging
 import time
 import uuid
-from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
+from contextlib import contextmanager
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Protocol
 
 from ..logging import (
     get_request_id,
     get_request_metadata,
     get_subagent_id_prefix,
 )
-from ..runtime.errors import classify_error
+from ..runtime.client import InteractionClosedError
+from ..runtime.errors import classify_error, retry_transient
 from .base import ToolResult
+
+logger = logging.getLogger(__name__)
 
 # The default and the ceiling of a call's timeout_seconds; an agent sets its
 # own with AgentConfig.subagent_timeout_seconds.
@@ -61,6 +67,91 @@ class SupportsChildClient(Protocol):
     async def cancel_request(self, request_id: str) -> Dict[str, Any]:
         """Cancel the child."""
 
+    async def post_interaction(
+        self, request_id: str, *, interaction_id: str, response: Any
+    ) -> Dict[str, Any]:
+        """Answer one of the child's interactions."""
+
+
+class InteractionRelay(Protocol):
+    """The calling request's side of its children's interactions.
+
+    The request loop binds one around a RunSubAgents call. It shows each
+    interaction a child opens to the user as an interaction of the calling
+    request, under an id derived from the child's request and interaction ids.
+    """
+
+    async def open(self, interaction: Dict[str, Any]) -> str:
+        """Open the relayed copy of a child's ``request.interaction.create``; return its id."""
+
+    async def wait(self, interaction_id: str) -> Dict[str, Any]:
+        """Wait for the relayed interaction to close; return its ack payload."""
+
+    async def close(self, interaction_id: str, ack: Dict[str, Any]) -> None:
+        """Close the relayed interaction as the child's ack closed the child's."""
+
+
+_interaction_relay: contextvars.ContextVar[Optional[InteractionRelay]] = (
+    contextvars.ContextVar("mash_interaction_relay", default=None)
+)
+
+
+def get_interaction_relay() -> Optional[InteractionRelay]:
+    """The relay bound for the current RunSubAgents call, if any."""
+    return _interaction_relay.get()
+
+
+@contextmanager
+def bound_interaction_relay(relay: Optional[InteractionRelay]) -> Iterator[None]:
+    """Bind the relay for one RunSubAgents call."""
+    token = _interaction_relay.set(relay)
+    try:
+        yield
+    finally:
+        _interaction_relay.reset(token)
+
+
+class _Budget:
+    """One child's share of timeout_seconds; its clock stops while it waits on the user."""
+
+    def __init__(self, seconds: float) -> None:
+        self._left = float(seconds)
+        self._since = time.monotonic()
+        self._waiting = 0
+        self.changed = asyncio.Event()
+
+    def pause(self) -> None:
+        if self._waiting == 0:
+            self._left -= time.monotonic() - self._since
+        self._waiting += 1
+        self.changed.set()
+
+    def resume(self) -> None:
+        self._waiting -= 1
+        if self._waiting == 0:
+            self._since = time.monotonic()
+        self.changed.set()
+
+    def left(self) -> Optional[float]:
+        """Seconds left, or None while the clock is stopped."""
+        if self._waiting:
+            return None
+        return self._left - (time.monotonic() - self._since)
+
+
+def _interaction_item(opened: Dict[str, Any], ack: Dict[str, Any]) -> Dict[str, Any]:
+    """A result entry's record of one relayed interaction."""
+    item = {
+        "interaction_id": opened.get("interaction_id"),
+        "type": opened.get("type"),
+        "prompt": opened.get("prompt"),
+        "response": ack.get("response"),
+    }
+    for flag in ("timed_out", "cancelled"):
+        if ack.get(flag):
+            item[flag] = True
+    return item
+
 
 def _child_error(data: Dict[str, Any]) -> Dict[str, Any]:
     error = classify_error(data.get("error") or "request failed")
@@ -84,7 +175,9 @@ class RunSubAgentsTool:
         "write one answer from their results. Returns one entry per item, in "
         "order, with the child's request_id, its status (completed, failed, "
         "cancelled or timed_out), and its response, structured output or "
-        "error, plus the session_id it ran in and its trace_id. Each item runs "
+        "error, plus the session_id it ran in and its trace_id. When a child "
+        "asked the user something (an approval, a question, a sign-in), its "
+        "entry lists those interactions with the user's response. Each item runs "
         "in a session of its own: pass an earlier entry's session_id to "
         "continue that session, where the agent sees its own earlier work, or "
         "leave it out to start a new one."
@@ -205,7 +298,6 @@ class RunSubAgentsTool:
         items, timeout_seconds = parsed
 
         started_at = time.monotonic()
-        deadline = started_at + timeout_seconds
         caller_request_id = get_request_id() or ""
         # The parent request's caller metadata is bound for its run; forward it
         # so the children inherit the context.
@@ -257,7 +349,7 @@ class RunSubAgentsTool:
 
         await asyncio.gather(
             *(
-                self._wait(entries[index], client, request_id, deadline)
+                self._wait(entries[index], client, request_id, timeout_seconds)
                 for index, client, request_id in submitted
             )
         )
@@ -282,27 +374,47 @@ class RunSubAgentsTool:
         entry: Dict[str, Any],
         client: Any,
         request_id: str,
-        deadline: float,
+        timeout_seconds: int,
     ) -> None:
-        """Follow one child's stream into ``entry`` until it ends or times out."""
+        """Follow one child's stream into ``entry`` until it ends or its budget runs out.
+
+        The budget's clock stops while the child waits on the user.
+        """
+        budget = _Budget(timeout_seconds)
+        follow = asyncio.ensure_future(self._follow(entry, client, request_id, budget))
         try:
-            await asyncio.wait_for(
-                self._follow(entry, client, request_id),
-                timeout=max(0.0, deadline - time.monotonic()),
-            )
-        except asyncio.TimeoutError:
-            entry.update(
-                {
-                    "status": "timed_out",
-                    "error": "the child did not finish before timeout_seconds",
-                }
-            )
-            try:
-                await client.cancel_request(request_id)
-            except Exception:
-                pass
+            while not follow.done():
+                left = budget.left()
+                if left is not None and left <= 0:
+                    follow.cancel()
+                    await asyncio.gather(follow, return_exceptions=True)
+                    entry.update(
+                        {
+                            "status": "timed_out",
+                            "error": "the child did not finish before timeout_seconds",
+                        }
+                    )
+                    try:
+                        await client.cancel_request(request_id)
+                    except Exception:
+                        pass
+                    return
+                budget.changed.clear()
+                changed = asyncio.ensure_future(budget.changed.wait())
+                try:
+                    await asyncio.wait(
+                        {follow, changed}, timeout=left, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    changed.cancel()
+            follow.result()
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             entry.update({"status": "failed", **classify_error(exc)})
+        finally:
+            if not follow.done():
+                follow.cancel()
         if "status" not in entry:
             entry.update(
                 {
@@ -311,30 +423,116 @@ class RunSubAgentsTool:
                 }
             )
 
-    async def _follow(self, entry: Dict[str, Any], client: Any, request_id: str) -> None:
-        async for event in client.stream_response(request_id):
-            event_name = str(event.get("event") or "")
-            data = event.get("data")
-            if not isinstance(data, dict):
-                data = {}
-            if event_name == "request.completed":
-                response = data.get("response")
-                response = response if isinstance(response, dict) else {}
-                metadata = response.get("metadata")
-                metadata = metadata if isinstance(metadata, dict) else {}
-                entry["status"] = "completed"
-                if metadata.get("trace_id"):
-                    entry["trace_id"] = str(metadata["trace_id"])
-                entry["response"] = str(response.get("text") or "")
-                if metadata.get("structured_output") is not None:
-                    entry["structured_output"] = metadata["structured_output"]
-                return
-            if event_name == "request.cancelled":
-                entry["status"] = "cancelled"
-                return
-            if event_name == "request.error":
-                entry.update({"status": "failed", **_child_error(data)})
-                return
+    async def _follow(
+        self, entry: Dict[str, Any], client: Any, request_id: str, budget: _Budget
+    ) -> None:
+        """Read the child's stream into ``entry``, relaying its interactions.
+
+        The stream replays from the start, so a rerun call opens and closes the
+        relayed interactions again; both are no-ops on ids already stored.
+        """
+        relay = get_interaction_relay()
+        opened: Dict[str, Dict[str, Any]] = {}  # child interaction id -> its create
+        relayed: Dict[str, str] = {}  # child interaction id -> relayed id
+        forwards: list[asyncio.Task[None]] = []
+        interactions: list[Dict[str, Any]] = []
+        stopped = False
+        try:
+            async for event in client.stream_response(request_id):
+                event_name = str(event.get("event") or "")
+                data = event.get("data")
+                if not isinstance(data, dict):
+                    data = {}
+                if event_name == "request.interaction.create" and relay is not None:
+                    child_interaction_id = str(data.get("interaction_id") or "")
+                    relayed_id = await relay.open(data)
+                    opened[child_interaction_id] = data
+                    relayed[child_interaction_id] = relayed_id
+                    budget.pause()
+                    forwards.append(
+                        asyncio.ensure_future(
+                            self._forward(
+                                relay, client, request_id, child_interaction_id, relayed_id
+                            )
+                        )
+                    )
+                    continue
+                if event_name == "request.interaction.ack":
+                    child_interaction_id = str(data.get("interaction_id") or "")
+                    relayed_id = relayed.pop(child_interaction_id, None)
+                    if relayed_id is None:
+                        continue
+                    await relay.close(relayed_id, data)
+                    budget.resume()
+                    interactions.append(
+                        _interaction_item(opened.pop(child_interaction_id), data)
+                    )
+                    continue
+                if event_name == "request.completed":
+                    response = data.get("response")
+                    response = response if isinstance(response, dict) else {}
+                    metadata = response.get("metadata")
+                    metadata = metadata if isinstance(metadata, dict) else {}
+                    entry["status"] = "completed"
+                    if metadata.get("trace_id"):
+                        entry["trace_id"] = str(metadata["trace_id"])
+                    entry["response"] = str(response.get("text") or "")
+                    if metadata.get("structured_output") is not None:
+                        entry["structured_output"] = metadata["structured_output"]
+                    return
+                if event_name == "request.cancelled":
+                    entry["status"] = "cancelled"
+                    return
+                if event_name == "request.error":
+                    entry.update({"status": "failed", **_child_error(data)})
+                    return
+        except asyncio.CancelledError:
+            # The call stops here (its budget ran out, or the process is
+            # going down); a rerun call picks the open interactions up again.
+            stopped = True
+            raise
+        finally:
+            for task in forwards:
+                task.cancel()
+            await asyncio.gather(*forwards, return_exceptions=True)
+            if not stopped:
+                # The child ended or its stream broke: nothing answers these now.
+                for relayed_id in relayed.values():
+                    await relay.close(relayed_id, {"response": None, "cancelled": True})
+            if interactions:
+                entry["interactions"] = interactions
+
+    async def _forward(
+        self,
+        relay: InteractionRelay,
+        client: Any,
+        request_id: str,
+        child_interaction_id: str,
+        relayed_id: str,
+    ) -> None:
+        """Send the user's answer to the relayed interaction on to the child."""
+        ack = await relay.wait(relayed_id)
+        if ack.get("cancelled") or ack.get("timed_out"):
+            return
+        try:
+            await retry_transient(
+                lambda: client.post_interaction(
+                    request_id,
+                    interaction_id=child_interaction_id,
+                    response=ack.get("response"),
+                )
+            )
+        except InteractionClosedError:
+            # The child already has an answer: its own timeout, or this one
+            # forwarded before a restart.
+            pass
+        except Exception:
+            logger.warning(
+                "could not answer interaction %s of child request %s",
+                child_interaction_id,
+                request_id,
+                exc_info=True,
+            )
 
     def to_llm_format(self) -> Dict[str, Any]:
         return {

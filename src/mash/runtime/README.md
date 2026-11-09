@@ -293,7 +293,7 @@ lifecycle.
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)
-  - `RunSubAgents` and `RunWorkflow` wiring for the companion on a host request the user started, over the host's agents and workflows; no other agent routes, and a child gets no `AskUser`
+  - `RunSubAgents` and `RunWorkflow` wiring for the companion on a host request the user started, over the host's agents and workflows; no other agent routes
 
 - [`context.py`](./context.py)
   - session history loading
@@ -560,6 +560,38 @@ If no response arrives within `timeout_seconds`:
 - `approval` → defaults to `"deny"`
 - `info` → defaults to `""`
 - `choice` → defaults to `[]`
+
+### Interaction ids
+
+An interaction's id is derived, not random: `itr_` and 12 hex characters of a
+UUID5 of `{request_id}:{step}`, where the step names the interaction's place in
+the loop (`interaction.open.{loop}.{attempt}` for the approval gate,
+`ask_user.{call}.open.{loop}.{attempt}`, `browser.handoff.{call}.open.{loop}.{attempt}`).
+A recovered request opens the same id, and the create event is deduped on it.
+
+### Relayed interactions
+
+A `RunSubAgents` child's interactions reach the user through the companion,
+without a model call. The loop binds a `ChildInteractionRelay` around the
+call, and the tool, which reads each child's stream, uses it:
+
+1. On the child's `request.interaction.create`, the relay opens the same
+   interaction on the calling request, under
+   `relayed_interaction_id(child_request_id, child_interaction_id)`, with
+   `origin` set to the child's `agent_id`, `request_id`, `session_id`,
+   `trace_id` and `interaction_id`.
+2. The user answers it on the calling request. A task in the tool waits for
+   that answer and posts it to the child through
+   `POST /h2a/agent/{agent_id}/request/{request_id}/interaction`.
+3. On the child's `request.interaction.ack`, the relay closes the calling
+   request's copy with the same response and flags. The first answer stored
+   wins, so this is a no-op once the user has answered; after a child timeout
+   or cancel it closes the copy the same way.
+
+The two event logs are the only state. A rerun call replays each child's
+stream and arrives at the same ids, so it reopens nothing, and forwards an
+answer that was stored but not yet sent. Cancel acks every open interaction of
+the request, the relayed ones included.
 
 ### Client Operation
 

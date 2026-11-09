@@ -1010,37 +1010,22 @@ def interaction_response_error(schema: Any, response: Any) -> str | None:
     return None
 
 
-async def open_interaction(
-    runtime: "AgentRuntime",
-    request_id: str,
-    session_id: str,
-    trace_id: str,
-    *,
-    interaction_type: str,
-    prompt: str,
-    options: list[str] | None = None,
-    timeout_seconds: int = 300,
-    extra: dict[str, Any] | None = None,
-) -> str:
-    """Mint an interaction id and emit its create event.
+# Interaction ids are UUID5s in this namespace, derived from a key that names
+# the interaction's place in a request, so a recovered request, and the
+# companion relaying it, arrive at the same id.
+INTERACTION_NAMESPACE = uuid.UUID("3c9a6f52-1d7e-4b8a-9f0c-5e2d8b4a7c16")
 
-    The loop keeps the id in its checkpoint, so a recovered request waits on
-    the interaction the user already sees.
-    """
-    interaction_id = f"itr_{uuid.uuid4().hex[:12]}"
-    await emit_interaction_create(
-        runtime,
-        request_id,
-        session_id,
-        trace_id,
-        interaction_id=interaction_id,
-        interaction_type=interaction_type,
-        prompt=prompt,
-        options=options,
-        timeout_seconds=timeout_seconds,
-        extra=extra,
-    )
-    return interaction_id
+
+def derive_interaction_id(key: str) -> str:
+    """The interaction id for ``key``: the same key always gives the same id."""
+    return f"itr_{uuid.uuid5(INTERACTION_NAMESPACE, key).hex[:12]}"
+
+
+def interaction_schema(interaction_type: str, options: list[str] | None = None) -> dict[str, Any]:
+    """The answer schema of an interaction of ``interaction_type``."""
+    if interaction_type == "choice":
+        return INTERACTION_SCHEMAS["choice"](options or [])
+    return dict(INTERACTION_SCHEMAS.get(interaction_type, {"type": "text"}))
 
 
 async def emit_interaction_create(
@@ -1052,15 +1037,12 @@ async def emit_interaction_create(
     interaction_id: str,
     interaction_type: str,
     prompt: str,
-    options: list[str] | None = None,
-    timeout_seconds: int = 300,
+    schema: dict[str, Any],
+    timeout_seconds: int,
     extra: dict[str, Any] | None = None,
-) -> None:
-    if interaction_type == "choice":
-        schema = INTERACTION_SCHEMAS["choice"](options or [])
-    else:
-        schema = INTERACTION_SCHEMAS.get(interaction_type, {"type": "text"})
-    await append_runtime_event(
+) -> RuntimeEvent:
+    """Append the interaction's create event; a repeat with the same id is a no-op."""
+    return await append_runtime_event(
         runtime,
         RuntimeEvent(
             request_id=request_id,
@@ -1071,7 +1053,8 @@ async def emit_interaction_create(
             event_type=RuntimeEventType.INTERACTION_START.value,
             dedupe_key=f"interaction.create.{interaction_id}",
             payload={
-                # Type-specific fields, e.g. a browser handoff's url and expires_at.
+                # Type-specific fields: a browser handoff's url and expires_at,
+                # a relayed interaction's origin.
                 **dict(extra or {}),
                 "interaction_id": interaction_id,
                 "type": interaction_type,

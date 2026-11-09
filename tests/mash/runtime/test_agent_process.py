@@ -25,6 +25,7 @@ from conftest import build_test_stores
 from mash.api import create_app
 from mash.api.config import MashHostConfig
 from mash.api.routes.h2a import build_h2a_router
+from mash.runtime.client import InteractionClosedError
 from mash.runtime import Host, HostBuilder
 from mash.runtime.agent_process import HostRelay, build_agent_server
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
@@ -203,6 +204,8 @@ class _RecordingClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.cancelled: list[str] = []
+        self.answers: list[tuple[str, str, Any]] = []
+        self.closed: set[str] = set()
 
     async def post_request(self, message: str, **kwargs: Any) -> str:
         self.calls.append({"message": message, **kwargs})
@@ -211,6 +214,12 @@ class _RecordingClient:
     async def cancel_request(self, request_id: str) -> dict:
         self.cancelled.append(request_id)
         return {"request_id": request_id, "status": "cancelled"}
+
+    async def post_interaction(self, request_id: str, *, interaction_id: str, response: Any) -> dict:
+        if interaction_id in self.closed:
+            raise InteractionClosedError(f"interaction '{interaction_id}' is no longer open")
+        self.answers.append((request_id, interaction_id, response))
+        return {"ok": True, "interaction_id": interaction_id}
 
 
 class H2ARelayAuthTests(unittest.TestCase):
@@ -467,6 +476,46 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self._cancel("child-1", caller="other").status_code, 403)
         self.assertEqual(self._cancel("missing").status_code, 404)
         self.assertEqual(self.client_for_research.cancelled, [])
+
+    def _answer(self, request_id: str, body: dict, *, caller: str = "primary-app"):
+        return self.http.post(
+            f"/h2a/agent/research/request/{request_id}/interaction",
+            json=body,
+            headers={"Authorization": f"Bearer {derive_agent_token(SECRET, caller)}"},
+        )
+
+    def test_the_parent_agent_may_answer_its_childs_interaction(self) -> None:
+        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+
+        resp = self._answer("child-1", {"interaction_id": "itr_1", "response": "approve"})
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self.client_for_research.answers, [("child-1", "itr_1", "approve")])
+
+    def test_another_agent_may_not_answer_the_childs_interaction(self) -> None:
+        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        body = {"interaction_id": "itr_1", "response": "approve"}
+
+        self.assertEqual(self._answer("child-1", body, caller="other").status_code, 403)
+        self.assertEqual(self._answer("missing", body).status_code, 404)
+        self.assertEqual(self.client_for_research.answers, [])
+
+    def test_an_answer_needs_an_interaction_id(self) -> None:
+        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+
+        resp = self._answer("child-1", {"response": "approve"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.client_for_research.answers, [])
+
+    def test_a_closed_interaction_is_409(self) -> None:
+        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self.client_for_research.closed.add("itr_1")
+
+        resp = self._answer("child-1", {"interaction_id": "itr_1", "response": "approve"})
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["code"], "INTERACTION_CLOSED")
 
     def test_workflow_parent_is_rejected(self) -> None:
         resp = self._submit(

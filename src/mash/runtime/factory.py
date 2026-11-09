@@ -163,8 +163,7 @@ def build_turn_agent(
     tools bound to the request: the conversation tools for its session and
     user, and ``search_cortex`` for its user. The companion, on a host request
     the user started, also gets ``RunSubAgents`` over the host's agents and
-    ``RunWorkflow`` over its workflows. A request a ``RunSubAgents`` call
-    started gets no ``AskUser``: the user talks to the companion.
+    ``RunWorkflow`` over its workflows.
     """
     base = self.agent
     config = replace(base.config)
@@ -185,10 +184,7 @@ def build_turn_agent(
     for name in ("RunSubAgents", "RunWorkflow"):
         if name in agent.tools:
             agent.tools.unregister(name)
-    if parent_kind == "subagent":
-        if "AskUser" in agent.tools:
-            agent.tools.unregister("AskUser")
-    else:
+    if parent_kind != "subagent":
         configure_run_subagents(self, agent, session_id=session_id, host=host, agents=host_agents)
         configure_run_workflow(self, agent, host=host)
     return agent

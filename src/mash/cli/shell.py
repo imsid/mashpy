@@ -44,6 +44,17 @@ from .types import CLIContext
 CHILD_SUBMIT_WAIT_SECONDS = 30.0
 
 
+@dataclass
+class _ChildFollow:
+    """A RunSubAgents child the REPL shows from its own stream."""
+
+    agent_id: str
+    request_id: str
+    started_at: float
+    # Stream events already shown; a stream replays from its first event.
+    seen: int = 0
+
+
 @dataclass(frozen=True)
 class ShellTarget:
     """Resolved shell target for a remote deployment."""
@@ -96,6 +107,8 @@ class MashRemoteShell:
         self._notice_lock = threading.Lock()
         self._following = False
         self._pending_notices: list[Notice] = []
+        # The children of the RunSubAgents call being shown, until each ends.
+        self._children: list[_ChildFollow] = []
         self.watchers = BackgroundWatchers(self._watcher_client, self.notify)
         register_default_commands(self)
 
@@ -279,13 +292,30 @@ class MashRemoteShell:
         children are read one after another, each from its first event; a
         child that finished while an earlier one was shown replays in full.
         """
+        started_at = time.monotonic()
+        self._children = []
         for item in subagents:
             if not isinstance(item, dict):
                 continue
             agent_id = str(item.get("agent_id") or "").strip()
             request_id = str(item.get("request_id") or "").strip()
             if agent_id and request_id:
-                self._follow_subagent(agent_id, request_id)
+                self._children.append(
+                    _ChildFollow(agent_id=agent_id, request_id=request_id, started_at=started_at)
+                )
+        self._show_children()
+
+    def _show_children(self) -> None:
+        """Show the children in order until one waits on the user.
+
+        The parent relays that child's interaction on its own stream, so the
+        REPL goes back to the parent's stream to ask, and comes back here
+        once the user has answered.
+        """
+        while self._children:
+            if not self._follow_subagent(self._children[0]):
+                return
+            self._children.pop(0)
 
     def _wait_for_child(self, agent_id: str, request_id: str) -> bool:
         """Wait until the child exists: its id is listed before it is submitted."""
@@ -299,14 +329,22 @@ class MashRemoteShell:
                     return False
                 time.sleep(0.25)
 
-    def _follow_subagent(self, agent_id: str, request_id: str) -> None:
-        started_at = time.monotonic()
-        if not self._wait_for_child(agent_id, request_id):
-            self.renderer.error(f"    Subagent {agent_id}: request {request_id} never started")
-            return
-        self.chain_renderer.begin_subagent(agent_id)
+    def _follow_subagent(self, child: _ChildFollow) -> bool:
+        """Show the child's steps until it ends (True) or waits on the user (False)."""
+        agent_id = child.agent_id
+        request_id = child.request_id
+        if child.seen == 0:
+            if not self._wait_for_child(agent_id, request_id):
+                self.renderer.error(f"    Subagent {agent_id}: request {request_id} never started")
+                return True
+            self.chain_renderer.begin_subagent(agent_id)
+        index = 0
         try:
             for event in self.client.stream_request(agent_id, request_id):
+                index += 1
+                if index <= child.seen:
+                    continue
+                child.seen = index
                 event_name = str(event.get("event") or "")
                 data = event.get("data")
                 if not isinstance(data, dict):
@@ -320,21 +358,24 @@ class MashRemoteShell:
                             child_event, agent_id=agent_id
                         )
                     continue
+                if event_name == "request.interaction.create":
+                    return False
                 if event_name == "request.error":
                     error = data.get("error")
                     self.renderer.error(
                         f"    Subagent {agent_id} error: {error or 'request failed'}"
                     )
-                    return
+                    return True
                 if event_name in {"request.completed", "request.cancelled"}:
                     break
         except (MashHostClientError, requests.RequestException) as exc:
             # One child's broken stream must not end the parent's.
             self.renderer.error(f"    Subagent {agent_id}: {exc}")
-            return
+            return True
         self.chain_renderer.finish_subagent(
-            agent_id, int((time.monotonic() - started_at) * 1000)
+            agent_id, int((time.monotonic() - child.started_at) * 1000)
         )
+        return True
 
     def handle_interaction(
         self,
@@ -349,8 +390,12 @@ class MashRemoteShell:
         interaction_type = str(payload.get("type") or "info")
         prompt = str(payload.get("prompt") or "Input required:")
         schema = payload.get("schema")
+        # A relayed interaction names the agent that asked.
+        origin = payload.get("origin")
+        if isinstance(origin, dict) and origin.get("agent_id"):
+            prompt = f"[{origin['agent_id']}] {prompt}"
 
-        self.renderer.info(f"\n{prompt}")
+        self.renderer.info(escape(f"\n{prompt}"))
 
         if interaction_type == "browser":
             url = str(payload.get("url") or "")
@@ -476,6 +521,10 @@ class MashRemoteShell:
 
                     if event_name == "request.interaction.create":
                         self.handle_interaction(ctx, request_id, payload, agent_id=agent_id)
+                        if payload.get("origin"):
+                            # A child's interaction, now answered: show the
+                            # children again from where they stopped.
+                            self._show_children()
                         continue
 
                     if event_name == "request.interaction.ack":

@@ -284,14 +284,12 @@ async def fetch_request_attempt(self: "AgentRuntime", request_id: str) -> int:
     return request_attempt(await self.runtime_store.list_request_events(request_id))
 
 
-def find_pending_interaction(
-    events: list[RuntimeEvent],
-) -> Optional[str]:
-    """Return the interaction id of the request's last un-acked interaction.
+def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
+    """The ids of the request's open interactions, in the order they opened.
 
-    An interaction is pending when its ``mash.interaction.start`` has no
-    matching ``mash.interaction.end``. The cancel path uses this to clear a parked prompt and
-    unblock the workflow's ``recv`` with the cancel sentinel.
+    An interaction is open while its ``mash.interaction.start`` has no
+    matching ``mash.interaction.end``. A request waits on one of its own at a
+    time, and on one more per child interaction it relays.
     """
     pending: dict[str, None] = {}
     for event in events:
@@ -303,10 +301,7 @@ def find_pending_interaction(
             pending[str(interaction_id)] = None
         elif event.event_type == RuntimeEventType.INTERACTION_END.value:
             pending.pop(str(interaction_id), None)
-    if not pending:
-        return None
-    # dicts preserve insertion order; the last still-open create wins.
-    return next(reversed(pending))
+    return list(pending)
 
 
 def user_id_from_request_metadata(
@@ -719,14 +714,16 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             "request_id": event.request_id,
             "agent_id": event.agent_id,
             "session_id": event.session_id,
+            "trace_id": event.trace_id,
             "interaction_id": event.payload.get("interaction_id"),
             "type": event.payload.get("type"),
             "prompt": event.payload.get("prompt"),
             "schema": event.payload.get("schema"),
             "timeout_seconds": event.payload.get("timeout_seconds"),
         }
-        # A browser handoff's live-view link and when it lapses.
-        for field_name in ("url", "expires_at"):
+        # A browser handoff's live-view link and when it lapses, and the child
+        # a relayed interaction came from.
+        for field_name in ("url", "expires_at", "origin"):
             if field_name in event.payload:
                 data[field_name] = event.payload[field_name]
         return {"event": "request.interaction.create", "data": data}

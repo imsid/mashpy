@@ -31,6 +31,7 @@ from ...logging import (
     bound_trace_id,
 )
 from ...logging.trace_context import bound_workflow_ids
+from ...tools.subagent import bound_interaction_relay
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
 from ..events import RuntimeEventType
@@ -41,12 +42,14 @@ from ..requests import (
 from .steps import (
     commit_request_step,
     complete_request,
+    derive_interaction_id,
     emit_interaction_ack,
+    emit_interaction_create,
     end_browser_handoff,
     fail_request,
     finalize_structured_output,
+    interaction_schema,
     load_request_context,
-    open_interaction,
     persist_completed_turn,
     plan_request_step,
     run_step_tool_batch,
@@ -250,9 +253,11 @@ class RequestRun:
         """
         attempt = 0
         while True:
+            step_name = f"{step_prefix}.open.{loop_index}.{attempt}"
             opened = await self._step(
-                f"{step_prefix}.open.{loop_index}.{attempt}",
+                step_name,
                 self._open_interaction,
+                interaction_id=derive_interaction_id(f"{self.request_id}:{step_name}"),
                 interaction_type=interaction_type,
                 prompt=prompt,
                 options=options,
@@ -272,24 +277,63 @@ class RequestRun:
                 continue
             return interaction_id, response, timed_out
 
-    async def _open_interaction(self, **kwargs: Any) -> dict[str, Any]:
-        timeout_seconds = int(kwargs["timeout_seconds"])
-        interaction_id = await open_interaction(
+    async def _open_interaction(
+        self,
+        *,
+        interaction_id: str,
+        interaction_type: str,
+        prompt: str,
+        options: list[str] | None,
+        timeout_seconds: int,
+        extra: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        await emit_interaction_create(
             self.runtime,
             self.request_id,
             self.session_id,
             self.checkpoint["trace_id"],
-            **kwargs,
+            interaction_id=interaction_id,
+            interaction_type=interaction_type,
+            prompt=prompt,
+            schema=interaction_schema(interaction_type, options),
+            timeout_seconds=timeout_seconds,
+            extra=extra,
         )
         return {
             "interaction_id": interaction_id,
             "deadline": time.time() + timeout_seconds,
         }
 
+    async def _await_close(self, interaction_id: str) -> dict[str, Any]:
+        """Wait, without a deadline, for an interaction's ``interaction.end``.
+
+        A relayed interaction has no deadline of its own: the child's closes it.
+        """
+        waiter = asyncio.Event()
+        self._interaction_waiters[interaction_id] = waiter
+        try:
+            while True:
+                # Cleared before the read, so an answer stored after the read
+                # still wakes the wait.
+                waiter.clear()
+                end = await self._interaction_end(interaction_id)
+                if end is not None:
+                    return dict(end.payload or {})
+                if self.cancelled.is_set():
+                    return {"response": None, "cancelled": True}
+                await waiter.wait()
+        finally:
+            self._interaction_waiters.pop(interaction_id, None)
+
     # --- tool calls ----------------------------------------------------------
 
     async def _ask_user(
-        self, state: dict[str, Any], *, tool_call: dict[str, Any], loop_index: int
+        self,
+        state: dict[str, Any],
+        *,
+        tool_call: dict[str, Any],
+        loop_index: int,
+        call_index: int,
     ) -> dict[str, Any]:
         """Turn an AskUser tool call into an interaction."""
         from ...tools.ask_user import ASK_USER_DEFAULT_TIMEOUT_SECONDS
@@ -302,7 +346,7 @@ class RequestRun:
             prompt=str(arguments.get("question") or ""),
             options=options,
             timeout_seconds=ASK_USER_DEFAULT_TIMEOUT_SECONDS,
-            step_prefix="ask_user",
+            step_prefix=f"ask_user.{call_index}",
         )
         if isinstance(response, list):
             content = ", ".join(str(item) for item in response)
@@ -401,10 +445,10 @@ class RequestRun:
         tool_call: dict[str, Any],
     ) -> dict[str, Any]:
         name = str(tool_call.get("name") or "")
-        # A child has no AskUser (the user talks to the calling agent), so its
-        # call takes the tool path and fails there as an unknown tool.
-        if name == "AskUser" and state.get("parent_kind") != "subagent":
-            return await self._ask_user(state, tool_call=tool_call, loop_index=loop_index)
+        if name == "AskUser":
+            return await self._ask_user(
+                state, tool_call=tool_call, loop_index=loop_index, call_index=call_index
+            )
         if name == "browser_handoff":
             return await self._browser_handoff(
                 state, tool_call=tool_call, loop_index=loop_index, call_index=call_index
@@ -416,7 +460,8 @@ class RequestRun:
         # Such a call only waits, on children that may need this agent's
         # slots or on a workflow run, so it gives its own back meanwhile.
         wait = self._slot_released() if prefix else contextlib.nullcontext()
-        with bound_subagent_id_prefix(prefix):
+        relay = ChildInteractionRelay(self) if name == "RunSubAgents" else None
+        with bound_subagent_id_prefix(prefix), bound_interaction_relay(relay):
             async with wait:
                 return await retry_transient(
                     lambda: run_step_tool_call(
@@ -623,4 +668,70 @@ class RequestRun:
             await complete_request(runtime, request_id, session_id, trace_id, turn_payload)
 
 
-__all__ = ["RequestCancelled", "RequestRun"]
+class ChildInteractionRelay:
+    """Relays a RunSubAgents call's child interactions onto the calling request.
+
+    Each interaction a child opens becomes an interaction of this request, the
+    one the user talks to, with an id derived from the child's request id and
+    interaction id and an ``origin`` naming the child. The event log is the
+    only state: a create or an ack with an id already stored is a no-op.
+    """
+
+    def __init__(self, run: RequestRun) -> None:
+        self._run = run
+
+    async def open(self, interaction: dict[str, Any]) -> str:
+        run = self._run
+        interaction_id = relayed_interaction_id(
+            str(interaction.get("request_id") or ""),
+            str(interaction.get("interaction_id") or ""),
+        )
+        extra: dict[str, Any] = {
+            "origin": {
+                key: interaction.get(key)
+                for key in ("agent_id", "request_id", "session_id", "trace_id", "interaction_id")
+            }
+        }
+        for key in ("url", "expires_at"):
+            if key in interaction:
+                extra[key] = interaction[key]
+        interaction_type = str(interaction.get("type") or "info")
+        schema = interaction.get("schema")
+        await emit_interaction_create(
+            run.runtime,
+            run.request_id,
+            run.session_id,
+            run.checkpoint["trace_id"],
+            interaction_id=interaction_id,
+            interaction_type=interaction_type,
+            prompt=str(interaction.get("prompt") or ""),
+            schema=schema if isinstance(schema, dict) else interaction_schema(interaction_type),
+            timeout_seconds=int(interaction.get("timeout_seconds") or 0),
+            extra=extra,
+        )
+        return interaction_id
+
+    async def wait(self, interaction_id: str) -> dict[str, Any]:
+        return await self._run._await_close(interaction_id)
+
+    async def close(self, interaction_id: str, ack: dict[str, Any]) -> None:
+        run = self._run
+        await emit_interaction_ack(
+            run.runtime,
+            run.request_id,
+            run.session_id,
+            run.checkpoint["trace_id"],
+            interaction_id=interaction_id,
+            response=ack.get("response"),
+            timed_out=bool(ack.get("timed_out")),
+            cancelled=bool(ack.get("cancelled")),
+        )
+        run.wake_interaction(interaction_id)
+
+
+def relayed_interaction_id(child_request_id: str, child_interaction_id: str) -> str:
+    """The id of a child's interaction as relayed onto the calling request."""
+    return derive_interaction_id(f"{child_request_id}:{child_interaction_id}")
+
+
+__all__ = ["ChildInteractionRelay", "RequestCancelled", "RequestRun", "relayed_interaction_id"]

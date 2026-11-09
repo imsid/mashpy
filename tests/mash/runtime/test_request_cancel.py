@@ -1,6 +1,6 @@
 """Tests for request cancellation.
 
-The pending-interaction finder, the public-event mapping, the terminal
+The open-interaction finder, the public-event mapping, the terminal
 cancelled event flipping a request terminal, and cancel's idempotence, driven
 through the runtime surface. A loop stopping at its next step after a cancel is
 covered in ``test_request_engine.py``.
@@ -16,9 +16,13 @@ from unittest.mock import patch
 
 from conftest import build_test_stores, seed_lifecycle
 from mash.runtime import AgentRuntime
-from mash.runtime.engine.steps import emit_request_cancelled, open_interaction
+from mash.runtime.engine.steps import (
+    emit_interaction_create,
+    emit_request_cancelled,
+    interaction_schema,
+)
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
-from mash.runtime.requests import find_pending_interaction, to_public_event
+from mash.runtime.requests import pending_interactions, to_public_event
 from mash.testing.runtime_fixtures import build_spec
 
 
@@ -39,29 +43,30 @@ def _evt(event_type: str, interaction_id: str | None = None) -> RuntimeEvent:
     )
 
 
-class FindPendingInteractionTests(unittest.TestCase):
+class PendingInteractionsTests(unittest.TestCase):
     def test_none_when_no_interactions(self) -> None:
         events = [_evt(RuntimeEventType.CHAT_START.value)]
-        self.assertIsNone(find_pending_interaction(events))
+        self.assertEqual(pending_interactions(events), [])
 
     def test_returns_unacked_create(self) -> None:
         events = [_evt(RuntimeEventType.INTERACTION_START.value, "itr_1")]
-        self.assertEqual(find_pending_interaction(events), "itr_1")
+        self.assertEqual(pending_interactions(events), ["itr_1"])
 
     def test_acked_interaction_is_not_pending(self) -> None:
         events = [
             _evt(RuntimeEventType.INTERACTION_START.value, "itr_1"),
             _evt(RuntimeEventType.INTERACTION_END.value, "itr_1"),
         ]
-        self.assertIsNone(find_pending_interaction(events))
+        self.assertEqual(pending_interactions(events), [])
 
-    def test_last_open_create_wins(self) -> None:
+    def test_every_open_create_in_the_order_it_opened(self) -> None:
         events = [
             _evt(RuntimeEventType.INTERACTION_START.value, "itr_1"),
-            _evt(RuntimeEventType.INTERACTION_END.value, "itr_1"),
             _evt(RuntimeEventType.INTERACTION_START.value, "itr_2"),
+            _evt(RuntimeEventType.INTERACTION_END.value, "itr_1"),
+            _evt(RuntimeEventType.INTERACTION_START.value, "itr_3"),
         ]
-        self.assertEqual(find_pending_interaction(events), "itr_2")
+        self.assertEqual(pending_interactions(events), ["itr_2", "itr_3"])
 
 
 class PublicEventTests(unittest.TestCase):
@@ -147,14 +152,19 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 dedupe_key="request.accepted",
             )
         )
-        interaction_id = await open_interaction(
-            runtime,
-            "req-1",
-            "s-1",
-            "trace-1",
-            interaction_type="approval",
-            prompt="Approve?",
-        )
+        # Its own approval, and a question it relays for a child.
+        for interaction_id, interaction_type in (("itr_own", "approval"), ("itr_relayed", "info")):
+            await emit_interaction_create(
+                runtime,
+                "req-1",
+                "s-1",
+                "trace-1",
+                interaction_id=interaction_id,
+                interaction_type=interaction_type,
+                prompt="?",
+                schema=interaction_schema(interaction_type),
+                timeout_seconds=300,
+            )
 
         result = await runtime.cancel_request("req-1")
         self.assertEqual(result["status"], "cancelled")
@@ -165,9 +175,10 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
             for e in events
             if e.event_type == RuntimeEventType.INTERACTION_END.value
         ]
-        self.assertEqual(len(acks), 1)
-        self.assertEqual(acks[0].payload.get("interaction_id"), interaction_id)
-        self.assertTrue(acks[0].payload.get("cancelled"))
+        self.assertEqual(
+            [ack.payload.get("interaction_id") for ack in acks], ["itr_own", "itr_relayed"]
+        )
+        self.assertTrue(all(ack.payload.get("cancelled") for ack in acks))
 
         self.assertEqual(
             events[-1].event_type, RuntimeEventType.INVOKE_AGENT_END.value
