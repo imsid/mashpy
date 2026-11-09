@@ -29,7 +29,7 @@ def _client():
                 build_spec(agent_id="slow", response_text="late", delay_seconds=1.5),
                 metadata=metadata(),
             )
-            .host(Host(host_id="assistant", primary="fast"))
+            .host(Host(host_id="assistant", agents=("fast",)))
             .build()
         )
         app = create_app(
@@ -82,7 +82,8 @@ def test_host_submit_takes_the_mode() -> None:
         )
         assert resp.status_code == 200, resp.text
         request_id = resp.json()["data"]["request_id"]
-        [record] = _list(client, mode="bg")
+        # A host request runs on the companion.
+        [record] = _list(client, "companion", mode="bg")
         assert record["request_id"] == request_id
 
 

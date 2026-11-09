@@ -14,8 +14,7 @@ For each message, pick one of these:
   lists any.
 
 Routing:
-- Pick agents by their capabilities in the SUBAGENTS list. Never send an item
-  to yourself.
+- Pick agents by their capabilities in the AGENTS list.
 - One item when the request has one owner. Several items only when the parts
   do not depend on each other. A dependent chain is two calls in sequence:
   build the second brief from the first result.

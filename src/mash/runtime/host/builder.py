@@ -10,7 +10,7 @@ from mash.workflows import WorkflowSpec
 
 from ..spec import AgentSpec
 from .host import Pool
-from .subagents import AgentMetadata
+from .directory import AgentMetadata
 from .types import AgentRegistration, Host
 
 
@@ -36,7 +36,6 @@ class HostBuilder:
         self._workflows: list[WorkflowSpec] = []
         self._cortex: Any = None
         self._evals = False
-        self._companion = False
 
     def agent(
         self,
@@ -85,16 +84,6 @@ class HostBuilder:
         self._evals = True
         return self
 
-    def enable_companion(self) -> "HostBuilder":
-        """Register the built-in ``companion`` agent.
-
-        A host defined without a primary gets ``companion`` as its primary,
-        which routes each user message among the host's subagents and
-        workflows.
-        """
-        self._companion = True
-        return self
-
     def build(self) -> Pool:
         pool = Pool(runtime_database_url=resolve_database_url())
         for registered in self._agents:
@@ -119,13 +108,13 @@ class HostBuilder:
             pool.register_workflow(
                 cortex.build_cortex_build_workflow(cortex_agent_spec.runtime_context)
             )
-        if self._companion:
-            companion = importlib.import_module("mash.agents.companion")
-            pool.register_agent(
-                companion.CompanionSpec(),
-                metadata=companion.build_companion_metadata(),
-                agent_id=companion.COMPANION_AGENT_ID,
-            )
+        # The companion routes every host request, so every pool has it.
+        companion = importlib.import_module("mash.agents.companion")
+        pool.register_agent(
+            companion.CompanionSpec(),
+            metadata=companion.build_companion_metadata(),
+            agent_id=companion.COMPANION_AGENT_ID,
+        )
         # Hosts are defined last so workflow-id validation sees every
         # registered workflow. Pool defaults are appended to both these hosts
         # and hosts defined later through the control API.

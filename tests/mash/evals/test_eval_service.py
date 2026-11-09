@@ -52,7 +52,7 @@ class _ServiceCase(unittest.TestCase):
         return _run(
             self.service.persist_experiment(
                 eval_id=eval_id,
-                host_composition={"host_id": "guide", "primary": "pilot", "subagents": []},
+                host_composition={"host_id": "guide", "agents": ["pilot"], "workflows": []},
                 agent_spec_snapshot={"pilot": {"model": model, "tools": ["t"]}},
             )
         )
@@ -105,8 +105,8 @@ class ExperimentLedgerTests(_ServiceCase):
             "target_host_id": "guide",
             "host_composition": {
                 "host_id": "guide",
-                "primary": "pilot",
-                "subagents": [],
+                "agents": ["pilot"],
+                "workflows": [],
             },
             "agent_spec_snapshot": {"pilot": {"model": "m1"}},
             "rubric_snapshot": dict(_RUBRIC),

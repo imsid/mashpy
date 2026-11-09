@@ -21,7 +21,7 @@ from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMResponse, LLMTokenUsage
 from mash.logging import bound_session_id
 from mash.runtime import Host, HostBuilder
-from mash.testing.runtime_fixtures import build_delegating_spec, build_spec, metadata
+from mash.testing.runtime_fixtures import build_spec, metadata
 
 
 def _response(text: str = "", calls: list[ToolCall] | None = None) -> LLMResponse:
@@ -93,15 +93,8 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
         self.pool = (
             HostBuilder()
             .agent(build_spec(agent_id="builder", response_text="built it", fail_on_message="explode"), metadata=metadata())
-            .agent(
-                build_delegating_spec(
-                    agent_id="pilot", final_text="p", subagent_id="builder", subagent_prompt="pilot asks"
-                ),
-                metadata=metadata(),
-            )
-            .enable_companion()
-            .host(Host(host_id="guide", subagents=("builder",)))
-            .host(Host(host_id="baseline", primary="pilot", subagents=("builder",)))
+            .agent(build_spec(agent_id="pilot"), metadata=metadata())
+            .host(Host(host_id="guide", agents=("builder",)))
             .build()
         )
         self.pool.configure_runtime_database_url("postgresql://test/runtime")
@@ -110,7 +103,7 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
 
         self.ok = await self._child("guide", COMPANION_AGENT_ID, "builder|scaffold rss", "s-1")
         self.failed = await self._child("guide", COMPANION_AGENT_ID, "builder|explode now", "s-1")
-        self.foreign = await self._child("baseline", "pilot", "go", "s-9")
+        self.foreign = await self._direct("builder", "go", "s-9")
 
         runtime = self.pool._agent_provider.agent_servers[COMPANION_AGENT_ID].runtime
         self.calls: list = []
@@ -130,6 +123,17 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
         [child] = await runtime.runtime_store.list_child_requests(accepted["request_id"])
         [trace] = await runtime.runtime_store.list_recent_traces("builder", session_id=child["session_id"], limit=1)
         return {**child, "trace_id": trace["trace_id"]}
+
+    async def _direct(self, agent_id: str, message: str, session_id: str) -> dict:
+        """A request the user sent the agent directly: no parent."""
+        client = self.pool.get_client(agent_id)
+        request_id = await client.post_request(message, session_id=session_id, user_id="u-1")
+        async for event in client.stream_response(request_id, timeout=10):
+            if event.get("event") in {"request.completed", "request.error"}:
+                break
+        runtime = self.pool._agent_provider.agent_servers[agent_id].runtime
+        [trace] = await runtime.runtime_store.list_recent_traces(agent_id, session_id=session_id, limit=1)
+        return {"request_id": request_id, "session_id": session_id, "trace_id": trace["trace_id"]}
 
     async def _call(self, tool_type, args: dict, session_id: str = "s-1"):
         with bound_session_id(session_id):
@@ -197,7 +201,7 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
             # The companion's child, asked from another user session.
             (InspectAgentTraceTool, {"agent_id": "builder", "trace_id": self.ok["trace_id"]}, "s-2"),
             (GetAgentTurnsTool, {"agent_id": "builder", "session_id": self.ok["session_id"]}, "s-2"),
-            # A child of pilot, not of the companion.
+            # A request the user sent builder directly, not a child of the companion.
             (InspectAgentTraceTool, {"agent_id": "builder", "trace_id": self.foreign["trace_id"]}, "s-1"),
             (ListAgentTracesTool, {"agent_id": "builder", "session_id": self.foreign["session_id"]}, "s-1"),
             # The right trace under the wrong agent.

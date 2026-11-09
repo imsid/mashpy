@@ -149,7 +149,7 @@ class ChangelogSummarizerSpec(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self) -> LLMProvider:
-        # Gemma over OpenRouter — the shared subagent model.
+        # Gemma over OpenRouter — the open model the builder also runs.
         return build_default_llm(CHANGELOG_AGENT_ID)
 
     def build_agent_config(self) -> AgentConfig:

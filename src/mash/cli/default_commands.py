@@ -8,17 +8,11 @@ from .background import parse_bg_args
 from .commands import Command
 
 
-def _host_members(host: dict) -> list[tuple[dict, str]]:
-    members: list[tuple[dict, str]] = []
-    primary = host.get("primary")
-    if isinstance(primary, dict):
-        members.append((primary, "primary"))
-    subagents = host.get("subagents")
-    if isinstance(subagents, list):
-        for member in subagents:
-            if isinstance(member, dict):
-                members.append((member, "subagent"))
-    return members
+def _host_members(host: dict) -> list[dict]:
+    agents = host.get("agents")
+    if not isinstance(agents, list):
+        return []
+    return [member for member in agents if isinstance(member, dict)]
 
 
 def _host_workflow_ids(host: dict) -> set[str]:
@@ -231,16 +225,15 @@ def register_default_commands(shell) -> None:
                 ctx.renderer.warn(f"Host '{ctx.host_id}' has no agents.")
                 return
             rows = []
-            for member, role in members:
+            for member in members:
                 metadata = member.get("metadata") or {}
                 rows.append(
                     [
                         str(member.get("agent_id") or ""),
                         str(metadata.get("display_name") or ""),
-                        role,
                     ]
                 )
-            ctx.renderer.table(["Agent", "Name", "Role"], rows)
+            ctx.renderer.table(["Agent", "Name"], rows)
             return
 
         agents = ctx.client.list_agents()
@@ -266,13 +259,12 @@ def register_default_commands(shell) -> None:
         rows = [
             [
                 str(host.get("host_id") or ""),
-                str(host.get("primary") or ""),
-                ", ".join(host.get("subagents") or []),
+                ", ".join(host.get("agents") or []),
                 ", ".join(host.get("workflows") or []),
             ]
             for host in hosts
         ]
-        ctx.renderer.table(["Host", "Primary", "Subagents", "Workflows"], rows)
+        ctx.renderer.table(["Host", "Agents", "Workflows"], rows)
 
     def workflow_command(ctx, args: list[str]) -> None:
         # Bare `/workflow` behaves like `/workflow list`.

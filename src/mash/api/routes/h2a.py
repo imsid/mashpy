@@ -1,19 +1,14 @@
 """H2A relay for calls agent processes make to the host.
 
-A companion primary also starts and reads its RunWorkflow runs here, for
-workflows in the host snapshot stored with its request.
-
-An agent in its process starts its RunSubAgents children through these
-routes, never directly. They speak H2A as ``AgentServer`` does (no
-``{data}`` envelope), so the agent uses a plain ``AgentClient`` pointed at
-``{host}/h2a``. Each call authenticates with the caller's agent token; the
-host checks it against the request's ``parent`` and host snapshot, then
-forwards to the child agent's client. A child runs on the calling agent
-itself or on one of the host's subagents. Both come from the parent's stored
-request, not from the caller's body: the host checks the target against the
-host snapshot stored with the parent and forwards that snapshot, and the
-subagent request acts for the parent request's user. So a primary can neither
-widen its composition nor name another user.
+The companion, in its process, starts its RunSubAgents children through these
+routes, never directly, and starts and reads its RunWorkflow runs here. They
+speak H2A as ``AgentServer`` does (no ``{data}`` envelope), so the agent uses a
+plain ``AgentClient`` pointed at ``{host}/h2a``. Each call authenticates with
+the caller's agent token; the host checks it against the request's ``parent``
+and the host snapshot stored with the parent request, not the caller's body:
+a child runs only on one of the host's agents and acts for the parent
+request's user, and a workflow runs only when the host lists it. So a caller
+can neither widen its host nor name another user.
 """
 
 from __future__ import annotations
@@ -154,12 +149,10 @@ def build_h2a_router() -> APIRouter:
         # The composition the parent was submitted with, as stored; the body's
         # "host" is the caller's copy and is not trusted.
         host = await _stored_host(store, parent_request_id)
-        subagents = host.get("subagents") if host is not None else None
-        if agent_id != caller and (
-            not isinstance(subagents, list) or agent_id not in subagents
-        ):
+        agents = host.get("agents") if host is not None else None
+        if not isinstance(agents, list) or agent_id not in agents:
             return h2a_error(
-                403, "FORBIDDEN", f"subagent '{agent_id}' is not in the request's host"
+                403, "FORBIDDEN", f"agent '{agent_id}' is not in the request's host"
             )
         if "user_id" in body and body.get("user_id") != identity.user_id:
             return h2a_error(

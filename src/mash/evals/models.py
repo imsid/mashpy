@@ -84,8 +84,9 @@ class ExperimentRun:
     # Failure reason when the row could not be scored (host request errored,
     # judge failed, etc.); None on a scored row.
     error: str | None = None
-    # Operational metrics (tokens, steps, tool calls, latency, subagent
-    # breakdown) aggregated from the host session; see evals.metrics.RowMetrics.
+    # Operational metrics (tokens, steps, tool calls, latency, per-agent
+    # breakdown) from the row's companion request and its children; see
+    # evals.metrics.RowMetrics.
     metrics: dict[str, Any] | None = None
     # Durable row-work state used by the run-experiment workflow.
     status: str = "pending"

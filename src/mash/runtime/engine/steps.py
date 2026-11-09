@@ -27,7 +27,7 @@ from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
 from ..events.types import EndStatus
-from ..host.subagents import append_context_block
+from ..host.directory import append_context_block
 from ..requests import (
     append_runtime_event,
     fetch_request_attempt,

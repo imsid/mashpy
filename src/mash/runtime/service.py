@@ -21,7 +21,7 @@ from .events import RuntimeStore
 from .spec import AgentSpec
 
 if TYPE_CHECKING:
-    from .host.subagents import SubagentAccess
+    from .host.directory import HostAccess
 
 
 def _resolve_runtime_database_url(explicit_value: str | None = None) -> str:
@@ -63,7 +63,7 @@ class AgentRuntime:
         self._shutdown_started = False
         self._shutdown_complete = False
 
-        self._subagent_access: SubagentAccess | None = None
+        self._host_access: HostAccess | None = None
         self._sandbox_tools: tuple[str, str] | None = None
         self._browser_tools: tuple[str, str] | None = None
         self._cortex: Any = None
@@ -137,12 +137,12 @@ class AgentRuntime:
         await self.mcp_manager.connect_all(servers)
         factory_helpers.register_mcp_tools(self, self.agent)
 
-    def attach_subagent_access(self, access: SubagentAccess) -> None:
-        """Give the runtime its route to subagents (the host relay in an agent process)."""
-        self._subagent_access = access
+    def attach_host_access(self, access: HostAccess) -> None:
+        """Give the runtime its route to the host's agents (the host relay in an agent process)."""
+        self._host_access = access
 
-    def get_subagent_access(self) -> SubagentAccess | None:
-        return self._subagent_access
+    def get_host_access(self) -> HostAccess | None:
+        return self._host_access
 
     def enable_cortex(self, reader: Any) -> None:
         """Give requests with a ``user_id`` the user's Cortex profile and ``search_cortex``."""
@@ -359,7 +359,7 @@ class AgentRuntime:
             return
         self._shutdown_started = True
         try:
-            self._subagent_access = None
+            self._host_access = None
 
             if self.mcp_manager is not None:
                 await self.mcp_manager.disconnect_all()

@@ -34,8 +34,7 @@ class _FakeClient:
                 "hosts": [
                     {
                         "host_id": "assistant",
-                        "primary": "primary",
-                        "subagents": ["research"],
+                        "agents": ["primary", "research"],
                         "workflows": [],
                     }
                 ],
@@ -52,8 +51,7 @@ class _FakeClient:
         return [
             {
                 "host_id": "assistant",
-                "primary": "primary",
-                "subagents": ["research"],
+                "agents": ["primary", "research"],
                 "workflows": [],
             }
         ]
@@ -61,8 +59,10 @@ class _FakeClient:
     def get_host(self, host_id: str):
         return {
             "host_id": host_id,
-            "primary": {"agent_id": "primary", "metadata": {"display_name": "Primary"}},
-            "subagents": [{"agent_id": "research", "metadata": {"display_name": "Research"}}],
+            "agents": [
+                {"agent_id": "primary", "metadata": {"display_name": "Primary"}},
+                {"agent_id": "research", "metadata": {"display_name": "Research"}},
+            ],
             "workflows": list(self.host_workflows),
         }
 
@@ -360,8 +360,8 @@ class MashRemoteShellTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/host")
         table.assert_called_once_with(
-            ["Host", "Primary", "Subagents", "Workflows"],
-            [["assistant", "primary", "research", ""]],
+            ["Host", "Agents", "Workflows"],
+            [["assistant", "primary, research", ""]],
         )
 
     def test_agents_command_lists_pool_agents_without_host(self) -> None:
@@ -373,13 +373,13 @@ class MashRemoteShellTests(unittest.TestCase):
             [["primary", "Primary"], ["research", "Research"]],
         )
 
-    def test_agents_command_host_scoped_shows_members_with_roles(self) -> None:
+    def test_agents_command_host_scoped_shows_the_hosts_agents(self) -> None:
         shell = self._build_host_shell()
         with patch.object(shell.context.renderer, "table") as table:
             shell.command_registry.execute(shell.context, "/agent")
         table.assert_called_once_with(
-            ["Agent", "Name", "Role"],
-            [["primary", "Primary", "primary"], ["research", "Research", "subagent"]],
+            ["Agent", "Name"],
+            [["primary", "Primary"], ["research", "Research"]],
         )
 
     def test_workflow_list_host_scoped_filters_attached(self) -> None:

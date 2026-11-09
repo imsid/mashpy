@@ -1,4 +1,4 @@
-"""The companion: the built-in primary of a host that names none."""
+"""The companion: the built-in router of every host request."""
 
 from __future__ import annotations
 
@@ -13,49 +13,39 @@ from mash.runtime import Host, HostBuilder
 from mash.testing.runtime_fixtures import DelegatingLLMProvider, build_spec, metadata
 
 
-def _builder(*, companion: bool = True) -> HostBuilder:
-    builder = (
+def _builder() -> HostBuilder:
+    return (
         HostBuilder()
         .agent(build_spec(agent_id="pilot"), metadata=metadata())
         .agent(build_spec(agent_id="builder"), metadata=metadata())
     )
-    return builder.enable_companion() if companion else builder
 
 
-class HostWithoutPrimaryTests(unittest.TestCase):
-    def test_a_host_without_a_primary_gets_the_companion(self) -> None:
-        pool = _builder().host(Host(host_id="guide", subagents=("pilot", "builder"))).build()
+class HostAgentsTests(unittest.TestCase):
+    def test_every_pool_has_the_companion_and_hosts_list_only_their_agents(self) -> None:
+        pool = _builder().host(Host(host_id="guide", agents=("pilot", "builder"))).build()
 
         host = pool.get_host("guide")
-        self.assertEqual(host.primary, COMPANION_AGENT_ID)
-        self.assertEqual(host.subagents, ("pilot", "builder"))
-        self.assertEqual(pool.snapshot_for(host)["primary"], COMPANION_AGENT_ID)
-        self.assertIn(COMPANION_AGENT_ID, pool.list_registered_agents())
-
-    def test_without_enable_companion_a_host_needs_a_primary(self) -> None:
-        with self.assertRaisesRegex(ValueError, "enable_companion"):
-            _builder(companion=False).host(Host(host_id="guide", subagents=("pilot",))).build()
-
-    def test_a_host_that_names_a_primary_is_unchanged(self) -> None:
-        pool = (
-            _builder()
-            .host(Host(host_id="baseline", primary="pilot", subagents=("builder",)))
-            .build()
+        self.assertEqual(host.agents, ("pilot", "builder"))
+        self.assertEqual(
+            pool.snapshot_for(host), {"host_id": "guide", "agents": ["pilot", "builder"], "workflows": []}
         )
-        self.assertEqual(pool.get_host("baseline").primary, "pilot")
+        self.assertIn(COMPANION_AGENT_ID, pool.list_registered_agents())
+        self.assertIn(COMPANION_AGENT_ID, HostBuilder().build().list_registered_agents())
 
-    def test_define_host_on_a_running_pool_fills_in_the_companion(self) -> None:
+    def test_define_host_on_a_running_pool(self) -> None:
         pool = _builder().build()
-        defined = pool.define_host(Host(host_id="later", subagents=("builder",)))
-        self.assertEqual(defined.primary, COMPANION_AGENT_ID)
+        defined = pool.define_host(Host(host_id="later", agents=("builder",)))
+        self.assertEqual(defined.agents, ("builder",))
 
-    def test_the_companion_cannot_also_be_a_subagent(self) -> None:
-        with self.assertRaises(ValueError):
-            _builder().host(Host(host_id="g", subagents=(COMPANION_AGENT_ID,))).build()
+    def test_a_host_cannot_list_the_companion(self) -> None:
+        with self.assertRaisesRegex(ValueError, "routes every host request"):
+            _builder().host(Host(host_id="g", agents=(COMPANION_AGENT_ID,))).build()
 
-    def test_an_empty_primary_is_still_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            Host(host_id="g", primary=" ")
+    def test_disabling_the_companion_is_refused_while_a_host_exists(self) -> None:
+        pool = _builder().host(Host(host_id="guide", agents=("pilot",))).build()
+        self.assertEqual(pool.agent_references(COMPANION_AGENT_ID), ["host 'guide'"])
+        self.assertEqual(pool.agent_references("builder"), [])
 
 
 class CompanionSpecTests(unittest.TestCase):
@@ -69,7 +59,7 @@ class CompanionSpecTests(unittest.TestCase):
         self.assertFalse(spec.enable_sandbox())
         self.assertEqual(spec.browser_sites(), [])
         self.assertEqual(spec.build_skills().list_skills(), [])
-        self.assertIn("Never send an item\n  to yourself", config.system_prompt)
+        self.assertIn("in the AGENTS list", config.system_prompt)
         self.assertIn("session_id", config.system_prompt)
         self.assertTrue(build_companion_metadata().description)
 
@@ -88,14 +78,14 @@ class CompanionSpecTests(unittest.TestCase):
 
 
 class CompanionRoutingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_a_host_request_runs_on_the_companion_and_routes_to_a_subagent(self) -> None:
+    async def test_a_host_request_runs_on_the_companion_and_routes_to_an_agent(self) -> None:
         provider = DelegatingLLMProvider(
             final_text="routed", subagent_id="builder", subagent_prompt="scaffold"
         )
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}
         ), patch.object(CompanionSpec, "build_llm", lambda self: provider):
-            pool = _builder().host(Host(host_id="guide", subagents=("pilot", "builder"))).build()
+            pool = _builder().host(Host(host_id="guide", agents=("pilot", "builder"))).build()
             pool.configure_runtime_database_url("postgresql://test/runtime")
             await pool.start()
             try:
@@ -112,7 +102,7 @@ class CompanionRoutingTests(unittest.IsolatedAsyncioTestCase):
                         break
                 self.assertEqual(terminal["event"], "request.completed", terminal)
                 self.assertEqual(terminal["data"]["response"]["text"], "routed")
-                self.assertIn("SUBAGENTS", str(provider.last_system))
+                self.assertIn("AGENTS\n", str(provider.last_system))
                 runtime = pool._agent_provider.agent_servers[COMPANION_AGENT_ID].runtime
                 [child] = await runtime.runtime_store.list_child_requests(accepted["request_id"])
                 self.assertEqual(child["agent_id"], "builder")
@@ -211,24 +201,24 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             _builder()
             .enable_evals()
             .workflow(_workflow())
-            .host(Host(host_id="guide", subagents=("pilot",), workflows=("changelog",)))
+            .host(Host(host_id="guide", agents=("pilot",), workflows=("changelog",)))
             .build()
         )
         host = pool.get_host("guide")
         self.assertIn("run-experiment", host.workflows)
         self.assertEqual(pool.snapshot_for(host)["workflows"], ["changelog"])
 
-    def test_run_workflow_is_registered_only_for_a_companion_primary_with_workflows(self) -> None:
+    def test_run_workflow_is_registered_only_for_the_companion_with_workflows(self) -> None:
         access = SimpleNamespace(get_workflow_client=lambda: object())
         cases = [
-            ("companion", {"primary": "companion", "workflows": ["changelog"]}, True),
-            ("companion", {"primary": "companion", "workflows": []}, False),
+            ("companion", {"agents": [], "workflows": ["changelog"]}, True),
+            ("companion", {"agents": [], "workflows": []}, False),
             ("companion", None, False),
-            ("pilot", {"primary": "pilot", "workflows": ["changelog"]}, False),
+            ("pilot", {"agents": ["pilot"], "workflows": ["changelog"]}, False),
         ]
         for app_id, host, expected in cases:
             with self.subTest(app_id=app_id, host=host):
-                runtime = SimpleNamespace(app_id=app_id, get_subagent_access=lambda: access)
+                runtime = SimpleNamespace(app_id=app_id, get_host_access=lambda: access)
                 agent = SimpleNamespace(tools=ToolRegistry())
                 configure_run_workflow(runtime, agent, host=host)
                 self.assertEqual("RunWorkflow" in agent.tools, expected)
@@ -242,8 +232,7 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 _builder()
                 .workflow(_workflow())
                 .workflow(_workflow("other"))
-                .host(Host(host_id="guide", subagents=("pilot",), workflows=("changelog",)))
-                .host(Host(host_id="plain", primary="pilot", workflows=("changelog",)))
+                .host(Host(host_id="guide", agents=("pilot",), workflows=("changelog",)))
                 .build()
             )
             pool.configure_runtime_database_url("postgresql://test/runtime")

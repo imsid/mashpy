@@ -1,4 +1,4 @@
-"""Agent metadata and subagent prompt helpers."""
+"""Agent metadata and the host agent directory."""
 
 from __future__ import annotations
 
@@ -35,57 +35,41 @@ class AgentMetadata:
                 raise ValueError("agent metadata capabilities must be non-empty")
 
 
-class SubagentAccess(Protocol):
-    """What a runtime needs to wire subagents per turn: their metadata and clients."""
+class HostAccess(Protocol):
+    """What a runtime needs to reach a host's agents: their metadata and clients."""
 
     def get_client(self, agent_id: str) -> Any: ...
 
     def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None: ...
 
 
-def _directory_entry(agent_id: str, meta: AgentMetadata | None, *, you: bool) -> list[str]:
-    label = f"{agent_id} (you)" if you else agent_id
+def _directory_entry(agent_id: str, meta: AgentMetadata | None) -> list[str]:
     if meta is None:
-        return [f"- {label}"]
+        return [f"- {agent_id}"]
     return [
-        f"- {label} | {meta.display_name}: {meta.description}",
+        f"- {agent_id} | {meta.display_name}: {meta.description}",
         f"  Capabilities: {', '.join(meta.capabilities)}",
         f"  Guidance: {meta.usage_guidance}",
     ]
 
 
-def build_subagent_prompt_block(
+def build_agent_directory(
     base_prompt: SystemPrompt,
-    subagents: dict[str, AgentMetadata],
-    *,
-    own_agent_id: str | None = None,
-    own_metadata: AgentMetadata | None = None,
+    agents: dict[str, AgentMetadata | None],
 ) -> SystemPrompt:
-    """Append the RunSubAgents directory to a system prompt.
-
-    The directory lists the agent itself first, marked ``(you)``, then the
-    host's subagents, so the model chooses among all the agents an item can
-    run on from one list.
-    """
-    if not subagents:
+    """Append the ``AGENTS`` directory of a host's agents to a system prompt."""
+    if not agents:
         return base_prompt
 
     lines = [
-        "SUBAGENTS",
-        "Delegate work using RunSubAgents(requests=[{agent_id, prompt}], timeout_seconds).",
+        "AGENTS",
+        "Run them with RunSubAgents(requests=[{agent_id, prompt, session_id?}], timeout_seconds).",
         "Each item runs as its own request, and all items run at the same time.",
-        "Split a task into several items when it has parts that do not depend on "
-        "each other, so they run at once. Answer directly when the task is small, "
-        "or when each step needs the result of the one before.",
-        "An item can run on any agent below, including you:",
+        "Split a task into several items only when its parts do not depend on each other.",
+        "The host's agents:",
     ]
-    if own_agent_id:
-        lines.extend(_directory_entry(own_agent_id, own_metadata, you=True))
-    for agent_id in sorted(subagents.keys()):
-        lines.extend(_directory_entry(agent_id, subagents[agent_id], you=False))
-    lines.append(
-        "Choose the best agent for each item and pass a concise task prompt."
-    )
+    for agent_id in sorted(agents.keys()):
+        lines.extend(_directory_entry(agent_id, agents[agent_id]))
     guidance = "\n".join(lines)
 
     if isinstance(base_prompt, list):

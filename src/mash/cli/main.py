@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from mash.agents.companion import COMPANION_AGENT_ID
 import argparse
 import os
 import sys
@@ -46,26 +47,21 @@ def _resolve_target(
 ) -> tuple[str, str | None]:
     """Resolve (agent_id, host_id) for a command.
 
-    An explicit agent targets the bare agent; a host targets the host's
-    primary with the host composition wired in.
+    An explicit agent targets the bare agent; a host targets the companion,
+    which routes every host request, with the host composition wired in.
     """
     if explicit_agent:
         return explicit_agent, None
     if host_id:
-        described = client.get_host(host_id)
-        primary = described.get("primary") or {}
-        agent_id = str(primary.get("agent_id") or "").strip()
-        if not agent_id:
-            raise ValueError(f"host '{host_id}' has no primary agent")
-        return agent_id, host_id
+        client.get_host(host_id)
+        return COMPANION_AGENT_ID, host_id
     health = client.health()
     deployment = health.get("deployment") or {}
     hosts = deployment.get("hosts") or []
     if len(hosts) == 1 and isinstance(hosts[0], dict):
-        primary = str(hosts[0].get("primary") or "").strip()
         resolved_host_id = str(hosts[0].get("host_id") or "").strip()
-        if primary and resolved_host_id:
-            return primary, resolved_host_id
+        if resolved_host_id:
+            return COMPANION_AGENT_ID, resolved_host_id
     agents = deployment.get("agents") or []
     if len(agents) == 1 and isinstance(agents[0], dict):
         agent_id = str(agents[0].get("agent_id") or "").strip()
@@ -132,8 +128,7 @@ def _host_rows(hosts: list[dict]) -> list[list[str]]:
     return [
         [
             str(host.get("host_id") or ""),
-            str(host.get("primary") or ""),
-            ", ".join(host.get("subagents") or []),
+            ", ".join(host.get("agents") or []),
             ", ".join(host.get("workflows") or []),
         ]
         for host in hosts
@@ -154,25 +149,23 @@ def _run_browse(client: MashHostClient, renderer: RichRenderer) -> int:
     renderer.info("Hosts")
     host_rows = _host_rows(client.list_hosts())
     if host_rows:
-        renderer.table(["Host", "Primary", "Subagents", "Workflows"], host_rows)
+        renderer.table(["Host", "Agents", "Workflows"], host_rows)
     else:
         renderer.info("(no hosts defined)")
 
     renderer.info(
-        "Compose a host with `mash compose --host <id> --primary <agent> "
-        "--subagents a,b`, then enter it with `mash repl`."
+        "Compose a host with `mash compose --host <id> --agents a,b`, then "
+        "enter it with `mash repl`."
     )
     return 0
 
 
 def _render_host_view(renderer: RichRenderer, described: dict) -> None:
-    primary = described.get("primary") or {}
-    members = ", ".join(
-        item.get("agent_id", "") for item in described.get("subagents") or []
-    )
+    members = ", ".join(item.get("agent_id", "") for item in described.get("agents") or [])
+    workflows = ", ".join(described.get("workflows") or [])
     renderer.info(
-        f"Host '{described.get('host_id')}': primary {primary.get('agent_id')}"
-        + (f" [{members}]" if members else "")
+        f"Host '{described.get('host_id')}': agents [{members}]"
+        + (f", workflows [{workflows}]" if workflows else "")
     )
 
 
@@ -212,8 +205,7 @@ def _run_compose(args: argparse.Namespace) -> int:
     try:
         described = client.define_host(
             args.host_id,
-            primary=args.primary,
-            subagents=_split_ids(args.subagents),
+            agents=_split_ids(args.agents),
             workflows=_split_ids(args.workflows),
         )
     except Exception as exc:
@@ -273,11 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compose.add_argument("--api-key", default=None, help="Optional bearer API key")
     compose.add_argument("--host", dest="host_id", required=True, help="Host id to define or replace")
-    compose.add_argument("--primary", required=True, help="Primary agent id")
     compose.add_argument(
-        "--subagents",
+        "--agents",
         default=None,
-        help="Comma-separated subagent ids",
+        help="Comma-separated agent ids the companion routes to",
     )
     compose.add_argument(
         "--workflows",
@@ -396,11 +387,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             for host in hosts:
                 if not isinstance(host, dict):
                     continue
-                subagents = ", ".join(host.get("subagents") or [])
-                renderer.info(
-                    f"  {host.get('host_id')} -> {host.get('primary')}"
-                    + (f" [{subagents}]" if subagents else "")
-                )
+                agents = ", ".join(host.get("agents") or [])
+                renderer.info(f"  {host.get('host_id')} [{agents}]")
             return 0
 
         if args.command == "agents":
@@ -444,13 +432,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             rows = [
                 [
                     str(host.get("host_id") or ""),
-                    str(host.get("primary") or ""),
-                    ", ".join(host.get("subagents") or []),
+                    ", ".join(host.get("agents") or []),
                     ", ".join(host.get("workflows") or []),
                 ]
                 for host in hosts
             ]
-            renderer.table(["Host", "Primary", "Subagents", "Workflows"], rows)
+            renderer.table(["Host", "Agents", "Workflows"], rows)
             return 0
 
         agent_id, target_host_id = _resolve_target(

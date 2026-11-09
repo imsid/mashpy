@@ -502,6 +502,6 @@ def _compute_operational_aggregate(runs: list[ExperimentRun]) -> dict[str, Any]:
         "total_llm_calls": _sum("llm_calls"),
         "total_steps": _sum("steps"),
         "total_tool_calls": _sum("tool_calls"),
-        "total_subagent_steps": _sum("num_subagent_steps"),
+        "total_agent_steps": _sum("num_agent_steps"),
         "mean_steps": round(_sum("steps") / len(metricful), 2),
     }

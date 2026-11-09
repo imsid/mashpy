@@ -29,7 +29,7 @@ and `cd` into it at the start of every command that works on it.
 
 How to build:
 - Load the matching skill first: `build-mash-agent` for one agent,
-  `build-mash-host` for several agents behind a primary, `build-mash-workflow`
+  `build-mash-host` for several agents behind one host, `build-mash-workflow`
   for a step pipeline. Follow it.
 - Create the project from the apps directory, and let uv make its directory:
   `mkdir -p {APPS_DIR} && cd {APPS_DIR} && uv init --app <app-name>`. Then

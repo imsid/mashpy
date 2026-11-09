@@ -26,9 +26,10 @@ from mash.runtime.client import AgentClientError
 from mash.runtime import AgentSpec, Host, HostBuilder
 from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import (
-    build_delegating_spec,
+    DelegatingLLMProvider,
     build_spec,
     metadata,
+    patch_companion_llm,
 )
 from mash.testing.runtime_fixtures import DeterministicAgentSpec, DeterministicLLMProvider
 from mash.tools.ask_user import AskUserTool
@@ -191,6 +192,29 @@ class _MetadataReadingAgentSpec(AgentSpec):
         )
 
 
+class _CompanionLLM(LLMProvider):
+    """The companion's model in these tests; ``inner`` decides what it does."""
+
+    def __init__(self) -> None:
+        self.inner: LLMProvider = DelegatingLLMProvider(
+            final_text="delegated-ok", subagent_id="research", subagent_prompt="analyze"
+        )
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    @property
+    def last_system(self) -> Any:
+        return getattr(self.inner, "last_system", None)
+
+    async def send(self, request):
+        return await self.inner.send(request)
+
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
+
+
 class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._masher_llm_patch = patch(
@@ -207,10 +231,22 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self._masher_llm_patch.start()
         self._masher_judge_llm_patch.start()
+        # The companion routes every host request; by default it hands the
+        # message to "research" and answers "delegated-ok".
+        self.companion = _CompanionLLM()
+        self._companion_patch = patch_companion_llm(self.companion)
+        self._companion_patch.start()
 
     def tearDown(self) -> None:
+        self._companion_patch.stop()
         self._masher_judge_llm_patch.stop()
         self._masher_llm_patch.stop()
+
+    def _route(self, agent_id: str) -> DelegatingLLMProvider:
+        self.companion.inner = DelegatingLLMProvider(
+            final_text="delegated-ok", subagent_id=agent_id, subagent_prompt="analyze"
+        )
+        return self.companion.inner
 
     def test_host_validation_rejects_unknown_members(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,25 +260,22 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .build()
                 )
                 with self.assertRaises(ValueError):
-                    pool.define_host(Host(host_id="h", primary="missing"))
+                    pool.define_host(Host(host_id="h", agents=("missing",)))
                 with self.assertRaises(ValueError):
-                    pool.define_host(
-                        Host(host_id="h", primary="primary", subagents=("missing",))
-                    )
+                    pool.define_host(Host(host_id="h", agents=("primary", "missing")))
                 with self.assertRaises(ValueError):
-                    pool.define_host(
-                        Host(host_id="h", primary="primary", workflows=("missing",))
-                    )
+                    pool.define_host(Host(host_id="h", agents=("primary",), workflows=("missing",)))
+                # The companion routes every host; listing it is refused.
+                with self.assertRaises(ValueError):
+                    pool.define_host(Host(host_id="h", agents=("companion",)))
 
     def test_host_type_rejects_invalid_composition(self) -> None:
         with self.assertRaises(ValueError):
-            Host(host_id="", primary="primary")
+            Host(host_id="", agents=("a",))
         with self.assertRaises(ValueError):
-            Host(host_id="h", primary="")
+            Host(host_id="h", agents=("",))
         with self.assertRaises(ValueError):
-            Host(host_id="h", primary="primary", subagents=("primary",))
-        with self.assertRaises(ValueError):
-            Host(host_id="h", primary="primary", subagents=("a", "a"))
+            Host(host_id="h", agents=("a", "a"))
 
     def test_builder_composes_flat_pool_and_hosts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,40 +290,35 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         build_spec(agent_id="research", response_text="research-ok"),
                         metadata=metadata(),
                     )
-                    .host(
-                        Host(
-                            host_id="assistant",
-                            primary="primary",
-                            subagents=("research",),
-                        )
-                    )
+                    .host(Host(host_id="assistant", agents=("primary", "research")))
                     .build()
                 )
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
                     sorted(described.keys()),
-                    ["primary", "research"],
+                    ["companion", "primary", "research"],
                 )
                 for item in described.values():
                     self.assertNotIn("role", item)
                     self.assertIsNotNone(item["metadata"])
 
                 host = pool.get_host("assistant")
-                self.assertEqual(host.primary, "primary")
-                self.assertEqual(host.subagents, ("research",))
+                self.assertEqual(host.agents, ("primary", "research"))
                 self.assertEqual(
                     pool.snapshot_for(host),
                     {
                         "host_id": "assistant",
-                        "primary": "primary",
-                        "subagents": ["research"],
+                        "agents": ["primary", "research"],
                         "workflows": [],
                     },
                 )
                 described_host = pool.describe_host("assistant")
-                self.assertEqual(described_host["primary"]["agent_id"], "primary")
                 self.assertEqual(
-                    described_host["subagents"][0]["metadata"]["display_name"],
+                    [member["agent_id"] for member in described_host["agents"]],
+                    ["primary", "research"],
+                )
+                self.assertEqual(
+                    described_host["agents"][1]["metadata"]["display_name"],
                     "Research",
                 )
 
@@ -316,7 +344,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     .host(
                         Host(
                             host_id="changelog-host",
-                            primary="primary",
+                            agents=("primary",),
                             workflows=("changelog",),
                         )
                     )
@@ -414,9 +442,9 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 described = {str(item["agent_id"]): item for item in pool.describe_agents()}
                 self.assertEqual(
                     sorted(described.keys()),
-                    ["primary"],
+                    ["companion", "primary"],
                 )
-                self.assertEqual(pool.list_agents(), ["primary"])
+                self.assertEqual(pool.list_agents(), ["primary", "companion"])
                 self.assertEqual(
                     sorted(item.workflow_id for item in pool.get_workflow_registry().list()),
                     ["wf-a", "wf-b"],
@@ -649,25 +677,15 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_host_request_routes_subagent_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                primary_spec = build_delegating_spec(
-                    agent_id="primary-app",
-                    final_text="delegated-ok",
-                    subagent_id="research",
-                    subagent_prompt="analyze",
-                )
+                router = self._route("research")
                 pool = (
                     HostBuilder()
-                    .agent(primary_spec, metadata=metadata())
                     .agent(
                         build_spec(agent_id="research", response_text="research-ok"),
                         metadata=metadata(),
                     )
                     .host(
-                        Host(
-                            host_id="assistant",
-                            primary="primary-app",
-                            subagents=("research",),
-                        )
+                        Host(host_id="assistant", agents=("research",))
                     )
                     .build()
                 )
@@ -678,21 +696,21 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "assistant", message="delegate", session_id="s-1",
                         user_id="u-1",
                     )
-                    self.assertEqual(accepted["agent_id"], "primary-app")
-                    client = pool.get_client("primary-app")
+                    self.assertEqual(accepted["agent_id"], "companion")
+                    client = pool.get_client("companion")
                     result = await _collect_terminal_payload(
                         client, accepted["request_id"], timeout=5
                     )
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                    # The subagent block must reach the LLM via the loaded
-                    # context's system prompt.
-                    self.assertIn("SUBAGENTS", str(primary_spec.provider.last_system))
-                    self.assertIn("research", str(primary_spec.provider.last_system))
+                    # The agent directory reaches the companion's model via the
+                    # loaded context's system prompt.
+                    self.assertIn("AGENTS", str(router.last_system))
+                    self.assertIn("- research", str(router.last_system))
 
                     # Every event of a host-routed request is stamped with the
                     # composition's host_id, and the store can filter on it.
-                    primary = _agent_runtime(pool, "primary-app")
+                    primary = _agent_runtime(pool, "companion")
                     request_events = await primary.runtime_store.list_request_events(
                         accepted["request_id"]
                     )
@@ -700,12 +718,12 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     for event in request_events:
                         self.assertEqual(event.host_id, "assistant")
                     filtered = await primary.runtime_store.list_events(
-                        "primary-app", host_id="assistant"
+                        "companion", host_id="assistant"
                     )
                     self.assertTrue(filtered)
                     self.assertEqual(
                         await primary.runtime_store.list_events(
-                            "primary-app", host_id="other-host"
+                            "companion", host_id="other-host"
                         ),
                         [],
                     )
@@ -718,7 +736,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         limit=1,
                     )
                     self.assertEqual(turns[-1]["user_message"], "analyze")
-                    self.assertEqual(turns[-1]["metadata"]["primary_app_id"], "primary-app")
+                    self.assertEqual(turns[-1]["metadata"]["primary_app_id"], "companion")
                     self.assertEqual(turns[-1]["metadata"]["primary_session_id"], "s-1")
                 finally:
                     await pool.close()
@@ -726,13 +744,13 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_host_request_injects_caller_context_into_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                primary_spec = build_spec(
-                    agent_id="primary-app", response_text="answered"
-                )
+                router = self.companion.inner = build_spec(
+                    agent_id="companion", response_text="answered"
+                ).build_llm()
                 pool = (
                     HostBuilder()
-                    .agent(primary_spec, metadata=metadata())
-                    .host(Host(host_id="assistant", primary="primary-app"))
+                    .agent(build_spec(agent_id="primary-app"), metadata=metadata())
+                    .host(Host(host_id="assistant", agents=("primary-app",)))
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
@@ -745,7 +763,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         context="User timezone: PST. Workspace: mashpy.",
                         user_id="u-1",
                     )
-                    client = pool.get_client("primary-app")
+                    client = pool.get_client("companion")
                     result = await _collect_terminal_payload(
                         client, accepted["request_id"], timeout=5
                     )
@@ -755,7 +773,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     # loaded context's system prompt.
                     self.assertIn(
                         "User timezone: PST. Workspace: mashpy.",
-                        str(primary_spec.provider.last_system),
+                        str(router.last_system),
                     )
                 finally:
                     await pool.close()
@@ -766,26 +784,18 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 primary_spec = _MetadataReadingAgentSpec(agent_id="primary-app")
-                pool = (
-                    HostBuilder()
-                    .agent(primary_spec, metadata=metadata())
-                    .host(Host(host_id="assistant", primary="primary-app"))
-                    .build()
-                )
+                pool = HostBuilder().agent(primary_spec, metadata=metadata()).build()
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    accepted = await pool.submit_host_request(
-                        "assistant",
-                        message="hello",
+                    client = pool.get_client("primary-app")
+                    request_id = await client.post_request(
+                        "hello",
                         session_id="s-meta",
                         metadata={"tenant": "acme", "user_id": "u-1"},
                         user_id="u-1",
                     )
-                    client = pool.get_client("primary-app")
-                    result = await _collect_terminal_payload(
-                        client, accepted["request_id"], timeout=5
-                    )
+                    result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "meta-ok")
 
                     # The tool observed the caller metadata during the run.
@@ -801,25 +811,14 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_subagent_request_inherits_caller_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                primary_spec = build_delegating_spec(
-                    agent_id="primary-app",
-                    final_text="delegated-ok",
-                    subagent_id="research",
-                    subagent_prompt="analyze",
-                )
                 pool = (
                     HostBuilder()
-                    .agent(primary_spec, metadata=metadata())
                     .agent(
                         build_spec(agent_id="research", response_text="research-ok"),
                         metadata=metadata(),
                     )
                     .host(
-                        Host(
-                            host_id="assistant",
-                            primary="primary-app",
-                            subagents=("research",),
-                        )
+                        Host(host_id="assistant", agents=("research",))
                     )
                     .build()
                 )
@@ -833,7 +832,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         metadata={"tenant": "acme"},
                         user_id="u-1",
                     )
-                    client = pool.get_client("primary-app")
+                    client = pool.get_client("companion")
                     result = await _collect_terminal_payload(
                         client, accepted["request_id"], timeout=5
                     )
@@ -860,15 +859,6 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 pool = (
                     HostBuilder()
                     .agent(
-                        build_delegating_spec(
-                            agent_id="primary-app",
-                            final_text="delegated-ok",
-                            subagent_id="research",
-                            subagent_prompt="analyze",
-                        ),
-                        metadata=metadata(),
-                    )
-                    .agent(
                         build_spec(agent_id="research", response_text="research-ok"),
                         metadata=metadata(),
                     )
@@ -878,17 +868,13 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await pool.start()
                 try:
                     pool.define_host(
-                        Host(
-                            host_id="h-dyn",
-                            primary="primary-app",
-                            subagents=("research",),
-                        )
+                        Host(host_id="h-dyn", agents=("research",))
                     )
                     accepted = await pool.submit_host_request(
                         "h-dyn", message="delegate", session_id="s-1",
                         user_id="u-1",
                     )
-                    client = pool.get_client("primary-app")
+                    client = pool.get_client("companion")
                     result = await _collect_terminal_payload(
                         client, accepted["request_id"], timeout=5
                     )
@@ -904,44 +890,29 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_bare_agent_request_runs_children_only_on_itself(self) -> None:
+    async def test_a_bare_companion_request_runs_no_children(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 pool = (
                     HostBuilder()
                     .agent(
-                        build_delegating_spec(
-                            agent_id="primary-app",
-                            final_text="delegated-ok",
-                            subagent_id="research",
-                            subagent_prompt="analyze",
-                        ),
-                        metadata=metadata(),
-                    )
-                    .agent(
                         build_spec(agent_id="research", response_text="research-ok"),
                         metadata=metadata(),
                     )
-                    .host(
-                        Host(
-                            host_id="assistant",
-                            primary="primary-app",
-                            subagents=("research",),
-                        )
-                    )
+                    .host(Host(host_id="assistant", agents=("research",)))
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    # Bare submit: same agent, no host snapshot, so RunSubAgents
-                    # may run children only on the calling agent.
-                    client = pool.get_client("primary-app")
+                    # Bare submit: no host snapshot, so the companion has no
+                    # agents and no RunSubAgents; its model's call fails.
+                    client = pool.get_client("companion")
                     request_id = await client.post_request("delegate", session_id="s-2", user_id="u-1")
                     await _collect_events(client, request_id, timeout=5)
 
-                    primary = _agent_runtime(pool, "primary-app")
-                    request_events = await primary.runtime_store.list_request_events(
+                    companion = _agent_runtime(pool, "companion")
+                    request_events = await companion.runtime_store.list_request_events(
                         request_id
                     )
                     [completion] = [
@@ -949,85 +920,63 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         for event in request_events
                         if event.event_type == "execute_tool.end"
                     ]
-                    [entry] = json.loads(completion.payload["result"]["content"])
-                    self.assertEqual(entry["status"], "failed")
-                    self.assertIsNone(entry["request_id"])
-                    self.assertIn("RunSubAgents runs only on 'primary-app'", entry["error"])
-
+                    self.assertTrue(completion.payload["result"]["is_error"])
+                    self.assertEqual(
+                        await companion.runtime_store.list_child_requests(request_id), []
+                    )
                     # Bare requests carry no host_id on their events.
                     for event in request_events:
                         self.assertIsNone(event.host_id)
-
-                    research = _agent_runtime(pool, "research")
-                    turns = await research.store.get_turns(
-                        session_id="s-2",
-                        app_id=research.app_id,
-                        limit=1,
-                    )
-                    self.assertEqual(turns, [])
                 finally:
                     await pool.close()
 
-    async def test_a_child_gets_neither_run_subagents_nor_ask_user(self) -> None:
+    async def test_only_the_companion_routes_and_a_child_gets_no_ask_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 pool = (
                     HostBuilder()
                     .agent(
-                        _AskingSpec(agent_id="primary-app", response_text="p"),
-                        metadata=metadata(),
-                    )
-                    .agent(
                         _AskingSpec(agent_id="research", response_text="r"),
                         metadata=metadata(),
                     )
+                    .host(Host(host_id="assistant", agents=("research",)))
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    # A child carries the primary's host snapshot.
-                    host = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
-                    primary = _agent_runtime(pool, "primary-app")
-                    primary_agent = primary.build_turn_agent(
+                    host = pool.snapshot_for(pool.get_host("assistant"))
+                    companion = _agent_runtime(pool, "companion").build_turn_agent(
                         session_id="s-1", trace_id="t-1", host=host
                     )
-                    research_agent = _agent_runtime(pool, "research").build_turn_agent(
-                        session_id="s-1", trace_id="t-2", host=host, parent_kind="subagent"
-                    )
-                    own_child = primary.build_turn_agent(
+                    research = _agent_runtime(pool, "research")
+                    direct = research.build_turn_agent(session_id="s-1", trace_id="t-2")
+                    child = research.build_turn_agent(
                         session_id="s-1", trace_id="t-3", host=host, parent_kind="subagent"
                     )
-                    self.assertIn("RunSubAgents", primary_agent.tools)
-                    self.assertIn("AskUser", primary_agent.tools)
-                    for child in (research_agent, own_child):
-                        self.assertNotIn("RunSubAgents", child.tools)
-                        self.assertNotIn("AskUser", child.tools)
-                        self.assertNotIn("SUBAGENTS", str(child.config.system_prompt))
-                    self.assertIn("SUBAGENTS", str(primary_agent.config.system_prompt))
-                    self.assertIn("- primary-app (you)", str(primary_agent.config.system_prompt))
+                    self.assertIn("RunSubAgents", companion.tools)
+                    self.assertIn("AGENTS", str(companion.config.system_prompt))
+                    self.assertIn("- research", str(companion.config.system_prompt))
+                    # A host agent never routes, asked directly or as a child.
+                    for agent in (direct, child):
+                        self.assertNotIn("RunSubAgents", agent.tools)
+                        self.assertNotIn("AGENTS\n", str(agent.config.system_prompt))
+                    self.assertIn("AskUser", direct.tools)
+                    self.assertNotIn("AskUser", child.tools)
                     # A child's removals stay on its own registry.
-                    self.assertIn("AskUser", primary.agent.tools)
+                    self.assertIn("AskUser", research.agent.tools)
                 finally:
                     await pool.close()
 
     async def _run_delegation(self, subagent_id: str) -> tuple[Any, str, dict[str, Any]]:
+        self._route(subagent_id)
         pool = (
             HostBuilder()
-            .agent(
-                build_delegating_spec(
-                    agent_id="primary-app",
-                    final_text="delegated-ok",
-                    subagent_id=subagent_id,
-                    subagent_prompt="analyze",
-                ),
-                metadata=metadata(),
-            )
             .agent(
                 build_spec(agent_id="research", response_text="research-ok"),
                 metadata=metadata(),
             )
-            .host(Host(host_id="assistant", primary="primary-app", subagents=("research",)))
+            .host(Host(host_id="assistant", agents=("research",)))
             .build()
         )
         pool.configure_runtime_database_url("postgresql://test/runtime")
@@ -1037,7 +986,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         request_id = accepted["request_id"]
         result = await _collect_terminal_payload(
-            pool.get_client("primary-app"), request_id, timeout=10
+            pool.get_client("companion"), request_id, timeout=10
         )
         return pool, request_id, result
 
@@ -1054,7 +1003,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "agent_id": "research",
                             "mode": "bg",
-                            "started_by": "primary-app",
+                            "started_by": "companion",
                             "status": "completed",
                             "user_id": "u-1",
                         },
@@ -1068,46 +1017,31 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await pool.close()
 
-    async def test_the_caller_can_run_a_child_on_itself_through_the_relay(self) -> None:
+    async def test_the_companion_never_routes_to_itself(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                pool, request_id, result = await self._run_delegation("primary-app")
+                pool, request_id, result = await self._run_delegation("companion")
                 try:
                     self.assertEqual(result["response"]["text"], "delegated-ok")
                     store = pool.get_runtime_store()
-                    [child] = await store.list_child_requests(request_id)
-                    self.assertEqual(child["agent_id"], "primary-app")
-                    self.assertEqual(child["started_by"], "primary-app")
-                    self.assertEqual(child["status"], "completed")
-
-                    # The child's own model asked for RunSubAgents too, but a
-                    # child is built without it: splitting is one level deep.
-                    child_events = await store.list_request_events(child["request_id"])
+                    self.assertEqual(await store.list_child_requests(request_id), [])
                     [call] = [
-                        e for e in child_events
+                        e for e in await store.list_request_events(request_id)
                         if e.event_type == "execute_tool.end"
                     ]
-                    self.assertTrue(call.payload["result"]["is_error"])
-                    self.assertEqual(await store.list_child_requests(child["request_id"]), [])
+                    [entry] = json.loads(call.payload["result"]["content"])
+                    self.assertEqual(entry["status"], "failed")
+                    self.assertIn("not in host 'assistant'", entry["error"])
                 finally:
                     await pool.close()
 
     async def test_host_snapshot_gates_subagent_membership(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                # The host's only subagent is "other"; the primary tries to
-                # invoke "research", which is in the pool but not in the host.
+                # The host's only agent is "other"; the companion tries to
+                # route to "research", which is in the pool but not in the host.
                 pool = (
                     HostBuilder()
-                    .agent(
-                        build_delegating_spec(
-                            agent_id="primary-app",
-                            final_text="delegated-ok",
-                            subagent_id="research",
-                            subagent_prompt="analyze",
-                        ),
-                        metadata=metadata(),
-                    )
                     .agent(
                         build_spec(agent_id="research", response_text="research-ok"),
                         metadata=metadata(),
@@ -1117,11 +1051,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         metadata=metadata(),
                     )
                     .host(
-                        Host(
-                            host_id="narrow",
-                            primary="primary-app",
-                            subagents=("other",),
-                        )
+                        Host(host_id="narrow", agents=("other",))
                     )
                     .build()
                 )
@@ -1132,17 +1062,14 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "narrow", message="delegate", session_id="s-1",
                         user_id="u-1",
                     )
-                    client = pool.get_client("primary-app")
+                    client = pool.get_client("companion")
                     await _collect_events(
                         client, accepted["request_id"], timeout=5
                     )
-                    research = _agent_runtime(pool, "research")
-                    turns = await research.store.get_turns(
-                        session_id="s-1",
-                        app_id=research.app_id,
-                        limit=1,
+                    self.assertEqual(
+                        await pool.get_runtime_store().list_child_requests(accepted["request_id"]),
+                        [],
                     )
-                    self.assertEqual(turns, [])
                 finally:
                     await pool.close()
 
@@ -1152,15 +1079,6 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 pool = (
                     HostBuilder()
                     .agent(
-                        build_delegating_spec(
-                            agent_id="primary-app",
-                            final_text="delegated-ok",
-                            subagent_id="research",
-                            subagent_prompt="analyze",
-                        ),
-                        metadata=metadata(),
-                    )
-                    .agent(
                         build_spec(
                             agent_id="research",
                             response_text="research-ok",
@@ -1168,11 +1086,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         metadata=metadata(),
                     )
                     .host(
-                        Host(
-                            host_id="assistant",
-                            primary="primary-app",
-                            subagents=("research",),
-                        )
+                        Host(host_id="assistant", agents=("research",))
                     )
                     .build()
                 )
@@ -1186,11 +1100,11 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     request_id = accepted["request_id"]
                     self.assertTrue(request_id)
 
-                    client = pool.get_client("primary-app")
+                    client = pool.get_client("companion")
                     result = await _collect_terminal_payload(client, request_id, timeout=5)
                     self.assertEqual(result["response"]["text"], "delegated-ok")
 
-                    primary = _agent_runtime(pool, "primary-app")
+                    primary = _agent_runtime(pool, "companion")
                     request_events = await primary.runtime_store.list_request_events(request_id)
                     subagent_events = [
                         event

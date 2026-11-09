@@ -78,16 +78,16 @@ class RunSubAgentsTool:
     # The concurrency is inside the one call.
     parallel_safe = False
     description = (
-        "Run one or more requests at the same time, each on this agent or one "
-        "of its subagents, and wait for all of them. Use one item to hand a "
-        "task to a subagent; use several to split a large task into parts that "
-        "run at once, then write one answer from their results. Returns one "
-        "entry per item, in order, with the child's request_id, its status "
-        "(completed, failed, cancelled or timed_out), and its response, "
-        "structured output or error, plus the session_id it ran in and its "
-        "trace_id. Each item runs in a session of its own: pass an earlier "
-        "entry's session_id to continue that session, where the agent sees its "
-        "own earlier work, or leave it out to start a new one."
+        "Run one or more requests at the same time, each on one of the host's "
+        "agents, and wait for all of them. Use one item to hand a task to an "
+        "agent; use several for parts that do not depend on each other, then "
+        "write one answer from their results. Returns one entry per item, in "
+        "order, with the child's request_id, its status (completed, failed, "
+        "cancelled or timed_out), and its response, structured output or "
+        "error, plus the session_id it ran in and its trace_id. Each item runs "
+        "in a session of its own: pass an earlier entry's session_id to "
+        "continue that session, where the agent sees its own earlier work, or "
+        "leave it out to start a new one."
     )
     parameters = {
         "type": "object",
@@ -101,7 +101,7 @@ class RunSubAgentsTool:
                     "properties": {
                         "agent_id": {
                             "type": "string",
-                            "description": "This agent's own id, or a subagent of the host.",
+                            "description": "One of the host's agents.",
                         },
                         "prompt": {"type": "string"},
                         "session_id": {
@@ -137,10 +137,6 @@ class RunSubAgentsTool:
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
         self._caller_agent_id = caller_agent_id
-        # The model names this agent in an item to run part of the work itself.
-        self.description = (
-            f"{type(self).description} Your own agent_id is '{caller_agent_id}'."
-        )
         self._client_resolver = client_resolver
         self._session_id = str(session_id).strip()
         self._host = dict(host) if host is not None else None

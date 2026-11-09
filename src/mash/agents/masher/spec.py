@@ -14,7 +14,7 @@ from mash.core.llm import (
     OpenAIProvider,
     OSSCompatibleProvider,
 )
-from mash.runtime.host.subagents import AgentMetadata
+from mash.runtime.host.directory import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry

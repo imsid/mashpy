@@ -47,8 +47,8 @@ class _FakeLLMProvider(LLMProvider):
 
 @contextmanager
 def _keyless_models() -> Iterator[None]:
-    """Pilot's Gemini primary and the masher agents on a fake provider; the
-    Gemma subagents build against a dummy OpenRouter key."""
+    """Pilot's Gemini guide, the companion and the masher agents on a fake
+    provider; the Gemma agents build against a dummy OpenRouter key."""
     with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
         stack.enter_context(
             patch.dict(
@@ -82,9 +82,8 @@ def test_pool_has_the_guide_the_builder_and_the_changelog_workflow() -> None:
             }
             assert CHANGELOG_AGENT_ID in pool.list_registered_agents()
             guide = pool.get_host(GUIDE_HOST_ID)
-            # The guide names no primary, so the companion routes for it.
-            assert guide.primary == COMPANION_AGENT_ID
-            assert guide.subagents == (PILOT_AGENT_ID, BUILDER_AGENT_ID)
+            # The companion routes every guide request to these agents.
+            assert guide.agents == (PILOT_AGENT_ID, BUILDER_AGENT_ID)
             assert CHANGELOG_WORKFLOW_ID in guide.workflows
             assert pool.snapshot_for(guide)["workflows"] == [CHANGELOG_WORKFLOW_ID]
         finally:
@@ -117,7 +116,8 @@ def test_agents_get_sandbox_and_browser_tools() -> None:
                     trace_id="trace-1",
                     host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
                 )
-                assert "RunSubAgents" in turn_agent.tools
+                # Only the companion routes; pilot is one of the guide's agents.
+                assert "RunSubAgents" not in turn_agent.tools
 
                 companion = _agent_runtime(pool, COMPANION_AGENT_ID)
                 companion_turn = companion.build_turn_agent(

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 from fastapi import Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from mash.memory.search.service import MemorySearchService
 from mash.memory.search.types import FusionWeights, RetrievalConfig
@@ -72,8 +72,11 @@ class SetRequestModeRequest(BaseModel):
 
 
 class DefineHostRequest(BaseModel):
-    primary: str = Field(min_length=1)
-    subagents: list[str] = Field(default_factory=list)
+    # A body in the old primary/subagents shape fails instead of defining an
+    # empty host.
+    model_config = ConfigDict(extra="forbid")
+
+    agents: list[str] = Field(default_factory=list)
     workflows: list[str] = Field(default_factory=list)
 
 

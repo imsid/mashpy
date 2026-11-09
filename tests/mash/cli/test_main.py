@@ -39,16 +39,13 @@ def test_build_parser_accepts_compose_flags() -> None:
             "compose",
             "--host",
             "assistant",
-            "--primary",
-            "concierge",
-            "--subagents",
+            "--agents",
             "email,calendar",
         ]
     )
     assert args.command == "compose"
     assert args.host_id == "assistant"
-    assert args.primary == "concierge"
-    assert args.subagents == "email,calendar"
+    assert args.agents == "email,calendar"
 
 
 def test_build_parser_rejects_targeting_flags_on_connect() -> None:
@@ -59,7 +56,7 @@ def test_build_parser_rejects_targeting_flags_on_connect() -> None:
         parser.parse_args(["connect", "--host", "assistant"])
     with pytest.raises(SystemExit):
         parser.parse_args(
-            ["connect", "--host", "assistant", "--primary", "concierge"]
+            ["connect", "--host", "assistant", "--agents", "concierge"]
         )
 
 
@@ -168,8 +165,7 @@ def test_compose_defines_host_and_saves_config(tmp_path, monkeypatch) -> None:
     fake_client = MagicMock()
     fake_client.define_host.return_value = {
         "host_id": "assistant",
-        "primary": {"agent_id": "concierge"},
-        "subagents": [{"agent_id": "email"}, {"agent_id": "calendar"}],
+        "agents": [{"agent_id": "email"}, {"agent_id": "calendar"}],
         "workflows": [],
     }
     saved = {}
@@ -188,9 +184,7 @@ def test_compose_defines_host_and_saves_config(tmp_path, monkeypatch) -> None:
                 "http://127.0.0.1:8000",
                 "--host",
                 "assistant",
-                "--primary",
-                "concierge",
-                "--subagents",
+                "--agents",
                 "email,calendar",
             ]
         )
@@ -198,8 +192,7 @@ def test_compose_defines_host_and_saves_config(tmp_path, monkeypatch) -> None:
     assert code == 0
     fake_client.define_host.assert_called_once_with(
         "assistant",
-        primary="concierge",
-        subagents=["email", "calendar"],
+        agents=["email", "calendar"],
         workflows=[],
     )
     assert saved["config"].host_id == "assistant"
@@ -215,8 +208,7 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
     fake_client = MagicMock()
     fake_client.define_host.return_value = {
         "host_id": "assistant",
-        "primary": {"agent_id": "concierge"},
-        "subagents": [],
+        "agents": [{"agent_id": "concierge"}],
         "workflows": [],
     }
     saved = {}
@@ -234,7 +226,7 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
         cli_main, "save_config", fake_save_config
     ), patch.object(cli_main, "load_config", return_value=existing):
         code = cli_main.main(
-            ["compose", "--host", "assistant", "--primary", "concierge"]
+            ["compose", "--host", "assistant", "--agents", "concierge"]
         )
 
     assert code == 0
@@ -244,10 +236,12 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
     assert saved["config"].user_id == "u-42"
 
 
-def test_compose_requires_primary() -> None:
+def test_compose_no_longer_takes_a_primary() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["compose", "--host", "assistant"])
+        parser.parse_args(["compose", "--host", "assistant", "--primary", "concierge"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["compose", "--host", "assistant", "--subagents", "a"])
 
 
 def test_connect_saves_the_user_id(tmp_path) -> None:

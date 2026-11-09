@@ -17,42 +17,44 @@ from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import RunSubAgentsTool
 from ..tools.workflow import RunWorkflowTool
-from .host.subagents import (
+from .host.directory import (
     AgentMetadata,
     append_context_block,
-    build_subagent_prompt_block,
+    build_agent_directory,
 )
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
 
 
-def resolve_host_subagents(
+def _is_companion(self: "AgentRuntime") -> bool:
+    from mash.agents.companion import COMPANION_AGENT_ID
+
+    return self.app_id == COMPANION_AGENT_ID
+
+
+def resolve_host_agents(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
     parent_kind: str | None = None,
 ) -> dict[str, AgentMetadata]:
-    """Resolve a host snapshot's subagent ids to pool metadata.
+    """Resolve a host snapshot's agent ids to pool metadata.
 
-    Only the host's primary routes to subagents. A subagent request carries the
-    same snapshot, but must not see its siblings or call them. A request a
-    RunSubAgents call started gets none either, even when it runs on the
-    primary itself: splitting is one level deep.
+    Only the companion routes, on a request the user started; a request a
+    RunSubAgents call started gets no agents, so routing is one level deep.
     """
-    if parent_kind == "subagent":
+    if parent_kind == "subagent" or not host or not _is_companion(self):
         return {}
-    if not host or host.get("primary") != self.app_id:
+    agent_ids = [str(value) for value in host.get("agents") or []]
+    if not agent_ids:
         return {}
-    subagent_ids = [str(value) for value in host.get("subagents") or []]
-    if not subagent_ids:
-        return {}
-    access = self.get_subagent_access()
+    access = self.get_host_access()
     if access is None:
         raise RuntimeError(
-            f"agent '{self.app_id}' received a host snapshot but has no subagent access"
+            f"agent '{self.app_id}' received a host snapshot but has no host access"
         )
     resolved: dict[str, AgentMetadata] = {}
-    for agent_id in subagent_ids:
+    for agent_id in agent_ids:
         metadata = access.get_agent_metadata(agent_id)
         if metadata is None:
             raise RuntimeError(
@@ -62,24 +64,6 @@ def resolve_host_subagents(
     return resolved
 
 
-def _with_directory(
-    self: "AgentRuntime",
-    base_prompt: SystemPrompt,
-    subagents: dict[str, AgentMetadata],
-) -> SystemPrompt:
-    """Append the RunSubAgents directory, listing this agent first."""
-    if not subagents:
-        return base_prompt
-    access = self.get_subagent_access()
-    own_metadata = access.get_agent_metadata(self.app_id) if access is not None else None
-    return build_subagent_prompt_block(
-        base_prompt,
-        subagents,
-        own_agent_id=self.app_id,
-        own_metadata=own_metadata,
-    )
-
-
 def resolve_host_system_prompt(
     self: "AgentRuntime",
     host: dict[str, Any] | None,
@@ -87,13 +71,13 @@ def resolve_host_system_prompt(
     *,
     parent_kind: str | None = None,
 ) -> SystemPrompt:
-    """Render the base prompt with the subagent block and request context.
+    """Render the base prompt with the agent directory and request context.
 
-    The subagent routing block is appended first, then any caller-supplied
-    per-request ``context`` after it.
+    The directory is appended first, then any caller-supplied per-request
+    ``context`` after it.
     """
-    prompt = _with_directory(
-        self, self.system_prompt, resolve_host_subagents(self, host, parent_kind)
+    prompt = build_agent_directory(
+        self.system_prompt, resolve_host_agents(self, host, parent_kind)
     )
     return append_context_block(prompt, context)
 
@@ -177,17 +161,16 @@ def build_turn_agent(
 
     It shares the base agent's LLM, skills and tool objects, and adds the
     tools bound to the request: the conversation tools for its session and
-    user, ``search_cortex`` for its user, and ``RunSubAgents`` unless a
-    ``RunSubAgents`` call started the request, in which case it gets neither
-    ``RunSubAgents`` nor ``AskUser``: the user talks to the calling agent, not
-    its children.
+    user, and ``search_cortex`` for its user. The companion, on a host request
+    the user started, also gets ``RunSubAgents`` over the host's agents and
+    ``RunWorkflow`` over its workflows. A request a ``RunSubAgents`` call
+    started gets no ``AskUser``: the user talks to the companion.
     """
     base = self.agent
     config = replace(base.config)
     config.system_prompt = self.system_prompt
-    host_subagents = resolve_host_subagents(self, host, parent_kind)
-    if host_subagents:
-        config.system_prompt = _with_directory(self, config.system_prompt, host_subagents)
+    host_agents = resolve_host_agents(self, host, parent_kind)
+    config.system_prompt = build_agent_directory(config.system_prompt, host_agents)
 
     agent = Agent(llm=base.llm, tools=base.tools.copy(), skills=base.skills, config=config)
     agent.set_signal_collector(self.signal_collector)
@@ -199,18 +182,14 @@ def build_turn_agent(
     cortex = self.get_cortex()
     if cortex is not None and user_id:
         agent.tools.register(cortex.search_tool(user_id))
+    for name in ("RunSubAgents", "RunWorkflow"):
+        if name in agent.tools:
+            agent.tools.unregister(name)
     if parent_kind == "subagent":
-        for name in ("RunSubAgents", "RunWorkflow", "AskUser"):
-            if name in agent.tools:
-                agent.tools.unregister(name)
+        if "AskUser" in agent.tools:
+            agent.tools.unregister("AskUser")
     else:
-        configure_run_subagents(
-            self,
-            agent,
-            session_id=session_id,
-            host=host,
-            subagent_ids=set(host_subagents),
-        )
+        configure_run_subagents(self, agent, session_id=session_id, host=host, agents=host_agents)
         configure_run_workflow(self, agent, host=host)
     return agent
 
@@ -269,36 +248,19 @@ def configure_run_subagents(
     *,
     session_id: str,
     host: dict[str, Any] | None,
-    subagent_ids: set[str],
+    agents: dict[str, AgentMetadata],
 ) -> None:
-    """Register ``RunSubAgents`` for a request the user started.
-
-    Its children may run on this agent or on the host's subagents. Without
-    subagent access (a runtime outside a host) there is no route to any
-    child, so the tool is not registered.
-    """
-    access = self.get_subagent_access()
-    if access is None:
-        if subagent_ids:
-            raise RuntimeError(
-                f"agent '{self.app_id}' received a host snapshot but has no subagent access"
-            )
+    """Register ``RunSubAgents`` for the companion, over the host's agents."""
+    if not agents:
         return
+    access = self.get_host_access()
     host_id = str((host or {}).get("host_id") or "")
-    allowed = {self.app_id, *subagent_ids}
 
     def client_resolver(agent_id: str) -> Any:
-        if agent_id not in allowed:
-            if host_id:
-                raise ValueError(f"agent '{agent_id}' is not in host '{host_id}'")
-            raise ValueError(
-                f"agent '{agent_id}' is not available; without a host, "
-                f"RunSubAgents runs only on '{self.app_id}'"
-            )
+        if agent_id not in agents:
+            raise ValueError(f"agent '{agent_id}' is not in host '{host_id}'")
         return access.get_client(agent_id)
 
-    if "RunSubAgents" in agent.tools:
-        agent.tools.unregister("RunSubAgents")
     agent.tools.register(
         RunSubAgentsTool(
             client_resolver=client_resolver,
@@ -313,19 +275,11 @@ def configure_run_subagents(
 def configure_run_workflow(
     self: "AgentRuntime", agent: Agent, *, host: dict[str, Any] | None
 ) -> None:
-    """Register ``RunWorkflow`` for a companion primary whose host has workflows."""
-    from mash.agents.companion import COMPANION_AGENT_ID
-
-    if "RunWorkflow" in agent.tools:
-        agent.tools.unregister("RunWorkflow")
+    """Register ``RunWorkflow`` for the companion when its host has workflows."""
     workflow_ids = [str(value) for value in (host or {}).get("workflows") or []]
-    if (
-        self.app_id != COMPANION_AGENT_ID
-        or (host or {}).get("primary") != self.app_id
-        or not workflow_ids
-    ):
+    if not _is_companion(self) or not workflow_ids:
         return
-    access = self.get_subagent_access()
+    access = self.get_host_access()
     get_workflow_client = getattr(access, "get_workflow_client", None)
     if get_workflow_client is None:
         return

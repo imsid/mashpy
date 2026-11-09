@@ -4,7 +4,7 @@ import { PageHeader, Card } from '../components/Page.jsx';
 import { Async } from '../components/State.jsx';
 import { Chip, Mono } from '../components/Chip.jsx';
 import { Drawer } from '../components/Drawer.jsx';
-import { Button, Field, TextInput, TextArea, Select } from '../components/Form.jsx';
+import { Button, Field, TextInput, TextArea } from '../components/Form.jsx';
 import { api } from '../lib/api.js';
 import { useApi } from '../lib/useApi.js';
 
@@ -27,19 +27,13 @@ function HostCard({ host, onEdit, onTest }) {
         </div>
       </div>
       <div className="space-y-2 text-sm">
-        <div className="flex items-center gap-2">
-          <span className="w-20 shrink-0 text-xs font-medium uppercase tracking-wide text-slate-400">
-            Primary
-          </span>
-          <Chip>{host.primary}</Chip>
-        </div>
         <div className="flex items-start gap-2">
           <span className="w-20 shrink-0 pt-0.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-            Subagents
+            Agents
           </span>
           <div className="flex flex-wrap gap-1.5">
-            {host.subagents?.length ? (
-              host.subagents.map((s) => <Chip key={s}>{s}</Chip>)
+            {host.agents?.length ? (
+              host.agents.map((a) => <Chip key={a}>{a}</Chip>)
             ) : (
               <span className="text-xs text-slate-400">none</span>
             )}
@@ -65,8 +59,7 @@ function HostCard({ host, onEdit, onTest }) {
 function HostFormDrawer({ open, host, agents, onClose, onSaved }) {
   const isNew = !host?.host_id;
   const [hostId, setHostId] = useState('');
-  const [primary, setPrimary] = useState('');
-  const [subagents, setSubagents] = useState([]);
+  const [members, setMembers] = useState([]);
   const [workflows, setWorkflows] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -75,15 +68,14 @@ function HostFormDrawer({ open, host, agents, onClose, onSaved }) {
   // Seed form state once per open.
   if (open && !initialized) {
     setHostId(host?.host_id || '');
-    setPrimary(host?.primary || agents[0]?.agent_id || '');
-    setSubagents(host?.subagents || []);
+    setMembers(host?.agents || []);
     setWorkflows((host?.workflows || []).join(', '));
     setInitialized(true);
   }
   if (!open && initialized) setInitialized(false);
 
-  const toggleSub = (id) =>
-    setSubagents((cur) =>
+  const toggleMember = (id) =>
+    setMembers((cur) =>
       cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
     );
 
@@ -92,8 +84,7 @@ function HostFormDrawer({ open, host, agents, onClose, onSaved }) {
     setError(null);
     try {
       await api.defineHost(hostId.trim(), {
-        primary: primary.trim(),
-        subagents: subagents.filter((s) => s !== primary),
+        agents: members,
         workflows: workflows
           .split(',')
           .map((w) => w.trim())
@@ -123,7 +114,7 @@ function HostFormDrawer({ open, host, agents, onClose, onSaved }) {
             <Button
               variant="primary"
               onClick={save}
-              disabled={saving || !hostId.trim() || !primary}
+              disabled={saving || !hostId.trim()}
             >
               {saving ? 'Saving…' : 'Save host'}
             </Button>
@@ -140,25 +131,16 @@ function HostFormDrawer({ open, host, agents, onClose, onSaved }) {
             placeholder="assistant"
           />
         </Field>
-        <Field label="Primary agent">
-          <Select value={primary} onChange={(e) => setPrimary(e.target.value)}>
-            {agents.map((a) => (
-              <option key={a.agent_id} value={a.agent_id}>
-                {a.metadata?.display_name || a.agent_id} ({a.agent_id})
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="Subagents">
+        <Field label="Agents" hint="The companion routes each request to these agents.">
           <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-slate-200 p-2">
             {agents
-              .filter((a) => a.agent_id !== primary)
+              .filter((a) => a.agent_id !== 'companion')
               .map((a) => (
                 <label key={a.agent_id} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={subagents.includes(a.agent_id)}
-                    onChange={() => toggleSub(a.agent_id)}
+                    checked={members.includes(a.agent_id)}
+                    onChange={() => toggleMember(a.agent_id)}
                   />
                   <span>{a.metadata?.display_name || a.agent_id}</span>
                   <Mono>{a.agent_id}</Mono>
@@ -210,7 +192,7 @@ function TestRequestDrawer({ open, host, onClose }) {
       open={open}
       onClose={onClose}
       title={host ? `Test ${host.host_id}` : 'Test host'}
-      subtitle="Submit a request to this host's primary agent."
+      subtitle="Submit a request to this host. The companion routes it."
       footer={
         <div className="flex items-center justify-between">
           <span className="text-xs text-rose-600">{error?.message || ''}</span>
@@ -279,7 +261,7 @@ export default function Hosts() {
     <div>
       <PageHeader
         title="Hosts"
-        description="Active compositions: a primary agent, its subagents, and workflows."
+        description="Active compositions: the agents and workflows the companion routes each request to."
         actions={
           <Button
             variant="primary"

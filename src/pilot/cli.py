@@ -8,6 +8,7 @@ enter one with `pilot repl --host <id>` — the REPL is scoped to that host.
 
 from __future__ import annotations
 
+from mash.agents.companion import COMPANION_AGENT_ID
 import argparse
 import os
 from typing import Any, Sequence
@@ -56,10 +57,6 @@ def _describe_host(client: MashHostClient, host_id: str) -> dict[str, Any]:
             f"host '{host_id}' is not available on this deployment. "
             f"Check `pilot hosts` or create it with `pilot compose`: {exc}"
         ) from exc
-    primary = described.get("primary") or {}
-    agent_id = primary.get("agent_id") if isinstance(primary, dict) else None
-    if not isinstance(agent_id, str) or not agent_id.strip():
-        raise ValueError(f"host '{host_id}' did not report a primary agent id")
     return described
 
 
@@ -79,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--agent",
         default=None,
-        help="Target a single agent directly (bare-agent mode, no delegation)",
+        help="Target a single agent directly (bare-agent mode, without the companion)",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -105,9 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         "compose", help="Compose agents into a host (define-or-replace)"
     )
     compose.add_argument("host_id", help="Id for the composition")
-    compose.add_argument("--primary", required=True, help="Primary agent id")
     compose.add_argument(
-        "--subagents", default=None, help="Comma-separated subagent ids"
+        "--agents", default=None, help="Comma-separated agent ids the companion routes to"
     )
     compose.add_argument(
         "--workflows", default=None, help="Comma-separated workflow ids"
@@ -140,8 +136,7 @@ def _configured_host_rows() -> list[list[str]]:
         rows.append(
             [
                 host_id,
-                entry["primary"],
-                ", ".join(entry["subagents"]),
+                ", ".join(entry["agents"]),
                 ", ".join(entry["workflows"]),
             ]
         )
@@ -151,7 +146,7 @@ def _configured_host_rows() -> list[list[str]]:
 def _render_configured_hosts(renderer: RichRenderer) -> None:
     rows = _configured_host_rows()
     if rows:
-        renderer.table(["Host", "Primary", "Subagents", "Workflows"], rows)
+        renderer.table(["Host", "Agents", "Workflows"], rows)
     else:
         renderer.info("(no hosts configured)")
 
@@ -183,8 +178,8 @@ def _run_browse(client: MashHostClient, renderer: RichRenderer) -> int:
     renderer.info(f"Configured hosts ({store.hosts_file_path()})")
     _render_configured_hosts(renderer)
     renderer.info(
-        "Compose a host with `pilot compose <host-id> --primary <agent> "
-        "--subagents a,b --workflows w`, then enter it with "
+        "Compose a host with `pilot compose <host-id> --agents a,b "
+        "--workflows w`, then enter it with "
         "`pilot repl --host <host-id>`."
     )
     return 0
@@ -193,20 +188,13 @@ def _run_browse(client: MashHostClient, renderer: RichRenderer) -> int:
 def _run_compose(
     client: MashHostClient, renderer: RichRenderer, args: argparse.Namespace
 ) -> int:
-    subagents = _split_ids(args.subagents)
+    agents = _split_ids(args.agents)
     workflows = _split_ids(args.workflows)
-    client.define_host(
-        args.host_id,
-        primary=args.primary,
-        subagents=subagents,
-        workflows=workflows,
-    )
-    store.record_host(
-        args.host_id, primary=args.primary, subagents=subagents, workflows=workflows
-    )
+    client.define_host(args.host_id, agents=agents, workflows=workflows)
+    store.record_host(args.host_id, agents=agents, workflows=workflows)
     renderer.info(
-        f"Composed host '{args.host_id}' (primary {args.primary}, "
-        f"{len(subagents)} subagent(s)). Saved to {store.hosts_file_path()}."
+        f"Composed host '{args.host_id}' ({len(agents)} agent(s), "
+        f"{len(workflows)} workflow(s)). Saved to {store.hosts_file_path()}."
     )
     renderer.info(f"Enter it with `pilot repl --host {args.host_id}`.")
     return 0
@@ -237,8 +225,9 @@ def _run_repl(
         # PUTs), then enter the requested one.
         store.publish_hosts(client, renderer)
         host_id = args.target_host
-        described = _describe_host(client, host_id)
-        agent_id = described["primary"]["agent_id"].strip()
+        _describe_host(client, host_id)
+        # The companion routes every host request.
+        agent_id = COMPANION_AGENT_ID
 
     saved = load_config()
     user_id = args.user_id or (saved.user_id if saved else None)

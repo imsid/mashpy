@@ -316,3 +316,16 @@ def build_tool_calling_spec(
 ) -> ToolCallingAgentSpec:
     """A spec whose model calls ``tool_name`` once and answers with its result."""
     return ToolCallingAgentSpec(agent_id=agent_id, tool_name=tool_name, arguments=arguments)
+
+
+def patch_companion_llm(provider: LLMProvider):
+    """Run the companion, which routes every host request, on ``provider``.
+
+    A context manager over ``unittest.mock.patch``; the companion builds its
+    model when its process starts, so enter it before the pool starts.
+    """
+    from unittest.mock import patch
+
+    from mash.agents.companion import CompanionSpec
+
+    return patch.object(CompanionSpec, "build_llm", lambda self: provider)
