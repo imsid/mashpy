@@ -25,7 +25,7 @@ def _client():
             HostBuilder()
             .agent(build_spec(agent_id="fast", response_text="done"), metadata=metadata())
             .agent(build_spec(agent_id="other", response_text="done"), metadata=metadata())
-            .host(Host(host_id="assistant", primary="fast"))
+            .host(Host(host_id="assistant", agents=("fast",)))
             .build()
         )
         app = create_app(

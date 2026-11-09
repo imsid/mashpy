@@ -27,7 +27,7 @@ links the host serves.
  user app ──HTTP──► Mash host (API, hosts, workflows)
                      │  one child per agent, on 127.0.0.1:
                      │    mash agent serve --agent research
-                     │  /h2a relay (subagent calls), /sandbox relay (run_code,
+                     │  /h2a relay (companion calls), /sandbox relay (run_code,
                      │  sandbox_put, sandbox_get), /s/ links (users)
                      │
                      ▼ Docker socket
@@ -47,8 +47,8 @@ links the host serves.
 - A child that exits is restarted on the same port, with backoff from 1 to 30
   seconds. While it is down, host routes for that agent return
   `503 AGENT_UNAVAILABLE`. Children live and die with the host.
-- A primary calls its subagents through the host's `/h2a` relay, which checks
-  the call against the request's host composition.
+- The companion runs a host request's agents and workflows through the host's
+  `/h2a` relay, which checks each call against the request's host composition.
 - Every request carries a `user_id`. A `run_code`, `sandbox_put` or
   `sandbox_get` call goes from the agent process to the host's `/sandbox`
   relay with only the request id; the host looks up the request's user and acts
@@ -334,7 +334,7 @@ mash sandbox stop u-42                        # stop now and remove its network;
   back. A waiting request's stream shows nothing until it starts.
 - The host continues the workflow runs under its runner id that are queued
   or running, from their completed steps.
-- Subagent calls and workflow agent steps submit with fixed request ids, so a
+- The companion's child requests and workflow agent steps submit with fixed request ids, so a
   step that runs again reattaches to the request it already started.
 - A `run_code` call is a tool step. If the process dies during it, the step
   runs again after recovery, and the code runs again in the same sandbox.
@@ -562,7 +562,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | agent process | set by the host | The agent's token |
-| `MASH_HOST_API_URL` | agent process | set by the host | The host address for subagent calls and the sandbox tools |
+| `MASH_HOST_API_URL` | agent process | set by the host | The host address for the companion's calls and the sandbox tools |
 | `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots |
 | `MASH_BROWSER_ENABLED` | agent process | set by the host | `1` when the host has browsers, so an agent whose spec lists sites gets the browser tools |
 | `MASH_PARENT_PID` | agent process | set by the host | The agent process stops when this process exits |

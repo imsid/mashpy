@@ -281,9 +281,8 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
   );
   const composition = snapshotState.data?.host_composition;
   const specSnapshot = snapshotState.data?.agent_spec_snapshot || {};
-  const agentIds = composition
-    ? [composition.primary, ...(composition.subagents || [])].filter(Boolean)
-    : [];
+  // The companion routes every request to the host's agents.
+  const agentIds = composition ? ['companion', ...(composition.agents || [])] : [];
 
   useEffect(() => {
     if (!job || DONE_STATUSES.has(job.status)) return;
@@ -412,7 +411,7 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
                     return (
                       <div key={agentId} className="flex flex-wrap items-center gap-2 text-sm">
                         <Chip tone="indigo">{agentId}</Chip>
-                        {agentId === composition.primary ? <Chip>primary</Chip> : null}
+                        {agentId === 'companion' ? <Chip>router</Chip> : null}
                         {spec.model ? <Chip tone="slate">{spec.model}</Chip> : null}
                         {spec.tools?.length ? (
                           <span className="text-xs text-slate-400">
@@ -497,7 +496,7 @@ function ExperimentsTab({ evalId, hostId, rowCount, rubric, experiments, onRunDo
       header: 'Agents',
       render: (r) => {
         const composition = r.host_composition || {};
-        const agents = [composition.primary, ...(composition.subagents || [])].filter(Boolean);
+        const agents = composition.agents || [];
         if (!agents.length) return <span className="text-slate-300">—</span>;
         return (
           <div className="flex flex-wrap gap-1">

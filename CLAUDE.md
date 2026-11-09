@@ -33,10 +33,11 @@ agent's and each sandbox's token.
 - **AgentSpec** — abstract contract that defines one agent (id, tools, skills,
   LLM provider, config). You subclass this.
 - **AgentMetadata** — self-description supplied when an agent is registered
-  (display name, description, capabilities, usage guidance). Role-independent.
+  (display name, description, capabilities, usage guidance). The companion
+  routes host requests by it.
 - **HostBuilder** — fluent builder that composes a flat pool of agents,
   workflows, and optional host definitions into a `Pool`.
-- **Pool** — the deployed pool of role-less agents and workflows that the API
+- **Pool** — the deployed pool of agents and workflows that the API
   server runs. The pool is the unit of deploy; a pool with no user agents is a
   valid, workflow-only deploy. The pool runs no agents itself: when the host
   starts, it runs each agent as a subprocess and keeps an HTTP client for it.
@@ -66,8 +67,9 @@ agent's and each sandbox's token.
   it through the host on those sites only. When a site needs a sign-in, the
   agent hands the browser to the user through a live-view link; Mash never
   sees the password. Code in the sandbox has no route to the browser.
-- **Host** — an immutable composition over the pool (`host_id`, `primary`,
-  `subagents`, `workflows`). The unit of composition: define hosts in code at
+- **Host** — an immutable composition over the pool (`host_id`, `agents`,
+  `workflows`). Every request to a host goes to the built-in `companion`,
+  which routes it to the host's agents and workflows. The unit of composition: define hosts in code at
   build time or dynamically over the API, and route requests to one with
   `POST /v1/hosts/{host_id}/request`. Hosts are in-memory; redefine them after
   a restart.
@@ -263,6 +265,7 @@ AgentConfig(
     compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
+    provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
@@ -557,16 +560,19 @@ until it restarts. Web search providers behave the same way.
 
 ## Multi-Agent Composition
 
-Register all agents into a flat pool, then compose hosts over it. A host
-names one agent as primary and a set of subagents; roles live in the host,
-not on the agents.
+Register all agents into a flat pool, then compose hosts over it. A host is a
+set of agents and workflows; every agent in it is the same kind of member.
+Every pool has the built-in `companion` agent, and every request to a host
+goes to it: for each user message the companion decides which of the host's
+agents run, how many, and whether each continues an earlier session of that
+agent or starts a new one, or runs one of the host's workflows. It waits for
+them and writes the answer.
 
 ```python
 from mash import AgentMetadata, Host, HostBuilder
 
 pool = (
     HostBuilder()
-    .agent(ConciergeAgent(), metadata=AgentMetadata(...))
     .agent(
         ResearchAgent(),
         metadata=AgentMetadata(
@@ -577,74 +583,46 @@ pool = (
         ),
     )
     .agent(CodeAgent(), metadata=AgentMetadata(...))
-    .host(
-        Host(
-            host_id="assistant",
-            primary="concierge",
-            subagents=("research", "code"),
-        )
-    )
+    .host(Host(host_id="assistant", agents=("research", "code")))
     .build()
 )
 ```
 
-Every request the user starts gets a `RunSubAgents` tool. Submitting a
-request to a host also gives the primary a directory in its prompt, for that
-request only: the primary itself, marked `(you)`, then the host's subagents,
-each from its `AgentMetadata`, with guidance to split a task only when its
-parts do not depend on each other. The same agent can be primary in one
-host and a subagent in another.
+A host never lists `companion`; it routes for every host. Each agent's
+`AgentMetadata` is what the companion routes by: a host request gives the
+companion an `AGENTS` directory of the host's agents in its prompt, for that
+request only, with guidance to split a task only when its parts do not depend
+on each other.
 
+The companion routes with `RunSubAgents`, which only it has, and only on a
+host request the user started.
 `RunSubAgents(requests=[{agent_id, prompt, session_id?, output_schema?}], timeout_seconds)`
-runs each item as its own child request, all at the same time, and returns
-when all of them are done. An item's `agent_id` is one of the host's
-subagents or the calling agent itself, so one item hands a task to a subagent
-and several split a large task into parts. Without a host, the agent can run
-children only on itself. The result has one entry per item, in order: the
-child's `request_id`, its `session_id` and `trace_id`, its `status`
-(`completed`, `failed`, `cancelled` or `timed_out`), and its response,
-structured output or error. One child's
+runs each item as its own child request on one of the host's agents, all at
+the same time, and returns when all of them are done. The result has one entry
+per item, in order: the child's `request_id`, its `session_id` and
+`trace_id`, its `status` (`completed`, `failed`, `cancelled` or
+`timed_out`), and its response, structured output or error. One child's
 failure stays in its entry. A call takes at most 16 items. `timeout_seconds`
-defaults to the calling agent's `AgentConfig.subagent_timeout_seconds` (3600
-unless the spec sets it), which is also the most a call may ask for; when it
-passes, the tool cancels the children still running.
+defaults to the companion's `AgentConfig.subagent_timeout_seconds` (3600),
+which is also the most a call may ask for; when it passes, the tool cancels
+the children still running.
 
-Each child is a `bg` request in a session of its own, started by the calling
-agent, with `parent_request_id` set to the calling request. Without
+Each child is a `bg` request in a session of its own, started by the
+companion, with `parent_request_id` set to the companion's request. Without
 `session_id` the child starts a new session, named after its request id. With
 the `session_id` of an earlier entry it continues that session and replays its
 turns, so the agent sees its own earlier work there; the relay accepts only a
-session of the same agent started from the caller's session. The caller's
-saved turn keeps a ledger of its children (agent, session, trace, status, brief
-and answer, clipped), which replay shows to the model under the reply, so a
-follow-up can go back to the session that answered. A child gets neither
-`RunSubAgents` nor `AskUser`: splitting is one level deep, and the user talks
-to the calling agent. The calling agent's process starts children through the
-host's `/h2a` relay, which checks each against the composition stored with
-the calling request (not one the caller sends) and forwards it to the child
-agent's process. Cancelling a request cancels its
+session of the same agent started from the companion's session. The
+companion's saved turn keeps a ledger of its children (agent, session, trace,
+status, brief and answer, clipped), which replay shows to the model under the
+reply, so a follow-up can go back to the session that answered. A child gets
+no `AskUser`: the user talks to the companion. The companion's process starts
+children through the host's `/h2a` relay, which checks each against the host
+composition stored with the companion's request (not one the caller sends) and
+forwards it to the child agent's process. Cancelling a request cancels its
 running children.
 
-A host defined in code may leave out `primary` when the pool calls
-`HostBuilder().enable_companion()`. The pool then registers the built-in
-`companion` agent and makes it the host's primary. For each user message the
-companion decides which subagents run, how many, and whether each continues an
-earlier session of that agent or starts a new one. It waits for them and
-writes the answer. Without `enable_companion()`, a host without a primary
-fails to define. The control API and `mash compose` still require `primary`.
-
-```python
-pool = (
-    HostBuilder()
-    .agent(PilotAgent(), metadata=AgentMetadata(...))
-    .agent(BuilderAgent(), metadata=AgentMetadata(...))
-    .enable_companion()
-    .host(Host(host_id="guide", subagents=("pilot", "builder")))
-    .build()
-)
-```
-
-When the companion's host lists workflows (its own, not the pool defaults that
+When the host lists workflows (its own, not the pool defaults that
 `enable_evals()` adds), each request gets a `WORKFLOWS` list in its context:
 every workflow's id, `metadata["display_name"]`, `metadata["description"]` and
 input schema. The companion runs one with
@@ -660,35 +638,40 @@ The companion reads what its agents did with three tools, each keyed by an
 session that is not a child of the companion in the user's current session.
 
 `companion` picks its provider like masher's agents;
-`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model.
+`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model. On Gemini it routes
+with `thinking_level` `low` (about 1.5-2s faster per model call than the
+default); `COMPANION_AGENT_THINKING_LEVEL` sets another level, and an empty
+value leaves the model's default. Without any provider key it still starts,
+and a host request fails with an error that names the keys to set.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
 
 ```python
-pool.define_host(Host(host_id="research-only", primary="research"))
+pool.define_host(Host(host_id="research-only", agents=("research",)))
 ```
 
 ```bash
 curl -X PUT http://127.0.0.1:8000/api/v1/hosts/research-only \
   -H "Content-Type: application/json" \
-  -d '{"primary": "research", "subagents": [], "workflows": []}'
+  -d '{"agents": ["research"], "workflows": []}'
 
 curl -X POST http://127.0.0.1:8000/api/v1/hosts/research-only/request \
   -H "Content-Type: application/json" \
   -d '{"message": "find recent papers", "session_id": "s-1", "user_id": "u-42"}'
 ```
 
-The submit response includes the primary `agent_id` and `request_id`; stream
+The submit response includes `agent_id` (`companion`) and `request_id`; stream
 results from the existing `GET /v1/agent/{agent_id}/request/{request_id}/events`.
 Requests snapshot the host composition at submit time, so redefining a host
-never affects in-flight requests.
+never affects in-flight requests. A request sent to one agent directly
+(`POST /api/v1/agent/{agent_id}/request`) bypasses hosts and the companion.
 
 Submit bodies also take an optional `metadata` JSON object: opaque caller
 context for code, never shown to the model (the inverse of `context`, which is
 prompt text). It is stored on the request, so a crash-replayed request reruns
 with the same metadata; tools read it during execution via
-`mash.logging.get_request_metadata()`, and subagent requests inherit it.
+`mash.logging.get_request_metadata()`, and the companion's children inherit it.
 
 A body under `/api/v1`, a submit's included, may be at most 4 MiB; a larger
 one gets `413 BODY_TOO_LARGE` before the API key is checked.
@@ -696,9 +679,9 @@ one gets `413 BODY_TOO_LARGE` before the API key is checked.
 Every submit body carries a `user_id`: the end user the request acts for (1 to
 255 letters, digits, `.`, `_`, `:`, `@` or `-`). A body without one fails
 validation with `422`. The host is the trust boundary: the app asserts the
-user, and the host passes it to the primary. It is stored on the request and
+user, and the host passes it to the companion. It is stored on the request and
 its turns and never shown to the model, and the request's code runs in that
-user's sandbox. Subagent calls carry the parent request's user, set by
+user's sandbox. The companion's children carry its request's user, set by
 the host's `/h2a` relay, so an agent cannot act for another user. A session
 belongs to the user of its first request: a submit that names another user's
 `session_id` returns `409 SESSION_USER_MISMATCH`, since the session's turns
@@ -714,7 +697,7 @@ PUT) and pins later commands to it:
 ```bash
 mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1   # save the connection
 mash agents                                         # see what's in the pool
-mash compose --host assistant --primary concierge --subagents email,calendar
+mash compose --host assistant --agents email,calendar
 mash repl                                           # pinned to 'assistant'
 ```
 
@@ -850,7 +833,7 @@ pool = (
   workflow on demand for one user; the run's user is the one it builds:
   `POST /api/v1/workflow/cortex-build/run` with
   `{"user_id": "u-42", "input": {"limit": 200}}`. It reads the user's turns
-  since the last build (workflow and subagent turns excluded) with the tools
+  since the last build (workflow and child turns excluded) with the tools
   each turn ran, has the built-in `cortex-agent` curate them into a profile
   and entries, and writes the result in one transaction. Rerun while the
   result's `remaining` is above 0. A build fails with a version conflict if

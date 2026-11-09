@@ -333,6 +333,7 @@ class Agent:
             temperature=self.config.temperature,
             use_prompt_caching=self.config.prompt_caching_enabled,
             streaming=self.config.streaming_enabled,
+            provider_options=dict(self.config.provider_options),
         )
         response = await self.llm.send(request)
 

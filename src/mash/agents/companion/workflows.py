@@ -1,4 +1,4 @@
-"""The workflow list a companion primary gets in its request context."""
+"""The workflow list the companion gets in a host request's context."""
 
 from __future__ import annotations
 

@@ -42,8 +42,7 @@ def build_host_router() -> APIRouter:
         try:
             host = Host(
                 host_id=resolved_host_id,
-                primary=body.primary.strip(),
-                subagents=tuple(value.strip() for value in body.subagents),
+                agents=tuple(value.strip() for value in body.agents),
                 workflows=tuple(value.strip() for value in body.workflows),
             )
             state.pool.define_host(host)

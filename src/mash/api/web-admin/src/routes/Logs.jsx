@@ -242,7 +242,7 @@ function SessionEntry({
 const SESSION_HEADERS = ['', 'Agent', 'Session ID', 'Started', 'Tokens', 'Cache read', 'Cache write', 'Traces'];
 
 // Pool-wide session rollup, or scoped to sessions where the selected agent
-// participated (as primary or subagent) and/or the selected workflow ran.
+// participated (as the companion or a host agent) and/or the selected workflow ran.
 // Each session expands to its traces, which may span multiple agents.
 function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   const state = useApi(

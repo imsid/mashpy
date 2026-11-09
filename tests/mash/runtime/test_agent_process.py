@@ -32,26 +32,22 @@ from mash.runtime.host.processes import AgentEndpoint
 from mash.runtime.host.tokens import agent_for_token, derive_agent_token
 from mash.runtime.factory import build_turn_agent
 from mash.tools.sandbox import RunCodeTool, SandboxGetTool, SandboxPutTool
-from mash.testing.runtime_fixtures import build_delegating_spec, build_spec, metadata
+from mash.testing.runtime_fixtures import (
+    DelegatingLLMProvider,
+    build_spec,
+    metadata,
+    patch_companion_llm,
+)
 
 SECRET = "host-secret"
-HOST_SNAPSHOT = {"host_id": "assistant", "primary": "primary-app", "subagents": ["research"]}
+HOST_SNAPSHOT = {"host_id": "assistant", "agents": ["research"], "workflows": []}
 
 
 def _build_pool():
     return (
         HostBuilder()
-        .agent(
-            build_delegating_spec(
-                agent_id="primary-app",
-                final_text="delegated-ok",
-                subagent_id="research",
-                subagent_prompt="analyze",
-            ),
-            metadata=metadata(),
-        )
         .agent(build_spec(agent_id="research", response_text="research-ok"), metadata=metadata())
-        .host(Host(host_id="assistant", primary="primary-app", subagents=("research",)))
+        .host(Host(host_id="assistant", agents=("research",)))
         .build()
     )
 
@@ -106,12 +102,12 @@ class BuildAgentServerTests(unittest.TestCase):
 
         self.assertEqual(server.agent_id, "research")
 
-    def test_subagents_resolve_to_the_host_relay(self) -> None:
+    def test_host_agents_resolve_to_the_host_relay(self) -> None:
         server = build_agent_server(
-            _build_pool(), "primary-app", token="tok", host_api_url="http://host/"
+            _build_pool(), "companion", token="tok", host_api_url="http://host/"
         )
 
-        relay = server.runtime.get_subagent_access()
+        relay = server.runtime.get_host_access()
         self.assertIsInstance(relay, HostRelay)
         client = relay.get_client("research")
         self.assertEqual(client.base_url, "http://host/h2a")
@@ -346,7 +342,7 @@ class H2ARelayAuthTests(unittest.TestCase):
 
     def test_subagent_must_be_in_the_parents_stored_host(self) -> None:
         self._accept("req-w", agent_id="primary-app", user_id="u-1",
-                     host={**HOST_SNAPSHOT, "subagents": ["writer"]})
+                     host={**HOST_SNAPSHOT, "agents": ["writer"]})
 
         resp = self._submit(parent=_parent("req-w"))
 
@@ -355,13 +351,13 @@ class H2ARelayAuthTests(unittest.TestCase):
 
     def test_a_host_in_the_body_cannot_widen_the_parents_host(self) -> None:
         # The caller writes the body; only the parent's stored snapshot counts.
-        resp = self._submit(target="other", host={**HOST_SNAPSHOT, "subagents": ["research", "other"]})
+        resp = self._submit(target="other", host={**HOST_SNAPSHOT, "agents": ["research", "other"]})
 
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
 
     def test_the_parents_stored_host_is_forwarded(self) -> None:
-        resp = self._submit(host={**HOST_SNAPSHOT, "subagents": ["research", "other"]})
+        resp = self._submit(host={**HOST_SNAPSHOT, "agents": ["research", "other"]})
 
         self.assertEqual(resp.status_code, 202, resp.text)
         self.assertEqual(self.client_for_research.calls[0]["host"], HOST_SNAPSHOT)
@@ -374,23 +370,20 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
 
-    def test_the_caller_may_target_itself(self) -> None:
+    def test_the_caller_may_not_target_itself(self) -> None:
         resp = self._submit(target="primary-app")
 
-        self.assertEqual(resp.status_code, 202, resp.text)
-        [call] = self.client_for_research.calls
-        self.assertEqual(call["parent"]["started_by"], "primary-app")
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
 
-    def test_without_a_host_only_the_caller_is_a_target(self) -> None:
+    def test_without_a_host_there_is_no_target(self) -> None:
         self._accept("req-bare", agent_id="primary-app", user_id="u-1")
         bare = _parent("req-bare")
-        self.assertEqual(
-            self._submit(target="primary-app", host=None, parent=bare).status_code, 202
-        )
-        self.assertIsNone(self.client_for_research.calls[0]["host"])
-        resp = self._submit(target="research", host=None, parent=bare)
-        self.assertEqual(resp.status_code, 403)
-        self.assertEqual(len(self.client_for_research.calls), 1)
+        for target in ("primary-app", "research"):
+            with self.subTest(target=target):
+                resp = self._submit(target=target, host=None, parent=bare)
+                self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.client_for_research.calls, [])
 
     def test_an_agent_outside_the_host_is_still_refused(self) -> None:
         resp = self._submit(target="other")
@@ -519,7 +512,14 @@ class H2ARelayAuthTests(unittest.TestCase):
 
 
 class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
-    async def test_primary_calls_subagent_through_the_host_relay(self) -> None:
+    async def test_the_companion_runs_a_host_agent_through_the_host_relay(self) -> None:
+        router = patch_companion_llm(
+            DelegatingLLMProvider(
+                final_text="delegated-ok", subagent_id="research", subagent_prompt="analyze"
+            )
+        )
+        router.start()
+        self.addCleanup(router.stop)
         # One shared Postgres: every process's stores see the same rows.
         runtime_store, memory_store = build_test_stores()
         for target, store in (
@@ -532,11 +532,11 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
             p.start()
             self.addCleanup(p.stop)
 
-        primary_token = derive_agent_token(SECRET, "primary-app")
+        primary_token = derive_agent_token(SECRET, "companion")
         research_token = derive_agent_token(SECRET, "research")
         # Each agent process imports the pool itself and serves one agent from it.
         primary_server = build_agent_server(
-            _build_pool(), "primary-app", token=primary_token, host_api_url="http://host"
+            _build_pool(), "companion", token=primary_token, host_api_url="http://host"
         )
         research_server = build_agent_server(
             _build_pool(), "research", token=research_token, host_api_url="http://host"
@@ -553,7 +553,7 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         network = _Network(
-            {"host": host_app, "primary-app": primary_server.app, "research": research_server.app}
+            {"host": host_app, "companion": primary_server.app, "research": research_server.app}
         )
         client_patch = patch(
             "mash.runtime.client.httpx.AsyncClient",
@@ -571,7 +571,7 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 )
                 events = [
                     event
-                    async for event in host_pool.get_client("primary-app").stream_response(
+                    async for event in host_pool.get_client("companion").stream_response(
                         accepted["request_id"], timeout=10
                     )
                 ]
@@ -601,9 +601,9 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
             [child["agent_id"] for child in call_starts[0]["subagents"]], ["research"]
         )
         self.assertEqual(turns[-1]["user_message"], "analyze")
-        # The host copied the primary request's user onto the subagent call,
+        # The host copied the companion request's user onto the child,
         # so both turns are stored for that user.
-        self.assertEqual(turn_users, {("primary-app", "u-1"), ("research", "u-1")})
+        self.assertEqual(turn_users, {("companion", "u-1"), ("research", "u-1")})
 
 
 if __name__ == "__main__":

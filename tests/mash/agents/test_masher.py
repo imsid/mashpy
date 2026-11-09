@@ -56,7 +56,7 @@ class MasherSpecTests(unittest.TestCase):
 
     def test_builder_registers_masher_only_with_enable_evals(self) -> None:
         plain = HostBuilder().agent(self._primary_spec(), metadata=metadata()).build()
-        self.assertEqual(plain.list_agents(), ["primary"])
+        self.assertEqual(plain.list_agents(), ["primary", "companion"])
         self.assertEqual(plain.get_workflow_registry().list(), [])
 
         host = (
@@ -68,7 +68,8 @@ class MasherSpecTests(unittest.TestCase):
         try:
             described = {str(item["agent_id"]): item for item in host.describe_agents()}
             self.assertEqual(
-                sorted(described.keys()), ["eval-agent", "eval-judge-agent", "primary"]
+                sorted(described.keys()),
+                ["companion", "eval-agent", "eval-judge-agent", "primary"],
             )
             self.assertEqual(
                 {item.workflow_id for item in host.get_workflow_registry().list()},
@@ -174,7 +175,7 @@ class _FakeEvalService:
 
 class _FakePool:
     def __init__(self) -> None:
-        self._host = Host(host_id="guide", primary="pilot", subagents=("helper",))
+        self._host = Host(host_id="guide", agents=("pilot", "helper"))
         self._metadata = {
             "pilot": AgentMetadata(
                 display_name="Pilot",
@@ -284,10 +285,8 @@ class GenSyntheticEvalsPipelineTests(unittest.TestCase):
 
                 profile = profile_step.run(inp, ctx)
 
-                self.assertEqual(profile.primary_agent_id, "pilot")
                 self.assertEqual(
-                    [(p.agent_id, p.role) for p in profile.agent_profiles],
-                    [("pilot", "primary"), ("helper", "subagent")],
+                    [p.agent_id for p in profile.agent_profiles], ["pilot", "helper"]
                 )
                 self.assertEqual(
                     profile.agent_profiles[0].capabilities,
@@ -470,7 +469,7 @@ class MasherBuilderTests(unittest.TestCase):
                     .host(
                         Host(
                             host_id="main",
-                            primary="primary",
+                            agents=("primary",),
                             workflows=("custom-chain",),
                         )
                     )
@@ -496,7 +495,7 @@ class MasherBuilderTests(unittest.TestCase):
                     HostBuilder()
                     .enable_evals()
                     .agent(self._primary_spec(), metadata=metadata())
-                    .host(Host(host_id="main", primary="primary"))
+                    .host(Host(host_id="main", agents=("primary",)))
                     .build()
                 )
                 try:

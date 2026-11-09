@@ -137,23 +137,25 @@ stay out of reach of the code the model writes.
 ## The pool and hosts
 
 The pool is the unit of deploy. `HostBuilder` composes agents and workflows
-into a `Pool`, and the API server runs it. Agents in the pool are role-less; a
-pool with only workflows is a valid deploy that serves workflow runs alone.
+into a `Pool`, and the API server runs it. Every pool also has the built-in
+`companion` agent. A pool with only workflows is a valid deploy that serves
+workflow runs alone.
 
-A host is a composition over the pool: a `host_id`, a primary agent, and a set
-of subagents and workflows. Submitting a request to a host wires the primary
-with delegation to that host's subagents, for that request only. Hosts are
+A host is a composition over the pool: a `host_id` and a set of agents and
+workflows. Every request to a host runs on the companion, which routes each
+message to the host's agents or workflows, continues an agent's earlier
+session on a follow-up, and writes the answer. Hosts are
 defined in code at build time or dynamically over the API, so the same pool
 serves different compositions without a redeploy.
 
 ```mermaid
 flowchart TD
     U["User application<br/>(web · api · cli · app)"] --> API["Mash API server"]
-    API --> HO["Host 'assistant'<br/>primary + subagents"]
+    API --> HO["Host 'assistant'<br/>companion routes to agents"]
     API --> WF["Workflow runs"]
     HO --> P["Pool"]
     WF --> P
-    P --> A1["Agent: concierge"]
+    P --> A1["Agent: support"]
     P --> A2["Agent: research"]
     P --> W1["Workflow: research-brief"]
     A1 -- "run_code" --> S["Sandboxes<br/>one per user"]
@@ -194,8 +196,8 @@ and the harness underneath is identical.
 The runtime events a request writes are named after OpenTelemetry spans, so
 every request already reads as a trace in the GenAI conventions: an
 `invoke_agent` span for the run, a `chat` span for each model call with its
-token usage, an `execute_tool` span for each tool call, and subagent requests
-nested under the call that started them. The admin UI, the REPL's `/trace`
+token usage, an `execute_tool` span for each tool call, and the companion's
+child requests nested under the call that started them. The admin UI, the REPL's `/trace`
 and the trace analysis API all read that projection of the event log, with no
 second store to keep in sync.
 
@@ -210,8 +212,8 @@ export unless you turn content capture on.
 ## Evals
 
 The host is also the unit of evaluation. A user request lands on the
-composition: the primary agent, the delegation choices it makes, the tools and
-subagents behind it. Mash evals run against the host rather than any single
+composition: the companion, the routing choices it makes, and the agents and
+tools behind them. Mash evals run against the host rather than any single
 agent, so what gets measured is the path the application actually takes and
 the response the user actually receives.
 
@@ -225,9 +227,9 @@ records the results.
 
 Every experiment measures two kinds of signal. Deterministic quantitative
 metrics come from each row's runtime events: latency, tokens, steps, tool
-calls, per-subagent breakdowns. Qualitative criteria are non-deterministic and
+calls, per-agent breakdowns. Qualitative criteria are non-deterministic and
 scored by the built-in eval agent against the rubric: task completion,
-subagent coordination, response quality, each with a rationale. Comparing two
+agent routing, response quality, each with a rationale. Comparing two
 experiments answers three questions in one view: what changed in the agent
 specs, how quality moved per criterion and per row, and what the change costs
 in tokens and latency. See [Synthetic evals](synthetic-evals.md) for the full

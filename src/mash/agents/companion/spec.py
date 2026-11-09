@@ -1,11 +1,13 @@
-"""The built-in companion agent, the primary of a host that names none."""
+"""The built-in companion agent, which routes every host request."""
 
 from __future__ import annotations
 
-from mash.agents.masher.spec import _build_eval_llm
+import os
+
+from mash.agents.masher.spec import _build_eval_llm, _select_eval_agent_provider_kind
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
-from mash.runtime.host.subagents import AgentMetadata
+from mash.runtime.host.directory import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
@@ -14,6 +16,27 @@ from .logs import AgentLogReader, GetAgentTurnsTool, InspectAgentTraceTool, List
 from .prompt import COMPANION_PROMPT
 
 COMPANION_AGENT_ID = "companion"
+
+
+class _UnconfiguredLLM(LLMProvider):
+    """The companion's model when no provider key is set.
+
+    Every pool has the companion, so it must start without a key; a host
+    request then fails with this error instead of the whole host.
+    """
+
+    @property
+    def model(self) -> str:
+        return "unconfigured"
+
+    async def send(self, request):
+        raise RuntimeError(
+            "the companion has no model: set GEMINI_API_KEY, OPENAI_API_KEY, "
+            "ANTHROPIC_API_KEY or OSS_BASE_URL on the host"
+        )
+
+    def set_event_logger(self, logger, app_id: str) -> None:
+        del logger, app_id
 
 
 def build_companion_metadata() -> AgentMetadata:
@@ -25,10 +48,22 @@ def build_companion_metadata() -> AgentMetadata:
         ),
         capabilities=["routing", "agent sessions", "workflow runs", "agent logs"],
         usage_guidance=(
-            "The primary of every host defined without one. Apps do not route "
-            "to it."
+            "Every request to a host goes to it. Hosts do not list it among "
+            "their agents."
         ),
     )
+
+
+def _routing_provider_options() -> dict:
+    """Low thinking on Gemini: routing needs little, and each call is ~1.5-2s faster.
+
+    ``COMPANION_AGENT_THINKING_LEVEL`` overrides the level; other providers
+    get no options.
+    """
+    if _select_eval_agent_provider_kind() != "gemini":
+        return {}
+    level = os.getenv("COMPANION_AGENT_THINKING_LEVEL", "low").strip()
+    return {"thinking_level": level} if level else {}
 
 
 class CompanionSpec(AgentSpec):
@@ -61,6 +96,8 @@ class CompanionSpec(AgentSpec):
     def build_llm(self) -> LLMProvider:
         # The same provider selection as masher's built-in agents, with
         # COMPANION_AGENT_<PROVIDER>_MODEL overrides.
+        if _select_eval_agent_provider_kind() is None:
+            return _UnconfiguredLLM()
         return _build_eval_llm(
             agent_id=COMPANION_AGENT_ID, prefix="COMPANION_AGENT", label="companion agent"
         )
@@ -71,6 +108,7 @@ class CompanionSpec(AgentSpec):
             system_prompt=COMPANION_PROMPT,
             # Ledger entries are short, so the companion keeps more turns.
             conversation_history_turns=10,
+            provider_options=_routing_provider_options(),
         )
 
     def enable_runtime_tools(self) -> bool:

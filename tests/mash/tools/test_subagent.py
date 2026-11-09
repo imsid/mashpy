@@ -392,13 +392,15 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         from mash.tools.registry import ToolRegistry
 
         access = SimpleNamespace(get_client=lambda agent_id: None)
-        runtime = SimpleNamespace(app_id="planner", get_subagent_access=lambda: access)
+        runtime = SimpleNamespace(app_id="companion", get_host_access=lambda: access)
         for config, expected in (
-            (AgentConfig(app_id="planner", system_prompt="p"), 3600),
-            (AgentConfig(app_id="planner", system_prompt="p", subagent_timeout_seconds=7200), 7200),
+            (AgentConfig(app_id="companion", system_prompt="p"), 3600),
+            (AgentConfig(app_id="companion", system_prompt="p", subagent_timeout_seconds=7200), 7200),
         ):
             agent = SimpleNamespace(tools=ToolRegistry(), config=config)
-            configure_run_subagents(runtime, agent, session_id="s1", host=None, subagent_ids=set())
+            configure_run_subagents(
+                runtime, agent, session_id="s1", host={"host_id": "h"}, agents={"research": None}
+            )
             schema = agent.tools.get("RunSubAgents").parameters["properties"]["timeout_seconds"]
             self.assertEqual(schema["maximum"], expected)
 
@@ -419,8 +421,9 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(self.children.submitted), 16, result.content)
 
-    async def test_the_description_names_the_callers_own_id(self) -> None:
-        self.assertIn("'planner'", self.tool.description)
+    async def test_the_description_routes_to_the_hosts_agents(self) -> None:
+        self.assertIn("one of the host's agents", self.tool.description)
+        self.assertNotIn("planner", self.tool.description)
         self.assertEqual(self.tool.name, "RunSubAgents")
         self.assertFalse(self.tool.parallel_safe)
 

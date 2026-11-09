@@ -94,21 +94,10 @@
           },
           {
             "flags": [
-              "--primary"
+              "--agents"
             ],
-            "name": "primary",
-            "help": "Primary agent id",
-            "positional": false,
-            "required": true,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
-              "--subagents"
-            ],
-            "name": "subagents",
-            "help": "Comma-separated subagent ids",
+            "name": "agents",
+            "help": "Comma-separated agent ids the companion routes to",
             "positional": false,
             "required": false,
             "default": null,
@@ -900,7 +889,7 @@
                   "--agent"
                 ],
                 "name": "agent",
-                "help": "Start in this agent's folder",
+                "help": "Run as this agent's uid, in its folder",
                 "positional": false,
                 "required": false,
                 "default": null,

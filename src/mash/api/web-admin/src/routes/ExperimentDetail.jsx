@@ -124,7 +124,7 @@ function OperationalCard({ operational }) {
           />
           <Stat label="LLM calls" value={operational.total_llm_calls ?? 0} />
           <Stat label="Tool calls" value={operational.total_tool_calls ?? 0} />
-          <Stat label="Subagent steps" value={operational.total_subagent_steps ?? 0} />
+          <Stat label="Agent steps" value={operational.total_agent_steps ?? 0} />
         </StatGrid>
       ) : (
         <p className="text-sm text-slate-400">
@@ -138,7 +138,8 @@ function OperationalCard({ operational }) {
 function SnapshotSection({ experiment }) {
   const composition = experiment?.host_composition || {};
   const snapshot = experiment?.agent_spec_snapshot || {};
-  const agents = [composition.primary, ...(composition.subagents || [])].filter(Boolean);
+  // The companion routes every request to the host's agents.
+  const agents = composition.agents ? ['companion', ...composition.agents] : [];
   const agentIds = agents.length ? agents : Object.keys(snapshot);
   if (!agentIds.length) return null;
   return (
@@ -152,7 +153,7 @@ function SnapshotSection({ experiment }) {
           return (
             <div key={agentId} className="flex flex-wrap items-center gap-2 text-sm">
               <Chip tone="indigo">{agentId}</Chip>
-              {agentId === composition.primary ? <Chip>primary</Chip> : null}
+              {agentId === 'companion' ? <Chip>router</Chip> : null}
               {spec.model ? <Chip tone="slate">{spec.model}</Chip> : null}
               {spec.tools?.length ? (
                 <span className="text-xs text-slate-400">
@@ -241,7 +242,7 @@ function RunDrawer({ run, onClose }) {
                   label="Cached (read / write)"
                   value={`${(run.metrics.tokens?.cache_read ?? 0).toLocaleString()} / ${(run.metrics.tokens?.cache_creation ?? 0).toLocaleString()}`}
                 />
-                <Stat label="Subagent steps" value={run.metrics.num_subagent_steps ?? 0} />
+                <Stat label="Agent steps" value={run.metrics.num_agent_steps ?? 0} />
               </StatGrid>
             </Section>
           ) : null}

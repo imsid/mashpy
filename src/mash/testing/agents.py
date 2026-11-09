@@ -84,7 +84,7 @@ class LocalAgentProvider:
                 else spec.build_memory_store()
             ),
         )
-        runtime.attach_subagent_access(
+        runtime.attach_host_access(
             HostRelay(self._pool, host_api_url=relay_url, token=token)
         )
         # As in an agent process: a spec can opt out of the sandbox tools.

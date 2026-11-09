@@ -538,11 +538,18 @@ class OSSCompatibleProvider(BaseLLMProvider):
             if prompt_details is not None
             else None
         )
+        completion_details = block_value(usage, "completion_tokens_details")
+        reasoning_tokens = (
+            block_value(completion_details, "reasoning_tokens")
+            if completion_details is not None
+            else None
+        )
         return LLMTokenUsage(
             input_tokens=block_value(usage, "prompt_tokens"),
             output_tokens=block_value(usage, "completion_tokens"),
             total_tokens=block_value(usage, "total_tokens"),
             cache_read_tokens=cache_read_tokens,
+            reasoning_tokens=int(reasoning_tokens) if reasoning_tokens is not None else None,
         )
 
     # -- streaming -----------------------------------------------------------

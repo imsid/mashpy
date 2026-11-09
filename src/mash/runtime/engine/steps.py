@@ -27,7 +27,7 @@ from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
 from ..events.types import EndStatus
-from ..host.subagents import append_context_block
+from ..host.directory import append_context_block
 from ..requests import (
     append_runtime_event,
     fetch_request_attempt,
@@ -945,7 +945,10 @@ async def finalize_structured_output(
         tools=[],
         max_tokens=runtime.agent.config.max_tokens,
         temperature=runtime.agent.config.temperature,
-        provider_options={"structured_output": dict(structured_output_request)},
+        provider_options={
+            **runtime.agent.config.provider_options,
+            "structured_output": dict(structured_output_request),
+        },
     )
     response = await runtime.agent.llm.send(llm_request)
     if response.stop_reason in {"max_tokens", "refusal", "error"}:

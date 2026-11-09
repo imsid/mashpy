@@ -124,27 +124,22 @@ class DiffAgentSpecsTests(unittest.TestCase):
 
 
 class _FakeRuntimeStore:
-    async def list_session_events(
-        self, session_id: str, *, event_types: Any = None
-    ) -> list[Any]:
-        del event_types
+    """The companion's request for a row, with one child on "pilot"."""
+
+    async def list_child_requests(self, parent_request_id: str) -> list[dict[str, Any]]:
+        return [{"request_id": f"{parent_request_id}-child", "agent_id": "pilot"}]
+
+    async def list_request_events(self, request_id: str) -> list[Any]:
         from mash.runtime.events.types import RuntimeEvent
 
+        agent_id = "pilot" if request_id.endswith("-child") else "companion"
         return [
             RuntimeEvent(
-                app_id="pilot",
-                agent_id="pilot",
+                app_id=agent_id,
+                agent_id=agent_id,
+                request_id=request_id,
                 event_type="mash.step.end",
-                session_id=session_id,
                 created_at=1.0,
-            ),
-            RuntimeEvent(
-                app_id="pilot",
-                agent_id="pilot",
-                event_type="llm.request.complete",
-                session_id=session_id,
-                created_at=2.0,
-                payload={"input_tokens": 10, "output_tokens": 5},
             ),
         ]
 
@@ -155,10 +150,10 @@ class _FakePool:
     def get_host(self, host_id: str) -> Host:
         if host_id != "guide":
             raise ValueError(host_id)
-        return Host(host_id="guide", primary="pilot")
+        return Host(host_id="guide", agents=("pilot",))
 
     def snapshot_for(self, host: Host) -> dict[str, Any]:
-        return {"host_id": host.host_id, "primary": host.primary, "subagents": []}
+        return {"host_id": host.host_id, "agents": list(host.agents), "workflows": []}
 
     def snapshot_host_agent_specs(self, host_id: str) -> dict[str, Any]:
         del host_id
@@ -275,7 +270,7 @@ class RunExperimentWorkflowTests(unittest.TestCase):
         )
         experiment = asyncio.run(service.get_experiment(result.experiment_id))
         self.assertEqual(experiment.target_host_id, "guide")
-        self.assertEqual(experiment.host_composition["primary"], "pilot")
+        self.assertEqual(experiment.host_composition["agents"], ["pilot"])
         assert experiment.rubric_snapshot is not None
         self.assertEqual(
             experiment.rubric_snapshot["global_scoring_prompt"],
@@ -287,6 +282,10 @@ class RunExperimentWorkflowTests(unittest.TestCase):
         runs = asyncio.run(service.list_runs(result.experiment_id, limit=1000))
         self.assertTrue(all(run.status == "scored" for run in runs))
         self.assertTrue(all(run.metrics is not None for run in runs))
+        # A row counts the companion's request and the child it ran on pilot,
+        # which ran in a session of its own.
+        self.assertEqual(runs[0].metrics["steps"], 2)
+        self.assertEqual([a["agent_id"] for a in runs[0].metrics["agents"]], ["pilot"])
 
     def test_host_and_judge_failures_are_isolated(self) -> None:
         result, service, calls = self._run(

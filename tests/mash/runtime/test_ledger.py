@@ -17,7 +17,7 @@ from mash.core.llm.types import LLMContentBlock, LLMResponse, LLMTokenUsage
 from mash.memory.compaction import compact_conversation
 from mash.memory.ledger import build_ledger, format_ledger, merge_ledgers
 from mash.runtime import Host, HostBuilder
-from mash.testing.runtime_fixtures import DeterministicAgentSpec, metadata
+from mash.testing.runtime_fixtures import DeterministicAgentSpec, metadata, patch_companion_llm
 
 
 def _context(*messages: dict[str, Any]) -> dict[str, Any]:
@@ -232,28 +232,21 @@ class _RoutingProvider(LLMProvider):
         del logger, app_id
 
 
-class _RoutingSpec(DeterministicAgentSpec):
-    def __init__(self) -> None:
-        super().__init__(agent_id="router")
-        self.provider = _RoutingProvider()
-
-
 class LedgerReplayTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_follow_up_routed_from_the_ledger_lands_in_the_recorded_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
-                router = _RoutingSpec()
+            router = _RoutingProvider()
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}), patch_companion_llm(router):
                 pool = (
                     HostBuilder()
-                    .agent(router, metadata=metadata())
                     .agent(DeterministicAgentSpec(agent_id="research", response_text="research-ok"), metadata=metadata())
-                    .host(Host(host_id="h", primary="router", subagents=("research",)))
+                    .host(Host(host_id="h", agents=("research",)))
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    client = pool.get_client("router")
+                    client = pool.get_client("companion")
 
                     async def _ask(message: str) -> str:
                         accepted = await pool.submit_host_request(
@@ -266,8 +259,8 @@ class LedgerReplayTests(unittest.IsolatedAsyncioTestCase):
                         raise AssertionError("no terminal event")
 
                     first_id = await _ask("scaffold rss")
-                    runtime = pool._agent_provider.agent_servers["router"].runtime
-                    [turn] = await runtime.store.get_turns("s-1", "router")
+                    runtime = pool._agent_provider.agent_servers["companion"].runtime
+                    [turn] = await runtime.store.get_turns("s-1", "companion")
                     [entry] = turn["metadata"]["ledger"]
                     self.assertEqual(entry["companion_session_id"], "s-1")
                     self.assertEqual(entry["agent_id"], "research")
@@ -279,7 +272,7 @@ class LedgerReplayTests(unittest.IsolatedAsyncioTestCase):
                     second_id = await _ask("add a test")
 
                     # The replayed reply showed the ledger to the model.
-                    self.assertIn(f"answered\n\n[ledger]\n- research  session {entry['session_id']}", router.provider.seen[2])
+                    self.assertIn(f"answered\n\n[ledger]\n- research  session {entry['session_id']}", router.seen[2])
                     [first_child] = await runtime.runtime_store.list_child_requests(first_id)
                     [second_child] = await runtime.runtime_store.list_child_requests(second_id)
                     self.assertEqual(first_child["session_id"], entry["session_id"])

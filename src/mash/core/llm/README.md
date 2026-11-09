@@ -59,7 +59,7 @@ Behavior:
 - Disables the SDK's internal retry loop (`HttpRetryOptions(attempts=1)`) so retry decisions go through `retry_transient`, where they are logged.
 - Honors `request.streaming`, emitting coalesced `chat.delta` events and assembling the stream into the same response shape as a non-streamed call.
 - Translates structured output into the Interactions `response_format` parameter.
-- Reads thinking controls from `provider_options["thinking_level"]` and `provider_options["thinking_summaries"]`; thought tokens land in `usage.metadata["thought_tokens"]`.
+- Reads thinking controls from `provider_options["thinking_level"]` and `provider_options["thinking_summaries"]`; thought tokens land in `usage.reasoning_tokens`, which a turn records as `mash.usage.reasoning_tokens` on its `chat.end`.
 - Returns capability flags:
   - `structured_output=True`
   - `streaming=True`

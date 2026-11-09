@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from mash.runtime.host.subagents import append_context_block
+from mash.runtime.host.directory import append_context_block
 
 
 class AppendContextBlockTests(unittest.TestCase):

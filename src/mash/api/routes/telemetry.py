@@ -154,7 +154,7 @@ def build_telemetry_router() -> APIRouter:
             )
 
         # With a session but no agent, list a session's traces across the pool
-        # (subagents / cross-agent workflow tasks). Use any agent's shared store.
+        # (RunSubAgents children / cross-agent workflow tasks). Use any agent's shared store.
         if resolved_agent_id is not None:
             store = get_runtime_store(request, resolved_agent_id)
         else:
@@ -255,7 +255,7 @@ def build_telemetry_router() -> APIRouter:
         resolved_workflow_id = normalize_optional_text(workflow_id)
         # The runtime event log is shared across the pool, so any agent's store
         # rolls up every session. agent_id matches sessions the agent
-        # participated in (as primary or subagent); workflow_id matches
+        # participated in (as the companion or a host agent); workflow_id matches
         # sessions where that workflow ran.
         store = state.pool.get_runtime_store()
         if store is None or not state.pool.list_agents():

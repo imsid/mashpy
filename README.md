@@ -45,9 +45,9 @@ standardizes interactions between user applications and agents.
   model in one line of `build_llm()`.
 - **Self-hosted interfaces**: HTTP API with streaming, CLI, and interactive REPL,
   all on one Postgres. Deploy locally, in Docker, or on any cloud.
-- **Multi-agent composition**: define a primary agent, add specialized subagents,
-  and compose workflows behind a single host. Agents delegate to each other
-  without a separate coordination layer.
+- **Multi-agent composition**: put agents and workflows behind a host. The
+  built-in companion routes each message to the right agents or workflow,
+  continues an agent's earlier session on a follow-up, and writes the answer.
 - **Human-in-the-loop**: agents can pause for approval or ask users questions
   mid-execution. Interactions survive host restarts.
 - **Observability**: span trees, trace analysis, telemetry API, built-in
@@ -121,9 +121,9 @@ from mash.skills import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
 
-class ConciergeAgent(AgentSpec):
+class SupportAgent(AgentSpec):
     def get_agent_id(self):
-        return "concierge"
+        return "support"
 
     def build_tools(self):
         return ToolRegistry()
@@ -132,15 +132,12 @@ class ConciergeAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="concierge")
+        return AnthropicProvider(app_id="support")
 
     def build_agent_config(self):
         return AgentConfig(
-            app_id="concierge",
-            system_prompt=(
-                "You are the concierge. Answer the user directly, and "
-                "delegate research-heavy questions to the research subagent."
-            ),
+            app_id="support",
+            system_prompt="You answer product and account questions.",
         )
 
 
@@ -237,7 +234,7 @@ The pool is the unit of deploy: agents and workflows registered together.
 
 from mash import AgentMetadata, HostBuilder
 
-from .agents import ConciergeAgent, ResearchAgent
+from .agents import ResearchAgent, SupportAgent
 from .workflows import RESEARCH_BRIEF
 
 
@@ -245,12 +242,12 @@ def build_pool():
     pool = (
         HostBuilder()
         .agent(
-            ConciergeAgent(),
+            SupportAgent(),
             metadata=AgentMetadata(
-                display_name="Concierge",
-                description="Front-door agent that answers users and delegates.",
-                capabilities=["conversation", "delegation"],
-                usage_guidance="Default entry point for user requests.",
+                display_name="Support",
+                description="Answers product and account questions.",
+                capabilities=["product questions", "account help"],
+                usage_guidance="Questions about the product or a user's account.",
             ),
         )
         .agent(
@@ -310,9 +307,10 @@ mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
 mash browse
 ```
 
-**Compose an assistant host with primary and subagents:**
+**Compose an assistant host from agents and a workflow.** Every request to it
+goes to the built-in companion, which routes it:
 ```bash
-mash compose --host assistant --primary concierge --subagents research \
+mash compose --host assistant --agents support,research \
   --workflows research-brief
 ```
 
@@ -327,12 +325,12 @@ mash repl --host assistant
 |---|---|
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
-| **Pool** | The deployed pool of role-less agents the API server runs; each agent runs as a subprocess of the host |
+| **Pool** | The deployed pool of agents the API server runs; each agent runs as a subprocess of the host |
 | **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory, sandbox and browser |
 | **Sandbox** | A container per user where agents' code runs, holding that user's workspaces and nothing else |
 | **Browser** | A Chromium per user, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
-| **Host** | A composition over the pool (primary + subagents + workflows), defined in code or dynamically over the API |
-| **ToolRegistry** | Register callable tools; built-ins include AskUser and RunSubAgents, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
+| **Host** | A composition over the pool (agents + workflows), defined in code or dynamically over the API; the built-in companion routes every request to it |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser and the companion's RunSubAgents and RunWorkflow, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |

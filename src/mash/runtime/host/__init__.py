@@ -1,7 +1,7 @@
 """Pool and host composition exports.
 
 Lazy exports: submodules here import back into ``mash.runtime.service`` and
-``mash.runtime.factory``, which themselves import ``host.subagents``. Keeping
+``mash.runtime.factory``, which themselves import ``host.directory``. Keeping
 this package init lazy breaks the cycle.
 """
 
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .builder import HostBuilder
     from .host import AgentDisabledError, AgentInUseError, Pool
-    from .subagents import AgentMetadata
+    from .directory import AgentMetadata
     from .types import Host
 
 __all__ = [
@@ -28,7 +28,7 @@ __all__ = [
 _EXPORTS: dict[str, tuple[str, str]] = {
     "AgentDisabledError": (".host", "AgentDisabledError"),
     "AgentInUseError": (".host", "AgentInUseError"),
-    "AgentMetadata": (".subagents", "AgentMetadata"),
+    "AgentMetadata": (".directory", "AgentMetadata"),
     "Pool": (".host", "Pool"),
     "Host": (".types", "Host"),
     "HostBuilder": (".builder", "HostBuilder"),

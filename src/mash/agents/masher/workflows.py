@@ -15,6 +15,7 @@ any run executes.
 
 from __future__ import annotations
 
+from mash.agents.companion import COMPANION_AGENT_ID
 import asyncio
 import uuid
 from dataclasses import replace
@@ -52,7 +53,6 @@ class GenSyntheticEvalsInput(BaseModel):
 
 class AgentProfile(BaseModel):
     agent_id: str
-    role: Literal["primary", "subagent"]
     display_name: str = ""
     description: str = ""
     capabilities: list[str] = Field(default_factory=list)
@@ -60,7 +60,6 @@ class AgentProfile(BaseModel):
 
 
 class HostProfile(BaseModel):
-    primary_agent_id: str
     agent_profiles: list[AgentProfile]
 
 
@@ -71,7 +70,6 @@ class GenerationBrief(BaseModel):
     host_id: str
     user_guidance: str = ""
     row_count: int = Field(default=20, ge=1, le=100)
-    primary_agent_id: str
     agent_profiles: list[AgentProfile]
 
 
@@ -141,24 +139,19 @@ def _build_profile_host(context: MasherRuntimeContext):
     def profile_host(inp: GenSyntheticEvalsInput, _ctx: StepContext) -> HostProfile:
         pool = context.require_pool()
         host = pool.get_host(inp.host_id)
-        members: list[tuple[Literal["primary", "subagent"], str]] = [
-            ("primary", host.primary),
-            *(("subagent", agent_id) for agent_id in host.subagents),
-        ]
         profiles: list[AgentProfile] = []
-        for role, agent_id in members:
+        for agent_id in host.agents:
             metadata = pool.get_agent_metadata(agent_id)
             profiles.append(
                 AgentProfile(
                     agent_id=agent_id,
-                    role=role,
                     display_name=metadata.display_name if metadata else "",
                     description=metadata.description if metadata else "",
                     capabilities=list(metadata.capabilities) if metadata else [],
                     usage_guidance=metadata.usage_guidance if metadata else "",
                 )
             )
-        return HostProfile(primary_agent_id=host.primary, agent_profiles=profiles)
+        return HostProfile(agent_profiles=profiles)
 
     return profile_host
 
@@ -292,17 +285,28 @@ async def _fan_out_after_warmup(
 async def _collect_experiment_metrics(
     context: MasherRuntimeContext,
     *,
-    session_id: str,
-    primary_agent_id: str,
+    request_id: str | None,
 ) -> dict[str, Any] | None:
+    """The row's metrics: the companion's request and the children it ran.
+
+    Each child runs in a session of its own, so its events are read by
+    request, from the children the companion's request started.
+    """
+    if request_id is None:
+        return None
     try:
         store = context.require_runtime_store()
-        events = await store.list_session_events(
-            session_id, event_types=list(METRIC_EVENT_TYPES)
-        )
-        return compute_row_metrics(
-            events, primary_agent_id=primary_agent_id
-        ).to_dict()
+        wanted = set(METRIC_EVENT_TYPES)
+        request_ids = [request_id] + [
+            child["request_id"] for child in await store.list_child_requests(request_id)
+        ]
+        events = [
+            event
+            for rid in request_ids
+            for event in await store.list_request_events(rid)
+            if event.event_type in wanted
+        ]
+        return compute_row_metrics(events, router_agent_id=COMPANION_AGENT_ID).to_dict()
     except Exception:  # noqa: BLE001 - metrics never fail experiment work
         return None
 
@@ -349,9 +353,6 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
         pool = context.require_pool()
         experiment = await service.get_experiment(inp.experiment_id)
         host_snapshot = dict(experiment.host_composition)
-        primary_agent_id = str(host_snapshot.get("primary") or "").strip()
-        if not primary_agent_id:
-            raise ValueError("experiment host snapshot has no primary agent")
         rows = await service.list_runs(inp.experiment_id, limit=1000)
         pending = [row for row in rows if row.status in {"pending", "executing"}]
 
@@ -365,17 +366,12 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
             if request_id is not None:
                 try:
                     payload = await collect_terminal_payload(
-                        pool, primary_agent_id, request_id
+                        pool, COMPANION_AGENT_ID, request_id
                     )
                     actual_output = _response_text(payload)
                 except Exception as exc:  # noqa: BLE001 - row failure
                     error = _error_text(exc)
-            metrics = await _collect_experiment_metrics(
-                context,
-                session_id=active.session_id
-                or f"eval:{ctx.run_id}:{active.row_id}",
-                primary_agent_id=primary_agent_id,
-            )
+            metrics = await _collect_experiment_metrics(context, request_id=request_id)
             await service.persist_run(
                 replace(
                     active,
@@ -396,7 +392,7 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
             try:
                 request_id = await post_inline_agent_request(
                     pool,
-                    agent_id=primary_agent_id,
+                    agent_id=COMPANION_AGENT_ID,
                     message=row.input,
                     structured_output=None,
                     workflow_id=MASHER_RUN_EXPERIMENT_WORKFLOW_ID,

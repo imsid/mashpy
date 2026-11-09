@@ -20,9 +20,12 @@ Read the change before designing anything around it.
 - Decide what is *material*: which behaviors a user could observe going wrong.
   Refactors with no observable surface do not need a live test.
 - Learn how pilot exposes that surface. `src/pilot/spec.py` and
-  `src/pilot/catalog/` say which agents exist (the `pilot` guide and its
-  `builder` subagent, plus masher's eval agents and the changelog workflow's
-  agent), which tools each one registers, and which models back them.
+  `src/pilot/catalog/` say which agents exist (the `pilot` guide and the
+  `builder`, plus masher's eval agents and the changelog workflow's agent),
+  which tools each one registers, and which models back them. Every request
+  to the `guide` host runs on the built-in `companion`, which routes it to
+  `pilot`, `builder` or the changelog workflow with `RunSubAgents` and
+  `RunWorkflow`; a request to one agent goes to `/api/v1/agent/<id>/request`.
   `GET /api/v1/agent`, `/api/v1/hosts` and `/api/v1/workflow` say what is
   actually deployed; the changelog workflow's id is `pilot-changelog`.
 - Every agent runs as a subprocess of the host (`mash agent serve`) inside the
@@ -48,8 +51,8 @@ Read the change before designing anything around it.
 Model choice is part of grounding: an agent whose model cannot drive the path
 you want to test will fail for reasons that have nothing to do with your
 change. Check which provider backs each agent, and prefer one you have seen
-complete the shape you need (a multi-turn tool loop, an interaction, a subagent
-invocation).
+complete the shape you need (a multi-turn tool loop, an interaction, a
+companion routing call).
 
 ---
 
@@ -264,12 +267,14 @@ Use this when a change touches request mode, the mode or session-requests
 routes, cancel, `RunSubAgents`, the `/h2a` relay, or the REPL's `/bg`,
 Ctrl-Z and idle watching. Pilot has no sleep tool, so a long-running request
 asks the agent to run `sleep N` through `run_code`; give it a `timeout` above
-N. Submit on the `guide` host so `pilot` (Gemini) is the caller and `builder`
-(Gemma) is a subagent it can split work onto.
+N. Send the timer requests to `pilot` (Gemini) directly, since the companion
+has no `run_code`. Send the splitting requests to the `guide` host, where the
+companion is the caller and `pilot` and `builder` (Gemma) are the agents it
+splits work onto.
 
 ```bash
-# a bg request on the guide host
-curl -s -X POST http://127.0.0.1:8000/api/v1/hosts/guide/request \
+# a bg request to pilot
+curl -s -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request \
   -H 'Content-Type: application/json' -d '{"session_id":"s-bg-1","user_id":"u-bg-1","mode":"bg",
   "message":"Use run_code to run the shell command `sleep 45` in your sandbox (timeout 90). When it finishes, reply with exactly: timer done"}'
 # the session's requests, and the columns behind them
@@ -288,7 +293,7 @@ psql ... -c "select request_id,agent_id,mode,status,started_by,parent_request_id
    prompt is up, and Ctrl-Z must reach the shell as SIGTSTP, so piped stdin
    cannot test this. Drive the REPL in a pty from the Mac with pexpect
    (`uv run --with pexpect python drive.py`), spawning
-   `docker compose -f docker-compose.pilot.yml exec -it -w /tmp -e HOME=/tmp pilot pilot repl --host guide --user-id u-repl-1 --session-id <fresh>`
+   `docker compose -f docker-compose.pilot.yml exec -it -w /tmp -e HOME=/tmp pilot pilot repl --agent pilot --user-id u-repl-1 --session-id <fresh>`
    and sending Ctrl-Z with `child.sendcontrol("z")`. Strip ANSI codes before
    matching: Rich colors the brackets around a short id separately from the
    id. Check:
@@ -300,18 +305,22 @@ psql ... -c "select request_id,agent_id,mode,status,started_by,parent_request_id
    - `/bg --switch <prefix>` replays the earlier steps (the `run_code` line
      shows again), renders the reply, and the row ends `fg` and `completed`.
    - `/bg --switch zz` prints `No background request matches 'zz'.`
-3. **Splitting** (tables): a bg request saying "Call the RunSubAgents tool
+3. **Splitting** (tables): a bg request on the `guide` host saying "Call the RunSubAgents tool
    exactly once with three items: two with agent_id "pilot" and one with
    agent_id "builder". Ask each item for one short fact about the Mash
    framework, answering in one sentence without using any tools. Then
    combine the three facts into one short answer." Check:
    - exactly three rows with `parent_request_id` = the parent, agents
-     {pilot, pilot, builder}, `mode=bg`, `started_by=pilot`;
+     {pilot, pilot, builder}, `mode=bg`, `started_by=companion`, each in a
+     session of its own whose id is its request id;
    - the parent's `execute_tool.start` for `RunSubAgents` lists the three
      children under `payload->'subagents'`, in item order;
    - the parent's one `execute_tool.end` for `RunSubAgents` holds three entries
      in item order, each `completed`;
-   - the children's `memory_turns` rows have `replayable = false`.
+   - the children's `memory_turns` rows are in their own sessions, with
+     `primary_session_id` in their metadata naming the parent's session;
+   - the parent's turn has `metadata->'ledger'` with three entries, one per
+     child, each naming its session and trace.
 4. **Kill** (API, tables, DBOS): the same split, with each item told to run
    `sleep 90` through `run_code` (timeout 120) and reply "slept". Once all
    three children have an `execute_tool.start` row, cancel the parent

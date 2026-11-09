@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import uuid
 from typing import Optional
 
-from .subagents import AgentMetadata
+from .directory import AgentMetadata
 from ..spec import AgentSpec
 
 
@@ -21,38 +21,26 @@ class AgentRegistration:
 
 @dataclass(frozen=True)
 class Host:
-    """An immutable composition of pool agents.
+    """An immutable composition of pool agents and workflows.
 
+    Every agent in a host is the same kind of member: the built-in
+    ``companion`` routes each request to them and to the host's workflows.
     A session is never bound to a host; the client addresses a host
     explicitly per request, and the request carries a snapshot of this
     composition for durable replay.
-
-    A host without a ``primary`` gets the built-in ``companion`` agent as its
-    primary when the pool defines it, and the companion routes among the
-    subagents and workflows.
     """
 
     host_id: str
-    primary: Optional[str] = None
-    subagents: tuple[str, ...] = ()
+    agents: tuple[str, ...] = ()
     workflows: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.host_id.strip():
             raise ValueError("host_id is required")
-        if self.primary is not None and not self.primary.strip():
-            raise ValueError("host primary agent id must be non-empty")
         seen: set[str] = set()
-        for agent_id in self.subagents:
+        for agent_id in self.agents:
             if not str(agent_id).strip():
-                raise ValueError("host subagent ids must be non-empty")
-            if agent_id == self.primary:
-                raise ValueError(
-                    f"host '{self.host_id}' primary '{self.primary}' cannot also "
-                    "be a subagent"
-                )
+                raise ValueError("host agent ids must be non-empty")
             if agent_id in seen:
-                raise ValueError(
-                    f"host '{self.host_id}' has duplicate subagent '{agent_id}'"
-                )
+                raise ValueError(f"host '{self.host_id}' has duplicate agent '{agent_id}'")
             seen.add(agent_id)

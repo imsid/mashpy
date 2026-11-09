@@ -1,13 +1,14 @@
 """Operational metrics for one scored eval row.
 
-Every dataset row runs through the host under test under a single ``session_id``
-that the primary agent and all of its subagents share. Their runtime events are
-therefore a self-contained record of what the run *cost* — tokens, steps, tool
-calls, latency — independent of the qualitative rubric score.
+Every dataset row runs through the host under test as one companion request,
+plus the requests its RunSubAgents calls start on the host's agents. Their
+runtime events are a self-contained record of what the run *cost* — tokens,
+steps, tool calls, latency — independent of the qualitative rubric score.
 
 :func:`compute_row_metrics` is a pure fold over those events (no I/O), so it is
-deterministic and unit-testable against a captured event list. The scoring
-workflow loads a row's session events and calls this once per row.
+deterministic and unit-testable against a captured event list. The experiment
+workflow loads the events of a row's request and its children and calls this
+once per row.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ class TokenUsage:
 
 
 @dataclass
-class SubagentMetrics:
+class AgentMetrics:
     agent_id: str
     steps: int
     tool_calls: int
@@ -69,7 +70,7 @@ class SubagentMetrics:
 
 @dataclass
 class RowMetrics:
-    """Operational cost of running one row, primary + subagents combined."""
+    """Operational cost of running one row: the companion and the agents it ran."""
 
     latency_ms: float | None
     llm_calls: int
@@ -78,8 +79,8 @@ class RowMetrics:
     tokens: TokenUsage
     tool_call_breakdown: dict[str, int]
     stop_reason: str | None
-    num_subagent_steps: int
-    subagents: list[SubagentMetrics] = field(default_factory=list)
+    num_agent_steps: int
+    agents: list[AgentMetrics] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -133,12 +134,12 @@ class _AgentAccum:
 
 
 def compute_row_metrics(
-    events: list[RuntimeEvent], *, primary_agent_id: str
+    events: list[RuntimeEvent], *, router_agent_id: str
 ) -> RowMetrics:
     """Fold a session's runtime events into one :class:`RowMetrics`.
 
     ``events`` should be every metric-bearing event for the row's session
-    (primary and subagents), in any order. Safe on partial logs — a row whose
+    (the router and the agents it ran), in any order. Safe on partial logs — a row whose
     host request errored still yields the tokens/steps spent before it failed.
     """
     per_agent: dict[str, _AgentAccum] = {}
@@ -165,11 +166,11 @@ def compute_row_metrics(
         elif etype == RuntimeEventType.INVOKE_AGENT_END.value:
             acc.observe_terminal(event)
 
-    primary = per_agent.get(primary_agent_id, _AgentAccum())
-    subagents: list[SubagentMetrics] = []
+    router = per_agent.get(router_agent_id, _AgentAccum())
+    agents: list[AgentMetrics] = []
     tokens = TokenUsage()
     tool_breakdown: dict[str, int] = {}
-    steps = llm_calls = tool_calls = num_subagent_steps = 0
+    steps = llm_calls = tool_calls = num_agent_steps = 0
 
     for agent_id, acc in sorted(per_agent.items()):
         steps += acc.steps
@@ -181,10 +182,10 @@ def compute_row_metrics(
         tokens.cache_creation += acc.tokens.cache_creation
         for name, count in acc.tool_breakdown.items():
             tool_breakdown[name] = tool_breakdown.get(name, 0) + count
-        if agent_id != primary_agent_id:
-            num_subagent_steps += acc.steps
-            subagents.append(
-                SubagentMetrics(
+        if agent_id != router_agent_id:
+            num_agent_steps += acc.steps
+            agents.append(
+                AgentMetrics(
                     agent_id=agent_id,
                     steps=acc.steps,
                     tool_calls=acc.tool_calls,
@@ -205,9 +206,9 @@ def compute_row_metrics(
         tool_calls=tool_calls,
         tokens=tokens,
         tool_call_breakdown=tool_breakdown,
-        stop_reason=primary.stop_reason(),
-        num_subagent_steps=num_subagent_steps,
-        subagents=subagents,
+        stop_reason=router.stop_reason(),
+        num_agent_steps=num_agent_steps,
+        agents=agents,
     )
 
 

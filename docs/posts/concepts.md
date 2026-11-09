@@ -69,7 +69,7 @@ Events let you observe the agent loop while it is running. Each event has a defi
 
 ### Host
 
-A host is a pool of agents composed together. It is the bridge between a user application and one or more agents. Within a host, agents are assigned roles: **primary**, **subagent**, and **workflow**. The primary agent handles free-form user requests and can delegate to subagents. Workflow agents run a deterministic sequence of tasks and return structured output.
+A host is a pool of agents composed together. It is the bridge between a user application and one or more agents. A host holds agents and workflows, all as equal members, and a router decides for each message which of them handle it. Workflow agents run a deterministic sequence of tasks and return structured output.
 
 Host is a Mash-only concept for structuring how applications interface with agents. The interaction model between user application, host, and agents is governed by the [H2A Protocol](../rfcs/host-to-agent-protocol.md). Composing agents through a host means you can add or remove agents without changing the application. Hosts are self-hosted services, accessible over HTTP or via the CLI. The host is also the trust boundary: the application tells it which user each request acts for.
 

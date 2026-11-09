@@ -2,7 +2,7 @@
 
 The host runs ``mash agent serve`` as a child process per agent. It imports the
 same ``build_pool()`` the host runs, serves one agent from it behind an
-``AgentServer`` on a localhost port, and reaches the host for everything else: subagent calls go to the host's H2A relay (``{host}/h2a``) with the
+``AgentServer`` on a localhost port, and reaches the host for everything else: the companion's RunSubAgents calls go to the host's H2A relay (``{host}/h2a``) with the
 agent's token, and the host checks them against the request's host snapshot.
 When the host has sandboxes, every agent served here gets ``run_code``,
 ``sandbox_put`` and ``sandbox_get``, which act in the request user's sandbox
@@ -25,7 +25,7 @@ import uuid
 from typing import Any
 
 from .client import AgentClient, WorkflowRelayClient
-from .host.subagents import AgentMetadata
+from .host.directory import AgentMetadata
 from .server import AgentServer
 
 MASH_AGENT_TOKEN_ENV = "MASH_AGENT_TOKEN"
@@ -40,7 +40,7 @@ MASH_PARENT_PID_ENV = "MASH_PARENT_PID"
 
 
 class HostRelay:
-    """Subagent access for an agent process: subagents resolve to the host."""
+    """Host access for an agent process: the host's agents resolve to the relay."""
 
     def __init__(self, pool: Any, *, host_api_url: str, token: str) -> None:
         self._pool = pool
@@ -91,7 +91,7 @@ def build_agent_server(
         session_id=str(uuid.uuid4()),
         token=token,
     )
-    server.runtime.attach_subagent_access(
+    server.runtime.attach_host_access(
         HostRelay(pool, host_api_url=host_api_url, token=token)
     )
     if sandbox_tools and spec.enable_sandbox():

@@ -49,11 +49,12 @@ Evals are on only in a pool built with `HostBuilder.enable_evals()`.
 
 ## Operational metrics (`metrics.py`)
 
-Every row runs under a single `session_id` shared by the primary and its
-subagents, so the runtime events for that session are a self-contained record
-of what the run cost. `compute_row_metrics` is a pure fold over those events
-(no I/O): latency, steps, LLM calls, tool calls (with per-tool breakdown),
-tokens including cache read/creation, and recursive subagent metrics. The
+Every row runs as one companion request on the host, plus the children it
+starts on the host's agents, each in a session of its own; the events of that
+request and its children are a self-contained record of what the run cost.
+`compute_row_metrics` is a pure fold over those events (no I/O): latency,
+steps, LLM calls, tool calls (with per-tool breakdown), tokens including cache
+read/creation, and per-agent metrics for the agents the companion ran. The
 scoring workflow calls it once per row; quality (rubric score) and cost
 (metrics) stay independent.
 

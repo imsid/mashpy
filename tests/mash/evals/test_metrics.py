@@ -41,12 +41,12 @@ def _tool(agent_id: str, ts: float, name: str) -> RuntimeEvent:
 
 class ComputeRowMetricsTests(unittest.TestCase):
     def _session(self) -> list[RuntimeEvent]:
-        # Primary "pilot" invokes subagent "helper"; helper hits its step limit.
+        # The companion runs "helper"; helper hits its step limit.
         return [
-            _ev("pilot", "invoke_agent.start", 100.0),
-            _ev("pilot", "chat.start", 100.1),  # ignored
-            _llm("pilot", 101.0, i=300, o=50, cr=1000),
-            _tool("pilot", 101.5, "RunSubAgents"),
+            _ev("companion", "invoke_agent.start", 100.0),
+            _ev("companion", "chat.start", 100.1),  # ignored
+            _llm("companion", 101.0, i=300, o=50, cr=1000),
+            _tool("companion", 101.5, "RunSubAgents"),
             _ev("helper", "invoke_agent.start", 101.6),
             _llm("helper", 102.0, i=4000, o=200, finish="tool_use"),
             _tool("helper", 102.1, "bash"),
@@ -57,64 +57,64 @@ class ComputeRowMetricsTests(unittest.TestCase):
                 error="Stopped after reaching the max step limit (1) before finishing.",
                 error_code="max_steps_exhausted",
                 stop_reason="max_steps"),
-            _ev("pilot", "mash.step.end", 103.0),
-            _llm("pilot", 103.5, i=350, o=90, cr=1200),
-            _ev("pilot", "mash.step.end", 104.0),
-            _ev("pilot", "invoke_agent.end", 105.0, status="ok",
+            _ev("companion", "mash.step.end", 103.0),
+            _llm("companion", 103.5, i=350, o=90, cr=1200),
+            _ev("companion", "mash.step.end", 104.0),
+            _ev("companion", "invoke_agent.end", 105.0, status="ok",
                 response_metadata={"host": {}}),
         ]
 
-    def test_totals_span_primary_and_subagents(self) -> None:
-        m = compute_row_metrics(self._session(), primary_agent_id="pilot")
-        self.assertEqual(m.llm_calls, 3)           # 2 pilot + 1 helper
-        self.assertEqual(m.steps, 3)               # 2 pilot + 1 helper
-        self.assertEqual(m.tool_calls, 3)          # 1 pilot + 2 helper
+    def test_totals_span_the_router_and_its_agents(self) -> None:
+        m = compute_row_metrics(self._session(), router_agent_id="companion")
+        self.assertEqual(m.llm_calls, 3)           # 2 companion + 1 helper
+        self.assertEqual(m.steps, 3)               # 2 companion + 1 helper
+        self.assertEqual(m.tool_calls, 3)          # 1 companion + 2 helper
         self.assertEqual(m.tokens.input, 300 + 350 + 4000)
         self.assertEqual(m.tokens.output, 50 + 90 + 200)
         self.assertEqual(m.tokens.cache_read, 1000 + 1200)
         self.assertEqual(m.tool_call_breakdown, {"RunSubAgents": 1, "bash": 2})
 
     def test_wall_clock_latency(self) -> None:
-        m = compute_row_metrics(self._session(), primary_agent_id="pilot")
+        m = compute_row_metrics(self._session(), router_agent_id="companion")
         self.assertAlmostEqual(m.latency_ms, 5000.0)  # 100.0 -> 105.0
 
-    def test_subagent_breakdown_and_stop_reason(self) -> None:
-        m = compute_row_metrics(self._session(), primary_agent_id="pilot")
-        self.assertEqual(m.num_subagent_steps, 1)
-        self.assertEqual(len(m.subagents), 1)
-        sub = m.subagents[0]
+    def test_agent_breakdown_and_stop_reason(self) -> None:
+        m = compute_row_metrics(self._session(), router_agent_id="companion")
+        self.assertEqual(m.num_agent_steps, 1)
+        self.assertEqual(len(m.agents), 1)
+        sub = m.agents[0]
         self.assertEqual(sub.agent_id, "helper")
         self.assertEqual(sub.stop_reason, "max_steps")
         self.assertEqual(sub.steps, 1)
         self.assertEqual(sub.tokens.input, 4000)
-        # Primary's stop_reason falls back to its last LLM finish_reason.
+        # The router's stop_reason falls back to its last LLM finish_reason.
         self.assertEqual(m.stop_reason, "end_turn")
 
-    def test_failed_primary_reports_error_and_partial_tokens(self) -> None:
+    def test_failed_router_reports_error_and_partial_tokens(self) -> None:
         events = [
-            _ev("pilot", "invoke_agent.start", 200.0),
-            _llm("pilot", 201.0, i=100, o=10),
-            _ev("pilot", "invoke_agent.end", 202.0, status="error", error="boom"),
+            _ev("companion", "invoke_agent.start", 200.0),
+            _llm("companion", 201.0, i=100, o=10),
+            _ev("companion", "invoke_agent.end", 202.0, status="error", error="boom"),
         ]
-        m = compute_row_metrics(events, primary_agent_id="pilot")
+        m = compute_row_metrics(events, router_agent_id="companion")
         self.assertEqual(m.stop_reason, "error")
         self.assertEqual(m.tokens.input, 100)   # spend before the failure is kept
-        self.assertEqual(m.subagents, [])
+        self.assertEqual(m.agents, [])
 
     def test_failure_that_names_a_stop_reason_keeps_it(self) -> None:
         """An exhausted step budget must stay distinguishable from any error."""
         events = [
-            _ev("pilot", "invoke_agent.start", 200.0),
-            _llm("pilot", 201.0, i=100, o=10, finish="tool_use"),
-            _ev("pilot", "invoke_agent.end", 202.0, status="error",
+            _ev("companion", "invoke_agent.start", 200.0),
+            _llm("companion", 201.0, i=100, o=10, finish="tool_use"),
+            _ev("companion", "invoke_agent.end", 202.0, status="error",
                 error="Stopped after reaching the max step limit (1) before finishing.",
                 error_code="max_steps_exhausted",
                 stop_reason="max_steps"),
         ]
-        m = compute_row_metrics(events, primary_agent_id="pilot")
+        m = compute_row_metrics(events, router_agent_id="companion")
         self.assertEqual(m.stop_reason, "max_steps")
 
-    def test_cancelled_primary_reports_cancelled_not_a_finish_reason(self) -> None:
+    def test_cancelled_router_reports_cancelled_not_a_finish_reason(self) -> None:
         """A cancelled run must not report the last LLM finish reason.
 
         A cancelled request's end must decide the stop reason; otherwise the
@@ -122,31 +122,31 @@ class ComputeRowMetricsTests(unittest.TestCase):
         ended on its own.
         """
         events = [
-            _ev("pilot", "invoke_agent.start", 200.0),
-            _llm("pilot", 201.0, i=100, o=10, finish="end_turn"),
-            _ev("pilot", "invoke_agent.end", 202.0, status="cancelled"),
+            _ev("companion", "invoke_agent.start", 200.0),
+            _llm("companion", 201.0, i=100, o=10, finish="end_turn"),
+            _ev("companion", "invoke_agent.end", 202.0, status="cancelled"),
         ]
-        m = compute_row_metrics(events, primary_agent_id="pilot")
+        m = compute_row_metrics(events, router_agent_id="companion")
         self.assertEqual(m.stop_reason, "cancelled")
         self.assertEqual(m.tokens.input, 100)  # spend before the cancel is kept
 
     def test_cancelled_then_resumed_to_completion_reports_the_outcome(self) -> None:
         """Latest terminal event wins, and by timestamp rather than list order."""
         events = [
-            _ev("pilot", "invoke_agent.start", 300.0),
-            _ev("pilot", "invoke_agent.end", 301.0, status="cancelled"),
-            _llm("pilot", 302.0, i=100, o=10, finish="tool_use"),
-            _ev("pilot", "invoke_agent.end", 303.0, status="ok",
+            _ev("companion", "invoke_agent.start", 300.0),
+            _ev("companion", "invoke_agent.end", 301.0, status="cancelled"),
+            _llm("companion", 302.0, i=100, o=10, finish="tool_use"),
+            _ev("companion", "invoke_agent.end", 303.0, status="ok",
                 response_metadata={"stop_reason": "end_turn"}),
         ]
         self.assertEqual(
-            compute_row_metrics(events, primary_agent_id="pilot").stop_reason,
+            compute_row_metrics(events, router_agent_id="companion").stop_reason,
             "end_turn",
         )
         # Same events, shuffled: the fold is order-independent as documented.
         self.assertEqual(
             compute_row_metrics(
-                list(reversed(events)), primary_agent_id="pilot"
+                list(reversed(events)), router_agent_id="companion"
             ).stop_reason,
             "end_turn",
         )
@@ -155,7 +155,7 @@ class ComputeRowMetricsTests(unittest.TestCase):
         self.assertIn("invoke_agent.end", METRIC_EVENT_TYPES)
 
     def test_empty_events(self) -> None:
-        m = compute_row_metrics([], primary_agent_id="pilot")
+        m = compute_row_metrics([], router_agent_id="companion")
         self.assertIsNone(m.latency_ms)
         self.assertEqual(m.steps, 0)
         self.assertIsNone(m.stop_reason)

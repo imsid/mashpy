@@ -17,7 +17,7 @@ from ..client import AgentClient, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
 from ..spec import AgentSpec
 from .processes import STATUS_UNAVAILABLE, AgentProvider
-from .subagents import AgentMetadata
+from .directory import AgentMetadata
 from .types import AgentRegistration, Host
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ class AgentInUseError(RuntimeError):
 
 
 class Pool:
-    """Deployed pool of role-less agents, workflows, and the hosts composed over them.
+    """Deployed pool of agents, workflows, and the hosts composed over them.
 
     The pool is the unit of deploy; a :class:`Host` is the unit of
     composition. Hosts are in-memory values: define them in code at build
@@ -185,26 +185,24 @@ class Pool:
         return resolved_agent_id
 
     def define_host(self, host: Host) -> Host:
-        if host.primary is None:
-            from mash.agents.companion import COMPANION_AGENT_ID
+        from mash.agents.companion import COMPANION_AGENT_ID
 
-            if COMPANION_AGENT_ID not in self._registered:
-                raise ValueError(
-                    f"host '{host.host_id}' has no primary; name one or call "
-                    "HostBuilder.enable_companion()"
-                )
-            host = replace(host, primary=COMPANION_AGENT_ID)
+        if COMPANION_AGENT_ID not in self._registered:
+            raise ValueError(
+                f"host '{host.host_id}' needs the companion, which routes its "
+                "requests; build the pool with HostBuilder"
+            )
+        if COMPANION_AGENT_ID in host.agents:
+            raise ValueError(
+                f"host '{host.host_id}' lists '{COMPANION_AGENT_ID}', which routes "
+                "every host request; list only the agents it routes to"
+            )
         merged_workflows = tuple(
             dict.fromkeys((*host.workflows, *self._default_workflow_ids))
         )
         if merged_workflows != host.workflows:
-            host = Host(
-                host_id=host.host_id,
-                primary=host.primary,
-                subagents=host.subagents,
-                workflows=merged_workflows,
-            )
-        for agent_id in (host.primary, *host.subagents):
+            host = replace(host, workflows=merged_workflows)
+        for agent_id in host.agents:
             registered = self._registered.get(agent_id)
             if registered is None or registered.is_workflow_agent:
                 raise ValueError(
@@ -246,8 +244,7 @@ class Pool:
 
         return {
             "host_id": host.host_id,
-            "primary": _member(host.primary),
-            "subagents": [_member(agent_id) for agent_id in host.subagents],
+            "agents": [_member(agent_id) for agent_id in host.agents],
             "workflows": list(host.workflows),
         }
 
@@ -255,8 +252,7 @@ class Pool:
         # The host's own workflows, without the pool defaults every host gets.
         return {
             "host_id": host.host_id,
-            "primary": host.primary,
-            "subagents": list(host.subagents),
+            "agents": list(host.agents),
             "workflows": [
                 workflow_id
                 for workflow_id in host.workflows
@@ -273,7 +269,9 @@ class Pool:
         whole snapshot.
         """
         host = self.get_host(host_id)
-        agent_ids = [host.primary, *host.subagents]
+        from mash.agents.companion import COMPANION_AGENT_ID
+
+        agent_ids = [COMPANION_AGENT_ID, *host.agents]
         return {agent_id: self._snapshot_agent_spec(agent_id) for agent_id in agent_ids}
 
     def _snapshot_agent_spec(self, agent_id: str) -> dict[str, Any]:
@@ -327,7 +325,7 @@ class Pool:
 
         host = self.get_host(host_id)
         snapshot = self.snapshot_for(host)
-        if host.primary == COMPANION_AGENT_ID and snapshot["workflows"]:
+        if snapshot["workflows"]:
             # The companion's workflow directory, built from the registered
             # specs.
             listing = format_workflow_list(
@@ -335,7 +333,7 @@ class Pool:
                 for workflow_id in snapshot["workflows"]
             )
             context = "\n\n".join(part for part in (context, listing) if part)
-        request_id = await self.get_client(host.primary).post_request(
+        request_id = await self.get_client(COMPANION_AGENT_ID).post_request(
             message,
             session_id=session_id,
             structured_output=structured_output,
@@ -349,7 +347,7 @@ class Pool:
         )
         return {
             "request_id": request_id,
-            "agent_id": host.primary,
+            "agent_id": COMPANION_AGENT_ID,
             "session_id": session_id,
             "user_id": user_id,
             "status": "accepted",
@@ -469,10 +467,13 @@ class Pool:
 
     def agent_references(self, agent_id: str) -> list[str]:
         """The hosts and workflows that name ``agent_id``."""
+        from mash.agents.companion import COMPANION_AGENT_ID
+
+        # The companion routes every host's requests.
         references = [
             f"host '{host.host_id}'"
             for host in self._hosts.values()
-            if agent_id == host.primary or agent_id in host.subagents
+            if agent_id == COMPANION_AGENT_ID or agent_id in host.agents
         ]
         for workflow in self._workflow_registry.list():
             for step in workflow.steps:
@@ -588,8 +589,7 @@ class Pool:
         return [
             {
                 "host_id": host.host_id,
-                "primary": host.primary,
-                "subagents": list(host.subagents),
+                "agents": list(host.agents),
                 "workflows": list(host.workflows),
             }
             for host in self._hosts.values()

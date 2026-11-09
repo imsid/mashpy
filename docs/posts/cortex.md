@@ -41,9 +41,9 @@ curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
   -d '{"message": "plan a site visit", "session_id": "s-7", "user_id": "u-42"}'
 ```
 
-The host is the trust boundary. The application authenticates to it with the API key and asserts the user, and the host passes `user_id` to the primary's process unchanged. It is stored on the request and on every turn the request saves, and it is never shown to the model.
+The host is the trust boundary. The application authenticates to it with the API key and asserts the user, and the host passes `user_id` to the companion's process unchanged. It is stored on the request and on every turn the request saves, and it is never shown to the model.
 
-Subagent calls are where an agent could try to act as someone else. A primary calls its subagents through the host's `/h2a` relay, and the relay looks up the parent request before forwarding anything:
+The companion's calls to the host's agents are where an agent could try to act as someone else. The companion starts each child through the host's `/h2a` relay, and the relay looks up the parent request before forwarding anything:
 
 ```python
 # src/mash/api/routes/h2a.py
@@ -60,7 +60,7 @@ if "user_id" in body and body.get("user_id") != identity.user_id:
     )
 ```
 
-The forwarded request gets `identity.user_id`, read from `runtime_request`, which records each request's agent and user from its accepted event. The subagent works for the same user as the primary.
+The forwarded request gets `identity.user_id`, read from `runtime_request`, which records each request's agent and user from its accepted event. The child works for the same user as the companion request that started it.
 
 ## What an agent sees
 
@@ -123,7 +123,7 @@ flowchart LR
     W -->|"one transaction,\nversion check"| U
 ```
 
-**collect** loads the user's Cortex and their turns since `built_through`. `MemoryStore.list_user_turns` takes turns across every agent, oldest first, and leaves out workflow turns and subagent turns: the subagent's message is the primary's delegation prompt, and what the subagent did already shows in the primary's trace. For each turn, collect reads the tools it ran from the event log. Arguments come from each `execute_tool.start` event and results from its `execute_tool.end`. It clips messages to 4000 characters, arguments to 500 and results to 1000, keeps 20 tool calls per turn, and stops adding turns at 60000 characters. The rest wait for the next run. Results of `search_cortex` itself are dropped, so memory is never built from memory.
+**collect** loads the user's Cortex and their turns since `built_through`. `MemoryStore.list_user_turns` takes turns across every agent, oldest first, and leaves out workflow turns and child turns: the child's message is the companion's brief, and what the child did already shows in the companion's trace. For each turn, collect reads the tools it ran from the event log. Arguments come from each `execute_tool.start` event and results from its `execute_tool.end`. It clips messages to 4000 characters, arguments to 500 and results to 1000, keeps 20 tool calls per turn, and stops adding turns at 60000 characters. The rest wait for the next run. Results of `search_cortex` itself are dropped, so memory is never built from memory.
 
 **curate** sends the bundle to `cortex-agent`, a tool-less agent whose structured output is a new `profile`, a list of `upserts` and a list of `deletes`. With no new turns it passes the bundle through and the model never runs. Its prompt tells it to keep facts the user stated or confirmed, merge duplicates, delete build entries the new turns contradict, and cite each entry's sources.
 

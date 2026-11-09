@@ -8,9 +8,10 @@ export function buildAgentUsage(hosts = [], workflows = []) {
   };
 
   for (const host of hosts) {
-    add(host.primary, { type: 'host', id: host.host_id, role: 'primary' });
-    for (const agentId of host.subagents || []) {
-      add(agentId, { type: 'host', id: host.host_id, role: 'subagent' });
+    // The companion routes every host's requests to the host's agents.
+    add('companion', { type: 'host', id: host.host_id, role: 'router' });
+    for (const agentId of host.agents || []) {
+      add(agentId, { type: 'host', id: host.host_id, role: 'agent' });
     }
   }
 

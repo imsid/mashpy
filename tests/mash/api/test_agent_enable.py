@@ -28,7 +28,7 @@ def _client():
             .agent(build_spec(agent_id="research", response_text="r"), metadata=metadata())
             .agent(build_spec(agent_id="solo", response_text="solo-ok"), metadata=metadata())
             .agent(build_spec(agent_id="worker", response_text="{}"), metadata=metadata())
-            .host(Host(host_id="assistant", primary="primary", subagents=("research",)))
+            .host(Host(host_id="assistant", agents=("primary", "research")))
             .workflow(
                 WorkflowSpec(
                     workflow_id="wf",
@@ -57,7 +57,12 @@ def test_every_agent_starts_enabled_and_running() -> None:
 
 def test_disable_is_refused_while_a_host_or_workflow_names_the_agent() -> None:
     with _client() as client:
-        for agent_id, reference in (("research", "host 'assistant'"), ("worker", "workflow 'wf'")):
+        for agent_id, reference in (
+            ("research", "host 'assistant'"),
+            ("worker", "workflow 'wf'"),
+            # The companion routes every host's requests.
+            ("companion", "host 'assistant'"),
+        ):
             resp = client.post(f"/api/v1/agent/{agent_id}/disable")
             assert resp.status_code == 409
             assert resp.json()["error"]["code"] == "AGENT_IN_USE"
@@ -83,7 +88,7 @@ def test_a_disabled_agent_takes_no_requests_until_enabled() -> None:
         assert client.get("/api/v1/agent/solo").json()["data"] == {
             "agent": disabled.json()["data"]["agent"]
         }
-        host = client.put("/api/v1/hosts/solo-host", json={"primary": "solo"})
+        host = client.put("/api/v1/hosts/solo-host", json={"agents": ["solo"]})
         assert host.status_code == 400
 
         enabled = client.post("/api/v1/agent/solo/enable")

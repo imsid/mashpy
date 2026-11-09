@@ -25,7 +25,7 @@ from mash.api.admin_ui import get_admin_static_dir
 from mash.api.routes.common import API_KEY_COOKIE
 from mash.runtime import Host, HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
-from mash.testing.runtime_fixtures import build_spec, metadata
+from mash.testing.runtime_fixtures import patch_companion_llm, build_spec, metadata
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
 from mash.workflows.engine import WorkflowRunner
@@ -76,6 +76,8 @@ def _stub_eval_agent_llms():
         side_effect=lambda: build_spec(
             agent_id="eval-judge-agent", response_text="{}"
         ).build_llm(),
+    ), patch_companion_llm(
+        build_spec(agent_id="companion", response_text="companion-ok").build_llm()
     ):
         yield
 
@@ -115,11 +117,7 @@ def _build_test_client(
                 metadata=metadata(),
             )
             .host(
-                Host(
-                    host_id="assistant",
-                    primary="primary",
-                    subagents=("research",),
-                )
+                Host(host_id="assistant", agents=("primary", "research"))
             )
         )
         if workflow_enabled:
@@ -195,22 +193,21 @@ def test_health_and_agent_contract() -> None:
             assert health.status_code == 200
             payload = health.json()["data"]
             assert payload["service"] == "mash-api"
-            assert len(payload["deployment"]["agents"]) == 4
+            assert len(payload["deployment"]["agents"]) == 5
             assert payload["deployment"]["hosts"] == [
                 {
                     "host_id": "assistant",
-                    "primary": "primary",
-                    "subagents": ["research"],
+                    "agents": ["primary", "research"],
                     "workflows": MASHER_WORKFLOW_IDS,
                 }
             ]
 
             agents = client.get("/api/v1/agent")
             assert agents.status_code == 200
-            assert len(agents.json()["data"]["agents"]) == 4
+            assert len(agents.json()["data"]["agents"]) == 5
             assert {
                 item["agent_id"] for item in agents.json()["data"]["agents"]
-            } == {"primary", "research", "eval-agent", "eval-judge-agent"}
+            } == {"primary", "research", "eval-agent", "eval-judge-agent", "companion"}
 
             static_dir = get_admin_static_dir()
             asset_paths = sorted(
@@ -240,9 +237,8 @@ def test_host_routes_define_inspect_and_list() -> None:
             described = client.get("/api/v1/hosts/assistant")
             assert described.status_code == 200
             payload = described.json()["data"]
-            assert payload["primary"]["agent_id"] == "primary"
-            assert payload["subagents"][0]["agent_id"] == "research"
-            assert payload["subagents"][0]["metadata"]["display_name"] == "Research"
+            assert [item["agent_id"] for item in payload["agents"]] == ["primary", "research"]
+            assert payload["agents"][1]["metadata"]["display_name"] == "Research"
 
             missing = client.get("/api/v1/hosts/unknown")
             assert missing.status_code == 404
@@ -251,10 +247,10 @@ def test_host_routes_define_inspect_and_list() -> None:
             # Idempotent define/replace over the API.
             defined = client.put(
                 "/api/v1/hosts/solo",
-                json={"primary": "research"},
+                json={"agents": ["research"]},
             )
             assert defined.status_code == 200
-            assert defined.json()["data"]["primary"]["agent_id"] == "research"
+            assert defined.json()["data"]["agents"][0]["agent_id"] == "research"
             assert [host["host_id"] for host in client.get("/api/v1/hosts").json()["data"]["hosts"]] == [
                 "assistant",
                 "solo",
@@ -262,10 +258,20 @@ def test_host_routes_define_inspect_and_list() -> None:
 
             invalid = client.put(
                 "/api/v1/hosts/bad",
-                json={"primary": "missing-agent"},
+                json={"agents": ["missing-agent"]},
             )
             assert invalid.status_code == 400
             assert invalid.json()["error"]["code"] == "INVALID_HOST"
+
+            # The companion routes every host; a host does not list it.
+            routed = client.put("/api/v1/hosts/bad", json={"agents": ["companion"]})
+            assert routed.status_code == 400
+
+            # The old primary/subagents body is refused, not read as empty.
+            legacy = client.put(
+                "/api/v1/hosts/old", json={"primary": "research", "subagents": []}
+            )
+            assert legacy.status_code == 422
 
 
 def test_host_snapshot_route_returns_live_composition_and_specs() -> None:
@@ -277,11 +283,10 @@ def test_host_snapshot_route_returns_live_composition_and_specs() -> None:
             payload = response.json()["data"]
             assert payload["host_composition"] == {
                 "host_id": "assistant",
-                "primary": "primary",
-                "subagents": ["research"],
+                "agents": ["primary", "research"],
                 "workflows": [],
             }
-            assert set(payload["agent_spec_snapshot"]) == {"primary", "research"}
+            assert set(payload["agent_spec_snapshot"]) == {"companion", "primary", "research"}
 
             missing = client.get("/api/v1/hosts/unknown/snapshot")
             assert missing.status_code == 404
@@ -308,11 +313,7 @@ def test_workflow_list_host_filter() -> None:
 
             attached = client.put(
                 "/api/v1/hosts/assistant",
-                json={
-                    "primary": "primary",
-                    "subagents": ["research"],
-                    "workflows": ["changelog"],
-                },
+                json={"agents": ["primary", "research"], "workflows": ["changelog"]},
             )
             assert attached.status_code == 200
 
@@ -328,7 +329,7 @@ def test_workflow_list_host_filter() -> None:
             assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
 
-def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
+def test_host_request_routes_to_the_companion_and_streams_from_it() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
@@ -338,13 +339,13 @@ def test_host_request_routes_to_primary_and_streams_from_agent() -> None:
             )
             assert submitted.status_code == 200
             accepted = submitted.json()["data"]
-            assert accepted["agent_id"] == "primary"
+            assert accepted["agent_id"] == "companion"
             assert accepted["session_id"] == "s-host-1"
             request_id = accepted["request_id"]
             assert request_id
 
-            payload = _collect_terminal_response(client, "primary", request_id)
-            assert payload["response"]["text"] == "primary-ok"
+            payload = _collect_terminal_response(client, "companion", request_id)
+            assert payload["response"]["text"] == "companion-ok"
 
             missing = client.post(
                 "/api/v1/hosts/unknown/request",
@@ -901,7 +902,7 @@ def test_submit_routes_store_a_callers_traceparent() -> None:
                 headers={"traceparent": traceparent},
             )
             hosted_id = hosted.json()["data"]["request_id"]
-            _collect_terminal_response(client, "primary", hosted_id)
+            _collect_terminal_response(client, "companion", hosted_id)
             assert _accepted_payload(client, hosted_id)["traceparent"] == traceparent
 
             # An invalid header is dropped; the request starts its own trace.
@@ -1343,7 +1344,8 @@ def test_workflow_only_pool_serves_and_completes_runs() -> None:
             with TestClient(app) as client:
                 listed_agents = client.get("/api/v1/agent")
                 assert listed_agents.status_code == 200
-                assert listed_agents.json()["data"]["agents"] == []
+                # Only the companion, which every pool has for its hosts.
+                assert [a["agent_id"] for a in listed_agents.json()["data"]["agents"]] == ["companion"]
 
                 listed = client.get("/api/v1/workflow")
                 assert listed.status_code == 200

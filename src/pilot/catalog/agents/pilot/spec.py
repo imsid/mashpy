@@ -2,7 +2,8 @@
 
 It answers from the mashpy checkout mounted read-only in every sandbox, looks
 things up on the published docs site and the GitHub repository in the user's
-browser, and hands work that builds a Mash app to the builder subagent.
+browser. Building a Mash app is the builder's job; the companion routes those
+requests to it.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from mash.skills.registry import SkillRegistry
 from mash.tools.ask_user import AskUserTool
 from mash.tools.registry import ToolRegistry
 
-from ..._base import APP_NAME, REPO_ROOT, build_primary_llm
+from ..._base import APP_NAME, REPO_ROOT, build_guide_llm
 
 PILOT_AGENT_ID = "pilot"
 
@@ -65,9 +66,10 @@ When the user asks you to analyse data or make a page, chart or file, write and
 run the code with `run_code` in your own folder, and give the user the link
 your code prints.
 
-Delegate to `builder` when the user wants a Mash app built: an agent, a host of
-agents, or a workflow. Pass on what the user asked for, and report back where
-the builder put the app and what it verified.
+Building a Mash app (an agent, a host of agents, or a workflow) is the
+`builder` agent's job, and requests for one go to it. When a brief asks you to
+build one anyway, say that the builder does that and answer the questions
+about Mash that it raises.
 """
 
 
@@ -94,7 +96,7 @@ class PilotSpec(AgentSpec):
         return list(BROWSER_SITES)
 
     def build_llm(self) -> LLMProvider:
-        return build_primary_llm(PILOT_AGENT_ID)
+        return build_guide_llm(PILOT_AGENT_ID)
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
@@ -120,7 +122,7 @@ def build_metadata() -> AgentMetadata:
             "searching the docs site and the GitHub repository",
         ],
         usage_guidance=(
-            "Default entry point for questions about how Mash works. Delegates "
-            "building a Mash app to the builder."
+            "Questions about how Mash works, answered from the source, docs "
+            "and git history. Not for building apps: that is the builder's job."
         ),
     )

@@ -159,16 +159,14 @@ class MashHostClient:
         self,
         host_id: str,
         *,
-        primary: str,
-        subagents: list[str] | None = None,
+        agents: list[str] | None = None,
         workflows: list[str] | None = None,
     ) -> dict[str, Any]:
         response = self._request(
             "PUT",
             f"/api/v1/hosts/{quote(host_id, safe='')}",
             json_body={
-                "primary": primary,
-                "subagents": list(subagents or []),
+                "agents": list(agents or []),
                 "workflows": list(workflows or []),
             },
         )

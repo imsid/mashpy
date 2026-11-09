@@ -5,7 +5,7 @@ from __future__ import annotations
 from mash.agents.masher.spec import _build_eval_llm
 from mash.core.config import AgentConfig
 from mash.core.llm import LLMProvider
-from mash.runtime.host.subagents import AgentMetadata
+from mash.runtime.host.directory import AgentMetadata
 from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry

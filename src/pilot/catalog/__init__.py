@@ -1,8 +1,8 @@
 """The Pilot catalog: every pooled agent the store ships, with its listing.
 
 Each entry pairs an agent factory with the `AgentMetadata` that becomes its
-store listing (and, when the agent serves as a subagent, the delegation
-directory the primary reads). Adding an agent to the store is adding a
+store listing (and the entry in the agent directory the companion routes
+from). Adding an agent to the store is adding a
 package under `agents/` and one entry to `CATALOG`.
 """
 

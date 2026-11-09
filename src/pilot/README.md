@@ -26,8 +26,10 @@ Gemma model over OpenRouter** (`google/gemma-4-31b-it`), read from
 | `OPENROUTER_API_KEY` | Key for the builder and the changelog summarizer (required) | — |
 | `MASH_HOST_SECRET` | Derives each agent's token (required; `openssl rand -hex 32`) | — |
 | `MASH_API_KEY` | The host's API key; the host binds `0.0.0.0` in its container, so it is required (`openssl rand -hex 32`) | — |
-| `PILOT_PRIMARY_MODEL` | Override the guide's model | `gemini-3.5-flash` |
-| `PILOT_SUBAGENT_MODEL` | Override the builder's and summarizer's model | `google/gemma-4-31b-it` |
+| `PILOT_GUIDE_MODEL` | Override the guide's model | `gemini-3.5-flash` |
+| `PILOT_OPEN_MODEL` | Override the builder's and summarizer's model | `google/gemma-4-31b-it` |
+| `COMPANION_AGENT_GEMINI_MODEL` | Override the companion's model (it uses `GEMINI_API_KEY`) | `gemini-3.5-flash` |
+| `COMPANION_AGENT_THINKING_LEVEL` | The companion's Gemini thinking level; empty for the model's default | `low` |
 
 ## Quick start
 
@@ -77,20 +79,10 @@ profiles are kept.
 | `pilot` | The guide. Answers questions about Mash from the mounted source, docs and git history, and searches the published docs site (`imsid.github.io`) and the GitHub repository in your browser. |
 | `builder` | Builds Mash apps in its folder of your sandbox (`/home/agent/workspaces/builder/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
 
-The `guide` host names no primary, so the built-in `companion` is its primary.
-For each message the companion picks `pilot`, `builder`, both, or the
-`pilot-changelog` workflow, continues an agent's earlier session when you
-follow up on its work, and writes the answer. The host config file starts
-with `guide-baseline`, the same agents with `pilot` as the primary, to compare
-against:
-
-```bash
-pilot repl --host guide-baseline
-```
-
-A `guide` entry in an older `~/.pilot/hosts.json` names `pilot` as primary and
-replaces the companion's `guide` on the deployment when `pilot repl` publishes
-the file. Remove that entry to get the companion back.
+The `guide` host is `pilot`, `builder` and the `pilot-changelog` workflow.
+Every request to it goes to the built-in `companion`, which picks `pilot`,
+`builder`, both, or the workflow for each message, continues an agent's
+earlier session when you follow up on its work, and writes the answer.
 
 ## A workflow it ships
 

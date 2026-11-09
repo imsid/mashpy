@@ -13,8 +13,8 @@ built-in API server.
 This skill covers a single agent: its spec, tools, LLM provider, config, and
 how to run and connect to it. Two sibling skills cover the rest:
 
-- **`build-mash-host`** — composing several agents into a host with a primary
-  and subagents.
+- **`build-mash-host`** — composing several agents and workflows into a host
+  that the companion routes.
 - **`build-mash-workflow`** — durable step pipelines (`WorkflowSpec`,
   `CodeStep`, `AgentStep`).
 
@@ -101,8 +101,8 @@ def build_pool():
 ```
 
 `AgentMetadata` is required for every pooled agent — registration rejects an
-agent without it. It is the self-description delegation decisions are made
-from, so write it like routing documentation, not marketing copy.
+agent without it. It is the self-description the companion routes host
+requests by, so write it like routing documentation, not marketing copy.
 
 ### tools.py — Custom Tools
 
@@ -300,6 +300,7 @@ AgentConfig(
     compaction_token_threshold=0,         # summarize history past this token count (0 = off)
     compaction_turn_limit=50,             # how many recent turns the summary keeps when compaction runs
     compaction_temperature=0.0,           # sampling temperature for the summary pass
+    provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
@@ -341,7 +342,7 @@ mash host serve --host-app {project_name}.spec:build_pool --port 8000
 # (validates the URL and key against /health)
 mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
 
-# Talk to the agent directly (bare mode, no delegation)
+# Talk to the agent directly (bare mode, without the companion)
 mash repl --agent assistant
 ```
 

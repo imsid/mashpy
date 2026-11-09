@@ -7,7 +7,7 @@
 - Core types remain reusable across local runtimes, hosted APIs, and built-in agents.
 
 ## Change Rules
-- Keep `core` generic; do not mix in API, CLI, or subagent-host policy.
+- Keep `core` generic; do not mix in API, CLI, or host routing policy.
 - Preserve tool-call schema behavior and response metadata relied on by downstream runtime code.
 - If core execution defaults change, update downstream docs and tests that depend on that behavior.
 

@@ -36,9 +36,10 @@ harness and observability underneath.
 ## One Host, Composable Agents
 
 Mash deployments are a pool of agents plus the host compositions defined
-over them. A host names one agent as primary and a set of subagents; the
-primary delegates to those specialists without a separate coordination layer
-outside the runtime. A host can be composed from those agents in code at build
+over them. A host names a set of agents and workflows. Every request to a host
+runs on the built-in companion, which routes each message to the right agents
+or workflow, continues an agent's earlier session on a follow-up, and writes
+the answer, all inside the runtime. A host can be composed from those agents in code at build
 time, or at runtime over the API/CLI. This allows hosts to be [dynamic in their
 composition](building-dynamic-hosts-apis.md) without requiring a deploy.
 
@@ -48,7 +49,7 @@ pool = (
     .agent(PilotSpec(),   metadata=AgentMetadata(...))
     .agent(CliCopilot(),  metadata=AgentMetadata(...))
     .agent(ApiCopilot(),  metadata=AgentMetadata(...))
-    .host(Host(host_id="pilot", primary="pilot", subagents=("cli-copilot", "api-copilot")))
+    .host(Host(host_id="guide", agents=("pilot", "cli-copilot", "api-copilot")))
     .build()
 )
 ```
@@ -150,7 +151,7 @@ Mash ships with runtime tools that are available to every agent out of the box:
 - **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for when the host has sandboxes; the two file tools copy files in and out of folders the spec declares, and exist only when it declares some
 - **browser_navigate**, **browser_snapshot**, **browser_click** and the rest of Playwright MCP's page tools, plus **browser_save**, **browser_upload** and **browser_handoff**: drive the browser of the user the request acts for, on the sites the spec lists with `browser_sites()`, and exist only for a spec that lists some
 - **AskUserTool**: pause execution to ask the user a question
-- **RunSubAgents**: run one or more requests at the same time on registered subagents or the agent itself, and return their results in order
+- **RunSubAgents**: the companion's routing tool; run one or more requests at the same time on the host's agents, each in a session of its own, and return their results in order
 - **search_conversations**: search stored conversation turns and return ranked previews
 - **get_full_turn_message**: expand search results into full turn text
 
@@ -184,7 +185,7 @@ main tables:
 |---|---|---|
 | `runtime_event_log` | runtime | Append-only, ordered event stream for every request. The runtime replays from it across restarts, and trace analysis and the telemetry views are computed from it. |
 | `runtime_feedback` | runtime | Notes submitted through `/feedback`, read back through the feedback API. |
-| `memory_turns` | memory | One row per turn (user message, agent response, running token total). The replayable turns are the conversation history context loading feeds into a request; workflow and subagent turns are stored here too but excluded from replay. |
+| `memory_turns` | memory | One row per turn (user message, agent response, running token total). The replayable turns are the conversation history context loading feeds into a request; workflow turns are stored here too but excluded from replay. |
 | `memory_signals` | memory | Named signals emitted on a turn, stored as values keyed to that turn. |
 | `workflow_runs`, `workflow_steps`, `workflow_step_events` | workflow | One row per workflow run, per-step input/output snapshots, and the append-only step lifecycle audit behind durable resume and the step audit trail. |
 
@@ -332,7 +333,7 @@ envelope carrying `workflow_id`, `workflow_run_id`, `step_id`,
 `workflow_input`, and its coerced `input`, and must return structured output
 matching the step's output schema. The step can target a pooled agent by id or
 carry its own `agent_spec`, which registers as a workflow-only agent hidden
-from listings and delegation.
+from listings and hosts.
 
 Runs are durable and observable. The host runs each run, a failed run
 resumes from the failed step with completed steps skipped and their stored
@@ -349,8 +350,8 @@ in full.
 ## Evals
 
 The host is the unit of deploy and the unit of evaluation. Mash evals run a
-dataset through the full composition, primary agent, delegation, and
-subagents, so what gets scored is the response the application actually
+dataset through the full composition, the companion's routing and the agents
+it runs, so what gets scored is the response the application actually
 receives. Synthetic evals ship as two Masher workflows backed by Mash's built-in
 generation and judging agents. `HostBuilder.enable_evals()` registers both
 agents and both workflows; their specs then appear in agent listings.
@@ -367,7 +368,7 @@ agents and both workflows; their specs then appear in agent listings.
 
 Each run records two kinds of signal. Deterministic quantitative metrics come
 from the row's runtime events: latency, tokens with the cached read/write
-split, steps, tool calls, per-subagent breakdowns. Qualitative criteria are
+split, steps, tool calls, per-agent breakdowns. Qualitative criteria are
 non-deterministic and scored by the eval agent, each with a rationale.
 Comparison is computed at read time over any two experiments of the same
 eval: the agent spec delta from the snapshots, score movement per criterion
@@ -383,7 +384,7 @@ full.
 
 When agents run as operational software, producing the right answer is not
 enough; teams also need to know where the time went, down to the level of a
-single tool call or a subagent delegation. Mash ships observability across the
+single tool call or a single routed agent. Mash ships observability across the
 runtime, API, UI, and CLI, so every trace is inspectable the moment it
 completes, without wiring up a third-party APM or building a post-processing
 pipeline first.
@@ -418,14 +419,14 @@ invoke_agent assistant
 The trace analysis computed from these spans includes:
 
 - **Timing breakdown**: total duration, cold start, context load, model calls,
-  tool execution, subagent calls, and idle time, each with absolute and
+  tool execution, child requests, and idle time, each with absolute and
   percentage values
 - **Per-tool stats**: call count, total/avg/max/min latency, error count,
   sorted by total time so the most expensive tool surfaces first
 - **Per-step breakdown**: model call, tool, and overhead time for each agent loop
   iteration
 - **Slowest operations**: top 10 spans ranked by duration
-- **Subagent traces**: each `RunSubAgents` child is nested under the call that
+- **Child traces**: each `RunSubAgents` child is nested under the call that
   started it and analyzed on its own
 
 ### Telemetry API
@@ -450,9 +451,8 @@ running deployment.
 Overview reports deployment health: counts of agents, hosts, and sessions, plus
 a per-day chart of requests and tokens across the pool.
 
-Agents lists the role-less pool as cards. Each card shows the agent's display
-name, description, capabilities, usage guidance, and the hosts that use it as
-primary or subagent. Clicking a card opens that agent's logs.
+Agents lists the pool as cards. Each card shows the agent's display name,
+description, capabilities, usage guidance, and the hosts it belongs to. Clicking a card opens that agent's logs.
 
 Tools and Skills list everything registered across the agent pool, each with a
 detail view showing which agents carry it.
@@ -460,8 +460,7 @@ detail view showing which agents carry it.
 Workflows lists the workflows registered in the pool with the task chain each
 one runs, every task next to the agent that runs it.
 
-Hosts shows the host compositions: which agent is primary and which are
-subagents for each host.
+Hosts shows the host compositions: the agents and workflows of each host.
 
 Evals drives the eval loop: generate an eval for a host, inspect its dataset
 and rubric, run experiments, and compare two experiments down to per-row score
@@ -507,7 +506,7 @@ and converse through it.
 ```bash
 mash host serve --host-app <MASH_HOST> --port 8001
 mash connect --api-base-url <MASH_HOST_URL> --api-key secret --user-id u-1
-mash compose --host pilot --primary pilot --subagents cli-copilot,api-copilot
+mash compose --host guide --agents pilot,cli-copilot,api-copilot
 mash repl
 ```
 
@@ -519,10 +518,10 @@ CLI's target. The same endpoint is open to any application, so an integration
 can assemble its agent team at runtime without redeploying:
 
 ```bash
-curl -X PUT <MASH_HOST_URL>/api/v1/hosts/pilot \
-  -d '{"primary": "pilot", "subagents": ["cli-copilot", "api-copilot"]}'
+curl -X PUT <MASH_HOST_URL>/api/v1/hosts/guide \
+  -d '{"agents": ["pilot", "cli-copilot", "api-copilot"]}'
 
-curl -X POST <MASH_HOST_URL>/api/v1/hosts/pilot/request \
+curl -X POST <MASH_HOST_URL>/api/v1/hosts/guide/request \
   -d '{"message": "...", "session_id": "s-1", "user_id": "u-1"}'
 ```
 

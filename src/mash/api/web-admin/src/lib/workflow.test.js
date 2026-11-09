@@ -84,9 +84,9 @@ test('workflow event URLs encode definition and run ids', () => {
   );
 });
 
-test('agent usage includes host roles and workflow step dependencies', () => {
+test('agent usage includes host membership and workflow step dependencies', () => {
   const usage = buildAgentUsage(
-    [{ host_id: 'main', primary: 'primary', subagents: ['research'] }],
+    [{ host_id: 'main', agents: ['research'] }],
     [{
       workflow_id: 'gen-synthetic-evals',
       steps: [{ step_id: 'generate', kind: 'agent', agent_id: 'eval-agent' }],
@@ -95,8 +95,11 @@ test('agent usage includes host roles and workflow step dependencies', () => {
       steps: [{ step_id: 'judge-rows', kind: 'code', agent_ids: ['eval-judge-agent'] }],
     }],
   );
-  assert.deepEqual(usage.get('primary'), [
-    { type: 'host', id: 'main', role: 'primary' },
+  assert.deepEqual(usage.get('research'), [
+    { type: 'host', id: 'main', role: 'agent' },
+  ]);
+  assert.deepEqual(usage.get('companion'), [
+    { type: 'host', id: 'main', role: 'router' },
   ]);
   assert.deepEqual(usage.get('eval-agent'), [
     { type: 'workflow', id: 'gen-synthetic-evals', role: 'generate' },
