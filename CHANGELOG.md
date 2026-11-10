@@ -9,6 +9,17 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.38.0](https://github.com/imsid/mashpy/compare/mashpy-v0.37.0...mashpy-v0.38.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** the companion relays its children's interactions to the user ([#274](https://github.com/imsid/mashpy/issues/274))
+
+### Features
+
+* **runtime:** the companion relays its children's interactions to the user ([#274](https://github.com/imsid/mashpy/issues/274)) ([10e6b90](https://github.com/imsid/mashpy/commit/10e6b903dd085abe62ef005b9975c1af768e5a27))
+
 ## [0.37.0](https://github.com/imsid/mashpy/compare/mashpy-v0.36.0...mashpy-v0.37.0) (2026-11-09)
 
 
