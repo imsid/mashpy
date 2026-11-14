@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+
+from .input import PROMPT, InputLine, MenuEntry, history_path
 
 if TYPE_CHECKING:
     from .types import CLIContext
@@ -50,17 +47,11 @@ class REPL:
             f"Connected to {self.app_id}. Type /help for commands."
         )
 
-        # Setup prompt
-        command_words = self._get_command_words()
-        completer = WordCompleter(command_words, ignore_case=True)
-        history = FileHistory(str(self._get_history_path()))
-        key_bindings = self._build_key_bindings(ctx)
         prompt_style = Style.from_dict({"prompt": "bold cyan"})
-
-        session: PromptSession[str] = PromptSession(
-            history=history,
-            completer=completer,
-            auto_suggest=AutoSuggestFromHistory(),
+        line_input = InputLine(
+            history=history_path(self.app_id),
+            commands=self._command_menu,
+            key_bindings=self._build_key_bindings(ctx),
         )
 
         # Main loop
@@ -69,17 +60,13 @@ class REPL:
                 # raw: notices that background threads print above the
                 # prompt keep their colors instead of showing escaped codes.
                 with patch_stdout(raw=True):
-                    line = session.prompt(
-                        [("class:prompt", "> ")],
-                        style=prompt_style,
-                        key_bindings=key_bindings,
-                        complete_while_typing=True,
+                    line = line_input.prompt(
+                        [("class:prompt", PROMPT)], style=prompt_style
                     )
             except (KeyboardInterrupt, EOFError):
                 ctx.renderer.warn("Bye.")
                 return
 
-            line = line.strip()
             if not line:
                 continue
 
@@ -98,20 +85,12 @@ class REPL:
             except Exception as e:
                 ctx.renderer.error(f"Error: {str(e)}")
 
-    def _get_command_words(self) -> List[str]:
-        """Get list of command words for completion."""
-        words: List[str] = []
-        for command in self.command_registry.list_commands():
-            words.append(f"/{command.name}")
-            for alias in command.aliases:
-                words.append(f"/{alias}")
-        return sorted(set(words))
-
-    def _get_history_path(self) -> Path:
-        """Get path to history file."""
-        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in self.app_id)
-        slug = slug.strip("_") or "mash"
-        return Path(f".{slug}_history")
+    def _command_menu(self) -> List[MenuEntry]:
+        """Each command's name and help, for the ``/`` menu."""
+        return [
+            (command.name, command.help)
+            for command in self.command_registry.list_commands()
+        ]
 
     def _build_key_bindings(self, ctx: CLIContext) -> KeyBindings:
         """Build key bindings for the REPL."""

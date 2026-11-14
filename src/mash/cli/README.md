@@ -119,6 +119,31 @@ For a `browser` handoff it prints the prompt and the live-view link, opens the
 link in your browser, and waits: press Enter when you are done in the browser,
 or type `cancel`.
 
+### Input
+
+The input line is a `prompt_toolkit` session (`input.py`). Its editing comes
+from the library:
+
+- Enter sends the message. Alt+Enter, Ctrl-J, or `\` then Enter add a line.
+- Up and Down move between the lines of a message. On the first or last line
+  they step through history, and the unsent draft comes back on the way down.
+- Shift+arrows, Shift+Home and Shift+End select. Typing replaces the
+  selection and Backspace deletes it.
+- Ctrl-W cuts the previous word or the selection, Ctrl-K and Ctrl-U cut to the
+  end and start of the line, and Ctrl-Y pastes. Cut text also goes to the
+  system clipboard through `pyperclip`; where it finds no clipboard mechanism
+  the cut text stays available inside the input.
+- Ctrl-_ undoes. Ctrl-X Ctrl-E opens the draft in `$EDITOR`.
+- A paste never sends the message. A paste of more than 20 lines shows as
+  `[pasted 84 lines #1]` and is sent in full.
+- `/` opens the command menu with each command's description, filtered as you
+  type.
+- History is kept per app in `~/.mash/history/`.
+
+Shift+Enter is the same key as Enter in most terminals, so it sends. A mouse
+selection belongs to the terminal: it copies output, and Delete does not erase
+it in the input. Shift+Up/Down and Option-as-Meta depend on terminal settings.
+
 Each `/command` invocation is wrapped in `command.start` and
 `command.complete`/`command.error` events. The remote shell ships them
 best-effort to the deployment (`POST /telemetry/command-events`), where they land
@@ -133,6 +158,7 @@ slow or unreachable.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in shell commands.
 - `background.py`: `/bg` parsing, id prefixes, the `--list` tree, the Ctrl-Z handler, and the threads that follow `bg` requests while the prompt is idle.
 - `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained child output.
+- `input.py`: the input line: the `prompt_toolkit` session, the Enter and paste bindings, the `/` menu, and the clipboard.
 - `config.py`, `repl.py`, and `types.py`: saved connection config and shell state types.
 
 ### Live token streaming
