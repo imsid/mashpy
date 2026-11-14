@@ -462,6 +462,16 @@ async def set_request_mode(
     return {"request_id": request_id, "agent_id": self.app_id, "mode": mode}
 
 
+def _stream_event(event: RuntimeEvent) -> dict[str, Any]:
+    """One stored event's SSE frame with ``seq``, its place in the request's stream.
+
+    A reader that reconnects passes the last ``seq`` it saw as the cursor.
+    """
+    frame = to_public_event(event)
+    frame["seq"] = int(event.request_seq or 0)
+    return frame
+
+
 async def stream_response_events(
     self: "AgentRuntime",
     request_id: str,
@@ -482,7 +492,7 @@ async def stream_response_events(
         request_id,
         after_seq=max(0, int(cursor)),
     )
-    public_events = [to_public_event(event) for event in stored_events]
+    public_events = [_stream_event(event) for event in stored_events]
     next_cursor = int(cursor)
     if stored_events:
         next_cursor = int(stored_events[-1].request_seq or 0)
@@ -499,7 +509,7 @@ async def stream_response_events(
             request_id,
             after_seq=max(0, int(cursor)),
         )
-        public_events = [to_public_event(event) for event in stored_events]
+        public_events = [_stream_event(event) for event in stored_events]
         if stored_events:
             next_cursor = int(stored_events[-1].request_seq or 0)
         return public_events, next_cursor, done

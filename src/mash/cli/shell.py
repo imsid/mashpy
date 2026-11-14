@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import requests
 from rich.markup import escape
 
 from mash.runtime.events import (
@@ -113,8 +112,8 @@ class MashRemoteShell:
         register_default_commands(self)
 
     def _watcher_client(self) -> Any:
-        copy = getattr(self.client, "copy", None)
-        return copy() if callable(copy) else self.client
+        # httpx.Client is safe to share between threads.
+        return self.client
 
     def _render_notice(self, notice: Notice) -> None:
         # Escaped: Rich would read a short id like "[a1b2c3d4]" as markup.
@@ -368,7 +367,7 @@ class MashRemoteShell:
                     return True
                 if event_name in {"request.completed", "request.cancelled"}:
                     break
-        except (MashHostClientError, requests.RequestException) as exc:
+        except MashHostClientError as exc:
             # One child's broken stream must not end the parent's.
             self.renderer.error(f"    Subagent {agent_id}: {exc}")
             return True

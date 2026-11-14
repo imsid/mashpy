@@ -843,14 +843,13 @@ class MashRemoteShellTests(unittest.TestCase):
         error.assert_not_called()
 
     def test_a_childs_dropped_stream_does_not_end_the_parent(self) -> None:
-        import requests
 
         shell = self._build_shell()
         parent_stream = shell.client.stream_request
 
         def stream(agent_id: str, request_id: str):
             if request_id == "sub-1":
-                raise requests.exceptions.ChunkedEncodingError("Response ended prematurely")
+                raise MashHostClientError("Response ended prematurely")
             yield from parent_stream(agent_id, request_id)
 
         _fake(shell).stream_request = stream

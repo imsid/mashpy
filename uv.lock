@@ -835,7 +835,7 @@ wheels = [
 
 [[package]]
 name = "mashpy"
-version = "0.33.0"
+version = "0.38.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -851,7 +851,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "requests" },
     { name = "rich" },
     { name = "starlette" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
@@ -897,7 +896,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", specifier = ">=13.7.1" },
     { name = "starlette", specifier = ">=0.52.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },

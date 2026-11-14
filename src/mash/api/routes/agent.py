@@ -243,7 +243,14 @@ def build_agent_router() -> APIRouter:
         request: Request,
         agent_id: str,
         request_id: str,
+        after: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
+        """Stream the request's events as SSE, each with its seq as ``id:``.
+
+        ``after`` is the seq of the last event the reader has: the stream
+        starts at the next one, so a reader that lost its connection continues
+        where it stopped. Without it the stream starts at the first event.
+        """
         client = get_client(request, agent_id)
         normalized_request_id = request_id.strip()
         if not normalized_request_id:
@@ -255,10 +262,14 @@ def build_agent_router() -> APIRouter:
 
         async def _generate() -> AsyncIterator[str]:
             try:
-                async for event in client.stream_response(normalized_request_id):
+                async for event in client.stream_response(
+                    normalized_request_id, after=after
+                ):
                     event_name = str(event.get("event") or "message")
                     payload = event.get("data")
-                    yield build_runtime_event_sse_payload(event_name, payload)
+                    yield build_runtime_event_sse_payload(
+                        event_name, payload, seq=event.get("seq")
+                    )
                     if event_name in {
                         "request.completed",
                         "request.error",

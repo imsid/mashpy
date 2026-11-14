@@ -258,8 +258,13 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Path params:
   - `agent_id`
   - `request_id`
+- Query params:
+  - `after` (optional, default `0`): the `id` of the last event the reader
+    has. The stream starts at the next event. A reader that lost its
+    connection passes the last `id` it saw and misses or repeats nothing.
 - Response type: `text/event-stream`
 - Emits runtime events with:
+  - `id: <seq>`, the event's place in the request's stream, starting at 1
   - `event: <event_name>`
   - `data: <json payload>`
 - Streamed token output arrives as `event: agent.trace` frames whose

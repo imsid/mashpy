@@ -34,6 +34,7 @@ class _Runtime:
         self.store = _Store()
         self.calls: list[tuple[str, str]] = []
         self.answers: list[tuple[str, str, object]] = []
+        self.cursors: list[int] = []
 
     async def open(self) -> None:
         return None
@@ -64,9 +65,16 @@ class _Runtime:
     async def set_request_mode(self, request_id: str, mode: str) -> dict:
         return await self._record("mode", request_id)
 
-    async def stream_response_events(self, request_id: str, **_: object):
+    async def stream_response_events(
+        self, request_id: str, *, cursor: int = 0, **_: object
+    ):
         await self._record("events", request_id)
-        return [], 0, True
+        self.cursors.append(cursor)
+        events = [
+            {"event": "agent.trace", "data": {"n": seq}, "seq": seq}
+            for seq in range(cursor + 1, 4)
+        ]
+        return events, 3, True
 
     async def answer_interaction(
         self, request_id: str, interaction_id: str, response: object
@@ -96,6 +104,25 @@ class AgentServerControlRouteTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.client.__exit__(None, None, None)
+
+    def test_the_stream_starts_after_the_cursor_and_sends_each_seq_as_an_id(self) -> None:
+        resp = self.client.get("/agent/agent-a/request/req-1", params={"after": 1})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.runtime.cursors, [1])
+        self.assertEqual(
+            resp.text,
+            'id: 2\nevent: agent.trace\ndata: {"n": 2}\n\n'
+            'id: 3\nevent: agent.trace\ndata: {"n": 3}\n\n',
+        )
+
+    def test_the_stream_without_a_cursor_starts_at_the_first_event(self) -> None:
+        resp = self.client.get("/agent/agent-a/request/req-1")
+        self.assertEqual(self.runtime.cursors, [0])
+        self.assertTrue(resp.text.startswith("id: 1\n"))
+
+    def test_a_cursor_that_is_not_a_number_is_rejected(self) -> None:
+        resp = self.client.get("/agent/agent-a/request/req-1", params={"after": "x"})
+        self.assertEqual(resp.status_code, 400)
 
     def test_routes_call_the_runtime_and_return_its_result(self) -> None:
         for method, op in ROUTES:

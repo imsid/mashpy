@@ -30,7 +30,6 @@ dependencies = [
   "prompt_toolkit>=3.0.36",
   "python-dotenv>=1.0.0",
   "PyYAML>=6.0.2",
-  "requests>=2.31.0",
   "rich>=13.7.1",
   "starlette>=0.52.0",
   "tomli>=2.0.1; python_version < '3.11'",
