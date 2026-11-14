@@ -168,6 +168,13 @@ mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
 mash repl --agent assistant
 ```
 
+For a script, `mash run` submits one request, prints its answer on stdout and
+exits:
+
+```bash
+mash run --agent assistant "summarize yesterday's errors"
+```
+
 ## Minimal Workflow-Only Scaffold
 
 A pool needs no user agents. A workflow of pure `CodeStep`s deploys the same
@@ -205,7 +212,8 @@ def build_pool():
 ```
 
 Run it the same way, then start runs over the API
-(`POST /api/v1/workflow/export/run`) or the CLI. `mash workflows` lists the
+(`POST /api/v1/workflow/export/run`) or the CLI
+(`mash workflow run export --input '{"table": "bills"}'`). `mash workflows` lists the
 deployment's workflows.
 
 ## AgentSpec Contract
@@ -831,7 +839,8 @@ pool = (
   user's sandbox. A resumed run keeps its user.
 - Run, resume, inspect, and stream over the API (`POST /workflow/{id}/run`,
   `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
-  the REPL (`/workflow run|status|resume`, which runs for the connection's user).
+  the REPL (`/workflow run|status|resume`, which runs for the connection's user)
+  or the shell (`mash workflow run|status|resume`).
 
 ## Cortex (User Memory)
 

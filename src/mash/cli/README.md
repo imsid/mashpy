@@ -32,6 +32,12 @@ Host-facing commands
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
 - `repl [common] [--session-id ID | --continue | --resume] [--debug]`: start the REPL, pinned to the resolved target and user. Without a session flag it starts a new session. `--continue` goes on in the user's most recent session for the target, `--resume` opens a picker of the user's sessions (first message, turns, time since last activity), and `--session-id` names one. A resumed session starts with its last two turns, dimmed. `--debug` starts it at the detail level, which Ctrl-O also switches. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
+- `run [common] [MESSAGE] [--session-id ID | --continue] [--json]`: submit one request, print its answer and exit. The message is the argument, or stdin when there is none (`git diff | mash run`). The answer goes to stdout as the agent wrote it. Tool and subagent lines go to stderr when stderr is a terminal, so a pipe gets the answer alone. `--json` prints each stream event as one JSON object per line. Without a session flag the request starts a new session. The exit status is 0 when the request completed, 1 when it failed, 2 when it asked for input (an approval, a question, a browser handoff), in which case it is cancelled, and 130 on Ctrl-C, which also cancels it.
+- `workflow list [common]`: list the workflows the target can run.
+- `workflow run [common] WORKFLOW_ID [--input JSON | --input @FILE] [--dedup-key KEY] [--no-follow]`: start a run for the connection's user and follow its steps to the result. `--no-follow` prints the run id and exits. A workflow of code steps runs without a user.
+- `workflow status [common] WORKFLOW_ID RUN_ID`: show a run's status, steps and result.
+- `workflow resume [common] WORKFLOW_ID RUN_ID`: resume a failed run from its failed step.
+- The `workflow` commands exit 1 when the command or a step fails.
 
 Host management
 
@@ -114,7 +120,7 @@ Deployment
 - `/agents`: the agents the REPL's requests can reach, each with its display name, description, capabilities and usage guidance. On a host these are the host's agents, which the companion routes to; with `--agent` it is that agent.
 - `/tools`: the tools and skills of those agents.
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
-- `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the REPL's user.
+- `/workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]`: start a workflow run for the REPL's user and follow its steps. `--no-follow` prints the run id and returns.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
 - `/memory`: the user's Cortex profile and entries. `/memory add <text>` pins a fact (`topic: fact` names its topic) and `/memory forget <id>` removes an entry. On a deployment without Cortex it says so.
 - `/browser`: the sites the user's browser is signed in to. `/browser forget <site>` signs out of one.
@@ -233,6 +239,7 @@ slow or unreachable.
 
 ## Main Components
 - `main.py`: top-level parser, command dispatch, and command execution.
+- `oneshot.py`: `mash run`: one request, its answer on stdout, an exit status.
 - `client.py`: HTTP client used to talk to hosted Mash agents.
 - `repl.py`: the REPL loop. It owns the input, follows the foreground request and its children as asyncio tasks, queues messages, and asks interactions.
 - `views.py`: the state of one request and `reduce`, which applies a stream event to it and returns the output that event finished. It prints nothing.
@@ -241,7 +248,7 @@ slow or unreachable.
 - `sessions.py`: the session picker's rows.
 - `input.py`: the input line: the `prompt_toolkit` session, the Enter and paste bindings, the `/` menu, and the clipboard.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in commands. A handler may be a plain function, which runs on a thread, or a coroutine function.
-- `background.py`: `/bg` parsing, id prefixes, the `--list` tree, and the tasks that follow `bg` requests.
+- `background.py`: `/bg` parsing, id prefixes, the `list` tree, and the tasks that follow `bg` requests.
 - `config.py` and `types.py`: saved connection config and the context passed to commands.
 
 ## Public Exports

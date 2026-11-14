@@ -433,3 +433,204 @@ def test_importing_the_library_reads_no_dotenv() -> None:
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, user_id: str | None = "u-42",
+              stdin: str | None = None):
+    """Run ``mash run`` with a fake client; return (exit code, run_once mock, client)."""
+    import io
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import main as cli_main
+    from mash.cli.config import CLIConfig
+
+    client = MagicMock()
+    client.list_sessions.return_value = sessions or []
+    once = MagicMock(return_value=0)
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id=user_id)
+    patches = [
+        patch.object(cli_main, "MashHostClient", return_value=client),
+        patch.object(cli_main, "load_config", return_value=existing),
+        patch.object(cli_main, "run_once", once),
+    ]
+    if stdin is not None:
+        patches.append(patch.object(cli_main.sys, "stdin", io.StringIO(stdin)))
+    for item in patches:
+        item.start()
+    try:
+        code = cli_main.main(["run", "--agent", "primary", *argv])
+    finally:
+        for item in reversed(patches):
+            item.stop()
+    return code, once, client
+
+
+def test_run_submits_the_message_in_a_new_session() -> None:
+    code, once, client = _one_shot(["why was march high"])
+    assert code == 0
+    kwargs = once.call_args.kwargs
+    assert once.call_args.args == (client,)
+    assert kwargs["session_id"]
+    assert {key: value for key, value in kwargs.items() if key != "session_id"} == {
+        "agent_id": "primary", "host_id": None, "user_id": "u-42",
+        "message": "why was march high", "json_output": False,
+    }
+    client.list_sessions.assert_not_called()
+
+
+def test_run_returns_the_requests_exit_status() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import main as cli_main
+    from mash.cli.config import CLIConfig
+
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
+    with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
+        cli_main, "load_config", return_value=existing
+    ), patch.object(cli_main, "run_once", MagicMock(return_value=2)):
+        assert cli_main.main(["run", "--agent", "primary", "deploy"]) == 2
+
+
+def test_run_reads_the_message_from_stdin_and_takes_json() -> None:
+    code, once, _ = _one_shot(["--json"], stdin="summarize this\n")
+    assert code == 0
+    assert once.call_args.kwargs["message"] == "summarize this"
+    assert once.call_args.kwargs["json_output"] is True
+
+
+def test_run_continue_goes_on_in_the_users_latest_session() -> None:
+    code, once, client = _one_shot(["--continue", "and april?"], sessions=_SESSIONS[:1])
+    assert code == 0
+    client.list_sessions.assert_called_once_with("primary", user_id="u-42", limit=1)
+    assert once.call_args.kwargs["session_id"] == "s-new"
+
+
+def test_run_session_id_names_the_session_and_excludes_continue(capsys) -> None:
+    code, once, client = _one_shot(["--session-id", "s-7", "hi"])
+    assert code == 0
+    assert once.call_args.kwargs["session_id"] == "s-7"
+    client.list_sessions.assert_not_called()
+    with pytest.raises(SystemExit):
+        _one_shot(["--session-id", "s-7", "--continue", "hi"])
+    capsys.readouterr()
+
+
+def test_run_requires_a_user_id_and_a_message(capsys) -> None:
+    code, once, _ = _one_shot(["hi"], user_id=None)
+    assert code == 1
+    assert "a user id is required" in capsys.readouterr().out
+    code, once, _ = _one_shot([], stdin="  \n")
+    assert code == 1
+    once.assert_not_called()
+    assert "empty" in capsys.readouterr().out
+
+
+class _WorkflowClient:
+    """The client calls ``mash workflow`` makes, recorded."""
+
+    def __init__(self, events: list[dict] | None = None) -> None:
+        self.runs: list[dict] = []
+        self.resumed: list[tuple[str, str]] = []
+        self.status: list[tuple[str, str]] = []
+        self.events = events if events is not None else [
+            {"event": "step.started", "data": {"step_id": "scan"}},
+            {"event": "step.completed", "data": {"step_id": "scan"}},
+            {"event": "workflow.completed", "data": {"result": {"rows": 3}}},
+        ]
+
+    def list_agents(self):
+        return [{"agent_id": "primary"}]
+
+    def list_workflows(self, *, host=None):
+        return [{"workflow_id": "export", "step_count": 1,
+                 "step_preview": [{"step_id": "export", "kind": "code"}]}]
+
+    def run_workflow(self, workflow_id, *, dedup_key=None, workflow_input=None, user_id=None):
+        self.runs.append({"workflow_id": workflow_id, "dedup_key": dedup_key,
+                          "workflow_input": workflow_input, "user_id": user_id})
+        return {"workflow_id": workflow_id, "run_id": "run-1", "status": "queued"}
+
+    def stream_workflow_run(self, workflow_id, run_id):
+        yield from self.events
+
+    def get_workflow_run(self, workflow_id, run_id):
+        self.status.append((workflow_id, run_id))
+        return {"workflow_id": workflow_id, "run_id": run_id, "status": "completed",
+                "steps": [], "result": {"rows": 3}}
+
+    def resume_workflow_run(self, workflow_id, run_id):
+        self.resumed.append((workflow_id, run_id))
+        return {"workflow_id": workflow_id, "run_id": run_id, "status": "running"}
+
+    def close(self) -> None:
+        pass
+
+
+def _workflow(argv: list[str], client: _WorkflowClient, *, user_id: str | None = "u-42") -> int:
+    from unittest.mock import patch
+
+    from mash.cli import main as cli_main
+    from mash.cli.config import CLIConfig
+
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id=user_id)
+    with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
+        cli_main, "load_config", return_value=existing
+    ):
+        return cli_main.main(["workflow", "--agent", "primary", *argv])
+
+
+def test_workflow_run_follows_the_run_to_its_result(capsys) -> None:
+    client = _WorkflowClient()
+    code = _workflow(["run", "export", "--input", '{"table": "bills"}', "--dedup-key", "k1"], client)
+    assert code == 0
+    assert client.runs == [{"workflow_id": "export", "dedup_key": "k1",
+                            "workflow_input": {"table": "bills"}, "user_id": "u-42"}]
+    out = capsys.readouterr().out
+    assert "Run ID: run-1" in out
+    assert "Workflow step scan completed" in out
+    assert "Workflow status: completed" in out
+    assert '"rows": 3' in out
+
+
+def test_workflow_run_reads_its_input_from_a_file_and_runs_without_a_user(tmp_path) -> None:
+    path = tmp_path / "input.json"
+    path.write_text('{\n  "table": "two words"\n}\n', encoding="utf-8")
+    client = _WorkflowClient()
+    assert _workflow(["run", "export", "--input", f"@{path}"], client, user_id=None) == 0
+    assert client.runs == [{"workflow_id": "export", "dedup_key": None,
+                            "workflow_input": {"table": "two words"}, "user_id": None}]
+
+
+def test_workflow_run_no_follow_prints_the_run_id_and_exits(capsys) -> None:
+    client = _WorkflowClient(events=[{"event": "workflow.error", "data": {"error": "not read"}}])
+    assert _workflow(["run", "export", "--no-follow"], client) == 0
+    out = capsys.readouterr().out
+    assert "Run ID: run-1" in out and "Status: queued" in out
+    assert "not read" not in out
+
+
+def test_workflow_run_exits_1_when_a_step_fails_or_the_input_is_bad(capsys) -> None:
+    client = _WorkflowClient(events=[
+        {"event": "step.started", "data": {"step_id": "scan"}},
+        {"event": "step.failed", "data": {"step_id": "scan", "payload": {"error": "no such table"}}},
+    ])
+    assert _workflow(["run", "export"], client) == 1
+    assert "no such table" in capsys.readouterr().out
+    assert _workflow(["run", "export", "--input", "[1]"], client) == 1
+    assert "Workflow input must be a JSON object" in capsys.readouterr().out
+    assert _workflow(["run", "export", "--input", "@/no/such/file.json"], client) == 1
+    assert len(client.runs) == 1
+
+
+def test_workflow_status_resume_and_list(capsys) -> None:
+    client = _WorkflowClient()
+    assert _workflow(["status", "export", "run-1"], client) == 0
+    assert _workflow(["resume", "export", "run-1"], client) == 0
+    assert _workflow(["list"], client) == 0
+    assert client.status == [("export", "run-1")]
+    assert client.resumed == [("export", "run-1")]
+    out = capsys.readouterr().out
+    assert "completed" in out and "export (code)" in out
+    with pytest.raises(SystemExit):
+        _workflow([], client)
+    capsys.readouterr()

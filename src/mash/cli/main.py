@@ -19,6 +19,7 @@ from .ask import menu
 from .client import MashHostClient
 from .config import CLIConfig, load_config, save_config
 from .render import RichRenderer
+from .oneshot import read_message, run_once
 from .repl import Repl, Target
 from .sessions import PICKER_HINT, PICKER_LIMIT, session_options, session_title
 
@@ -40,6 +41,44 @@ def _resolve_connection(
     if not base_url:
         raise ValueError("API base URL is required. Use --api-base-url or `mash connect`.")
     return base_url, api_key, agent_id, host_id, user_id
+
+
+def _run_workflow_command(
+    client: MashHostClient, args: argparse.Namespace, target: Target
+) -> int:
+    """``mash workflow ...``: the REPL's ``/workflow`` command, run once.
+
+    Returns 1 when the command printed an error.
+    """
+    words = [args.workflow_command]
+    if args.workflow_command == "run":
+        words.append(args.workflow_id)
+        if args.dedup_key:
+            words.append(args.dedup_key)
+        if args.no_follow:
+            words.append("--no-follow")
+        if args.input is not None:
+            raw = args.input
+            if raw.startswith("@"):
+                with open(raw[1:], encoding="utf-8") as handle:
+                    raw = handle.read()
+            words.extend(["--input", raw.strip()])
+    elif args.workflow_command in ("status", "resume"):
+        words.extend([args.workflow_id, args.run_id])
+    repl = Repl(client, target)
+    failed = False
+    report = repl.renderer.error
+
+    def error(text: str) -> None:
+        nonlocal failed
+        failed = True
+        report(text)
+
+    repl.renderer.error = error  # type: ignore[method-assign]
+    command = repl.command_registry.get("workflow")
+    assert command is not None
+    command.handler(repl.context, words)
+    return 1 if failed else 0
 
 
 def _resolve_target(
@@ -323,6 +362,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start at the detail level: each model turn, its thinking, and tool results",
     )
 
+    run = subparsers.add_parser(
+        "run",
+        parents=[common],
+        help="Submit one request, print its answer and exit",
+        description=(
+            "Submit one request, print its answer on stdout and exit. Exit status: "
+            "0 completed, 1 failed, 2 the request asked for input (it is cancelled), "
+            "130 interrupted."
+        ),
+    )
+    run.add_argument("message", nargs="?", default=None, help="The message; read from stdin when omitted")
+    run_session = run.add_mutually_exclusive_group()
+    run_session.add_argument("--session-id", default=None, help="Remote session id")
+    run_session.add_argument(
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Go on in your most recent session",
+    )
+    run.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Print each stream event as one JSON object per line",
+    )
+
+    workflow = subparsers.add_parser(
+        "workflow", parents=[common], help="Run, inspect and resume workflow runs"
+    )
+    workflow_subparsers = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_subparsers.add_parser("list", help="List the workflows you can run")
+    workflow_run = workflow_subparsers.add_parser(
+        "run", help="Start a run and follow its steps to the end"
+    )
+    workflow_run.add_argument("workflow_id")
+    workflow_run.add_argument(
+        "--input", default=None, help="The workflow's input: a JSON object, or @file to read one"
+    )
+    workflow_run.add_argument("--dedup-key", default=None, help="A key that names the run")
+    workflow_run.add_argument(
+        "--no-follow", action="store_true", help="Print the run id and exit without following"
+    )
+    for name, text in (("status", "Show a run's status, steps and result"),
+                       ("resume", "Resume a failed run from its failed step")):
+        sub = workflow_subparsers.add_parser(name, help=text)
+        sub.add_argument("workflow_id")
+        sub.add_argument("run_id")
+
     host = subparsers.add_parser("host", help="Host management commands")
     host.set_defaults(handler=lambda _: _print_help(host))
     host_subparsers = host.add_subparsers(dest="host_command")
@@ -483,6 +570,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                 renderer.print(f"User: {turn['user_message']}")
                 renderer.print(f"Agent: {turn['agent_response']}")
             return 0
+
+        if args.command == "run":
+            if not user_id:
+                raise ValueError(
+                    "a user id is required. Use --user-id or `mash connect --user-id`."
+                )
+            message = read_message(args.message, sys.stdin)
+            session_id = args.session_id
+            if args.continue_session:
+                earlier = client.list_sessions(agent_id, user_id=user_id, limit=1)
+                session_id = str(earlier[0]["session_id"]) if earlier else None
+            return run_once(
+                client,
+                agent_id=agent_id,
+                host_id=target_host_id,
+                session_id=session_id or Repl.new_session_id(),
+                user_id=user_id,
+                message=message,
+                json_output=args.json_output,
+            )
+
+        if args.command == "workflow":
+            return _run_workflow_command(
+                client,
+                args,
+                Target(
+                    api_base_url=base_url,
+                    agent_id=agent_id,
+                    session_id=Repl.new_session_id(),
+                    user_id=user_id or "",
+                    host_id=target_host_id,
+                ),
+            )
 
         if args.command == "repl":
             if not user_id:

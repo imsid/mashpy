@@ -422,6 +422,20 @@ class DefaultCommandTests(unittest.TestCase):
         self.assertIn("Workflow step scan completed", lines)
         self.assertIn("Workflow status: completed", lines)
 
+    def test_workflow_run_no_follow_prints_the_run_and_returns(self) -> None:
+        shell = self._build_shell()
+        with patch.object(shell.context.renderer, "info") as info:
+            _run(shell, "/workflow run changelog manual --no-follow --input {\"note\": \"--no-follow\"}")
+        self.assertEqual(
+            _fake(shell).workflow_runs,
+            [{"workflow_id": "changelog", "dedup_key": "manual",
+              "workflow_input": {"note": "--no-follow"}, "user_id": "u-1"}],
+        )
+        self.assertEqual(
+            [call.args[0] for call in info.call_args_list],
+            ["Workflow: changelog", "Run ID: mw:host:changelog:abc", "Status: queued"],
+        )
+
     def test_workflow_run_renders_its_result(self) -> None:
         shell = self._build_shell()
         with patch.object(shell.context.renderer, "markdown") as markdown:
@@ -480,7 +494,7 @@ class DefaultCommandTests(unittest.TestCase):
         with patch.object(shell.context.renderer, "error") as error:
             _run(shell, "/workflow run")
         error.assert_called_once_with(
-            "Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]"
+            "Usage: /workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]"
         )
         self.assertEqual(_fake(shell).workflow_runs, [])
 

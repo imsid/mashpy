@@ -432,12 +432,17 @@ def register_default_commands(shell) -> None:
 
         if subcommand == "run":
             if len(args) < 2:
-                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]")
                 return
             workflow_id = args[1].strip()
             dedup_key = None
             workflow_input = None
             remaining = list(args[2:])
+            # Before --input, so JSON that holds the word stays input.
+            before_input = remaining[: remaining.index("--input")] if "--input" in remaining else remaining
+            follow = "--no-follow" not in before_input
+            if not follow:
+                remaining.remove("--no-follow")
             input_index = None
             for index, value in enumerate(remaining):
                 if value == "--input":
@@ -445,7 +450,7 @@ def register_default_commands(shell) -> None:
                     break
             if input_index is not None:
                 if input_index + 1 >= len(remaining):
-                    ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                    ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]")
                     return
                 raw_input = " ".join(remaining[input_index + 1 :]).strip()
                 if (
@@ -465,12 +470,12 @@ def register_default_commands(shell) -> None:
                     return
                 workflow_input = decoded_input
             if len(remaining) > 1:
-                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]")
                 return
             if remaining:
                 dedup_key = remaining[0].strip() or None
             if not workflow_id:
-                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--input JSON_OBJECT]")
+                ctx.renderer.error("Usage: /workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]")
                 return
             if ctx.host_id:
                 attached = _host_workflow_ids(ctx.client.get_host(ctx.host_id))
@@ -484,12 +489,13 @@ def register_default_commands(shell) -> None:
                 workflow_id,
                 dedup_key=dedup_key,
                 workflow_input=workflow_input,
-                user_id=ctx.user_id,
+                # A workflow of code steps runs without a user.
+                user_id=ctx.user_id or None,
             )
             ctx.renderer.info(f"Workflow: {run.get('workflow_id') or workflow_id}")
             run_id = str(run.get("run_id") or "")
             ctx.renderer.info(f"Run ID: {run_id}")
-            if not run_id:
+            if not run_id or not follow:
                 ctx.renderer.info(f"Status: {run.get('status') or ''}")
                 return
 
