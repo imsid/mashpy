@@ -57,36 +57,68 @@ recovers from failure. Every agent behind a Mash deployment speaks it, so the
 application integrates once.
 
 ```
-                  ┌─────────────────────────────────────────┐
-                  │          Durable Request                │
-                  │                                         │
-                  │   ┌─ context ─── memory ──┐             │
-                  │   │                       │             │
-request ────────► │   │     Agent Loop        │ ──► signals │
-(cli/api)         │   │ think → act → observe │      │      │
-                  │   │                       │      ▼      │
-                  │   └─ tools ───── skills ──┘  structured │
-workflow step ──► │      │ ▲                      output    │
-(api/cli)         │      │ │ user interaction               │
-                  │      │ ▼ (approval / ask-user /         │
-                  │      │    browser sign-in)              │
-                  │      │                                  │
-                  │      │  resumable · replayable          │
-                  └──────┼──────────────────────────────────┘
-                         ├────────────────────────────┐
-                         │ run_code                   │ browser_*
-                         ▼                            ▼
-                  ┌──────────────────────────┐ ┌──────────────────────────┐
-                  │  Sandbox: one per user   │ │  Browser: one per user   │
-                  │  workspaces/<agent_id>   │ │  Chromium with a profile │
-                  │  files persist           │ │  listed sites only       │
-                  │  no secrets · no db      │ │  sign-in via live view   │
-                  └──────────────────────────┘ └──────────────────────────┘
+                               api · cli · REPL
+                                       ▲
+                                       │
+                                       ▼
+┌─ Host ──────────────────────────────────────────────────────────────────────┐
+│                                      │                                      │
+│            ┌─────────────────────────┼─────────────────────────┐            │
+│            ▼                         ▼                         ▼            │
+│      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
+│      │   agent   │            │  companion  │            │ workflow  │      │
+│      │           │            │  (router)   │            │           │      │
+│      └───────────┘            └─────────────┘            └───────────┘      │
+│            │                         ▲                         │            │
+│            │   approvals, questions  │ RunSubAgents: one or    │            │
+│            │   and answers go back   │ more bg subagents       │            │
+│            │           ┌─────────────┼─────────────┐           │            │
+│            │           ▼             ▼             ▼           │            │
+│            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
+│            │      │  agent  │   │  agent  │   │  agent  │      │ agent step │
+│            │      └─────────┘   └─────────┘   └─────────┘      │            │
+│            │           │             │             │           │            │
+│            └───────────┴─────────────┼─────────────┴───────────┘            │
+│                                      │ every agent request                  │
+│                                      ▼                                      │
+│                 ┌─────────────────────────────────────────┐                 │
+│                 │          Durable Request                │                 │
+│                 │                                         │                 │
+│                 │   ┌─ context ─── memory ──┐             │                 │
+│                 │   │                       │             │                 │
+│                 │   │     Agent Loop        │ ─► response │                 │
+│                 │   │ think → act → observe │       ┊     │                 │
+│                 │   │                       │       ▼     │                 │
+│                 │   └─ tools ───── skills ──┘  structured │                 │
+│                 │      │                        output    │                 │
+│                 │      │ ▲ user interaction               │                 │
+│                 │      │ │ (approval / ask-user /         │                 │
+│                 │      │ ▼  browser sign-in)              │                 │
+│                 │      │                                  │                 │
+│                 │      │  resumable · replayable · traced │                 │
+│                 └──────┼──────────────────────────────────┘                 │
+└────────────────────────┼────────────────────────────────────────────────────┘
+            ┌────────────┴─────────────┬──────────────────────────┐
+            │ run_code                 │ browser                  │ MCP tools
+            ▼                          ▼                          ▼
+┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
+│ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
+│ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
+│ files persist         │  │ listed sites only     │  │ web search            │
+│ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
+└───────────────────────┘  └───────────────────────┘  └───────────────────────┘
 ```
 
-A request from a user and a step in a workflow ride the same durable loop, and
-the code either one runs lands in the sandbox of the user it acts for. An agent
-that lists sites drives that user's browser.
+A request to a host goes to the companion, which runs the host's agents as
+background requests, each in its own session, or starts a workflow, and then
+writes the answer. When one of those agents needs an approval or an answer,
+the companion relays it to the user. A request to one agent or one workflow
+skips the companion. Any request can run in the background: the user keeps
+talking and the client reports when it finishes or needs input. Whichever way
+a request reaches an agent, it rides the same durable loop, and the code it
+runs lands in the sandbox of the user it acts for. An agent that lists sites
+drives that user's browser, and remote tools call the MCP servers the agent
+connects to.
 
 ## Sandboxes
 
