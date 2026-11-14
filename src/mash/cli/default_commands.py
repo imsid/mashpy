@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from .background import parse_bg_args
-from .commands import Command
+from .commands import Command, ExitRepl
 
 
 def _host_members(host: dict) -> list[dict]:
@@ -150,7 +150,7 @@ def register_default_commands(shell) -> None:
             ctx.renderer.print(f"  /{command.name}{aliases} - {command.help}")
 
     def exit_command(_ctx, _args: list[str]) -> None:
-        raise SystemExit(0)
+        raise ExitRepl()
 
     def clear_command(ctx, _args: list[str]) -> None:
         ctx.renderer.clear()
@@ -363,41 +363,38 @@ def register_default_commands(shell) -> None:
                 ctx.renderer.info(f"Status: {run.get('status') or ''}")
                 return
 
-            try:
-                for event in ctx.client.stream_workflow_run(workflow_id, run_id):
-                    event_name = str(event.get("event") or "")
-                    payload = event.get("data")
-                    if not isinstance(payload, dict):
-                        continue
-                    step_id = str(payload.get("step_id") or "")
-                    step_label = f"Workflow step {step_id}" if step_id else "Workflow step"
+            for event in ctx.client.stream_workflow_run(workflow_id, run_id):
+                event_name = str(event.get("event") or "")
+                payload = event.get("data")
+                if not isinstance(payload, dict):
+                    continue
+                step_id = str(payload.get("step_id") or "")
+                step_label = f"Workflow step {step_id}" if step_id else "Workflow step"
 
-                    if event_name == "step.started":
-                        ctx.renderer.info(f"{step_label} started")
-                        continue
+                if event_name == "step.started":
+                    ctx.renderer.info(f"{step_label} started")
+                    continue
 
-                    if event_name == "step.completed":
-                        ctx.renderer.info(f"{step_label} completed")
-                        continue
+                if event_name == "step.completed":
+                    ctx.renderer.info(f"{step_label} completed")
+                    continue
 
-                    if event_name == "step.failed":
-                        error = (payload.get("payload") or {}).get("error")
-                        ctx.renderer.error(str(error or f"{step_label} failed"))
-                        continue
+                if event_name == "step.failed":
+                    error = (payload.get("payload") or {}).get("error")
+                    ctx.renderer.error(str(error or f"{step_label} failed"))
+                    continue
 
-                    if event_name == "workflow.completed":
-                        ctx.renderer.info("Workflow status: completed")
-                        result = payload.get("result")
-                        if isinstance(result, dict):
-                            shell.render_workflow_result(workflow_id, result)
-                        continue
+                if event_name == "workflow.completed":
+                    ctx.renderer.info("Workflow status: completed")
+                    result = payload.get("result")
+                    if isinstance(result, dict):
+                        shell.render_workflow_result(workflow_id, result)
+                    continue
 
-                    if event_name == "workflow.error":
-                        error = payload.get("error")
-                        ctx.renderer.error(str(error or "workflow stream failed"))
-                        return
-            finally:
-                shell.chain_renderer.finish_trace()
+                if event_name == "workflow.error":
+                    error = payload.get("error")
+                    ctx.renderer.error(str(error or "workflow stream failed"))
+                    return
             return
 
         if subcommand == "status":
@@ -525,19 +522,19 @@ def register_default_commands(shell) -> None:
             ctx.renderer.info(f"Trace {trace_id}")
             _render_trace(ctx.renderer, data)
 
-    def bg_command(ctx, args: list[str]) -> None:
+    async def bg_command(ctx, args: list[str]) -> None:
         parsed = parse_bg_args(args)
         if isinstance(parsed, str):
             ctx.renderer.error(parsed)
             return
         if parsed.action == "start":
-            shell.start_background(ctx, parsed.message)
+            await shell.start_background(ctx, parsed.message)
         elif parsed.action == "list":
-            shell.list_background(ctx)
+            await shell.list_background(ctx)
         elif parsed.action == "switch":
-            shell.switch_to(ctx, parsed.request_id)
+            await shell.switch_to(ctx, parsed.request_id)
         else:
-            shell.kill(ctx, parsed.request_id)
+            await shell.kill(ctx, parsed.request_id)
 
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))

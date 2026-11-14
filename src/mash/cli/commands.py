@@ -6,14 +6,21 @@ import asyncio
 import inspect
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Protocol, Union
 
 from mash.logging.events import CommandEvent
 
 if TYPE_CHECKING:
     from .types import CLIContext
 
-CommandHandler = Callable[["CLIContext", List[str]], None]
+# A handler is a plain function, which the REPL runs in a worker thread so a
+# slow host call never freezes the input, or a coroutine function, which runs
+# on the REPL's event loop and may follow streams and ask the user things.
+CommandHandler = Callable[["CLIContext", List[str]], Union[None, Awaitable[None]]]
+
+
+class ExitRepl(Exception):
+    """Raised by a command to leave the REPL."""
 
 
 class SupportsCommandEventLogger(Protocol):
@@ -125,7 +132,7 @@ class CommandRegistry:
         """
         return sorted(self._commands.values(), key=lambda c: c.name)
 
-    def execute(self, ctx: CLIContext, line: str) -> bool:
+    async def execute(self, ctx: CLIContext, line: str) -> bool:
         """Execute a command if the line is a command.
 
         Args:
@@ -173,7 +180,10 @@ class CommandRegistry:
             )
 
         try:
-            command.handler(ctx, args)
+            if inspect.iscoroutinefunction(command.handler):
+                await command.handler(ctx, args)
+            else:
+                await asyncio.to_thread(command.handler, ctx, args)
 
             # Log command completion
             if self._event_logger:
@@ -186,6 +196,8 @@ class CommandRegistry:
                         duration_ms=int((time.time() - start_time) * 1000),
                     )
                 )
+        except ExitRepl:
+            raise
         except Exception as e:
             ctx.renderer.error(f"Command failed: {str(e)}")
 

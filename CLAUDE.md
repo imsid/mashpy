@@ -761,10 +761,12 @@ In the REPL:
 › /bg --kill a1b2c3d4            # cancel it and its children
 ```
 
-Ctrl-Z while a request streams sends it to the background. Ids are the first
-8 characters of the request id, and any unique prefix works. While the prompt
-is idle, the REPL prints when each `bg` request you started is done, fails,
-is cancelled or needs input (`/bg --switch` to answer).
+Ctrl-Z while a request runs sends it to the background. Ids are the first
+8 characters of the request id, and any unique prefix works. The REPL prints
+when each `bg` request you started is done, fails, is cancelled or needs
+input (`/bg --switch` to answer). The input stays open while a request runs:
+a message sent then is queued, Ctrl-C cancels the request, and Ctrl-O shows
+each model step and each child's tool calls.
 
 ## Workflows
 

@@ -293,7 +293,7 @@ def test_repl_requires_a_user_id(capsys) -> None:
     existing = CLIConfig(api_base_url="http://127.0.0.1:8000")
     with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
         cli_main, "load_config", return_value=existing
-    ), patch.object(cli_main, "MashRemoteShell", shell):
+    ), patch.object(cli_main, "Repl", shell):
         assert cli_main.main(["repl", "--agent", "primary"]) == 1
         shell.assert_not_called()
         assert cli_main.main(["repl", "--agent", "primary", "--user-id", "u-42"]) == 0
@@ -302,7 +302,7 @@ def test_repl_requires_a_user_id(capsys) -> None:
     assert target.user_id == "u-42"
 
 
-def test_repl_show_thinking_is_off_by_default() -> None:
+def test_repl_debug_is_off_by_default() -> None:
     from unittest.mock import MagicMock, patch
 
     from mash.cli import main as cli_main
@@ -312,11 +312,11 @@ def test_repl_show_thinking_is_off_by_default() -> None:
     existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
     with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
         cli_main, "load_config", return_value=existing
-    ), patch.object(cli_main, "MashRemoteShell", shell):
+    ), patch.object(cli_main, "Repl", shell):
         assert cli_main.main(["repl", "--agent", "primary"]) == 0
-        assert shell.call_args.kwargs["show_thinking"] is False
-        assert cli_main.main(["repl", "--agent", "primary", "--show-thinking"]) == 0
-        assert shell.call_args.kwargs["show_thinking"] is True
+        assert shell.call_args.kwargs["debug"] is False
+        assert cli_main.main(["repl", "--agent", "primary", "--debug"]) == 0
+        assert shell.call_args.kwargs["debug"] is True
 
 
 def test_cli_loads_dotenv_from_the_working_directory(tmp_path, monkeypatch) -> None:

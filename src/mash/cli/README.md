@@ -1,6 +1,6 @@
 # CLI
 
-`src/mash/cli` contains the `mash` command-line, remote shell behavior, and terminal rendering.
+`src/mash/cli` contains the `mash` command line, the REPL, and terminal rendering.
 
 ## Top-Level Commands
 
@@ -31,7 +31,7 @@ Host-facing commands
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID] [--show-thinking]`: start an interactive remote shell session, pinned to the resolved target and user. `--show-thinking` prints the model's thinking for each step under that step's line; it is off by default. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
+- `repl [common] [--session-id ID] [--debug]`: start the REPL, pinned to the resolved target and user. `--debug` starts it at the detail level, which Ctrl-O also switches. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
 
 Host management
 
@@ -83,21 +83,21 @@ Notes
 - If no command is given, the CLI prints help.
 - A host target runs on the companion; `--agent` targets one agent directly.
 
-## Interactive Shell Commands
+## REPL Commands
 
 - `/help`: list available slash commands.
-- `/exit`: leave the shell.
-- `/clear`: clear the terminal renderer.
+- `/exit`: leave the REPL.
+- `/clear`: clear the screen.
 - `/status`: show deployment, current agent, and session state.
 - `/agent`: list agents exposed by the host.
 - `/session`: show the current remote session details.
 - `/sessions`: list sessions for the current agent.
 - `/history [limit]`: show conversation history for the current session.
-- `/host`: list the host compositions defined on the deployment, including their attached workflows. The shell's own target is fixed at connect time.
+- `/host`: list the host compositions defined on the deployment, including their attached workflows. The REPL's own target is fixed at connect time.
 - `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
 - `/feedback <message>`: record a free-form note or bug report about the current session. The message is stored with the host, agent, session, and last request id so app developers can read it back later through the feedback API.
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
-- `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the shell's user.
+- `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the REPL's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
 - `/bg <message>`: submit the message with `mode: bg` and return to the prompt.
 - `/bg --list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child runs in a session of its own, so it is not listed here; `/bg --kill` still cancels it with its parent.
@@ -105,17 +105,49 @@ Notes
 - `/bg --kill <id>`: cancel a request and its children.
 
 `/bg --switch` and `/bg --kill` take any unique prefix of the request id.
-Ctrl-Z while a request streams switches it to `bg` and returns to the prompt;
-at the prompt Ctrl-Z keeps its default behavior. While the prompt is idle, the
-shell follows each running `bg` request you started and prints
+Ctrl-Z while a request runs switches it to `bg` and frees the foreground. The
+REPL follows each running `bg` request you started and prints
 `[a1b2c3d4] done` with the response, `failed: <error>`, `cancelled`, or
 `needs your input: /bg --switch a1b2c3d4`. It reads the session's `bg`
 requests when it starts and after each foreground request, so a restarted
-shell picks up the ones still running. Children are not announced; their
+REPL picks up the ones still running. Children are not announced; their
 results reach you through the request that started them.
 
-When a request waits on an interaction, the shell asks for the answer in place.
-For a `browser` handoff it prints the prompt and the live-view link, opens the
+### While a request runs
+
+The input stays open while a request runs. `prompt_toolkit` draws everything
+below the last finished line: the rows of the running request, the input, and
+the status bar. Finished output is printed above them with `rich` and scrolls
+like any other terminal output.
+
+- The live rows show the running request: its phase or current tool, elapsed
+  time and tokens. Under a `RunSubAgents` call there is one row per child, all
+  followed at the same time. Queued messages are listed below.
+- Each finished tool call prints one line, such as `✓ search(q=x) 2.5s`. A
+  `RunSubAgents` call prints `Asking 2 agents: energy, review` and then one
+  line per child as it ends, with its tool count, tokens and time.
+- The answer prints as markdown, one finished block at a time while it
+  streams, and once in total.
+- A message sent while a request runs is queued and sent when that request
+  ends. Up on an empty input takes the last queued message back for editing.
+- Ctrl-C clears the input when it has text. With an empty input it cancels
+  the running request. At an idle prompt, a second Ctrl-C within two seconds
+  leaves the REPL, as does Ctrl-D. Esc also cancels the running request.
+- Ctrl-O switches between the default level and the detail level. The detail
+  level adds a line per model step (action, tokens, time), each child's own
+  tool calls prefixed with its agent id, and a totals line when a request
+  ends.
+- Ctrl-L clears the screen.
+- The status bar shows the target, the number of `bg` requests being watched,
+  the session's tokens, and the keys that apply.
+
+Leaving the REPL while a request runs does not cancel it. The REPL prints
+`[a1b2c3d4] is still running on the host.`
+
+When a request waits on an interaction, the REPL asks for the answer in place
+and puts the draft you were typing back afterwards. A child's interaction is
+asked through the companion's request with the child's agent id in front. For
+a `browser` handoff it prints the prompt and the live-view link, opens the
 link in your browser, and waits: press Enter when you are done in the browser,
 or type `cancel`.
 
@@ -145,7 +177,7 @@ selection belongs to the terminal: it copies output, and Delete does not erase
 it in the input. Shift+Up/Down and Option-as-Meta depend on terminal settings.
 
 Each `/command` invocation is wrapped in `command.start` and
-`command.complete`/`command.error` events. The remote shell ships them
+`command.complete`/`command.error` events. The REPL ships them
 best-effort to the deployment (`POST /telemetry/command-events`), where they land
 in the agent's runtime event log and surface in the admin UI's CLI logs. Shipping
 runs on a background thread and never blocks or breaks the session if the host is
@@ -154,35 +186,16 @@ slow or unreachable.
 ## Main Components
 - `main.py`: top-level parser, command dispatch, and command execution.
 - `client.py`: HTTP client used to talk to hosted Mash agents.
-- `shell.py`: streamed remote shell UX, runtime-event rendering, and rendering of the companion's child requests.
-- `commands.py` and `default_commands.py`: slash-command model, registration, and built-in shell commands.
-- `background.py`: `/bg` parsing, id prefixes, the `--list` tree, the Ctrl-Z handler, and the threads that follow `bg` requests while the prompt is idle.
-- `render.py` and `chain_renderer.py`: terminal formatting for responses, tool calls, and chained child output.
+- `repl.py`: the REPL loop. It owns the input, follows the foreground request and its children as asyncio tasks, queues messages, and asks interactions.
+- `views.py`: the state of one request and `reduce`, which applies a stream event to it and returns the output that event finished. It prints nothing.
+- `render.py`: the theme, the lines printed for finished output, and the live rows and status bar.
 - `input.py`: the input line: the `prompt_toolkit` session, the Enter and paste bindings, the `/` menu, and the clipboard.
-- `config.py`, `repl.py`, and `types.py`: saved connection config and shell state types.
-
-### Live token streaming
-
-When the host streams a response (`chat.delta` events), the chain
-renderer shows the answer live and formatted, then renders it exactly once:
-
-- `chain_renderer._on_runtime_response_delta` buffers incoming chunks and flushes
-  each *completed* markdown block (`_flush_response_markdown` /
-  `_split_complete_markdown`) as it finishes — so the answer streams in with full
-  markdown formatting (headings, bold, syntax-highlighted code) rather than as
-  raw text or a single end-of-turn dump. Block-at-a-time flushing avoids the
-  scrollback artifacts a whole-buffer `rich.Live` repaint produces on long
-  output, and keeps unterminated code fences buffered until they close.
-- Single render is enforced in `shell.py`: the legacy per-step preview render is
-  gated on `chain_renderer.response_streamed()` (a non-consuming peek) and the
-  terminal `request.completed` render is gated on
-  `chain_renderer.take_response_streamed()` (consuming). When tokens streamed
-  live, both fall through and nothing re-renders.
-- Non-streaming providers (no deltas) keep the previous behavior: the preview
-  and/or terminal `renderer.markdown` panel renders the complete response once.
+- `commands.py` and `default_commands.py`: slash-command model, registration, and built-in commands. A handler may be a plain function, which runs on a thread, or a coroutine function.
+- `background.py`: `/bg` parsing, id prefixes, the `--list` tree, and the tasks that follow `bg` requests.
+- `config.py` and `types.py`: saved connection config and the context passed to commands.
 
 ## Public Exports
 - `MashHostClient`, `MashHostClientError`
-- `MashRemoteShell`, `ShellTarget`
+- `Repl`, `Target`
 - `CLIContext`
 - `Command`, `CommandRegistry`

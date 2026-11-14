@@ -305,7 +305,7 @@ def _tool_call_entry(tool_call: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "name": name,
         "arguments": arguments,
-        "preview": _tool_call_preview(name, arguments),
+        "preview": tool_call_preview(name, arguments),
     }
 
 
@@ -321,7 +321,8 @@ def run_code_preview(tool_args: Mapping[str, Any]) -> str:
     return f"$ {first}" if language == "shell" else f"{language}: {first}"
 
 
-def _tool_call_preview(tool_name: str, tool_args: Mapping[str, Any]) -> str:
+def tool_call_preview(tool_name: str, tool_args: Mapping[str, Any]) -> str:
+    """One line for a tool call: its name and its first two arguments, clipped."""
     if tool_name == "run_code" and "code" in tool_args:
         return run_code_preview(tool_args)
     if not tool_args:

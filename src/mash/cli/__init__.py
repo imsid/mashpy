@@ -2,14 +2,14 @@
 
 from .client import MashHostClient, MashHostClientError
 from .commands import Command, CommandRegistry
-from .shell import MashRemoteShell, ShellTarget
+from .repl import Repl, Target
 from .types import CLIContext
 
 __all__ = [
     "MashHostClient",
     "MashHostClientError",
-    "MashRemoteShell",
-    "ShellTarget",
+    "Repl",
+    "Target",
     "CLIContext",
     "Command",
     "CommandRegistry",

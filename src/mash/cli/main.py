@@ -18,7 +18,7 @@ from mash.cli.sandbox import add_sandbox_parser
 from .client import MashHostClient
 from .config import CLIConfig, load_config, save_config
 from .render import RichRenderer
-from .shell import MashRemoteShell, ShellTarget
+from .repl import Repl, Target
 
 
 def _print_help(parser: argparse.ArgumentParser) -> int:
@@ -304,9 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
     repl = subparsers.add_parser("repl", parents=[common], help="Start an interactive remote REPL")
     repl.add_argument("--session-id", default=None, help="Remote session id")
     repl.add_argument(
-        "--show-thinking",
+        "--debug",
         action="store_true",
-        help="Print each step's model thinking under that step",
+        help="Start at the detail level: each model turn, its thinking, and tool results",
     )
 
     host = subparsers.add_parser("host", help="Host management commands")
@@ -475,14 +475,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError(
                     "a user id is required. Use --user-id or `mash connect --user-id`."
                 )
-            target = ShellTarget(
+            target = Target(
                 api_base_url=base_url,
                 agent_id=agent_id,
-                session_id=args.session_id or MashRemoteShell.new_session_id(),
+                session_id=args.session_id or Repl.new_session_id(),
                 user_id=user_id,
                 host_id=target_host_id,
             )
-            MashRemoteShell(client, target, show_thinking=args.show_thinking).run()
+            Repl(client, target, debug=args.debug).run()
             return 0
     except Exception as exc:
         renderer.error(str(exc))
