@@ -38,6 +38,8 @@ class Command:
     help: str
     handler: CommandHandler
     aliases: tuple[str, ...] = ()
+    # The heading /help lists the command under; "" lists it under "More".
+    group: str = ""
 
 
 class CommandRegistry:

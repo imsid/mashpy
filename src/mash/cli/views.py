@@ -447,6 +447,14 @@ def reduce(view: RequestView, event: Mapping[str, Any], now: float) -> list[Outp
     return []
 
 
+def answer_text(view: RequestView) -> str:
+    """The whole answer of a request that completed."""
+    final = view.final or {}
+    response = final.get("response")
+    text = response.get("text") if isinstance(response, Mapping) else None
+    return str(text or final.get("text") or view.response_streamed or "")
+
+
 def final_text(view: RequestView) -> str:
     """The answer to print when the request ends: text that did not stream.
 

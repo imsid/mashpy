@@ -54,20 +54,22 @@ def _record(request_id: str, **fields: Any) -> dict[str, Any]:
 
 def test_the_four_forms() -> None:
     assert parse_bg_args(["set", "a", "timer"]) == BgCommand(action="start", message="set a timer")
-    assert parse_bg_args(["--list"]) == BgCommand(action="list")
-    assert parse_bg_args(["--switch", "a1b2"]) == BgCommand(action="switch", request_id="a1b2")
-    assert parse_bg_args(["--kill", "a1b2"]) == BgCommand(action="kill", request_id="a1b2")
+    assert parse_bg_args(["list"]) == BgCommand(action="list")
+    assert parse_bg_args(["switch", "a1b2"]) == BgCommand(action="switch", request_id="a1b2")
+    assert parse_bg_args(["kill", "a1b2"]) == BgCommand(action="kill", request_id="a1b2")
 
 
-def test_a_message_that_starts_with_a_flag_word_is_a_message() -> None:
+def test_a_message_that_starts_with_a_subcommand_word_is_a_message() -> None:
     assert parse_bg_args(["list", "my", "files"]) == BgCommand(
         action="start", message="list my files"
     )
+    assert parse_bg_args(["kill", "the", "old", "export"]) == BgCommand(
+        action="start", message="kill the old export"
+    )
+    assert parse_bg_args(["--list"]) == BgCommand(action="start", message="--list")
 
 
-@pytest.mark.parametrize(
-    "args", [[], ["--list", "x"], ["--switch"], ["--kill", "a", "b"], ["--later"]]
-)
+@pytest.mark.parametrize("args", [[], ["switch"], ["kill"]])
 def test_usage_errors(args: list[str]) -> None:
     assert parse_bg_args(args) == BG_USAGE
 
@@ -167,7 +169,7 @@ def test_failed_and_cancelled() -> None:
 
 def test_an_open_interaction_asks_for_input() -> None:
     notices = _watch(interaction("i-1", "approval", "Approve?"), Gate(), wait=0.3)
-    assert notices == [[("warn", "[a1b2c3d4] needs your input: /bg --switch a1b2c3d4")]]
+    assert notices == [[("warn", "[a1b2c3d4] needs your input: /bg switch a1b2c3d4")]]
 
 
 def test_an_answered_interaction_in_the_replay_is_not_announced() -> None:
@@ -291,7 +293,7 @@ def test_list_shows_children_under_their_parent() -> None:
     ]
 
     async def script(d: ReplDriver) -> None:
-        await d.say("/bg --list")
+        await d.say("/bg list")
 
     lines = run(script, host).output.splitlines()
     parent = next(i for i, line in enumerate(lines) if "a1b2c3d4" in line)
@@ -301,7 +303,7 @@ def test_list_shows_children_under_their_parent() -> None:
 
 def test_list_with_nothing_in_the_background_says_so() -> None:
     async def script(d: ReplDriver) -> None:
-        await d.say("/bg --list")
+        await d.say("/bg list")
 
     assert "No background requests in this session." in run(script, FakeHost()).output
 
@@ -313,7 +315,7 @@ def test_switch_brings_a_request_to_the_foreground_and_follows_it() -> None:
     host.script(PARENT, chat_end("response", text="Timer is up."), gate, completed("Timer is up."))
 
     async def script(d: ReplDriver) -> None:
-        d.type("/bg --switch a1b2" + ENTER)
+        d.type("/bg switch a1b2" + ENTER)
         await d.until(d.repl.running)
         assert d.repl.foreground.request_id == PARENT
         host.records = []
@@ -335,7 +337,7 @@ def test_switch_to_a_child_leaves_its_mode() -> None:
     host.script(CHILD_1, completed("r"))
 
     async def script(d: ReplDriver) -> None:
-        d.type("/bg --switch c1" + ENTER)
+        d.type("/bg switch c1" + ENTER)
         await d.until(lambda: ("research", CHILD_1, 0) in host.stream_calls)
         await d.idle()
 
@@ -352,7 +354,7 @@ def test_switch_while_a_request_runs_is_refused() -> None:
     async def script(d: ReplDriver) -> None:
         d.type("hello" + ENTER)
         await d.until(d.repl.running)
-        d.type("/bg --switch a1b2" + ENTER)
+        d.type("/bg switch a1b2" + ENTER)
         await d.until(lambda: "Press Ctrl-Z" in d.output)
         host.records = []
         gate.open()
@@ -367,8 +369,8 @@ def test_switch_and_kill_report_a_bad_prefix() -> None:
     host.records = [_record(PARENT, status="completed"), _record(OTHER, status="completed")]
 
     async def script(d: ReplDriver) -> None:
-        await d.say("/bg --switch a1b2")
-        await d.say("/bg --kill zz")
+        await d.say("/bg switch a1b2")
+        await d.say("/bg kill zz")
 
     out = run(script, host).output
     assert "'a1b2' matches 2 requests (a1b2c3d4, a1b2ffff)" in out
@@ -384,7 +386,7 @@ def test_kill_calls_the_cancel_route_on_the_requests_agent() -> None:
     ]
 
     async def script(d: ReplDriver) -> None:
-        await d.say("/bg --kill c1c1")
+        await d.say("/bg kill c1c1")
 
     out = run(script, host).output
     assert host.cancelled == [("research", CHILD_1)]

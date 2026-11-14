@@ -305,18 +305,18 @@ class DefaultCommandTests(unittest.TestCase):
             ),
         )
 
-    def test_boots_with_remote_commands(self) -> None:
+    def test_boots_with_the_built_in_commands(self) -> None:
         shell = self._build_shell()
-        command_names = [command.name for command in shell.command_registry.list_commands()]
-        self.assertIn("status", command_names)
-        self.assertIn("agent", command_names)
-        self.assertIn("sessions", command_names)
-        self.assertIn("host", command_names)
-        self.assertNotIn("use", command_names)
-        self.assertNotIn("agents", command_names)
-        self.assertNotIn("hosts", command_names)
-        self.assertIn("workflow", command_names)
-        self.assertNotIn("changelog", command_names)
+        names = {command.name for command in shell.command_registry.list_commands()}
+        self.assertEqual(
+            names,
+            {
+                "new", "resume", "compact", "usage", "copy",
+                "bg", "subagent", "retry", "trace",
+                "agents", "tools", "workflow", "memory", "browser",
+                "help", "keys", "feedback", "clear", "exit",
+            },
+        )
 
     def test_feedback_command_records_session_context(self) -> None:
         shell = self._build_host_shell()
@@ -339,41 +339,6 @@ class DefaultCommandTests(unittest.TestCase):
             _run(shell, "/feedback")
         self.assertEqual(_fake(shell).feedback, [])
         error.assert_called_once_with("Usage: /feedback <message>")
-
-    def test_session_command_reads_remote_session(self) -> None:
-        shell = self._build_shell()
-        with patch.object(shell.context.renderer, "info") as info:
-            _run(shell, "/session")
-        lines = [call.args[0] for call in info.call_args_list]
-        self.assertIn("Agent: primary", lines)
-        self.assertIn("Session ID: s-1", lines)
-
-    def test_hosts_command_lists_hosts(self) -> None:
-        shell = self._build_shell()
-        with patch.object(shell.context.renderer, "table") as table:
-            _run(shell, "/host")
-        table.assert_called_once_with(
-            ["Host", "Agents", "Workflows"],
-            [["assistant", "primary, research", ""]],
-        )
-
-    def test_agents_command_lists_pool_agents_without_host(self) -> None:
-        shell = self._build_shell()
-        with patch.object(shell.context.renderer, "table") as table:
-            _run(shell, "/agent")
-        table.assert_called_once_with(
-            ["Agent", "Name"],
-            [["primary", "Primary"], ["research", "Research"]],
-        )
-
-    def test_agents_command_host_scoped_shows_the_hosts_agents(self) -> None:
-        shell = self._build_host_shell()
-        with patch.object(shell.context.renderer, "table") as table:
-            _run(shell, "/agent")
-        table.assert_called_once_with(
-            ["Agent", "Name"],
-            [["primary", "Primary"], ["research", "Research"]],
-        )
 
     def test_workflow_list_host_scoped_filters_attached(self) -> None:
         shell = self._build_host_shell(host_workflows=["changelog"])

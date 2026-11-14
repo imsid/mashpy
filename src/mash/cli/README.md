@@ -85,38 +85,60 @@ Notes
 
 ## REPL Commands
 
-- `/help`: list available slash commands.
-- `/exit`: leave the REPL.
-- `/clear`: clear the screen.
-- `/status`: show deployment, current agent, and session state.
-- `/agent`: list agents exposed by the host.
-- `/session`: show the current remote session details.
-- `/sessions`: list sessions for the current agent.
-- `/history [limit]`: show conversation history for the current session.
-- `/host`: list the host compositions defined on the deployment, including their attached workflows. The REPL's own target is fixed at connect time.
-- `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
-- `/feedback <message>`: record a free-form note or bug report about the current session. The message is stored with the host, agent, session, and last request id so app developers can read it back later through the feedback API.
-- `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
-- `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the REPL's user.
-- `/workflow status <workflow_id> <run_id>`: show workflow run status.
+`/help` lists the commands under four headings. `/` in the input opens the
+same list as a menu, filtered as you type, and a command's arguments are
+offered after its name.
+
+Session
+
 - `/new`: start a new session without leaving the REPL.
 - `/resume`: open the session picker and go on in the session you choose. Neither works while a request runs in the foreground.
+- `/compact`: have the agent summarize the session so far. Later requests start from the summary.
+- `/usage`: the session's tokens, and today's requests and tokens for the agent the REPL talks to (the companion on a host).
+- `/copy`: copy the last answer to the system clipboard. `/copy code` copies its last code block. Where there is no system clipboard, Ctrl-Y pastes the text into the input.
+
+Requests
+
+- `/bg <message>`: submit the message with `mode: bg` and return to the prompt.
+- `/bg list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child runs in a session of its own, so it is not listed here; `/bg kill` still cancels it with its parent.
+- `/bg switch <id>`: switch a request to `fg`, replay its events from the start, then follow it live and answer its interactions. Switching to a child shows its events and leaves it `bg`.
+- `/bg kill <id>`: cancel a request and its children.
 - `/subagent`: list the children of the last request that started any, with each one's agent, status, tools, tokens, time and what it was asked. `↺` marks a child that continued an earlier session.
 - `/subagent <n>`: show child `n`: what it was asked, then its model steps, tool calls and own answer, read again from its stream. A child still running is followed to its end; Ctrl-C stops reading.
 - `/subagent cancel <n>`: cancel child `n`. The other children go on, and the companion sees the cancelled one's status in its result.
-- `/bg <message>`: submit the message with `mode: bg` and return to the prompt.
-- `/bg --list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child runs in a session of its own, so it is not listed here; `/bg --kill` still cancels it with its parent.
-- `/bg --switch <id>`: switch a request to `fg`, replay its events from the start, then follow it live and answer its interactions. Switching to a child shows its events and leaves it `bg`.
-- `/bg --kill <id>`: cancel a request and its children.
+- `/retry`: run the last request again as a new request and follow it.
+- `/trace [N]`: show trace analysis for the N most recent traces (default 1). Renders timing breakdown, tool stats, and slowest operations for each trace.
 
-`/bg --switch` and `/bg --kill` take any unique prefix of the request id.
+Deployment
+
+- `/agents`: the agents the REPL's requests can reach, each with its display name, description, capabilities and usage guidance. On a host these are the host's agents, which the companion routes to; with `--agent` it is that agent.
+- `/tools`: the tools and skills of those agents.
+- `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
+- `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the REPL's user.
+- `/workflow status <workflow_id> <run_id>`: show workflow run status.
+- `/memory`: the user's Cortex profile and entries. `/memory add <text>` pins a fact (`topic: fact` names its topic) and `/memory forget <id>` removes an entry. On a deployment without Cortex it says so.
+- `/browser`: the sites the user's browser is signed in to. `/browser forget <site>` signs out of one.
+
+REPL
+
+- `/help`, `/keys`: the commands, and the keys.
+- `/feedback <message>`: record a free-form note or bug report about the current session. The message is stored with the host, agent, session, and last request id so app developers can read it back later through the feedback API.
+- `/clear`: clear the screen.
+- `/exit`: leave the REPL.
+
+`/bg switch` and `/bg kill` take any unique prefix of the request id. `list`
+alone, and `switch` or `kill` followed by one id, are subcommands; any other
+text after `/bg` is a message.
 Ctrl-Z while a request runs switches it to `bg` and frees the foreground. The
 REPL follows each running `bg` request you started and prints
 `[a1b2c3d4] done` with the response, `failed: <error>`, `cancelled`, or
-`needs your input: /bg --switch a1b2c3d4`. It reads the session's `bg`
+`needs your input: /bg switch a1b2c3d4`. It reads the session's `bg`
 requests when it starts and after each foreground request, so a restarted
 REPL picks up the ones still running. Children are not announced; their
 results reach you through the request that started them.
+
+A command registered by an app is listed under the `group` it names, or
+under More.
 
 ### While a request runs
 
@@ -147,6 +169,11 @@ like any other terminal output.
 - Ctrl-L clears the screen.
 - The status bar shows the target, the number of `bg` requests being watched,
   the session's tokens, and the keys that apply.
+
+When stdin is a pipe or a file, the REPL reads one message or command per
+line and runs each to its end before reading the next. Nothing is live in
+that mode, and a request that asks an interaction is cancelled, since nobody
+is there to answer.
 
 Leaving the REPL while a request runs does not cancel it. The REPL prints
 `[a1b2c3d4] is still running on the host.`

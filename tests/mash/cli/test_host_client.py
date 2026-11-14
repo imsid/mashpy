@@ -151,6 +151,22 @@ class MashHostClientTests(unittest.TestCase):
             "GET /api/v1/agent/primary failed (409): agent is disabled",
         )
 
+    def test_an_error_carries_the_apis_code_when_there_is_one(self) -> None:
+        client, _ = _client(
+            httpx.Response(
+                404, json={"error": {"code": "CORTEX_NOT_FOUND", "message": "user not found"}}
+            ),
+            httpx.Response(404, json={"detail": "Not Found"}),
+            httpx.Response(502, text="bad gateway"),
+        )
+        with self.assertRaises(MashHostClientError) as raised:
+            client.get_cortex_user("u-1")
+        self.assertEqual(raised.exception.code, "CORTEX_NOT_FOUND")
+        for _ in range(2):
+            with self.assertRaises(MashHostClientError) as raised:
+                client.get_cortex_user("u-1")
+            self.assertIsNone(raised.exception.code)
+
     def test_a_host_that_cannot_be_reached_raises_a_client_error(self) -> None:
         client, _ = _client(httpx.ConnectError("connection refused"))
         with self.assertRaises(MashHostClientError) as raised:
@@ -407,6 +423,85 @@ class MashHostClientRouteTests(unittest.TestCase):
             "/api/v1/workflow/wf%2Fone",
             str(session.calls[-1]["url"]),
         )
+
+    def test_rerun_and_compact_post_to_their_routes(self) -> None:
+        client, session = self._client(
+            {"data": {"request_id": "r-2", "agent_id": "primary", "mode": "fg"}},
+            {"data": {"summary_text": "so far", "trace_id": "t-1"}},
+        )
+        self.assertEqual(client.rerun_request("primary", "r/1")["request_id"], "r-2")
+        self.assertEqual(client.compact_session("primary", "s 1")["summary_text"], "so far")
+        rerun, compact = session.calls
+        self.assertEqual(rerun["method"], "POST")
+        self.assertIn("/api/v1/agent/primary/request/r%2F1/rerun", rerun["url"])
+        self.assertEqual(compact["method"], "POST")
+        self.assertIn("/api/v1/agent/primary/sessions/s%201/compact", compact["url"])
+        self.assertEqual(compact["json"], {"reason": "manual"})
+
+    def test_get_usage_sends_only_the_filters_given(self) -> None:
+        client, session = self._client({"data": {"buckets": [{"input_tokens": 5}]}})
+        self.assertEqual(
+            client.get_usage("primary", from_ts=100.0), [{"input_tokens": 5}]
+        )
+        url = str(session.calls[0]["url"])
+        self.assertIn("/api/v1/telemetry/usage", url)
+        self.assertIn("agent_id=primary", url)
+        self.assertIn("from_ts=100.0", url)
+        self.assertIn("bucket=day", url)
+        self.assertNotIn("session_id", url)
+
+    def test_tools_and_skills_read_the_pool_routes(self) -> None:
+        client, session = self._client(
+            {"data": {"tools": [{"tool": {"name": "t"}, "agents": ["a"]}]}},
+            {"data": {"skills": []}},
+        )
+        self.assertEqual(client.list_tools()[0]["tool"]["name"], "t")
+        self.assertEqual(client.list_skills(), [])
+        self.assertTrue(str(session.calls[0]["url"]).endswith("/api/v1/tools"))
+        self.assertTrue(str(session.calls[1]["url"]).endswith("/api/v1/skills"))
+
+    def test_cortex_calls_use_the_users_routes(self) -> None:
+        client, session = self._client(
+            {"data": {"user_id": "u@1", "profile": "p", "entry_count": 1}},
+            {"data": {"entries": [{"entry_id": "e-1"}], "next": None}},
+            {"data": {"entry": {"entry_id": "e-2"}, "version": 3}},
+            {"data": {"deleted": "e-2", "version": 4}},
+        )
+        self.assertEqual(client.get_cortex_user("u@1")["profile"], "p")
+        self.assertEqual(client.list_cortex_entries("u@1", q="tea", limit=5), [{"entry_id": "e-1"}])
+        self.assertEqual(
+            client.create_cortex_entry("u@1", topic="note", content="likes tea")["entry_id"], "e-2"
+        )
+        client.delete_cortex_entry("u@1", "e-2")
+        user, entries, create, delete = session.calls
+        self.assertTrue(str(user["url"]).endswith("/api/v1/cortex/users/u%401"))
+        self.assertIn("/api/v1/cortex/users/u%401/entries", str(entries["url"]))
+        self.assertIn("q=tea", str(entries["url"]))
+        self.assertIn("limit=5", str(entries["url"]))
+        self.assertEqual(create["method"], "POST")
+        self.assertEqual(create["json"], {"topic": "note", "content": "likes tea"})
+        self.assertEqual(delete["method"], "DELETE")
+        self.assertTrue(str(delete["url"]).endswith("/api/v1/cortex/users/u%401/entries/e-2"))
+
+    def test_browser_calls_use_the_users_routes(self) -> None:
+        client, session = self._client(
+            {"data": {"user_id": "u-1", "sites": [{"domain": "pge.com", "cookies": 2}]}},
+            {"data": {"user_id": "u-1", "domain": "pge.com", "cookies": 2}},
+        )
+        self.assertEqual(client.list_browser_sites("u-1")[0]["domain"], "pge.com")
+        self.assertEqual(client.clear_browser_site("u-1", "pge.com")["cookies"], 2)
+        sites, clear = session.calls
+        self.assertTrue(str(sites["url"]).endswith("/api/v1/browser/users/u-1/sites"))
+        self.assertEqual(clear["method"], "DELETE")
+        self.assertTrue(str(clear["url"]).endswith("/api/v1/browser/users/u-1/sites/pge.com"))
+
+    def test_list_sessions_sends_the_user_and_limit_when_given(self) -> None:
+        client, session = self._client({"data": {"sessions": []}}, {"data": {"sessions": []}})
+        client.list_sessions("primary")
+        client.list_sessions("primary", user_id="u-1", limit=20)
+        self.assertNotIn("?", str(session.calls[0]["url"]))
+        self.assertIn("user_id=u-1", str(session.calls[1]["url"]))
+        self.assertIn("limit=20", str(session.calls[1]["url"]))
 
     def test_list_workflow_runs_reads_the_runs_route(self) -> None:
         client, session = self._client(

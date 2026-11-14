@@ -150,10 +150,10 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/agent/<agent>/request \
 curl -s http://127.0.0.1:8000/api/v1/agent/<agent>/request/<request_id>/status
 
 # CLI — run it inside the host container; the host's `pilot` binary may be a
-# stale install. Piped stdin works, so a REPL session is scriptable. Run it from
-# /tmp: the REPL writes its history file to the working directory, which the
-# `mash` user cannot write in /opt/mash.
-printf '/status\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T -w /tmp -e HOME=/tmp pilot pilot repl --host guide
+# stale install. Piped stdin works, so a REPL session is scriptable: each line
+# is one message or command, run to its end before the next is read. HOME is
+# /tmp because the REPL keeps its history under ~/.mash/history.
+printf '/agents\n/exit\n' | docker compose -f docker-compose.pilot.yml exec -T -w /tmp -e HOME=/tmp pilot pilot repl --host guide
 
 # Sandboxes — list them, then inspect a user's files the way the agent's code
 # sees them. docker exec copies the container's env (the sandbox token
@@ -298,13 +298,13 @@ psql ... -c "select request_id,agent_id,mode,status,started_by,parent_request_id
    matching: Rich colors the brackets around a short id separately from the
    id. Check:
    - `/bg <sleep 40, then reply>` prints `[xxxxxxxx] running in the background`
-     and the prompt comes back; `/bg --list` shows it running; while idle,
+     and the prompt comes back; `/bg list` shows it running; while idle,
      `[xxxxxxxx] done` prints with the reply.
    - Ctrl-Z while a `sleep 30` request streams prints
      `[xxxxxxxx] moved to the background`, and its row is `bg` and running.
-   - `/bg --switch <prefix>` replays the earlier steps (the `run_code` line
+   - `/bg switch <prefix>` replays the earlier steps (the `run_code` line
      shows again), renders the reply, and the row ends `fg` and `completed`.
-   - `/bg --switch zz` prints `No background request matches 'zz'.`
+   - `/bg switch zz` prints `No background request matches 'zz'.`
 3. **Splitting** (tables): a bg request on the `guide` host saying "Call the RunSubAgents tool
    exactly once with three items: two with agent_id "pilot" and one with
    agent_id "builder". Ask each item for one short fact about the Mash

@@ -759,15 +759,15 @@ In the REPL:
 
 ```bash
 › /bg set a timer for 2 mins     # submit in the background, back to the prompt
-› /bg --list                     # the session's bg requests
-› /bg --switch a1b2c3d4          # bring one to the foreground, replay and follow it
-› /bg --kill a1b2c3d4            # cancel it and its children
+› /bg list                       # the session's bg requests
+› /bg switch a1b2c3d4            # bring one to the foreground, replay and follow it
+› /bg kill a1b2c3d4              # cancel it and its children
 ```
 
 Ctrl-Z while a request runs sends it to the background. Ids are the first
 8 characters of the request id, and any unique prefix works. The REPL prints
 when each `bg` request you started is done, fails, is cancelled or needs
-input (`/bg --switch` to answer). The input stays open while a request runs:
+input (`/bg switch` to answer). The input stays open while a request runs:
 a message sent then is queued, Ctrl-C cancels the request, and Ctrl-O shows
 each model step and each child's tool calls.
 

@@ -100,6 +100,11 @@ class SystemClipboard(Clipboard):
         except ImportError:
             self._system = None
 
+    @property
+    def system(self) -> bool:
+        """Whether text set here reaches the system clipboard."""
+        return self._system is not None
+
     def set_data(self, data: ClipboardData) -> None:
         self._memory.set_data(data)
         if self._system is not None:

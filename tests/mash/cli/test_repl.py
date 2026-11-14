@@ -397,7 +397,7 @@ def test_a_command_that_raises_is_reported() -> None:
 
     async def script(d: ReplDriver) -> None:
         with patch.object(host, "get_session", boom):
-            await d.say("/session")
+            await d.say("/usage")
 
     assert "Command failed: no such session" in run(script, host).output
 
@@ -718,6 +718,69 @@ def test_a_workflow_run_is_not_followed_after_its_call_ends() -> None:
         assert not d.repl._child_tasks
 
     assert "Exported." in run(script, host).output
+
+
+# --- piped input --------------------------------------------------------------
+
+
+def _piped(lines: str, host: FakeHost) -> str:
+    import io
+
+    from rich.console import Console
+
+    from mash.cli.render import rich_theme
+    from mash.cli.repl import Repl, Target
+
+    buffer = io.StringIO()
+    repl = Repl(
+        host,  # type: ignore[arg-type]
+        Target(api_base_url="http://host", agent_id="primary", session_id="s-1", user_id="u-1"),
+        console=Console(file=buffer, width=100, force_terminal=False, color_system=None,
+                        theme=rich_theme()),
+    )
+    with patch("mash.cli.repl.sys.stdin", io.StringIO(lines)):
+        asyncio.run(repl.run_async())
+    return buffer.getvalue()
+
+
+def test_piped_input_runs_one_line_at_a_time() -> None:
+    host = FakeHost()
+    host.script("r-1", *simple("First."))
+    host.script("r-2", chat_end("response", text="Second."), completed("Second."))
+    out = _piped("one\n\n/keys\ntwo\n/exit\nnever sent\n", host)
+    assert [s["message"] for s in host.submitted] == ["one", "two"]
+    lines = [line.rstrip() for line in out.splitlines()]
+    # Each request ends before the next line is read.
+    assert lines.index("First.") < lines.index("› /keys") < lines.index("› two")
+    assert lines.index("› two") < lines.index("Second.") < lines.index("Bye.")
+    assert "› never sent" not in lines
+
+
+def test_piped_input_ends_at_the_end_of_the_pipe() -> None:
+    host = FakeHost()
+    host.script("r-1", *simple("Only."))
+    out = _piped("one", host)
+    assert "Only." in out and "Bye." in out
+
+
+def test_a_piped_request_that_asks_something_is_cancelled() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", interaction("i-1", "approval", "Approve execution of: deploy?"),
+                gate, cancelled())
+    original = host.cancel_request
+
+    def cancel(agent_id: str, request_id: str) -> dict[str, Any]:
+        gate.open()
+        return original(agent_id, request_id)
+
+    host.cancel_request = cancel  # type: ignore[method-assign]
+    out = _piped("deploy\n", host)
+    assert host.cancelled == [("primary", "r-1")]
+    assert host.answers == []
+    assert "Approve execution of: deploy?" in out
+    assert "Input is not a terminal, so this cannot be answered." in out
+    assert "Request cancelled." in out
 
 
 # --- sessions -----------------------------------------------------------------

@@ -9,7 +9,7 @@ from typing import Any
 
 SHORT_ID_LENGTH = 8
 
-BG_USAGE = "Usage: /bg <message> | /bg --list | /bg --switch <id> | /bg --kill <id>"
+BG_USAGE = "Usage: /bg <message> | /bg list | /bg switch <id> | /bg kill <id>"
 
 
 def short_id(request_id: str) -> str:
@@ -28,21 +28,19 @@ class BgCommand:
 def parse_bg_args(args: list[str]) -> BgCommand | str:
     """Parse /bg's arguments, or return a usage error.
 
-    Only a first word starting with ``--`` is a flag, so ``/bg list my files``
-    is a message.
+    ``list`` alone, and ``switch`` or ``kill`` followed by one id, are
+    subcommands. Anything else is a message, so ``/bg list my files`` and
+    ``/bg kill the old export job`` are sent to the agent.
     """
     if not args:
         return BG_USAGE
-    flag = args[0]
-    if not flag.startswith("--"):
-        return BgCommand(action="start", message=" ".join(args))
-    if flag == "--list":
-        return BgCommand(action="list") if len(args) == 1 else BG_USAGE
-    if flag in ("--switch", "--kill"):
-        if len(args) != 2:
-            return BG_USAGE
-        return BgCommand(action=flag[2:], request_id=args[1])
-    return BG_USAGE
+    if args == ["list"]:
+        return BgCommand(action="list")
+    if len(args) == 2 and args[0] in ("switch", "kill"):
+        return BgCommand(action=args[0], request_id=args[1])
+    if args in (["switch"], ["kill"]):
+        return BG_USAGE
+    return BgCommand(action="start", message=" ".join(args))
 
 
 def resolve_prefix(prefix: str, records: list[dict[str, Any]]) -> dict[str, Any] | str:
@@ -62,7 +60,7 @@ def _clip(text: str, width: int = 60) -> str:
 
 
 def list_rows(records: list[dict[str, Any]]) -> list[list[str]]:
-    """Table rows for /bg --list, with each child indented under its parent.
+    """Table rows for /bg list, with each child indented under its parent.
 
     Records come newest first. A child whose parent is not listed (it runs in
     the foreground) is shown at the top level.
@@ -171,7 +169,7 @@ class BackgroundWatchers:
 
         def ask(interaction_id: str) -> None:
             timers.pop(interaction_id, None)
-            self._notify([("warn", f"[{sid}] needs your input: /bg --switch {sid}")])
+            self._notify([("warn", f"[{sid}] needs your input: /bg switch {sid}")])
 
         try:
             async for event in self._client.request_events(

@@ -20,6 +20,10 @@ from mash.runtime.structured_output import serialize_structured_output
 DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 # No read timeout: a stream is quiet while the request waits on the user.
 DEFAULT_STREAM_TIMEOUT = httpx.Timeout(10.0, read=None)
+# Compacting a session is a model call.
+COMPACT_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
+# A browser call may start the user's browser container first.
+BROWSER_TIMEOUT = httpx.Timeout(90.0, connect=10.0)
 
 TERMINAL_EVENTS = frozenset({"request.completed", "request.error", "request.cancelled"})
 
@@ -35,11 +39,20 @@ class MashHostClientError(RuntimeError):
     """Raised when Mash host operations fail.
 
     ``status_code`` is the HTTP status, or None when the host was not reached.
+    ``code`` is the API's error code, such as ``CORTEX_NOT_FOUND``, when the
+    response carried one.
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 class _SSEParser:
@@ -99,6 +112,16 @@ def _error_message(response: httpx.Response) -> str:
     return message or response.text
 
 
+def _error_code(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return str(code) if code else None
+
+
 class MashHostClient:
     """Thin client for interacting with a Mash host deployment."""
 
@@ -139,6 +162,7 @@ class MashHostClient:
                 f"{method} {path} failed ({response.status_code}): "
                 f"{_error_message(response)}",
                 status_code=response.status_code,
+                code=_error_code(response),
             )
 
     def _request(
@@ -345,6 +369,120 @@ class MashHostClient:
         response = self._request(
             "POST",
             f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/cancel",
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def rerun_request(self, agent_id: str, request_id: str) -> dict[str, Any]:
+        """Start a previous request over as a new request; returns its ``request_id``."""
+        response = self._request(
+            "POST",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/rerun",
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def compact_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
+        """Summarize the session's history; returns ``summary_text`` and ``trace_id``."""
+        response = self._request(
+            "POST",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/sessions/{quote(session_id, safe='')}/compact",
+            json_body={"reason": "manual"},
+            # The summary is a model call.
+            timeout=COMPACT_TIMEOUT,
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def get_usage(
+        self,
+        agent_id: str,
+        *,
+        session_id: str | None = None,
+        from_ts: float | None = None,
+        bucket: str = "day",
+    ) -> list[dict[str, Any]]:
+        """The agent's token usage in ``hour`` or ``day`` buckets."""
+        query = {
+            key: value
+            for key, value in (
+                ("agent_id", agent_id),
+                ("session_id", session_id),
+                ("from_ts", from_ts),
+                ("bucket", bucket),
+            )
+            if value is not None
+        }
+        response = self._request("GET", "/api/v1/telemetry/usage", query=query)
+        buckets = response.json()["data"].get("buckets")
+        return buckets if isinstance(buckets, list) else []
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """The pool's tools, each as ``{"tool", "agents"}``."""
+        tools = self._request("GET", "/api/v1/tools").json()["data"].get("tools")
+        return tools if isinstance(tools, list) else []
+
+    def list_skills(self) -> list[dict[str, Any]]:
+        """The pool's skills, each as ``{"skill", "agents"}``."""
+        skills = self._request("GET", "/api/v1/skills").json()["data"].get("skills")
+        return skills if isinstance(skills, list) else []
+
+    # --- Cortex -------------------------------------------------------------
+
+    @staticmethod
+    def _cortex_path(user_id: str, *parts: str) -> str:
+        path = f"/api/v1/cortex/users/{quote(user_id, safe='')}"
+        return path + "".join(f"/{quote(part, safe='')}" for part in parts)
+
+    def get_cortex_user(self, user_id: str) -> dict[str, Any]:
+        """The user's Cortex: ``profile``, ``version`` and ``entry_count``."""
+        data = self._request("GET", self._cortex_path(user_id)).json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def list_cortex_entries(
+        self, user_id: str, *, q: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"limit": limit}
+        if q:
+            query["q"] = q
+        response = self._request(
+            "GET", self._cortex_path(user_id, "entries"), query=query
+        )
+        entries = response.json()["data"].get("entries")
+        return entries if isinstance(entries, list) else []
+
+    def create_cortex_entry(
+        self, user_id: str, *, topic: str, content: str
+    ) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            self._cortex_path(user_id, "entries"),
+            json_body={"topic": topic, "content": content},
+        )
+        entry = response.json()["data"].get("entry")
+        return entry if isinstance(entry, dict) else {}
+
+    def delete_cortex_entry(self, user_id: str, entry_id: str) -> None:
+        self._request("DELETE", self._cortex_path(user_id, "entries", entry_id))
+
+    # --- browser ------------------------------------------------------------
+
+    def list_browser_sites(self, user_id: str) -> list[dict[str, Any]]:
+        """The sites the user's browser profile holds cookies for."""
+        response = self._request(
+            "GET",
+            f"/api/v1/browser/users/{quote(user_id, safe='')}/sites",
+            timeout=BROWSER_TIMEOUT,
+        )
+        sites = response.json()["data"].get("sites")
+        return sites if isinstance(sites, list) else []
+
+    def clear_browser_site(self, user_id: str, domain: str) -> dict[str, Any]:
+        """Sign the user's browser out of ``domain``."""
+        response = self._request(
+            "DELETE",
+            f"/api/v1/browser/users/{quote(user_id, safe='')}/sites/{quote(domain, safe='')}",
+            timeout=BROWSER_TIMEOUT,
         )
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}

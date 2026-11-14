@@ -4,8 +4,37 @@ from __future__ import annotations
 
 import json
 
+from datetime import datetime
+
+from rich.markup import escape
+
 from .background import parse_bg_args
+from .client import MashHostClientError
 from .commands import Command, ExitRepl
+from .render import clip, fmt_tokens
+
+GROUP_SESSION = "Session"
+GROUP_REQUESTS = "Requests"
+GROUP_DEPLOYMENT = "Deployment"
+GROUP_REPL = "REPL"
+
+KEYS = (
+    ("Enter", "Send the message"),
+    ("Alt+Enter, Ctrl-J, \\ then Enter", "Add a line"),
+    ("Up, Down", "Move between lines, then through history"),
+    ("Shift+arrows", "Select; typing replaces the selection"),
+    ("Ctrl-W, Ctrl-K, Ctrl-U", "Cut a word, to the end of the line, to its start"),
+    ("Ctrl-Y", "Paste what was cut"),
+    ("Ctrl-_", "Undo"),
+    ("Ctrl-X Ctrl-E", "Edit the message in $EDITOR"),
+    ("/", "Open the command menu"),
+    ("Ctrl-C", "Clear the input, then cancel the request, then (twice) leave"),
+    ("Esc", "Cancel the running request"),
+    ("Ctrl-Z", "Send the running request to the background"),
+    ("Ctrl-O", "Show or hide model steps and subagent tool calls"),
+    ("Ctrl-L", "Clear the screen"),
+    ("Ctrl-D", "Leave"),
+)
 
 
 def _host_members(host: dict) -> list[dict]:
@@ -139,15 +168,29 @@ def register_default_commands(shell) -> None:
     """Register built-in commands for a remote CLI shell."""
 
     def help_command(ctx, _args: list[str]) -> None:
-        commands = shell.command_registry.list_commands()
-        if not commands:
-            ctx.renderer.info("No commands available.")
-            return
-
-        ctx.renderer.info("Available commands:")
-        for command in commands:
-            aliases = f" (aliases: {', '.join(command.aliases)})" if command.aliases else ""
-            ctx.renderer.print(f"  /{command.name}{aliases} - {command.help}")
+        groups: dict[str, list[Command]] = {}
+        for command in shell.command_registry.list_commands():
+            groups.setdefault(command.group or "More", []).append(command)
+        builtin = [GROUP_SESSION, GROUP_REQUESTS, GROUP_DEPLOYMENT]
+        # An app's own groups come after the built-in ones, the REPL's last.
+        order = builtin + sorted(set(groups) - set(builtin) - {GROUP_REPL}) + [GROUP_REPL]
+        width = max((len(c.name) for cs in groups.values() for c in cs), default=0)
+        first = True
+        for group in order:
+            if group not in groups:
+                continue
+            if not first:
+                ctx.renderer.print()
+            first = False
+            ctx.renderer.info(group)
+            for command in groups[group]:
+                aliases = (
+                    f" (also /{', /'.join(command.aliases)})" if command.aliases else ""
+                )
+                ctx.renderer.print(
+                    f"  [accent]/{command.name:<{width}}[/accent]  "
+                    f"{escape(command.help)}[muted]{escape(aliases)}[/muted]"
+                )
 
     def exit_command(_ctx, _args: list[str]) -> None:
         raise ExitRepl()
@@ -155,116 +198,203 @@ def register_default_commands(shell) -> None:
     def clear_command(ctx, _args: list[str]) -> None:
         ctx.renderer.clear()
 
-    def status_command(ctx, _args: list[str]) -> None:
-        health = ctx.client.health()
-        deployment = health.get("deployment") or {}
-        ctx.renderer.info(f"Deployment: {ctx.api_base_url}")
-        ctx.renderer.info(f"Agents: {len(deployment.get('agents') or [])}")
-        ctx.renderer.info(f"Hosts: {len(deployment.get('hosts') or [])}")
-        ctx.renderer.info(f"Current host: {ctx.host_id or '(none)'}")
-        ctx.renderer.info(f"Current agent: {ctx.agent_id}")
-        ctx.renderer.info(f"Session ID: {ctx.session_id}")
-
-    def history_command(ctx, args: list[str]) -> None:
-        limit = None
-        if args:
-            try:
-                limit = int(args[0])
-            except ValueError:
-                ctx.renderer.error("Limit must be a number")
-                return
-
-        turns = ctx.client.get_history(ctx.agent_id, ctx.session_id, limit=limit)
-        if not turns:
-            ctx.renderer.warn("No conversation history.")
-            return
-
-        ctx.renderer.info(f"Conversation history ({len(turns)} turns):")
-        for index, turn in enumerate(turns, 1):
-            ctx.renderer.print(f"\n--- Turn {index} ---")
-            ctx.renderer.print(f"User: {turn['user_message']}")
-            ctx.renderer.print(f"Agent: {turn['agent_response']}")
-
-    def session_command(ctx, _args: list[str]) -> None:
-        payload = ctx.client.get_session(ctx.agent_id, ctx.session_id)
-        ctx.renderer.info(f"Deployment: {ctx.api_base_url}")
-        ctx.renderer.info(f"Agent: {payload.get('agent_id') or ctx.agent_id}")
-        ctx.renderer.info(f"Session ID: {payload.get('session_id') or ctx.session_id}")
-        ctx.renderer.info(f"Model: {payload.get('model')}")
-        ctx.renderer.info(f"Max steps: {payload.get('max_steps')}")
-        total_tokens = payload.get("total_tokens")
-        if total_tokens is None:
-            total_tokens = payload.get("session_total_tokens")
-        ctx.renderer.info(f"Session tokens: {total_tokens}")
-        cache_read = payload.get("cache_read_tokens") or 0
-        cache_write = payload.get("cache_write_tokens") or 0
-        if cache_read or cache_write:
-            ctx.renderer.info(f"  Cache: {cache_read} read / {cache_write} written")
-
-    def sessions_command(ctx, _args: list[str]) -> None:
-        sessions = ctx.client.list_sessions(ctx.agent_id)
-        if not sessions:
-            ctx.renderer.warn("No sessions found.")
-            return
-        rows = []
-        for session in sessions:
-            rows.append(
-                [
-                    str(session.get("session_id") or ""),
-                    str(session.get("turn_count") or 0),
-                    str(session.get("session_total_tokens") or 0),
-                ]
-            )
-        ctx.renderer.table(["Session ID", "Turns", "Tokens"], rows)
-
     def agents_command(ctx, _args: list[str]) -> None:
+        """The agents this REPL's requests can reach, as the companion sees them."""
         if ctx.host_id:
-            host = ctx.client.get_host(ctx.host_id)
-            members = _host_members(host)
+            members = _host_members(ctx.client.get_host(ctx.host_id))
             if not members:
                 ctx.renderer.warn(f"Host '{ctx.host_id}' has no agents.")
                 return
-            rows = []
-            for member in members:
-                metadata = member.get("metadata") or {}
-                rows.append(
-                    [
-                        str(member.get("agent_id") or ""),
-                        str(metadata.get("display_name") or ""),
-                    ]
-                )
-            ctx.renderer.table(["Agent", "Name"], rows)
-            return
-
-        agents = ctx.client.list_agents()
-        if not agents:
-            ctx.renderer.warn("No agents available.")
-            return
-        rows = []
-        for agent in agents:
-            metadata = agent.get("metadata") or {}
-            rows.append(
-                [
-                    str(agent.get("agent_id") or ""),
-                    str(metadata.get("display_name") or ""),
-                ]
+        else:
+            agent = ctx.client.get_agent(ctx.agent_id).get("agent")
+            members = [agent] if isinstance(agent, dict) else []
+        for index, member in enumerate(members):
+            metadata = member.get("metadata") or {}
+            agent_id = str(member.get("agent_id") or "")
+            name = str(metadata.get("display_name") or "")
+            if index:
+                ctx.renderer.print()
+            ctx.renderer.print(
+                f"[agent]{escape(agent_id)}[/agent]"
+                + (f" [muted]· {escape(name)}[/muted]" if name else "")
             )
-        ctx.renderer.table(["Agent", "Name"], rows)
+            description = str(metadata.get("description") or "")
+            if description:
+                ctx.renderer.print(f"  {escape(description)}")
+            capabilities = [str(item) for item in metadata.get("capabilities") or []]
+            if capabilities:
+                ctx.renderer.muted(f"  Capabilities: {escape(', '.join(capabilities))}")
+            guidance = str(metadata.get("usage_guidance") or "")
+            if guidance:
+                ctx.renderer.muted(f"  Use for: {escape(guidance)}")
 
-    def hosts_command(ctx, _args: list[str]) -> None:
-        hosts = ctx.client.list_hosts()
-        if not hosts:
-            ctx.renderer.warn("No hosts defined.")
+    def _target_agents(ctx) -> set[str]:
+        if not ctx.host_id:
+            return {ctx.agent_id}
+        members = _host_members(ctx.client.get_host(ctx.host_id))
+        return {str(member.get("agent_id") or "") for member in members}
+
+    def tools_command(ctx, _args: list[str]) -> None:
+        agents = _target_agents(ctx)
+
+        def rows(items: list[dict], key: str) -> list[list[str]]:
+            found = []
+            for item in items:
+                used_by = sorted(set(item.get("agents") or []) & agents)
+                described = item.get(key) or {}
+                if used_by:
+                    found.append(
+                        [
+                            escape(str(described.get("name") or "")),
+                            escape(", ".join(used_by)),
+                            escape(clip(str(described.get("description") or ""), 70)),
+                        ]
+                    )
+            return sorted(found)
+
+        tools = rows(ctx.client.list_tools(), "tool")
+        skills = rows(ctx.client.list_skills(), "skill")
+        if not tools and not skills:
+            ctx.renderer.warn("These agents have no tools or skills.")
             return
-        rows = [
-            [
-                str(host.get("host_id") or ""),
-                ", ".join(host.get("agents") or []),
-                ", ".join(host.get("workflows") or []),
-            ]
-            for host in hosts
-        ]
-        ctx.renderer.table(["Host", "Agents", "Workflows"], rows)
+        if tools:
+            ctx.renderer.table(["Tool", "Agents", "Does"], tools)
+        if skills:
+            ctx.renderer.table(["Skill", "Agents", "Does"], skills)
+
+    def usage_command(ctx, _args: list[str]) -> None:
+        session = ctx.client.get_session(ctx.agent_id, ctx.session_id)
+        total = session.get("total_tokens")
+        if total is None:
+            total = session.get("session_total_tokens")
+        line = f"This session: {fmt_tokens(int(total or 0))} tokens"
+        cache_read = int(session.get("cache_read_tokens") or 0)
+        cache_write = int(session.get("cache_write_tokens") or 0)
+        if cache_read or cache_write:
+            line += (
+                f" (cache: {fmt_tokens(cache_read)} read, "
+                f"{fmt_tokens(cache_write)} written)"
+            )
+        ctx.renderer.info(line)
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        buckets = ctx.client.get_usage(ctx.agent_id, from_ts=midnight.timestamp())
+        requests = sum(int(bucket.get("request_count") or 0) for bucket in buckets)
+        tokens_in = sum(int(bucket.get("input_tokens") or 0) for bucket in buckets)
+        tokens_out = sum(int(bucket.get("output_tokens") or 0) for bucket in buckets)
+        ctx.renderer.info(
+            f"Today, {ctx.agent_id}: {requests} request{'' if requests == 1 else 's'} · "
+            f"{fmt_tokens(tokens_in)} in · {fmt_tokens(tokens_out)} out"
+        )
+
+    def memory_command(ctx, args: list[str]) -> None:
+        usage = "Usage: /memory | /memory add <text> | /memory forget <id>"
+        try:
+            if not args:
+                try:
+                    user = ctx.client.get_cortex_user(ctx.user_id)
+                except MashHostClientError as exc:
+                    if exc.code != "CORTEX_NOT_FOUND":
+                        raise
+                    ctx.renderer.warn("Nothing is remembered about you yet.")
+                    return
+                profile = str(user.get("profile") or "").strip()
+                if profile:
+                    ctx.renderer.markdown(profile)
+                entries = ctx.client.list_cortex_entries(ctx.user_id)
+                if entries:
+                    ctx.renderer.table(
+                        ["ID", "Topic", "Remembered", "From"],
+                        [
+                            [
+                                escape(str(entry.get("entry_id") or "")[:8]),
+                                escape(str(entry.get("topic") or "")),
+                                escape(clip(str(entry.get("content") or ""), 70)),
+                                "you" if entry.get("origin") == "app" else "conversations",
+                            ]
+                            for entry in entries
+                        ],
+                    )
+                elif not profile:
+                    ctx.renderer.warn("Nothing is remembered about you yet.")
+                return
+            if args[0] == "add" and len(args) > 1:
+                text = " ".join(args[1:]).strip()
+                # "topic: fact" names the topic; otherwise it is a note.
+                topic, _, content = text.partition(":")
+                if not content.strip() or len(topic) > 60:
+                    topic, content = "note", text
+                entry = ctx.client.create_cortex_entry(
+                    ctx.user_id, topic=topic.strip(), content=content.strip()
+                )
+                ctx.renderer.info(
+                    f"Remembered ({escape(str(entry.get('entry_id') or '')[:8])})."
+                )
+                return
+            if args[0] == "forget" and len(args) == 2:
+                entries = ctx.client.list_cortex_entries(ctx.user_id, limit=200)
+                matches = [
+                    entry
+                    for entry in entries
+                    if str(entry.get("entry_id") or "").startswith(args[1])
+                ]
+                if len(matches) != 1:
+                    ctx.renderer.error(
+                        f"No entry matches '{args[1]}'."
+                        if not matches
+                        else f"'{args[1]}' matches {len(matches)} entries; type more of the id."
+                    )
+                    return
+                ctx.client.delete_cortex_entry(ctx.user_id, str(matches[0]["entry_id"]))
+                ctx.renderer.info(f"Forgot: {escape(clip(str(matches[0].get('content') or ''), 70))}")
+                return
+            ctx.renderer.error(usage)
+        except MashHostClientError as exc:
+            # Without Cortex the deployment has no such routes.
+            if exc.status_code == 404 and exc.code != "CORTEX_NOT_FOUND":
+                ctx.renderer.warn("Cortex is not enabled on this deployment.")
+                return
+            raise
+
+    def browser_command(ctx, args: list[str]) -> None:
+        if not args:
+            sites = ctx.client.list_browser_sites(ctx.user_id)
+            if not sites:
+                ctx.renderer.warn("Your browser is not signed in to any site.")
+                return
+            ctx.renderer.table(
+                ["Site", "Cookies"],
+                [
+                    [escape(str(site.get("domain") or "")), str(site.get("cookies") or 0)]
+                    for site in sites
+                ],
+            )
+            return
+        if args[0] == "forget" and len(args) == 2:
+            cleared = ctx.client.clear_browser_site(ctx.user_id, args[1])
+            count = int(cleared.get("cookies") or 0)
+            ctx.renderer.info(
+                f"Signed out of {escape(args[1])} "
+                f"({count} cookie{'' if count == 1 else 's'} removed)."
+            )
+            return
+        ctx.renderer.error("Usage: /browser | /browser forget <site>")
+
+    def keys_command(ctx, _args: list[str]) -> None:
+        ctx.renderer.table(["Key", "Does"], [list(row) for row in KEYS])
+
+    def copy_command(ctx, args: list[str]) -> None:
+        if args not in ([], ["code"]):
+            ctx.renderer.error("Usage: /copy | /copy code")
+            return
+        shell.copy_last(code=bool(args))
+
+    async def retry_command(ctx, args: list[str]) -> None:
+        del ctx, args
+        await shell.retry()
+
+    async def compact_command(ctx, args: list[str]) -> None:
+        del ctx, args
+        await shell.compact()
 
     def workflow_command(ctx, args: list[str]) -> None:
         # Bare `/workflow` behaves like `/workflow list`.
@@ -554,83 +684,30 @@ def register_default_commands(shell) -> None:
         del ctx, args
         await shell.pick_session()
 
-    shell.command_registry.register(
-        Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))
-    )
-    shell.command_registry.register(
-        Command(name="new", help="Start a new session", handler=new_command)
-    )
-    shell.command_registry.register(
-        Command(name="resume", help="Go on in one of your earlier sessions", handler=resume_command)
-    )
-    shell.command_registry.register(
-        Command(
-            name="subagent",
-            help="List the last request's subagents, show one (<n>) or cancel one (cancel <n>)",
-            handler=subagent_command,
+    def add(name: str, help: str, handler, group: str, aliases: tuple[str, ...] = ()) -> None:
+        shell.command_registry.register(
+            Command(name=name, help=help, handler=handler, aliases=aliases, group=group)
         )
-    )
-    shell.command_registry.register(
-        Command(name="exit", help="Exit the application", handler=exit_command, aliases=("quit", "q"))
-    )
-    shell.command_registry.register(
-        Command(name="clear", help="Clear the screen", handler=clear_command, aliases=("cls",))
-    )
-    shell.command_registry.register(
-        Command(name="status", help="Show deployment status", handler=status_command)
-    )
-    shell.command_registry.register(
-        Command(
-            name="agent",
-            help="List available agents (host members only when connected through a host)",
-            handler=agents_command,
-        )
-    )
-    shell.command_registry.register(
-        Command(name="session", help="Show current remote session info", handler=session_command)
-    )
-    shell.command_registry.register(
-        Command(name="sessions", help="List remote sessions for the current agent", handler=sessions_command)
-    )
-    shell.command_registry.register(
-        Command(name="history", help="View conversation history", handler=history_command)
-    )
-    shell.command_registry.register(
-        Command(
-            name="host",
-            help="List defined hosts (retarget with `mash compose`)",
-            handler=hosts_command,
-        )
-    )
-    shell.command_registry.register(
-        Command(
-            name="workflow",
-            help="List, run, inspect, and resume workflows; bare `/workflow` lists (host-attached only when connected through a host)",
-            handler=workflow_command,
-        )
-    )
-    shell.command_registry.register(
-        Command(
-            name="trace",
-            help="Show trace analysis for recent traces (/trace [N])",
-            handler=trace_command,
-        )
-    )
-    shell.command_registry.register(
-        Command(
-            name="bg",
-            help=(
-                "Run a request in the background, or list, switch to and kill them "
-                "(/bg <message> | --list | --switch <id> | --kill <id>); "
-                "Ctrl-Z sends the streaming request to the background"
-            ),
-            handler=bg_command,
-        )
-    )
-    shell.command_registry.register(
-        Command(
-            name="feedback",
-            help="Send feedback or a bug report about this session (/feedback <message>)",
-            handler=feedback_command,
-        )
-    )
+
+    add("new", "Start a new session", new_command, GROUP_SESSION)
+    add("resume", "Go on in one of your earlier sessions", resume_command, GROUP_SESSION)
+    add("compact", "Summarize the session so far to free up context", compact_command, GROUP_SESSION)
+    add("usage", "Tokens used by this session and today", usage_command, GROUP_SESSION)
+    add("copy", "Copy the last answer, or its last code block (/copy code)", copy_command, GROUP_SESSION)
+
+    add("bg", "Run a message in the background: /bg <message> | list | switch <id> | kill <id>", bg_command, GROUP_REQUESTS)
+    add("subagent", "The last request's subagents: list, show one (<n>) or cancel one (cancel <n>)", subagent_command, GROUP_REQUESTS)
+    add("retry", "Run the last request again", retry_command, GROUP_REQUESTS)
+    add("trace", "Timing and tool statistics of recent requests (/trace [n])", trace_command, GROUP_REQUESTS)
+
+    add("agents", "The agents your requests can reach and what each is for", agents_command, GROUP_DEPLOYMENT)
+    add("tools", "The tools and skills of those agents", tools_command, GROUP_DEPLOYMENT)
+    add("workflow", "List, run, inspect and resume workflows", workflow_command, GROUP_DEPLOYMENT)
+    add("memory", "What is remembered about you: /memory | add <text> | forget <id>", memory_command, GROUP_DEPLOYMENT)
+    add("browser", "Sites your browser is signed in to: /browser | forget <site>", browser_command, GROUP_DEPLOYMENT)
+
+    add("help", "Show the commands", help_command, GROUP_REPL, ("h", "?"))
+    add("keys", "Show the keys", keys_command, GROUP_REPL)
+    add("feedback", "Send a note or bug report about this session", feedback_command, GROUP_REPL)
+    add("clear", "Clear the screen", clear_command, GROUP_REPL, ("cls",))
+    add("exit", "Leave", exit_command, GROUP_REPL, ("quit", "q"))

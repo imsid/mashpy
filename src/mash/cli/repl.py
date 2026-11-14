@@ -11,18 +11,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import signal
+import sys
 import time
 import uuid
 import webbrowser
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.clipboard import Clipboard
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
@@ -66,6 +69,7 @@ from .views import (
     Tool,
     ToolCall,
     Workflow,
+    answer_text,
     final_text,
     reduce,
 )
@@ -103,6 +107,30 @@ class _Interrupted:
     draft: str
 
 
+# A fenced code block's body.
+_CODE_BLOCK = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
+# The first argument each built-in command offers in the menu.
+ARGUMENT_MENUS: dict[str, tuple[MenuEntry, ...]] = {
+    "bg": (
+        ("list", "The session's background requests"),
+        ("switch", "Bring one to the foreground"),
+        ("kill", "Cancel one and its children"),
+    ),
+    "workflow": (
+        ("list", "The workflows you can run"),
+        ("run", "Start a run: run <workflow_id> [--input JSON]"),
+        ("status", "A run's status: status <workflow_id> <run_id>"),
+        ("resume", "Resume a failed run: resume <workflow_id> <run_id>"),
+    ),
+    "memory": (
+        ("add", "Pin a fact: add <text>"),
+        ("forget", "Remove an entry: forget <id>"),
+    ),
+    "browser": (("forget", "Sign out of a site: forget <site>"),),
+    "copy": (("code", "The last code block of the last answer"),),
+}
+
 # An open question was closed because its interaction no longer waits.
 _CLOSED: Any = object()
 # The approval menu's entry that prints the call's full arguments.
@@ -123,6 +151,7 @@ class Repl:
         tool_lines: Mapping[str, ToolLine] | None = None,
         console: Console | None = None,
         history: History | Path | None = None,
+        clipboard: Clipboard | None = None,
         input: Any = None,
         output: Any = None,
     ) -> None:
@@ -158,7 +187,7 @@ class Repl:
         # The request whose rows are in the live area, and the task reading it.
         self.foreground: RequestView | None = None
         self._foreground_task: asyncio.Task[None] | None = None
-        # A request brought forward with /bg --switch that another agent
+        # A request brought forward with /bg switch that another agent
         # started: Ctrl-Z leaves its mode alone.
         self._foreground_is_child = False
         self._child_tasks: set[asyncio.Task[None]] = set()
@@ -166,6 +195,8 @@ class Repl:
         self._workflow_tasks: dict[str, asyncio.Task[None]] = {}
         # The last request that started children, for /subagent.
         self.last_parent: RequestView | None = None
+        # The last answer printed in the foreground, for /copy.
+        self.last_answer = ""
         # Messages typed while a request ran, sent in order when it ends.
         self.queue: list[str] = []
         # Interactions waiting for the user, oldest first.
@@ -183,6 +214,7 @@ class Repl:
         # The input is opened when the REPL runs, so a Repl can be built (to
         # register commands, or in tests) without a terminal.
         self._history = history
+        self._clipboard = clipboard
         self._terminal = {"input": input, "output": output}
         self._input: InputLine | None = None
         self._ask_session_: PromptSession[str] | None = None
@@ -195,6 +227,8 @@ class Repl:
             self._input = InputLine(
                 history=self._history or history_path(self.app_name),
                 commands=self._command_menu,
+                arguments=self._argument_menu,
+                clipboard=self._clipboard,
                 key_bindings=self._key_bindings(),
                 **self._terminal,
             )
@@ -242,6 +276,30 @@ class Repl:
             (command.name, command.help)
             for command in self.command_registry.list_commands()
         ]
+
+    def _argument_menu(self, command: str, typed: Sequence[str]) -> list[MenuEntry]:
+        """The menu for a command's next argument."""
+        if not typed:
+            if command == "subagent":
+                children = self.last_parent.children if self.last_parent else []
+                return [
+                    (str(index), f"{child.agent_id}: {clip(child.brief, 50)}")
+                    for index, child in enumerate(children, 1)
+                ] + [("cancel", "Cancel one subagent")]
+            return list(ARGUMENT_MENUS.get(command, ()))
+        if command == "bg" and list(typed) in (["switch"], ["kill"]):
+            return [
+                (short_id(request_id), "running in the background")
+                for request_id in self.watchers.watching()
+            ]
+        if command == "subagent" and list(typed) == ["cancel"]:
+            children = self.last_parent.children if self.last_parent else []
+            return [
+                (str(index), child.agent_id)
+                for index, child in enumerate(children, 1)
+                if not child.ended
+            ]
+        return []
 
     def running(self) -> bool:
         """Whether a foreground request is running."""
@@ -555,6 +613,8 @@ class Repl:
 
     def _print_end(self, view: RequestView) -> None:
         if view.status == COMPLETED:
+            if view is self.foreground:
+                self.last_answer = answer_text(view)
             text = final_text(view)
             if text:
                 self.renderer.markdown(text)
@@ -661,6 +721,80 @@ class Repl:
     def _cancel_children(self) -> None:
         for task in list(self._child_tasks):
             task.cancel()
+
+    # --- /retry, /compact, /copy -----------------------------------------------
+
+    def _foreground_busy(self) -> bool:
+        if self._foreground_task is None:
+            return False
+        self.renderer.error(
+            "A request is running in the foreground. Wait for it, or press "
+            "Ctrl-Z to send it to the background first."
+        )
+        return True
+
+    async def retry(self) -> None:
+        """``/retry``: run the last request again as a new request."""
+        ctx = self.context
+        if self._foreground_busy():
+            return
+        if not ctx.last_request_id:
+            self.renderer.warn("Nothing to retry yet.")
+            return
+        accepted = await asyncio.to_thread(
+            self.client.rerun_request, ctx.agent_id, ctx.last_request_id
+        )
+        request_id = str(accepted.get("request_id") or "")
+        if not request_id:
+            raise MashHostClientError("the host returned no request id")
+        ctx.last_request_id = request_id
+        self._follow_in_foreground(
+            RequestView(
+                agent_id=ctx.agent_id,
+                request_id=request_id,
+                started_at=self.now(),
+                brief="retry",
+            )
+        )
+
+    async def compact(self) -> None:
+        """``/compact``: have the agent summarize the session's history."""
+        ctx = self.context
+        if self._foreground_busy():
+            return
+        result = await asyncio.to_thread(
+            self.client.compact_session, ctx.agent_id, ctx.session_id
+        )
+        summary = str(result.get("summary_text") or "").strip()
+        if not summary:
+            self.renderer.warn("Nothing to summarize yet.")
+            return
+        self.renderer.info("Session summarized. Later requests start from:")
+        self.renderer.muted(escape(clip(summary, 600)))
+        await self._refresh_session_tokens()
+
+    def copy_last(self, *, code: bool = False) -> None:
+        """``/copy``: the last answer, or its last code block, to the clipboard."""
+        text = self.last_answer
+        if not text.strip():
+            self.renderer.warn("No answer to copy yet.")
+            return
+        what = "the last answer"
+        if code:
+            blocks = _CODE_BLOCK.findall(text)
+            if not blocks:
+                self.renderer.warn("The last answer has no code block.")
+                return
+            text, what = blocks[-1].rstrip("\n"), "the last code block"
+        clipboard = self.input.session.clipboard
+        clipboard.set_text(text)
+        if getattr(clipboard, "system", True):
+            self.renderer.info(f"Copied {what} ({len(text)} characters).")
+        else:
+            self.renderer.warn(
+                "No system clipboard here. Ctrl-Y pastes "
+                f"{what} into the input."
+            )
 
     # --- /subagent ------------------------------------------------------------
 
@@ -805,7 +939,7 @@ class Repl:
         return resolved
 
     async def list_background(self, ctx: CLIContext) -> None:
-        """``/bg --list``: the session's bg requests, children under parents."""
+        """``/bg list``: the session's bg requests, children under parents."""
         records = await self._background_records(ctx)
         if not records:
             self.renderer.warn("No background requests in this session.")
@@ -814,7 +948,7 @@ class Repl:
         self.renderer.table(["ID", "Message", "Status", "Started by"], rows)
 
     async def switch_to(self, ctx: CLIContext, prefix: str) -> None:
-        """``/bg --switch <id>``: bring a request to the foreground and follow it."""
+        """``/bg switch <id>``: bring a request to the foreground and follow it."""
         if self._foreground_task is not None:
             self.renderer.error(
                 "A request is running in the foreground. Press Ctrl-Z to send it "
@@ -845,7 +979,7 @@ class Repl:
         self._follow_in_foreground(view, child=child)
 
     async def kill(self, ctx: CLIContext, prefix: str) -> None:
-        """``/bg --kill <id>``: cancel a request and its children."""
+        """``/bg kill <id>``: cancel a request and its children."""
         record = await self._resolve(ctx, prefix)
         if record is None:
             return
@@ -1133,11 +1267,7 @@ class Repl:
         self, session_id: str, *, resumed: bool, title: str = ""
     ) -> bool:
         """Go on in another session, or a new one, without leaving the REPL."""
-        if self._foreground_task is not None:
-            self.renderer.error(
-                "A request is running in the foreground. Wait for it, or press "
-                "Ctrl-Z to send it to the background first."
-            )
+        if self._foreground_busy():
             return False
         ctx = self.context
         ctx.session_id = session_id
@@ -1185,8 +1315,66 @@ class Repl:
             str(session["session_id"]), resumed=True, title=session_title(session)
         )
 
+    def _piped(self) -> bool:
+        """Whether messages come from a pipe or a file, not a terminal."""
+        if self._terminal["input"] is not None:
+            return False
+        try:
+            return not sys.stdin.isatty()
+        except (AttributeError, ValueError):
+            return True
+
+    async def _run_piped(self) -> None:
+        """Read one message or command per line of stdin, each run to its end.
+
+        There is no input line to draw, so nothing is live: output is printed
+        as it finishes. Nobody is there to answer an interaction, so a request
+        that asks one is cancelled.
+        """
+        loop = asyncio.get_running_loop()
+        self._banner()
+        if self._resumed:
+            await self._recap()
+        try:
+            while True:
+                line = await loop.run_in_executor(None, sys.stdin.readline)
+                if not line:
+                    break
+                text = line.strip()
+                if not text:
+                    continue
+                self.renderer.muted(escape(PROMPT + text))
+                try:
+                    if text.startswith("/"):
+                        await self.run_command(text)
+                    else:
+                        await self.send(text)
+                except ExitRepl:
+                    break
+                except Exception as exc:
+                    self.renderer.error(f"Error: {exc}")
+                while self._foreground_task is not None or self.queue or self._interactions:
+                    while self._interactions:
+                        interaction = self._interactions.popleft()
+                        view = interaction.view
+                        self.renderer.info(escape(str(interaction.payload.get("prompt") or "")))
+                        self.renderer.warn(
+                            "  Input is not a terminal, so this cannot be answered. "
+                            "Cancelling the request."
+                        )
+                        with contextlib.suppress(MashHostClientError):
+                            await asyncio.to_thread(
+                                self.client.cancel_request, view.agent_id, view.request_id
+                            )
+                    await asyncio.sleep(0.02)
+        finally:
+            await self._shutdown()
+
     async def run_async(self) -> None:
         """Run the REPL until the user leaves."""
+        if self._piped():
+            await self._run_piped()
+            return
         with patch_stdout(raw=True):
             self._banner()
             if self._resumed:

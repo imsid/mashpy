@@ -13,6 +13,7 @@ import io
 from collections.abc import Callable
 from typing import Any
 
+from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -167,6 +168,16 @@ class FakeHost:
         self.records: list[dict[str, Any]] = []
         self.missing: set[str] = set()
         self.session = {"total_tokens": 0}
+        # What the built-in commands read.
+        self.agents: list[dict[str, Any]] = []
+        self.tools: list[dict[str, Any]] = []
+        self.skills: list[dict[str, Any]] = []
+        self.usage: list[dict[str, Any]] = []
+        # None: the deployment has no Cortex, or no browsers.
+        self.cortex: dict[str, Any] | None = None
+        self.browser_sites: list[dict[str, Any]] | None = None
+        self.reruns: list[tuple[str, str, str]] = []
+        self.summary = ""
         # The user's sessions, newest first, and each session's turns.
         self.sessions: list[dict[str, Any]] = []
         self.history: dict[str, list[dict[str, Any]]] = {}
@@ -267,6 +278,73 @@ class FakeHost:
             and (started_by is None or record.get("started_by") == started_by)
         ]
 
+    # --- what the built-in commands read -------------------------------------
+
+    def get_host(self, host_id):
+        return {"host_id": host_id, "agents": list(self.agents), "workflows": []}
+
+    def get_agent(self, agent_id):
+        found = next((a for a in self.agents if a["agent_id"] == agent_id), None)
+        return {"agent": found or {"agent_id": agent_id, "metadata": None}}
+
+    def list_tools(self):
+        return list(self.tools)
+
+    def list_skills(self):
+        return list(self.skills)
+
+    def get_usage(self, agent_id, *, session_id=None, from_ts=None, bucket="day"):
+        self.calls.append(("get_usage", (agent_id, from_ts)))
+        return list(self.usage)
+
+    def _cortex(self):
+        if self.cortex is None:
+            raise MashHostClientError("Not Found", status_code=404)
+        return self.cortex
+
+    def get_cortex_user(self, user_id):
+        cortex = self._cortex()
+        if not cortex["profile"] and not cortex["entries"]:
+            raise MashHostClientError(
+                "user not found", status_code=404, code="CORTEX_NOT_FOUND"
+            )
+        return {"user_id": user_id, "profile": cortex["profile"],
+                "entry_count": len(cortex["entries"])}
+
+    def list_cortex_entries(self, user_id, *, q=None, limit=50):
+        return list(self._cortex()["entries"])
+
+    def create_cortex_entry(self, user_id, *, topic, content):
+        entry = {"entry_id": f"e{len(self._cortex()['entries']) + 1}-0000-aaaa",
+                 "topic": topic, "content": content, "origin": "app"}
+        self._cortex()["entries"].append(entry)
+        return entry
+
+    def delete_cortex_entry(self, user_id, entry_id):
+        cortex = self._cortex()
+        cortex["entries"] = [e for e in cortex["entries"] if e["entry_id"] != entry_id]
+
+    def list_browser_sites(self, user_id):
+        if self.browser_sites is None:
+            raise MashHostClientError(
+                "this host has no browsers", status_code=503, code="BROWSER_UNAVAILABLE"
+            )
+        return list(self.browser_sites)
+
+    def clear_browser_site(self, user_id, domain):
+        removed = [s for s in self.browser_sites or [] if s["domain"] == domain]
+        self.browser_sites = [s for s in self.browser_sites or [] if s["domain"] != domain]
+        return {"domain": domain, "cookies": sum(s["cookies"] for s in removed)}
+
+    def rerun_request(self, agent_id, request_id):
+        new_id = self._next_id()
+        self.reruns.append((agent_id, request_id, new_id))
+        return {"request_id": new_id, "agent_id": agent_id, "mode": "fg"}
+
+    def compact_session(self, agent_id, session_id):
+        self.calls.append(("compact_session", (agent_id, session_id)))
+        return {"summary_text": self.summary, "trace_id": "t-compact"}
+
     def list_sessions(self, agent_id, *, user_id=None, limit=None):
         self.calls.append(("list_sessions", (agent_id, user_id, limit)))
         return list(self.sessions)
@@ -308,6 +386,8 @@ class ReplDriver:
         self._pipe_context = create_pipe_input()
         self.pipe = self._pipe_context.__enter__()
         self.buffer = io.StringIO()
+        # Tests never touch the machine's clipboard.
+        self.clipboard = InMemoryClipboard()
         console = Console(
             file=self.buffer, width=100, force_terminal=False, color_system=None,
             theme=rich_theme(),
@@ -326,6 +406,7 @@ class ReplDriver:
             ),
             console=console,
             history=InMemoryHistory(),
+            clipboard=self.clipboard,
             input=self.pipe,
             output=DummyOutput(),
             **kwargs,
