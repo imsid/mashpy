@@ -9,6 +9,18 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.38.1](https://github.com/imsid/mashpy/compare/mashpy-v0.38.0...mashpy-v0.38.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **sandbox:** leave bind mounts alone when handing a folder over ([#278](https://github.com/imsid/mashpy/issues/278)) ([d0aa5b2](https://github.com/imsid/mashpy/commit/d0aa5b2fcf95a6aa2cb0ef7fe054d2ec46ba972f))
+
+
+### Documentation
+
+* show the host, companion and subagents in the architecture diagram ([#276](https://github.com/imsid/mashpy/issues/276)) ([e1c1916](https://github.com/imsid/mashpy/commit/e1c1916cebc96d9245521ae21ae1205cddaf5395))
+
 ## [0.38.0](https://github.com/imsid/mashpy/compare/mashpy-v0.37.0...mashpy-v0.38.0) (2026-11-09)
 
 
