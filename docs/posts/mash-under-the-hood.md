@@ -70,30 +70,58 @@ loop, and it makes retries, restarts, and long-running work easier to manage.
 
 Every request executes inside a durable request: a think → act → observe loop
 with context loaded from memory and tools and skills available to it, accepting
-input from the CLI, the API, or a scheduled workflow, and producing signals and
-optional structured output when it completes. The whole thing is resumable and
-replayable across restarts. The code the model writes leaves the request for
+input from the CLI, the API, or a scheduled workflow, and producing a response
+and optional structured output when it completes. The whole thing is resumable
+and replayable across restarts, and traced. A request reaches an agent
+directly, as a workflow's agent step, or from the companion, which routes a
+host request to one or more agents in the background and relays their
+approvals and questions to the user. The code the model writes leaves the request for
 the sandbox of the user it acts for, and the browser tools drive that user's
 browser. The diagram below maps that
 shape, and the rest of this section walks through its parts.
 
 ```
-                  ┌─────────────────────────────────────────┐
-                  │          Durable Request                │  ◄── one request,
-                  │                                         │      resumable and
-                  │   ┌─ context ─── memory ──┐             │      replayable
-                  │   │                       │             │
-request ────────► │   │     Agent Loop        │ ──► signals │
-(cli/api)         │   │ think → act → observe │      │      │
-                  │   │                       │      ▼      │
-                  │   └─ tools ───── skills ──┘  structured │
-workflow ───────► │      │ ▲                      output    │
-(schedule/trigger)│      │ │ user interaction               │
-                  │      │ ▼ (approval / ask-user /         │
-                  │      │    browser sign-in)              │
-                  │      │                                  │
-                  │      │  resumable · replayable          │
-                  └──────┼──────────────────────────────────┘
+                               api · cli · REPL
+                                       ▲
+                                       │
+                                       ▼
+┌─ Host ──────────────────────────────────────────────────────────────────────┐
+│                                      │                                      │
+│            ┌─────────────────────────┼─────────────────────────┐            │
+│            ▼                         ▼                         ▼            │
+│      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
+│      │   agent   │            │  companion  │            │ workflow  │      │
+│      │           │            │  (router)   │            │           │      │
+│      └───────────┘            └─────────────┘            └───────────┘      │
+│            │                         ▲                         │            │
+│            │   approvals, questions  │ RunSubAgents: one or    │            │
+│            │   and answers go back   │ more bg subagents       │            │
+│            │           ┌─────────────┼─────────────┐           │            │
+│            │           ▼             ▼             ▼           │            │
+│            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
+│            │      │  agent  │   │  agent  │   │  agent  │      │ agent step │
+│            │      └─────────┘   └─────────┘   └─────────┘      │            │
+│            │           │             │             │           │            │
+│            └───────────┴─────────────┼─────────────┴───────────┘            │
+│                                      │ every agent request                  │
+│                                      ▼                                      │
+│                 ┌─────────────────────────────────────────┐                 │
+│                 │          Durable Request                │                 │
+│                 │                                         │                 │
+│                 │   ┌─ context ─── memory ──┐             │                 │
+│                 │   │                       │  response / │                 │
+│                 │   │     Agent Loop        │ ► structured│                 │
+│                 │   │ think → act → observe │   output    │                 │
+│                 │   │                       │             │                 │
+│                 │   └─ tools ───── skills ──┘             │                 │
+│                 │      │                                  │                 │
+│                 │      │ ▲ user interaction               │                 │
+│                 │      │ │ (approval / ask-user /         │                 │
+│                 │      │ ▼  browser sign-in)              │                 │
+│                 │      │                                  │                 │
+│                 │      │  resumable · replayable · traced │                 │
+│                 └──────┼──────────────────────────────────┘                 │
+└────────────────────────┼────────────────────────────────────────────────────┘
                          ├────────────────────────────┐
                          │ run_code                   │ browser_*
                          ▼                            ▼

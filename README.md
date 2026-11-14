@@ -59,22 +59,47 @@ standardizes interactions between user applications and agents.
   Turn them on with `HostBuilder.enable_evals()`.
 
 ```
-                  ┌─────────────────────────────────────────┐
-                  │          Durable Request                │
-                  │                                         │
-                  │   ┌─ context ─── memory ──┐             │
-                  │   │                       │             │
-request ────────► │   │     Agent Loop        │ ──► signals │
-(cli/api)         │   │ think → act → observe │      │      │
-                  │   │                       │      ▼      │
-                  │   └─ tools ───── skills ──┘  structured │
-workflow step ──► │      │ ▲                      output    │
-(api/cli)         │      │ │ user interaction               │
-                  │      │ ▼ (approval / ask-user /         │
-                  │      │    browser sign-in)              │
-                  │      │                                  │
-                  │      │  resumable · replayable          │
-                  └──────┼──────────────────────────────────┘
+                               api · cli · REPL
+                                       ▲
+                                       │
+                                       ▼
+┌─ Host ──────────────────────────────────────────────────────────────────────┐
+│                                      │                                      │
+│            ┌─────────────────────────┼─────────────────────────┐            │
+│            ▼                         ▼                         ▼            │
+│      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
+│      │   agent   │            │  companion  │            │ workflow  │      │
+│      │           │            │  (router)   │            │           │      │
+│      └───────────┘            └─────────────┘            └───────────┘      │
+│            │                         ▲                         │            │
+│            │   approvals, questions  │ RunSubAgents: one or    │            │
+│            │   and answers go back   │ more bg subagents       │            │
+│            │           ┌─────────────┼─────────────┐           │            │
+│            │           ▼             ▼             ▼           │            │
+│            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
+│            │      │  agent  │   │  agent  │   │  agent  │      │ agent step │
+│            │      └─────────┘   └─────────┘   └─────────┘      │            │
+│            │           │             │             │           │            │
+│            └───────────┴─────────────┼─────────────┴───────────┘            │
+│                                      │ every agent request                  │
+│                                      ▼                                      │
+│                 ┌─────────────────────────────────────────┐                 │
+│                 │          Durable Request                │                 │
+│                 │                                         │                 │
+│                 │   ┌─ context ─── memory ──┐             │                 │
+│                 │   │                       │  response / │                 │
+│                 │   │     Agent Loop        │ ► structured│                 │
+│                 │   │ think → act → observe │   output    │                 │
+│                 │   │                       │             │                 │
+│                 │   └─ tools ───── skills ──┘             │                 │
+│                 │      │                                  │                 │
+│                 │      │ ▲ user interaction               │                 │
+│                 │      │ │ (approval / ask-user /         │                 │
+│                 │      │ ▼  browser sign-in)              │                 │
+│                 │      │                                  │                 │
+│                 │      │  resumable · replayable · traced │                 │
+│                 └──────┼──────────────────────────────────┘                 │
+└────────────────────────┼────────────────────────────────────────────────────┘
                          ├────────────────────────────┐
                          │ run_code                   │ browser_*
                          ▼                            ▼
@@ -86,9 +111,15 @@ workflow step ──► │      │ ▲                      output    │
                   └──────────────────────────┘ └──────────────────────────┘
 ```
 
-A request from a user and a step in a workflow ride the same durable loop, and
-the code either one runs lands in the sandbox of the user it acts for. An agent
-that lists sites drives that user's browser.
+A request to a host goes to the companion, which runs the host's agents as
+background requests, each in its own session, or starts a workflow, and then
+writes the answer. When one of those agents needs an approval or an answer,
+the companion relays it to the user. A request to one agent or one workflow
+skips the companion. Any request can run in the background: the user keeps
+talking and the client reports when it finishes or needs input. Whichever way
+a request reaches an agent, it rides the same durable loop, and the code it
+runs lands in the sandbox of the user it acts for. An agent that lists sites
+drives that user's browser.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
 at each capability, and the [product brief](docs/posts/product-brief.md) for
