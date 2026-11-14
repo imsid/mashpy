@@ -474,6 +474,7 @@ def test_run_submits_the_message_in_a_new_session() -> None:
     assert {key: value for key, value in kwargs.items() if key != "session_id"} == {
         "agent_id": "primary", "host_id": None, "user_id": "u-42",
         "message": "why was march high", "json_output": False,
+        "theme": None, "tool_lines": None,
     }
     client.list_sessions.assert_not_called()
 

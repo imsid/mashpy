@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from mash.agents.companion import COMPANION_AGENT_ID
 import argparse
-import os
 import sys
 from typing import Callable, Sequence
 
@@ -15,6 +14,7 @@ from mash.api.main import add_agent_serve_parser, add_serve_parser
 from mash.cli.browser import add_browser_parser
 from mash.cli.sandbox import add_sandbox_parser
 
+from .app import App
 from .ask import menu
 from .client import MashHostClient
 from .config import CLIConfig, load_config, save_config
@@ -24,27 +24,92 @@ from .repl import Repl, Target
 from .sessions import PICKER_HINT, PICKER_LIMIT, session_options, session_title
 
 
+# The `mash` command line: every command, and the saved connection alone.
+MASH = App(name="mash", operator_commands=True)
+
+
 def _print_help(parser: argparse.ArgumentParser) -> int:
     parser.print_help()
     return 0
 
 
-def _resolve_connection(
-    args: argparse.Namespace,
-) -> tuple[str, str | None, str | None, str | None, str | None]:
+def _connection(
+    args: argparse.Namespace, app: App
+) -> tuple[str, str | None, CLIConfig | None]:
+    """The deployment's URL, its API key, and the saved connection when it applies.
+
+    A flag wins over the environment, which wins over the app's default URL,
+    which wins over the connection ``connect`` saved. An app with a default
+    URL uses the saved connection only when it was saved for that URL, so a
+    key saved for one deployment is never sent to another.
+    """
     saved = load_config()
-    base_url = (getattr(args, "api_base_url", None) or os.environ.get("MASH_API_BASE_URL") or (saved.api_base_url if saved else "")).strip()
-    api_key = getattr(args, "api_key", None) or os.environ.get("MASH_API_KEY") or (saved.api_key if saved else None)
+    base_url = (
+        getattr(args, "api_base_url", None)
+        or app.env("API_BASE_URL")
+        or app.default_base_url
+        or (saved.api_base_url if saved else "")
+    ).strip()
+    if (
+        saved
+        and app.default_base_url
+        and saved.api_base_url.rstrip("/") != base_url.rstrip("/")
+    ):
+        saved = None
+    api_key = (
+        getattr(args, "api_key", None)
+        or app.env("API_KEY")
+        or (saved.api_key if saved else None)
+    )
+    return base_url, api_key, saved
+
+
+def _resolve_connection(
+    args: argparse.Namespace, app: App
+) -> tuple[str, str | None, str | None, str | None, str | None]:
+    base_url, api_key, saved = _connection(args, app)
     agent_id = getattr(args, "agent", None)
-    host_id = getattr(args, "host_id", None) or (saved.host_id if saved else None)
-    user_id = getattr(args, "user_id", None) or (saved.user_id if saved else None)
+    host_id = getattr(args, "host_id", None)
+    if not agent_id and not host_id:
+        # The app's own target, else the host `compose` pinned.
+        if app.default_host or app.default_agent:
+            agent_id, host_id = app.default_agent, app.default_host
+        elif saved:
+            host_id = saved.host_id
+    user_id = (
+        getattr(args, "user_id", None)
+        or app.env("USER_ID")
+        or (saved.user_id if saved else None)
+        or app.user()
+    )
     if not base_url:
-        raise ValueError("API base URL is required. Use --api-base-url or `mash connect`.")
+        raise ValueError(
+            f"API base URL is required. Use --api-base-url or `{app.name} connect`."
+        )
     return base_url, api_key, agent_id, host_id, user_id
 
 
+def _build_repl(
+    app: App, client: MashHostClient, target: Target, *, debug: bool = False
+) -> Repl:
+    """A REPL with the app's name, theme, tool lines, commands and renderers."""
+    repl = Repl(
+        client,
+        target,
+        debug=debug,
+        app_name=app.name,
+        theme=app.theme,
+        tool_lines=app.tool_lines,
+    )
+    for command in app.commands:
+        repl.command_registry.register(command)
+    for workflow_id, render in (app.workflow_renderers or {}).items():
+        repl.register_workflow_result_renderer(workflow_id, render)
+    return repl
+
+
 def _run_workflow_command(
-    client: MashHostClient, args: argparse.Namespace, target: Target
+    client: MashHostClient, args: argparse.Namespace, target: Target, app: App
 ) -> int:
     """``mash workflow ...``: the REPL's ``/workflow`` command, run once.
 
@@ -65,7 +130,7 @@ def _run_workflow_command(
             words.extend(["--input", raw.strip()])
     elif args.workflow_command in ("status", "resume"):
         words.extend([args.workflow_id, args.run_id])
-    repl = Repl(client, target)
+    repl = _build_repl(app, client, target)
     failed = False
     report = repl.renderer.error
 
@@ -122,17 +187,14 @@ def _split_ids(value: str | None) -> list[str]:
 def _resolve_saved_connection(
     args: argparse.Namespace,
     renderer: RichRenderer,
+    app: App,
 ) -> tuple[str, str | None] | None:
-    saved = load_config()
-    base_url = (
-        args.api_base_url
-        or os.environ.get("MASH_API_BASE_URL")
-        or (saved.api_base_url if saved else "")
-    ).strip()
+    base_url, api_key, _ = _connection(args, app)
     if not base_url:
-        renderer.error("API base URL is required. Use --api-base-url or `mash connect`.")
+        renderer.error(
+            f"API base URL is required. Use --api-base-url or `{app.name} connect`."
+        )
         return None
-    api_key = args.api_key or os.environ.get("MASH_API_KEY") or (saved.api_key if saved else None)
     return base_url, api_key
 
 
@@ -210,9 +272,9 @@ def _render_host_view(renderer: RichRenderer, described: dict) -> None:
     )
 
 
-def _run_connect(args: argparse.Namespace) -> int:
-    renderer = RichRenderer()
-    connection = _resolve_saved_connection(args, renderer)
+def _run_connect(args: argparse.Namespace, app: App) -> int:
+    renderer = RichRenderer(theme=app.theme)
+    connection = _resolve_saved_connection(args, renderer, app)
     if connection is None:
         return 1
     base_url, api_key = connection
@@ -235,9 +297,9 @@ def _run_connect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_compose(args: argparse.Namespace) -> int:
-    renderer = RichRenderer()
-    connection = _resolve_saved_connection(args, renderer)
+def _run_compose(args: argparse.Namespace, app: App) -> int:
+    renderer = RichRenderer(theme=app.theme)
+    connection = _resolve_saved_connection(args, renderer, app)
     if connection is None:
         return 1
     base_url, api_key = connection
@@ -270,11 +332,17 @@ def _run_compose(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(app: App = MASH) -> argparse.ArgumentParser:
+    mash = app is MASH
     parser = argparse.ArgumentParser(
-        prog="mash",
-        description="Mash CLI for self-hosted deployments and host serving.",
-        epilog=f"Documentation: {get_docs_url()}",
+        prog=app.name,
+        description=app.description
+        or (
+            "Mash CLI for self-hosted deployments and host serving."
+            if mash
+            else f"{app.name}: a client for a Mash deployment."
+        ),
+        epilog=f"Documentation: {get_docs_url()}" if mash else None,
     )
     parser.add_argument("--version", action="store_true", help="Show installed mash version and documentation URL.")
     subparsers = parser.add_subparsers(dest="command")
@@ -295,7 +363,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="User that requests and workflow runs act for (falls back to saved config)",
     )
 
-    compose = subparsers.add_parser(
+    compose = (
+        subparsers if app.operator_commands else argparse.ArgumentParser().add_subparsers()
+    ).add_parser(
         "compose",
         help="Define a host composition on the deployment and target it",
     )
@@ -410,6 +480,9 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("workflow_id")
         sub.add_argument("run_id")
 
+    if not app.operator_commands:
+        return parser
+
     host = subparsers.add_parser("host", help="Host management commands")
     host.set_defaults(handler=lambda _: _print_help(host))
     host_subparsers = host.add_subparsers(dest="host_command")
@@ -438,23 +511,30 @@ def load_env_file(argv: Sequence[str]) -> None:
     load_dotenv(find_dotenv(usecwd=True))
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     # Before the parser: its defaults read the environment.
     load_env_file(argv)
-    parser = build_parser()
+    parser = build_parser(app)
     args = parser.parse_args(argv)
 
     if args.version:
-        print(f"mash {__version__}")
-        print(f"Docs: {get_docs_url()}")
+        if app is MASH:
+            print(f"mash {__version__}")
+            print(f"Docs: {get_docs_url()}")
+        else:
+            print(f"{app.name} (mash {__version__})")
         return 0
 
+    if args.command is None and (app.default_host or app.default_agent):
+        # An app with a target of its own opens on its REPL.
+        args = parser.parse_args([*argv, "repl"])
+
     if args.command == "connect":
-        return _run_connect(args)
+        return _run_connect(args, app)
 
     if args.command == "compose":
-        return _run_compose(args)
+        return _run_compose(args, app)
 
     handler: Callable[[argparse.Namespace], int] | None = getattr(args, "handler", None)
     if handler is not None:
@@ -464,10 +544,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    renderer = RichRenderer()
+    renderer = RichRenderer(theme=app.theme)
     try:
         base_url, api_key, configured_agent, configured_host, user_id = _resolve_connection(
-            args
+            args, app
         )
     except ValueError as exc:
         renderer.error(str(exc))
@@ -574,7 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "run":
             if not user_id:
                 raise ValueError(
-                    "a user id is required. Use --user-id or `mash connect --user-id`."
+                    f"a user id is required. Use --user-id or `{app.name} connect --user-id`."
                 )
             message = read_message(args.message, sys.stdin)
             session_id = args.session_id
@@ -589,6 +669,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 user_id=user_id,
                 message=message,
                 json_output=args.json_output,
+                theme=app.theme,
+                tool_lines=app.tool_lines,
             )
 
         if args.command == "workflow":
@@ -602,12 +684,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     user_id=user_id or "",
                     host_id=target_host_id,
                 ),
+                app,
             )
 
         if args.command == "repl":
             if not user_id:
                 raise ValueError(
-                    "a user id is required. Use --user-id or `mash connect --user-id`."
+                    f"a user id is required. Use --user-id or `{app.name} connect --user-id`."
                 )
             session_id, title = args.session_id, ""
             if args.continue_session or args.resume:
@@ -635,7 +718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resumed=bool(session_id),
                 title=title,
             )
-            Repl(client, target, debug=args.debug).run()
+            _build_repl(app, client, target, debug=args.debug).run()
             return 0
     except Exception as exc:
         renderer.error(str(exc))

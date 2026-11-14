@@ -17,12 +17,12 @@ import json
 import signal
 import sys
 import time
-from typing import TextIO
+from typing import Mapping, TextIO
 
 from rich.console import Console
 
 from .client import MashHostClient, MashHostClientError
-from .render import OutputPrinter, RichRenderer
+from .render import OutputPrinter, RichRenderer, ToolLine, rich_theme
 from .views import (
     COMPLETED,
     Children,
@@ -86,6 +86,8 @@ async def _run(
     json_output: bool,
     stdout: TextIO,
     stderr: TextIO,
+    theme: Mapping[str, str] | None,
+    tool_lines: Mapping[str, ToolLine] | None,
 ) -> int:
     agent_id, request_id = await asyncio.to_thread(
         lambda: _submit(
@@ -102,7 +104,9 @@ async def _run(
     )
     progress = None
     if not json_output and stderr.isatty():
-        progress = OutputPrinter(RichRenderer(Console(file=stderr)))
+        progress = OutputPrinter(
+            RichRenderer(Console(file=stderr, theme=rich_theme(theme))), tool_lines=tool_lines
+        )
     asked: Interaction | None = None
     try:
         async for event in client.request_events(agent_id, request_id):
@@ -151,6 +155,8 @@ def run_once(
     json_output: bool = False,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    theme: Mapping[str, str] | None = None,
+    tool_lines: Mapping[str, ToolLine] | None = None,
 ) -> int:
     """Run one request to its end; returns the process exit status."""
     stdout = stdout or sys.stdout
@@ -168,6 +174,8 @@ def run_once(
                 json_output=json_output,
                 stdout=stdout,
                 stderr=stderr,
+                theme=theme,
+                tool_lines=tool_lines,
             )
         )
         loop = asyncio.get_running_loop()

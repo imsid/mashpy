@@ -77,7 +77,7 @@ def test_progress_goes_to_stderr_when_it_is_a_terminal() -> None:
     code, out, err = _run(host, err=_Terminal())
     assert code == EXIT_OK
     assert out == "The **answer**.\n"
-    assert "✓ search(q=x)" in err
+    assert "✓" in err and "search(q=x)" in err
 
 
 def test_a_host_target_submits_through_the_host() -> None:
