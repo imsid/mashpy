@@ -214,7 +214,9 @@ To give every sandbox files from the Docker host, list bind mounts in
 `MASH_SANDBOX_MOUNTS=/srv/docs:/home/agent/docs:ro`. The source is a path on
 the Docker host, even when the host runs in a container, because the daemon
 resolves it. A target inside `/home/agent/workspaces` sits on top of the
-user's volume without being copied into it. Bound files keep their owner on the
+user's volume without being copied into it. A target inside one agent's folder,
+`/home/agent/workspaces/<agent_id>/...`, can be reached by that agent alone,
+because the folder is its uid's. Bound files keep their owner on the
 Docker host, so add `:ro` unless every agent's uid may write them.
 
 ## Run the host on your laptop

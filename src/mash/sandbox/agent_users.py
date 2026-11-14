@@ -79,11 +79,13 @@ class AgentUsers:
         isolate: Optional[bool] = None,
         chown: Callable[[str, int], None] = lambda path, uid: os.lchown(path, uid, uid),
         add_user: Callable[[int, str], None] = add_passwd_entry,
+        device: Callable[[str], int] = lambda path: os.lstat(path).st_dev,
     ) -> None:
         self.workspaces_root = workspaces_root
         self.isolate = os.geteuid() == 0 if isolate is None else isolate
         self._chown = chown
         self._add_user = add_user
+        self._device = device
         self._state_dir = os.path.join(workspaces_root, _STATE_DIR)
         self._map_path = os.path.join(self._state_dir, _MAP_FILE)
         self._uids: dict[str, int] = self._load() if self.isolate else {}
@@ -130,8 +132,17 @@ class AgentUsers:
         # shared one. Links are changed themselves, never followed: an agent
         # may have pointed one anywhere.
         self._chown(folder, uid)
+        volume = self._device(self.workspaces_root)
         for parent, dirs, files in os.walk(folder, followlinks=False):
-            for name in dirs + files:
+            # A bind mount inside the folder is not the volume's: its files keep
+            # their owner on the Docker host, and a read-only one refuses a change.
+            on_volume = [
+                name
+                for name in dirs + files
+                if self._device(os.path.join(parent, name)) == volume
+            ]
+            dirs[:] = [name for name in dirs if name in on_volume]
+            for name in on_volume:
                 self._chown(os.path.join(parent, name), uid)
 
     def _load(self) -> dict[str, int]:
