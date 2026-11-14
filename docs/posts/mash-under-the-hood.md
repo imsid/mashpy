@@ -77,8 +77,8 @@ directly, as a workflow's agent step, or from the companion, which routes a
 host request to one or more agents in the background and relays their
 approvals and questions to the user. The code the model writes leaves the request for
 the sandbox of the user it acts for, and the browser tools drive that user's
-browser. The diagram below maps that
-shape, and the rest of this section walks through its parts.
+browser. Remote tools call the MCP servers the agent connects to. The diagram
+below maps that shape, and the rest of this section walks through its parts.
 
 ```
                                api · cli · REPL
@@ -109,12 +109,12 @@ shape, and the rest of this section walks through its parts.
 │                 │          Durable Request                │                 │
 │                 │                                         │                 │
 │                 │   ┌─ context ─── memory ──┐             │                 │
-│                 │   │                       │  response / │                 │
-│                 │   │     Agent Loop        │ ► structured│                 │
-│                 │   │ think → act → observe │   output    │                 │
 │                 │   │                       │             │                 │
-│                 │   └─ tools ───── skills ──┘             │                 │
-│                 │      │                                  │                 │
+│                 │   │     Agent Loop        │ ─► response │                 │
+│                 │   │ think → act → observe │       ┊     │                 │
+│                 │   │                       │       ▼     │                 │
+│                 │   └─ tools ───── skills ──┘  structured │                 │
+│                 │      │                        output    │                 │
 │                 │      │ ▲ user interaction               │                 │
 │                 │      │ │ (approval / ask-user /         │                 │
 │                 │      │ ▼  browser sign-in)              │                 │
@@ -122,15 +122,15 @@ shape, and the rest of this section walks through its parts.
 │                 │      │  resumable · replayable · traced │                 │
 │                 └──────┼──────────────────────────────────┘                 │
 └────────────────────────┼────────────────────────────────────────────────────┘
-                         ├────────────────────────────┐
-                         │ run_code                   │ browser_*
-                         ▼                            ▼
-                  ┌──────────────────────────┐ ┌──────────────────────────┐
-                  │  Sandbox: one per user   │ │  Browser: one per user   │
-                  │  workspaces/<agent_id>   │ │  Chromium with a profile │
-                  │  files persist           │ │  listed sites only       │
-                  │  no secrets · no db      │ │  sign-in via live view   │
-                  └──────────────────────────┘ └──────────────────────────┘
+            ┌────────────┴─────────────┬──────────────────────────┐
+            │ run_code                 │ browser_*                │ MCP tools
+            ▼                          ▼                          ▼
+┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
+│ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
+│ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
+│ files persist         │  │ listed sites only     │  │ web search            │
+│ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
+└───────────────────────┘  └───────────────────────┘  └───────────────────────┘
 ```
 
 **Frontier and OSS models**

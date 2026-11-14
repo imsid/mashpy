@@ -85,12 +85,12 @@ application integrates once.
 │                 │          Durable Request                │                 │
 │                 │                                         │                 │
 │                 │   ┌─ context ─── memory ──┐             │                 │
-│                 │   │                       │  response / │                 │
-│                 │   │     Agent Loop        │ ► structured│                 │
-│                 │   │ think → act → observe │   output    │                 │
 │                 │   │                       │             │                 │
-│                 │   └─ tools ───── skills ──┘             │                 │
-│                 │      │                                  │                 │
+│                 │   │     Agent Loop        │ ─► response │                 │
+│                 │   │ think → act → observe │       ┊     │                 │
+│                 │   │                       │       ▼     │                 │
+│                 │   └─ tools ───── skills ──┘  structured │                 │
+│                 │      │                        output    │                 │
 │                 │      │ ▲ user interaction               │                 │
 │                 │      │ │ (approval / ask-user /         │                 │
 │                 │      │ ▼  browser sign-in)              │                 │
@@ -98,15 +98,15 @@ application integrates once.
 │                 │      │  resumable · replayable · traced │                 │
 │                 └──────┼──────────────────────────────────┘                 │
 └────────────────────────┼────────────────────────────────────────────────────┘
-                         ├────────────────────────────┐
-                         │ run_code                   │ browser_*
-                         ▼                            ▼
-                  ┌──────────────────────────┐ ┌──────────────────────────┐
-                  │  Sandbox: one per user   │ │  Browser: one per user   │
-                  │  workspaces/<agent_id>   │ │  Chromium with a profile │
-                  │  files persist           │ │  listed sites only       │
-                  │  no secrets · no db      │ │  sign-in via live view   │
-                  └──────────────────────────┘ └──────────────────────────┘
+            ┌────────────┴─────────────┬──────────────────────────┐
+            │ run_code                 │ browser_*                │ MCP tools
+            ▼                          ▼                          ▼
+┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
+│ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
+│ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
+│ files persist         │  │ listed sites only     │  │ web search            │
+│ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
+└───────────────────────┘  └───────────────────────┘  └───────────────────────┘
 ```
 
 A request to a host goes to the companion, which runs the host's agents as
@@ -117,7 +117,8 @@ skips the companion. Any request can run in the background: the user keeps
 talking and the client reports when it finishes or needs input. Whichever way
 a request reaches an agent, it rides the same durable loop, and the code it
 runs lands in the sandbox of the user it acts for. An agent that lists sites
-drives that user's browser.
+drives that user's browser, and remote tools call the MCP servers the agent
+connects to.
 
 ## Sandboxes
 
