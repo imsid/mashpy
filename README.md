@@ -101,7 +101,7 @@ standardizes interactions between user applications and agents.
 │                 └──────┼──────────────────────────────────┘                 │
 └────────────────────────┼────────────────────────────────────────────────────┘
             ┌────────────┴─────────────┬──────────────────────────┐
-            │ run_code                 │ browser_*                │ MCP tools
+            │ run_code                 │ browser                  │ MCP tools
             ▼                          ▼                          ▼
 ┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
 │ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │

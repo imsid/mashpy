@@ -123,7 +123,7 @@ below maps that shape, and the rest of this section walks through its parts.
 │                 └──────┼──────────────────────────────────┘                 │
 └────────────────────────┼────────────────────────────────────────────────────┘
             ┌────────────┴─────────────┬──────────────────────────┐
-            │ run_code                 │ browser_*                │ MCP tools
+            │ run_code                 │ browser                  │ MCP tools
             ▼                          ▼                          ▼
 ┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
 │ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
