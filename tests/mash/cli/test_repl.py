@@ -11,6 +11,7 @@ from tests.mash.cli.repl_harness import (
     CTRL_C,
     CTRL_D,
     CTRL_O,
+    DOWN,
     ENTER,
     UP,
     FakeHost,
@@ -537,84 +538,128 @@ def test_the_detail_level_prints_each_childs_tools() -> None:
 # --- interactions -------------------------------------------------------------
 
 
-def test_an_approval_is_asked_and_the_answer_posted() -> None:
-    host = FakeHost()
+def _asking(d: ReplDriver):
+    return lambda: d.repl._asking is not None
+
+
+def _approval(host: FakeHost, *before: Any) -> Gate:
     gate = Gate()
     host.script(
         "r-1",
+        *before,
         interaction("i-1", "approval", "Approve execution of: deploy?"),
         gate,
         ack("i-1", "approve"),
         *simple("Deployed."),
     )
+    return gate
+
+
+def _answer_approval(keys: str, *before: Any) -> tuple[FakeHost, str]:
+    host = FakeHost()
+    gate = _approval(host, *before)
 
     async def script(d: ReplDriver) -> None:
         d.type("deploy it" + ENTER)
-        await d.until(lambda: "Approve execution of: deploy?" in d.output)
-        d.type("approve" + ENTER)
+        await d.until(_asking(d))
+        d.type(keys)
         await d.until(lambda: len(host.answers) == 1)
         gate.open()
         await d.idle()
 
-    out = run(script, host).output
+    return host, run(script, host).output
+
+
+def test_enter_approves_and_the_answer_is_posted() -> None:
+    host, out = _answer_approval(ENTER)
     assert host.answers == [
         {"agent_id": "primary", "request_id": "r-1", "interaction_id": "i-1", "response": "approve"}
     ]
+    lines = [line.rstrip() for line in out.splitlines()]
+    assert lines.index("Approve execution of: deploy?") < lines.index("  → approve")
     assert "Deployed." in out
 
 
-def test_an_answer_that_is_not_an_option_is_asked_again() -> None:
-    host = FakeHost()
-    gate = Gate()
-    host.script("r-1", interaction("i-1", "approval", "Approve?"), gate, *simple())
-
-    async def script(d: ReplDriver) -> None:
-        d.type("go" + ENTER)
-        await d.until(lambda: "Approve?" in d.output)
-        d.type("aprove" + ENTER)
-        await d.until(lambda: d.output.count("Options: approve, deny, skip") == 2)
-        assert host.answers == []
-        d.type("deny" + ENTER)
-        await d.until(lambda: len(host.answers) == 1)
-        gate.open()
-        await d.idle()
-
-    run(script, host)
-    assert host.answers[0]["response"] == "deny"
+def test_an_option_is_picked_by_arrow_number_or_first_letter() -> None:
+    assert _answer_approval(DOWN + ENTER)[0].answers[0]["response"] == "deny"
+    assert _answer_approval("3" + ENTER)[0].answers[0]["response"] == "skip"
+    assert _answer_approval("d" + ENTER)[0].answers[0]["response"] == "deny"
 
 
-def test_a_choice_takes_numbers_and_rejects_one_out_of_range() -> None:
+def test_an_approval_shows_the_call_and_can_show_all_of_it() -> None:
+    call = {"id": "t1", "name": "deploy", "arguments": {"env": "prod", "notes": "x" * 300}}
+    other = {"id": "t2", "name": "search", "arguments": {"q": "y"}}
+    host, out = _answer_approval(
+        "4" + ENTER + ENTER, chat_end("tool_call", tool_calls=[call, other])
+    )
+    lines = [line.rstrip() for line in out.splitlines()]
+    # The call the approval names is shown under the question, clipped.
+    shown = lines[lines.index("Approve execution of: deploy?") + 1]
+    assert shown.startswith("    deploy(env=prod")
+    assert "x" * 300 not in shown
+    assert not any(line.startswith("    search(") for line in lines)
+    # "View the full call" prints every argument and asks again.
+    assert '"env": "prod"' in out
+    assert "x" * 60 in out
+    assert host.answers[0]["response"] == "approve"
+
+
+def test_a_choice_answers_with_the_checked_options() -> None:
     host = FakeHost()
     gate = Gate()
     host.script(
         "r-1",
-        interaction("i-1", "choice", "Which months?", schema={"options": ["jan", "feb", "mar"]}),
+        interaction("i-1", "choice", "Which months?",
+                    schema={"type": "multi_select", "options": ["jan", "feb", "mar"]}),
         gate,
         *simple(),
     )
 
     async def script(d: ReplDriver) -> None:
         d.type("go" + ENTER)
-        await d.until(lambda: "3. mar" in d.output)
-        d.type("1, 7" + ENTER)
-        await d.until(lambda: d.output.count("Enter numbers separated by commas") == 2)
-        d.type("1, 3" + ENTER)
+        await d.until(_asking(d))
+        d.type(" " + DOWN + DOWN + " " + ENTER)
+        await d.until(lambda: len(host.answers) == 1)
+        gate.open()
+        await d.idle()
+
+    out = run(script, host).output
+    assert host.answers[0]["response"] == ["jan", "mar"]
+    assert "  → jan, mar" in out
+
+
+def test_a_choice_with_nothing_checked_answers_with_the_highlighted_option() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script(
+        "r-1",
+        interaction("i-1", "choice", "Which month?",
+                    schema={"type": "multi_select", "options": ["jan", "feb"]}),
+        gate,
+        *simple(),
+    )
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(_asking(d))
+        d.type(DOWN + ENTER)
         await d.until(lambda: len(host.answers) == 1)
         gate.open()
         await d.idle()
 
     run(script, host)
-    assert host.answers[0]["response"] == ["jan", "mar"]
+    assert host.answers[0]["response"] == ["feb"]
 
 
 def test_a_question_takes_free_text() -> None:
     host = FakeHost()
     gate = Gate()
-    host.script("r-1", interaction("i-1", "question", "Which account?"), gate, *simple())
+    host.script("r-1", interaction("i-1", "info", "Which account?", schema={"type": "text"}),
+                gate, *simple())
 
     async def script(d: ReplDriver) -> None:
         d.type("go" + ENTER)
-        await d.until(lambda: "Which account?" in d.output)
+        await d.until(_asking(d))
         d.type("the joint one" + ENTER)
         await d.until(lambda: len(host.answers) == 1)
         gate.open()
@@ -624,7 +669,7 @@ def test_a_question_takes_free_text() -> None:
     assert host.answers[0]["response"] == "the joint one"
 
 
-def test_a_browser_handoff_prints_and_opens_the_link_then_answers_done() -> None:
+def _browser(keys: str) -> tuple[FakeHost, str, str]:
     host = FakeHost()
     gate = Gate()
     url = "http://127.0.0.1:8000/browser/s/" + "t" * 120 + "/vnc.html"
@@ -633,35 +678,25 @@ def test_a_browser_handoff_prints_and_opens_the_link_then_answers_done() -> None
     async def script(d: ReplDriver) -> None:
         with patch("mash.cli.repl.webbrowser.open") as opened:
             d.type("go" + ENTER)
-            await d.until(lambda: "Press Enter when you're done" in d.output)
-            d.type(ENTER)
-            await d.until(lambda: len(host.answers) == 1)
+            await d.until(_asking(d))
             opened.assert_called_once_with(url)
+            d.type(keys)
+            await d.until(lambda: len(host.answers) == 1)
         gate.open()
         await d.idle()
 
-    out = run(script, host).output
+    return host, run(script, host).output, url
+
+
+def test_a_browser_handoff_prints_and_opens_the_link_then_answers_done() -> None:
+    host, out, url = _browser(ENTER)
     assert host.answers[0]["response"] == "done"
     # The link is never broken across lines.
     assert f"  Open: {url}" in out.splitlines()
 
 
 def test_a_browser_handoff_can_be_cancelled() -> None:
-    host = FakeHost()
-    gate = Gate()
-    host.script("r-1", interaction("i-1", "browser", "Sign in", url="http://x"), gate, *simple())
-
-    async def script(d: ReplDriver) -> None:
-        with patch("mash.cli.repl.webbrowser.open"):
-            d.type("go" + ENTER)
-            await d.until(lambda: "Press Enter" in d.output)
-            d.type("cancel" + ENTER)
-            await d.until(lambda: len(host.answers) == 1)
-        gate.open()
-        await d.idle()
-
-    run(script, host)
-    assert host.answers[0]["response"] == "cancel"
+    assert _browser(DOWN + ENTER)[0].answers[0]["response"] == "cancel"
 
 
 def test_a_childs_interaction_is_asked_through_the_parent_and_names_the_child() -> None:
@@ -669,14 +704,20 @@ def test_a_childs_interaction_is_asked_through_the_parent_and_names_the_child() 
     child_gate = Gate()
     _companion_script(
         host,
-        energy=[interaction("ci-1", "approval", "Approve execution of: run_code?"),
-                child_gate, ack("ci-1", "approve"), completed("e")],
+        energy=[
+            chat_end("tool_call", tool_calls=[
+                {"id": "x", "name": "run_code", "arguments": {"language": "shell", "code": "rm -r out"}}
+            ]),
+            interaction("ci-1", "approval", "Approve execution of: run_code?"),
+            child_gate, ack("ci-1", "approve"), completed("e"),
+        ],
         review=[completed("r")],
     )
     parent_gate = _parent_gate(host)
     index = host.scripts["r-1"].index(parent_gate)
-    relayed_gate = Gate()
+    hold, relayed_gate = Gate(), Gate()
     host.scripts["r-1"][index:index] = [
+        hold,
         interaction(
             "relay-1", "approval", "Approve execution of: run_code?",
             origin={"agent_id": "energy", "request_id": "c-0", "interaction_id": "ci-1"},
@@ -687,8 +728,12 @@ def test_a_childs_interaction_is_asked_through_the_parent_and_names_the_child() 
 
     async def script(d: ReplDriver) -> None:
         d.type("go" + ENTER)
-        await d.until(lambda: "[energy] Approve execution of: run_code?" in d.output)
-        d.type("approve" + ENTER)
+        await d.until(lambda: d.repl.foreground is not None
+                      and len(d.repl.foreground.children) == 2
+                      and d.repl.foreground.children[0].pending_tool_calls)
+        hold.open()
+        await d.until(_asking(d))
+        d.type(ENTER)
         await d.until(lambda: len(host.answers) == 1)
         child_gate.open()
         relayed_gate.open()
@@ -703,7 +748,125 @@ def test_a_childs_interaction_is_asked_through_the_parent_and_names_the_child() 
          "interaction_id": "relay-1", "response": "approve"}
     ]
     assert out.count("Approve execution of: run_code?") == 1
+    lines = [line.rstrip() for line in out.splitlines()]
+    asked = lines.index("[energy] Approve execution of: run_code?")
+    # The child's call is shown, not the companion's RunSubAgents call.
+    assert lines[asked + 1] == "    $ rm -r out"
     assert "✓ energy" in out
+
+
+def test_ctrl_c_at_an_interaction_cancels_the_request() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", interaction("i-1", "approval", "Approve?"), gate, cancelled())
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(_asking(d))
+        d.type(CTRL_C)
+        await d.until(lambda: host.cancelled == [("primary", "r-1")])
+        gate.open()
+        await d.idle()
+
+    out = run(script, host).output
+    assert host.answers == []
+    assert "Cancelling the request." in out
+    assert "Request cancelled." in out
+
+
+def test_ctrl_c_at_a_question_cancels_the_request() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", interaction("i-1", "info", "Name?"), gate, cancelled())
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(_asking(d))
+        d.type("si" + CTRL_C)
+        await d.until(lambda: host.cancelled == [("primary", "r-1")])
+        gate.open()
+        await d.idle()
+
+    assert run(script, host).host.answers == []
+
+
+def test_ctrl_d_at_an_interaction_leaves_the_repl() -> None:
+    host = FakeHost()
+    host.script("r-1", interaction("i-1", "approval", "Approve?"), Gate())
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(_asking(d))
+        d.type(CTRL_D)
+        await asyncio.wait_for(d.task, timeout=5)
+
+    out = run(script, host).output
+    assert host.answers == [] and host.cancelled == []
+    assert "is still running on the host." in out
+
+
+def test_a_menu_closes_when_its_interaction_is_answered_elsewhere() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", interaction("i-1", "approval", "Approve?"), gate,
+                ack("i-1", "deny"), *simple("Went on."))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(_asking(d))
+        gate.open()
+        await d.idle()
+        assert d.repl._asking is None
+
+    out = run(script, host).output
+    assert "No longer waiting for an answer." in out
+    assert "Went on." in out
+    assert host.answers == []
+
+
+def test_a_question_closes_when_its_request_ends() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", interaction("i-1", "info", "Name?"), gate, failed("timed out"))
+    host.script("r-2", *simple("Next."))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(_asking(d))
+        gate.open()
+        await d.idle()
+        await d.say("next")
+
+    out = run(script, host).output
+    assert "No longer waiting for an answer." in out
+    assert "Next." in out
+
+
+def test_the_question_says_how_many_more_are_waiting() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script(
+        "r-1",
+        interaction("i-1", "approval", "Approve execution of: a?"),
+        interaction("i-2", "approval", "Approve execution of: b?"),
+        gate,
+        *simple(),
+    )
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(lambda: d.repl._asking is not None and len(d.repl._interactions) == 1)
+        d.type(ENTER)
+        await d.until(lambda: len(host.answers) == 1)
+        await d.until(_asking(d))
+        d.type(DOWN + ENTER)
+        await d.until(lambda: len(host.answers) == 2)
+        gate.open()
+        await d.idle()
+
+    out = run(script, host).output
+    assert [a["response"] for a in host.answers] == ["approve", "deny"]
+    assert "Approve execution of: b?" in out
 
 
 def test_a_draft_survives_an_interaction_that_arrives_while_typing() -> None:
@@ -719,8 +882,8 @@ def test_a_draft_survives_an_interaction_that_arrives_while_typing() -> None:
         d.type("my next thou")
         await asyncio.sleep(0.1)
         start.open()
-        await d.until(lambda: "Approve?" in d.output)
-        d.type("approve" + ENTER)
+        await d.until(_asking(d))
+        d.type(ENTER)
         await d.until(lambda: len(host.answers) == 1)
         gate.open()
         await d.idle()
@@ -754,7 +917,7 @@ def test_an_interaction_that_times_out_before_it_is_asked_is_dropped() -> None:
 def test_an_answer_the_host_refuses_is_reported() -> None:
     host = FakeHost()
     gate = Gate()
-    host.script("r-1", interaction("i-1", "question", "Name?"), gate, *simple())
+    host.script("r-1", interaction("i-1", "info", "Name?"), gate, *simple())
 
     def closed(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise MashHostClientError("interaction 'i-1' is no longer open", status_code=409)
@@ -763,7 +926,7 @@ def test_an_answer_the_host_refuses_is_reported() -> None:
 
     async def script(d: ReplDriver) -> None:
         d.type("go" + ENTER)
-        await d.until(lambda: "Name?" in d.output)
+        await d.until(_asking(d))
         d.type("sid" + ENTER)
         await d.until(lambda: "was not accepted" in d.output)
         gate.open()

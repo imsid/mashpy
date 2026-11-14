@@ -82,6 +82,9 @@ def prompt_style_rules(theme: Mapping[str, str] | None = None) -> dict[str, str]
         "live.error": ptk(palette["error"]),
         "live.warn": ptk(palette["warn"]),
         "live.muted": ptk(palette["muted"]),
+        "ask.checked": ptk(f"bold {palette['accent']}"),
+        "ask.number": ptk(palette["muted"]),
+        "ask.hint": ptk(palette["muted"]),
         # The bar is plain text on the terminal's own background.
         "bottom-toolbar": "noreverse " + ptk(palette["muted"]),
         "bottom-toolbar.text": "noreverse " + ptk(palette["muted"]),

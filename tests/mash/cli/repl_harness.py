@@ -293,6 +293,17 @@ class ReplDriver:
             **kwargs,
         )
         self.task: asyncio.Task[None] | None = None
+        # Slash commands that have finished, so ``say`` can wait for one.
+        self.commands_run = 0
+        run_command = self.repl.run_command
+
+        async def counted(line: str) -> None:
+            try:
+                await run_command(line)
+            finally:
+                self.commands_run += 1
+
+        self.repl.run_command = counted  # type: ignore[method-assign]
 
     @property
     def output(self) -> str:
@@ -321,9 +332,11 @@ class ReplDriver:
 
     async def say(self, message: str) -> None:
         """Type a message, send it, and wait until the REPL is idle again."""
-        submitted = len(self.host.submitted)
+        submitted, commands = len(self.host.submitted), self.commands_run
         self.type(message + ENTER)
-        if not message.startswith("/"):
+        if message.startswith("/"):
+            await self.until(lambda: self.commands_run > commands)
+        else:
             await self.until(lambda: len(self.host.submitted) > submitted)
         await self.idle()
 

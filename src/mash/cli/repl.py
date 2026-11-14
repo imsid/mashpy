@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
@@ -31,6 +31,7 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markup import escape
 
+from .ask import menu
 from .background import BackgroundWatchers, Notice, list_rows, resolve_prefix, short_id
 from .client import MashHostClient, MashHostClientError
 from .command_log import RemoteCommandEventLogger
@@ -46,6 +47,7 @@ from .render import (
     live_rows,
     prompt_style_rules,
     status_bar,
+    tool_display,
 )
 from .types import CLIContext
 from .views import (
@@ -58,6 +60,7 @@ from .views import (
     Interaction,
     Output,
     RequestView,
+    ToolCall,
     final_text,
     reduce,
 )
@@ -87,6 +90,12 @@ class _Interrupted:
     """The input was closed so the loop can ask something; ``draft`` was typed."""
 
     draft: str
+
+
+# An open question was closed because its interaction no longer waits.
+_CLOSED: Any = object()
+# The approval menu's entry that prints the call's full arguments.
+_VIEW_CALL: Any = object()
 
 
 class Repl:
@@ -146,6 +155,8 @@ class Repl:
         self.queue: list[str] = []
         # Interactions waiting for the user, oldest first.
         self._interactions: deque[Interaction] = deque()
+        # The interaction being asked and the application asking it.
+        self._asking: tuple[Interaction, Application[Any]] | None = None
         self._draft = ""
         self._exit_armed_at: float | None = None
         self._flash: tuple[str, float] | None = None
@@ -707,6 +718,8 @@ class Repl:
         self._interactions = deque(
             item for item in self._interactions if item.view is not view
         )
+        if self._asking is not None and self._asking[0].view is view:
+            self._close_ask()
 
     def _acknowledged(self, ack: Ack) -> None:
         """An interaction closed: drop it if still unasked, report a timeout."""
@@ -716,11 +729,80 @@ class Repl:
             for item in self._interactions
             if str(item.payload.get("interaction_id") or "") != interaction_id
         )
+        asking = self._asking
+        if asking is not None and asking[0].view is ack.view and (
+            str(asking[0].payload.get("interaction_id") or "") == interaction_id
+        ):
+            # Answered somewhere else, or timed out, while its menu was open.
+            self._close_ask()
         if ack.payload.get("timed_out"):
             self.renderer.warn(f"  Interaction {interaction_id} timed out")
 
-    async def _ask_line(self, prompt: str = "  › ") -> str:
-        return (await self._ask_session.prompt_async(prompt)).strip()
+    def _close_ask(self) -> None:
+        """Close the open question: its interaction no longer waits."""
+        if self._asking is None:
+            return
+        app = self._asking[1]
+        if app is not None and app.is_running and not app.is_done:
+            with contextlib.suppress(Exception):
+                app.exit(result=_CLOSED)
+
+    async def _run_ask(self, interaction: Interaction, app: Application[Any]) -> Any:
+        """Run one question's application; ``_CLOSED`` when it was closed for it."""
+        self._asking = (interaction, app)
+        try:
+            return await app.run_async()
+        finally:
+            self._asking = None
+
+    async def _choose(
+        self,
+        interaction: Interaction,
+        options: list[tuple[Any, str]],
+        *,
+        multiple: bool = False,
+    ) -> Any:
+        return await self._run_ask(
+            interaction,
+            menu(options, multiple=multiple, style=self._style, **self._terminal),
+        )
+
+    async def _ask_line(self, interaction: Interaction) -> Any:
+        session = self._ask_session
+        self._asking = (interaction, session.app)
+        try:
+            answer = await session.prompt_async("  › ")
+        finally:
+            self._asking = None
+        return answer if answer is _CLOSED else str(answer).strip()
+
+    def _approval_calls(self, interaction: Interaction) -> list[ToolCall]:
+        """The tool calls an approval is about, from the turn that asked.
+
+        A relayed approval is about a child's calls. Only calls the prompt
+        names are returned: other calls of the turn need no approval.
+        """
+        view = interaction.view
+        origin = interaction.payload.get("origin")
+        if isinstance(origin, dict):
+            request_id = str(origin.get("request_id") or "")
+            view = next(
+                (child for child in view.children if child.request_id == request_id),
+                None,
+            )
+            if view is None:
+                return []
+        prompt = str(interaction.payload.get("prompt") or "")
+        return [
+            ToolCall(
+                call_id=call["id"],
+                name=call["name"],
+                arguments=call["arguments"],
+                started_at=self.now(),
+            )
+            for call in view.pending_tool_calls
+            if call["name"] in prompt
+        ]
 
     async def _ask(self, interaction: Interaction) -> Any:
         """Ask the user one interaction; return the response to post."""
@@ -728,10 +810,13 @@ class Repl:
         interaction_type = str(payload.get("type") or "info")
         prompt = str(payload.get("prompt") or "Input required:")
         schema = payload.get("schema")
+        options = list(schema.get("options") or []) if isinstance(schema, dict) else []
         # A relayed interaction names the agent that asked.
         origin = payload.get("origin")
         if isinstance(origin, dict) and origin.get("agent_id"):
             prompt = f"[{origin['agent_id']}] {prompt}"
+        if self._interactions:
+            prompt = f"{prompt} · {len(self._interactions)} more waiting"
         self.renderer.info(escape(prompt))
 
         if interaction_type == "browser":
@@ -739,39 +824,66 @@ class Repl:
             self.renderer.link(f"  Open: {url}")
             with contextlib.suppress(Exception):
                 webbrowser.open(url)
-            self.renderer.info('  Press Enter when you\'re done (or type "cancel")')
-            return "cancel" if (await self._ask_line()).lower() == "cancel" else "done"
+            return await self._choose(
+                interaction,
+                [("done", "Done, continue"), ("cancel", "Cancel the sign-in")],
+            )
 
         if interaction_type == "approval":
-            options = ["approve", "deny", "skip"]
+            calls = self._approval_calls(interaction)
+            for call in calls:
+                self.renderer.muted(
+                    "    " + escape(tool_display(call, self.tool_lines))
+                )
+            choices: list[tuple[Any, str]] = [
+                ("approve", "Approve"),
+                ("deny", "Deny"),
+                ("skip", "Skip"),
+            ]
+            if calls:
+                choices.append((_VIEW_CALL, "View the full call"))
             while True:
-                self.renderer.info(f"  Options: {', '.join(options)}")
-                answer = (await self._ask_line()).lower()
-                if answer in options:
+                answer = await self._choose(interaction, choices)
+                if answer is not _VIEW_CALL:
                     return answer
+                for call in calls:
+                    self.renderer.markdown(
+                        f"```json\n{json.dumps({call.name: call.arguments}, indent=2, default=str)}\n```"
+                    )
 
-        if interaction_type == "choice":
-            options = list(schema.get("options") or []) if isinstance(schema, dict) else []
-            for index, option in enumerate(options, 1):
-                self.renderer.info(f"  {index}. {option}")
-            while True:
-                self.renderer.info("  Enter numbers separated by commas:")
-                selected = _parse_choices(await self._ask_line(), options)
-                if selected is not None:
-                    return selected
+        if interaction_type == "choice" and options:
+            multiple = not isinstance(schema, dict) or schema.get("type") != "enum"
+            return await self._choose(
+                interaction,
+                [(option, str(option)) for option in options],
+                multiple=multiple,
+            )
 
-        return await self._ask_line()
+        return await self._ask_line(interaction)
 
     async def _answer_next(self) -> None:
-        """Ask the oldest waiting interaction and post the answer."""
+        """Ask the oldest waiting interaction and post the answer.
+
+        Ctrl-C cancels the request that asked. Ctrl-D raises ``EOFError``.
+        """
         interaction = self._interactions.popleft()
         view = interaction.view
         try:
             response = await self._ask(interaction)
-        except (EOFError, KeyboardInterrupt):
-            # Left unanswered: the request keeps waiting until it times out.
-            self.renderer.warn("  Left unanswered.")
+        except KeyboardInterrupt:
+            self.renderer.warn("  Cancelling the request.")
+            try:
+                await asyncio.to_thread(
+                    self.client.cancel_request, view.agent_id, view.request_id
+                )
+            except MashHostClientError as exc:
+                self.renderer.warn(f"  Could not cancel: {exc}")
             return
+        if response is _CLOSED:
+            self.renderer.muted("  No longer waiting for an answer.")
+            return
+        shown = ", ".join(map(str, response)) if isinstance(response, list) else str(response)
+        self.renderer.muted("  → " + escape(shown))
         try:
             await asyncio.to_thread(
                 lambda: self.client.post_interaction(
@@ -843,7 +955,10 @@ class Repl:
             try:
                 while True:
                     if self._interactions:
-                        await self._answer_next()
+                        try:
+                            await self._answer_next()
+                        except EOFError:
+                            break
                         continue
                     try:
                         text = await self._read()
@@ -885,18 +1000,3 @@ class Repl:
         except KeyboardInterrupt:
             pass
 
-
-def _parse_choices(text: str, options: list[Any]) -> list[Any] | None:
-    """The options named by comma-separated numbers or names; None if any is wrong."""
-    selected: list[Any] = []
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if part.isdigit() and 0 < int(part) <= len(options):
-            selected.append(options[int(part) - 1])
-        elif part in options:
-            selected.append(part)
-        else:
-            return None
-    return selected or None

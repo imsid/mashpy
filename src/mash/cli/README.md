@@ -145,11 +145,25 @@ Leaving the REPL while a request runs does not cancel it. The REPL prints
 `[a1b2c3d4] is still running on the host.`
 
 When a request waits on an interaction, the REPL asks for the answer in place
-and puts the draft you were typing back afterwards. A child's interaction is
-asked through the companion's request with the child's agent id in front. For
-a `browser` handoff it prints the prompt and the live-view link, opens the
-link in your browser, and waits: press Enter when you are done in the browser,
-or type `cancel`.
+and puts the draft you were typing back afterwards. The question is printed,
+then a menu opens under it (`ask.py`):
+
+- An approval lists Approve, Deny and Skip. The tool call it is about is
+  shown under the question, and `View the full call` prints all of its
+  arguments.
+- A choice lists the options as checkboxes. Space checks options and Enter
+  answers with the checked ones, or with the highlighted one when none is
+  checked.
+- A `browser` handoff prints the live-view link, opens it in your browser,
+  and lists Done and Cancel.
+- Any other question takes a line of text.
+
+Up, Down, a number or an option's first letter move through a menu, and Enter
+answers. Ctrl-C at a question cancels the request that asked. Ctrl-D leaves
+the REPL. A child's interaction is asked through the companion's request with
+the child's agent id in front. When several are waiting, the question says
+how many more there are. A question whose interaction is answered somewhere
+else, times out, or belongs to a request that ended closes by itself.
 
 ### Input
 
@@ -189,6 +203,7 @@ slow or unreachable.
 - `repl.py`: the REPL loop. It owns the input, follows the foreground request and its children as asyncio tasks, queues messages, and asks interactions.
 - `views.py`: the state of one request and `reduce`, which applies a stream event to it and returns the output that event finished. It prints nothing.
 - `render.py`: the theme, the lines printed for finished output, and the live rows and status bar.
+- `ask.py`: the menu that answers an interaction.
 - `input.py`: the input line: the `prompt_toolkit` session, the Enter and paste bindings, the `/` menu, and the clipboard.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in commands. A handler may be a plain function, which runs on a thread, or a coroutine function.
 - `background.py`: `/bg` parsing, id prefixes, the `--list` tree, and the tasks that follow `bg` requests.
