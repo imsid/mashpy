@@ -55,7 +55,8 @@ in its token.
   processes' environment, or plant files such as `sitecustomize.py` where
   another agent's code loads them. When the daemon starts it adds an
   `agent-<uid>` passwd entry for each mapped uid; a folder still owned by an
-  older shared uid is handed over on first use, without following links.
+  older shared uid is handed over on first use, without following links or
+  entering bind mounts, whose files keep their owner on the Docker host.
   Without root, as on a developer's machine, every agent runs as the current
   user.
 - `tokens.py`: `derive_sandbox_token(secret, user_id)`, the HMAC of

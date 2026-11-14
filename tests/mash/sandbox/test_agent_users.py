@@ -98,6 +98,28 @@ class AgentUsersTests(unittest.TestCase):
         )
         self.assertNotIn(str(outside), {path for path, _ in self.chowned})
 
+    def test_a_hand_over_leaves_bind_mounts_inside_the_folder_alone(self) -> None:
+        # Docker makes the folder, as root, to hold a mount target inside it.
+        folder = self.root / "research"
+        (folder / "src" / "pkg").mkdir(parents=True)
+        (folder / "src" / "pkg" / "app.py").write_text("")
+        (folder / "README.md").write_text("")
+        (folder / "notes.txt").write_text("")
+        mounted = (str(folder / "src"), str(folder / "README.md"))
+
+        users = AgentUsers(
+            str(self.root),
+            isolate=True,
+            chown=lambda path, uid: self.chowned.append((str(path), uid)),
+            add_user=lambda uid, folder: None,
+            device=lambda path: 2 if str(path).startswith(mounted) else 1,
+        )
+        users.prepare()
+        users.get("research")
+
+        chowned = {path for path, uid in self.chowned if uid == FIRST_AGENT_UID}
+        self.assertEqual(chowned, {str(folder), str(folder / "notes.txt")})
+
     def test_prepare_restores_the_passwd_entries_of_mapped_agents(self) -> None:
         users = self._users()
         users.prepare()
