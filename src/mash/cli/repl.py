@@ -43,6 +43,8 @@ from .render import (
     OutputPrinter,
     RichRenderer,
     ToolLine,
+    clip,
+    fmt_seconds,
     fmt_tokens,
     live_rows,
     prompt_style_rules,
@@ -60,13 +62,17 @@ from .views import (
     Interaction,
     Output,
     RequestView,
+    Tool,
     ToolCall,
+    Workflow,
     final_text,
     reduce,
 )
 
 # How long the REPL waits for a RunSubAgents child to be submitted.
 CHILD_SUBMIT_WAIT_SECONDS = 30.0
+# How long the REPL looks for the run a RunWorkflow call started.
+WORKFLOW_RUN_WAIT_SECONDS = 30.0
 # How long a finished request waits for its children's streams to end.
 CHILD_DRAIN_SECONDS = 5.0
 # A second Ctrl-C within this many seconds of the first leaves the REPL.
@@ -151,6 +157,10 @@ class Repl:
         # started: Ctrl-Z leaves its mode alone.
         self._foreground_is_child = False
         self._child_tasks: set[asyncio.Task[None]] = set()
+        # RunWorkflow call id -> the task following that call's run.
+        self._workflow_tasks: dict[str, asyncio.Task[None]] = {}
+        # The last request that started children, for /subagent.
+        self.last_parent: RequestView | None = None
         # Messages typed while a request ran, sent in order when it ends.
         self.queue: list[str] = []
         # Interactions waiting for the user, oldest first.
@@ -512,12 +522,29 @@ class Repl:
             return
         if isinstance(output, End) and output.view.parent is None:
             return
+        if isinstance(output, Workflow):
+            self._workflow_tasks[output.call.call_id] = self._child_task(
+                self._follow_workflow(output)
+            )
+            return
         self.printer.print(output, self.now())
+        if isinstance(output, Tool):
+            # The call ended, so its run needs no more following.
+            task = self._workflow_tasks.pop(output.call.call_id, None)
+            if task is not None:
+                task.cancel()
         if isinstance(output, Children):
+            if output.view.parent is None:
+                self.last_parent = output.view
             for child in output.children:
-                task = asyncio.get_running_loop().create_task(self._follow_child(child))
-                self._child_tasks.add(task)
-                task.add_done_callback(self._child_tasks.discard)
+                self._child_task(self._follow_child(child))
+
+    def _child_task(self, coroutine: Any) -> asyncio.Task[None]:
+        """A task that lives and dies with the foreground request."""
+        task = asyncio.get_running_loop().create_task(coroutine)
+        self._child_tasks.add(task)
+        task.add_done_callback(self._child_tasks.discard)
+        return task
 
     def _print_end(self, view: RequestView) -> None:
         if view.status == COMPLETED:
@@ -566,6 +593,55 @@ class Repl:
                 self.printer.child_end(child, self.now())
         self._invalidate()
 
+    async def _find_workflow_run(self, workflow: Workflow) -> str | None:
+        """The id of the run a RunWorkflow call started, found by its dedup key."""
+        deadline = self.now() + WORKFLOW_RUN_WAIT_SECONDS
+        while self.now() < deadline:
+            runs = await asyncio.to_thread(
+                self.client.list_workflow_runs, workflow.workflow_id
+            )
+            for run in runs:
+                if run.get("dedup_key") == workflow.dedup_key and run.get("run_id"):
+                    return str(run["run_id"])
+            await asyncio.sleep(0.5)
+        return None
+
+    async def _follow_workflow(self, workflow: Workflow) -> None:
+        """Show the step a RunWorkflow call's run is on; best effort.
+
+        The call's own result says how the run ended, so a failure to find or
+        read the run only leaves the row without a step.
+        """
+        call = workflow.call
+        try:
+            run_id = await self._find_workflow_run(workflow)
+            if run_id is None:
+                return
+            async for event in self.client.workflow_run_events(
+                workflow.workflow_id, run_id
+            ):
+                name = str(event.get("event") or "")
+                data = event.get("data")
+                step_id = str(data.get("step_id") or "") if isinstance(data, dict) else ""
+                if name == "step.started":
+                    call.note = f"step {step_id}"
+                elif name in ("step.completed", "step.failed"):
+                    ok = name == "step.completed"
+                    call.note = f"step {step_id} {'done' if ok else 'failed'}"
+                    if self.detail:
+                        mark = "[ok]✓[/ok]" if ok else "[error]✗[/error]"
+                        self.renderer.print(
+                            f"  [muted]{escape(workflow.workflow_id)} │[/muted] {mark} "
+                            f"[muted]step {escape(step_id)}[/muted]"
+                        )
+                elif name in ("workflow.completed", "workflow.error"):
+                    return
+                self._invalidate()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
     async def _drain_children(self) -> None:
         """Let the children's streams reach their end, briefly."""
         tasks = list(self._child_tasks)
@@ -578,6 +654,85 @@ class Repl:
     def _cancel_children(self) -> None:
         for task in list(self._child_tasks):
             task.cancel()
+
+    # --- /subagent ------------------------------------------------------------
+
+    def _subagent(self, number: str) -> RequestView | None:
+        """Child ``number`` (from 1) of the last request that started children."""
+        children = self.last_parent.children if self.last_parent is not None else []
+        if not children:
+            self.renderer.warn("No request in this REPL has started subagents yet.")
+            return None
+        if not number.isdigit() or not 0 < int(number) <= len(children):
+            self.renderer.error(
+                f"Give a number from 1 to {len(children)}; /subagent lists them."
+            )
+            return None
+        return children[int(number) - 1]
+
+    def list_subagents(self) -> None:
+        """``/subagent``: the children of the last request that started any."""
+        parent = self.last_parent
+        if parent is None or not parent.children:
+            self.renderer.warn("No request in this REPL has started subagents yet.")
+            return
+        now = self.now()
+        rows = [
+            [
+                str(index),
+                escape(child.agent_id) + (" ↺" if child.continued else ""),
+                child.status,
+                str(child.tool_count),
+                fmt_tokens(child.tokens),
+                fmt_seconds(child.elapsed(now)),
+                escape(clip(" ".join(child.brief.split()), 60)),
+            ]
+            for index, child in enumerate(parent.children, 1)
+        ]
+        self.renderer.table(
+            ["#", "Agent", "Status", "Tools", "Tokens", "Time", "Asked"], rows
+        )
+
+    async def show_subagent(self, number: str) -> None:
+        """``/subagent <n>``: what a child was asked, what it did and its answer.
+
+        The child's stream is read again from its start. A child still
+        running is followed to its end; Ctrl-C stops reading.
+        """
+        child = self._subagent(number)
+        if child is None:
+            return
+        self.renderer.info(f"[agent]{escape(child.agent_id)}[/agent] was asked:")
+        self.renderer.markdown(child.brief or "(nothing)")
+        view = RequestView(
+            agent_id=child.agent_id,
+            request_id=child.request_id,
+            started_at=self.now(),
+            brief=child.brief,
+        )
+        printer = OutputPrinter(
+            self.renderer, detail=lambda: True, tool_lines=self.tool_lines
+        )
+        async for event in self.client.request_events(child.agent_id, child.request_id):
+            for output in reduce(view, event, self.now()):
+                # Its interactions were asked through the parent, and its own
+                # children are not followed here.
+                if not isinstance(output, (Interaction, Ack, Children, Workflow, End)):
+                    printer.print(output, self.now())
+        self._print_end(view)
+
+    async def cancel_subagent(self, number: str) -> None:
+        """``/subagent cancel <n>``: cancel one child; the others go on."""
+        child = self._subagent(number)
+        if child is None:
+            return
+        if child.ended:
+            self.renderer.warn(f"{child.agent_id} already ended ({child.status}).")
+            return
+        await asyncio.to_thread(
+            self.client.cancel_request, child.agent_id, child.request_id
+        )
+        self.renderer.warn(f"Cancelling {escape(child.agent_id)}.")
 
     # --- cancel and background ---------------------------------------------
 

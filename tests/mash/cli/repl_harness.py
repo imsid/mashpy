@@ -167,6 +167,9 @@ class FakeHost:
         self.records: list[dict[str, Any]] = []
         self.missing: set[str] = set()
         self.session = {"total_tokens": 0}
+        # workflow id -> its runs; run id -> the run stream's events and gates.
+        self.workflow_runs: dict[str, list[dict[str, Any]]] = {}
+        self.workflow_scripts: dict[str, list[Any]] = {}
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self._count = 0
 
@@ -215,6 +218,20 @@ class FakeHost:
                 continue
             await asyncio.sleep(0)
             yield {**item, "seq": seq}
+
+    def list_workflow_runs(self, workflow_id, *, limit=50):
+        return list(self.workflow_runs.get(workflow_id, []))
+
+    async def workflow_run_events(self, workflow_id, run_id):
+        self.stream_calls.append((workflow_id, run_id, 0))
+        for item in self.workflow_scripts.get(run_id, []):
+            if isinstance(item, Gate):
+                await item.wait()
+                continue
+            if isinstance(item, Exception):
+                raise item
+            await asyncio.sleep(0)
+            yield item
 
     # --- request control ----------------------------------------------------
 
@@ -339,6 +356,12 @@ class ReplDriver:
         else:
             await self.until(lambda: len(self.host.submitted) > submitted)
         await self.idle()
+
+    async def command(self, line: str) -> None:
+        """Run a slash command and wait for it, whatever else is running."""
+        commands = self.commands_run
+        self.type(line + ENTER)
+        await self.until(lambda: self.commands_run > commands)
 
     async def close(self) -> None:
         if self.task is not None and not self.task.done():

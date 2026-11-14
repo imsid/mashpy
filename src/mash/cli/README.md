@@ -99,6 +99,9 @@ Notes
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the REPL's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
+- `/subagent`: list the children of the last request that started any, with each one's agent, status, tools, tokens, time and what it was asked. `↺` marks a child that continued an earlier session.
+- `/subagent <n>`: show child `n`: what it was asked, then its model steps, tool calls and own answer, read again from its stream. A child still running is followed to its end; Ctrl-C stops reading.
+- `/subagent cancel <n>`: cancel child `n`. The other children go on, and the companion sees the cancelled one's status in its result.
 - `/bg <message>`: submit the message with `mode: bg` and return to the prompt.
 - `/bg --list`: list the session's `bg` requests with their short id (the first 8 characters of the request id), message, status and `started_by`. A `RunSubAgents` child runs in a session of its own, so it is not listed here; `/bg --kill` still cancels it with its parent.
 - `/bg --switch <id>`: switch a request to `fg`, replay its events from the start, then follow it live and answer its interactions. Switching to a child shows its events and leaves it `bg`.
@@ -122,7 +125,9 @@ like any other terminal output.
 
 - The live rows show the running request: its phase or current tool, elapsed
   time and tokens. Under a `RunSubAgents` call there is one row per child, all
-  followed at the same time. Queued messages are listed below.
+  followed at the same time. A `RunWorkflow` call's row adds the step its run
+  is on, and the detail level prints each step as it ends. Queued messages
+  are listed below.
 - Each finished tool call prints one line, such as `✓ search(q=x) 2.5s`. A
   `RunSubAgents` call prints `Asking 2 agents: energy, review` and then one
   line per child as it ends, with its tool count, tokens and time.

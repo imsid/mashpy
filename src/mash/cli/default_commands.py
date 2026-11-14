@@ -536,8 +536,25 @@ def register_default_commands(shell) -> None:
         else:
             await shell.kill(ctx, parsed.request_id)
 
+    async def subagent_command(ctx, args: list[str]) -> None:
+        if not args:
+            shell.list_subagents()
+        elif len(args) == 1 and args[0] != "cancel":
+            await shell.show_subagent(args[0])
+        elif len(args) == 2 and args[0] == "cancel":
+            await shell.cancel_subagent(args[1])
+        else:
+            ctx.renderer.error("Usage: /subagent | /subagent <n> | /subagent cancel <n>")
+
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))
+    )
+    shell.command_registry.register(
+        Command(
+            name="subagent",
+            help="List the last request's subagents, show one (<n>) or cancel one (cancel <n>)",
+            handler=subagent_command,
+        )
     )
     shell.command_registry.register(
         Command(name="exit", help="Exit the application", handler=exit_command, aliases=("quit", "q"))

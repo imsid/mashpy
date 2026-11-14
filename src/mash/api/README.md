@@ -52,7 +52,7 @@ An agent process starts, follows, answers and cancels its `RunSubAgents` childre
 
 `POST /h2a/workflow/{workflow_id}/run`
 - Body: `{parent: {request_id}, input, dedup_key?}`. Sent by `RunWorkflow` with the agent's token.
-- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's user. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another.
+- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's user. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another. The call's `execute_tool.start` event carries `workflow_run: {workflow_id, dedup_key}`, so a client following the request can find the run in `GET /workflow/{workflow_id}/runs` and read its events.
 - Returns `{run_id, workflow_id, status, result, error}` with `202`. An input the workflow's `input_model` refuses is `422 INVALID_INPUT` with the validation errors in `error.details`.
 
 `GET /h2a/workflow/{workflow_id}/runs/{run_id}?parent_request_id=`

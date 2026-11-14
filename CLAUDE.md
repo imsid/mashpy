@@ -645,6 +645,9 @@ input schema. The companion runs one with
 `RunWorkflow(workflow_id, input, timeout_seconds)`, which starts a run for the
 request's user through the host's `/h2a` relay and waits for its result. On a
 timeout it returns `timed_out` with the `run_id`, and the run keeps going.
+The REPL shows the step the run is on, and `/subagent` lists the last
+request's children, shows one (`/subagent 2`) or cancels one
+(`/subagent cancel 2`).
 
 The companion reads what its agents did with three tools, each keyed by an
 `agent_id` with a `session_id` and/or `trace_id` from its ledger:

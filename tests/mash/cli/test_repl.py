@@ -535,6 +535,191 @@ def test_the_detail_level_prints_each_childs_tools() -> None:
     assert "    energy usage" in out
 
 
+def _three_children(host: FakeHost, gates: list[Gate]) -> None:
+    names = ["energy", "review", "solar"]
+    host.script(
+        "r-1",
+        tool_start(
+            "t1", "RunSubAgents",
+            {"requests": [{"agent_id": name, "prompt": f"look at {name}"} for name in names[:2]]
+             + [{"agent_id": "solar", "prompt": "look at solar", "session_id": "s-old"}]},
+            subagents=[{"agent_id": name, "request_id": f"c-{i}"} for i, name in enumerate(names)],
+        ),
+        Gate(),
+        tool_end("t1", "RunSubAgents"),
+        chat_end("response", text="All three done."),
+        completed("All three done."),
+    )
+    for index, gate in enumerate(gates):
+        host.script(
+            f"c-{index}",
+            tool_start("x", "search", {"q": names[index]}),
+            tool_end("x", "search"),
+            gate,
+            chat_end("response", text=f"{names[index]} answer", input_tokens=100, output_tokens=5),
+            completed(f"{names[index]} answer"),
+        )
+
+
+def test_three_children_print_three_lines_in_the_order_they_end() -> None:
+    host = FakeHost()
+    gates = [Gate(), Gate(), Gate()]
+    _three_children(host, gates)
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(lambda: d.repl.foreground is not None
+                      and len(d.repl.foreground.children) == 3
+                      and all(c.tool_count == 1 for c in d.repl.foreground.children))
+        children = d.repl.foreground.children
+        for index in (2, 0, 1):
+            gates[index].open()
+            await d.until(lambda: children[index].ended)
+        _parent_gate(host).open()
+        await d.idle()
+
+    lines = [line.strip() for line in run(script, host, host_id="fudge").output.splitlines()]
+    ended = [line.split()[1] for line in lines if line.startswith("✓ ") and "· 1 tool ·" in line]
+    assert ended == ["solar", "energy", "review"]
+    # A child that continues an earlier session is marked.
+    assert any(line.startswith("✓ solar ↺") for line in lines)
+
+
+def test_subagent_lists_shows_and_cancels_children() -> None:
+    host = FakeHost()
+    gates = [Gate(), Gate(), Gate()]
+    _three_children(host, gates)
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("/subagent")
+        assert "No request in this REPL has started subagents yet." in d.output
+        d.type("go" + ENTER)
+        await d.until(lambda: d.repl.foreground is not None
+                      and len(d.repl.foreground.children) == 3)
+        children = d.repl.foreground.children
+        gates[0].open()
+        await d.until(lambda: children[0].ended)
+        # One child is cancelled while the request runs; the others go on.
+        await d.command("/subagent cancel 2")
+        assert host.cancelled == [("review", "c-1")]
+        assert not children[1].ended and not children[2].ended
+        await d.command("/subagent cancel 1")
+        await d.command("/subagent 9")
+        await d.command("/subagent cancel")
+        gates[1].open()
+        gates[2].open()
+        await d.until(lambda: all(child.ended for child in children))
+        _parent_gate(host).open()
+        await d.idle()
+        await d.say("/subagent")
+        await d.say("/subagent 1")
+
+    out = run(script, host, host_id="fudge").output
+    assert "energy already ended (completed)." in out
+    assert "Give a number from 1 to 3; /subagent lists them." in out
+    assert "Usage: /subagent | /subagent <n> | /subagent cancel <n>" in out
+    assert host.cancelled == [("review", "c-1")]
+    # The list: one row per child, with what it was asked.
+    table = out[out.index("Asked"):]
+    for name in ("energy", "review", "solar ↺"):
+        assert name in table
+    assert "look at review" in table
+    # Showing a child replays its own stream: its brief, steps, tools, answer.
+    shown = out[out.rindex("energy was asked:"):]
+    assert "look at energy" in shown
+    assert "step 1 · response · 100 in / 5 out" in shown
+    assert "✓ search(q=energy)" in shown
+    assert "energy answer" in shown
+    assert host.stream_calls.count(("energy", "c-0", 0)) == 2
+
+
+# --- workflows started by the companion ---------------------------------------
+
+
+def _workflow_script(host: FakeHost, run_events: list[Any]) -> Gate:
+    gate = Gate()
+    host.script(
+        "r-1",
+        tool_start(
+            "t1", "RunWorkflow", {"workflow_id": "export", "input": {}},
+            workflow_run={"workflow_id": "export", "dedup_key": "r-1-0-0"},
+        ),
+        gate,
+        tool_end("t1", "RunWorkflow"),
+        chat_end("response", text="Exported."),
+        completed("Exported."),
+    )
+    host.workflow_runs["export"] = [
+        {"run_id": "run-old", "dedup_key": "other"},
+        {"run_id": "run-7", "dedup_key": "r-1-0-0"},
+    ]
+    host.workflow_scripts["run-7"] = run_events
+    return gate
+
+
+def _step(name: str, step_id: str) -> dict[str, Any]:
+    return {"event": name, "data": {"step_id": step_id}}
+
+
+def test_a_workflow_calls_row_shows_the_step_its_run_is_on() -> None:
+    host = FakeHost()
+    step_gate = Gate()
+    gate = _workflow_script(
+        host,
+        [_step("step.started", "scan"), _step("step.completed", "scan"),
+         _step("step.started", "summarize"), step_gate,
+         _step("step.completed", "summarize"), {"event": "workflow.completed", "data": {}}],
+    )
+
+    async def script(d: ReplDriver) -> None:
+        d.type("export it" + ENTER)
+        await d.until(lambda: d.repl.running() and d.repl.foreground.current_tool() is not None
+                      and d.repl.foreground.current_tool().note == "step summarize")
+        rows = "".join(text for _, text in d.repl._message())
+        assert "RunWorkflow(workflow_id=export, input={}) · step summarize" in rows
+        step_gate.open()
+        gate.open()
+        await d.idle()
+
+    out = run(script, host, debug=True).output
+    assert ("export", "run-7", 0) in host.stream_calls
+    # The detail level prints each step of the run as it ends.
+    assert "export │ ✓ step scan" in out
+    assert "Exported." in out
+
+
+def test_a_workflow_run_that_cannot_be_read_leaves_the_request_alone() -> None:
+    host = FakeHost()
+    gate = _workflow_script(host, [MashHostClientError("stream broke")])
+
+    async def script(d: ReplDriver) -> None:
+        d.type("export it" + ENTER)
+        await d.until(lambda: ("export", "run-7", 0) in host.stream_calls)
+        gate.open()
+        await d.idle()
+
+    out = run(script, host).output
+    assert "stream broke" not in out
+    assert "Exported." in out
+
+
+def test_a_workflow_run_is_not_followed_after_its_call_ends() -> None:
+    host = FakeHost()
+    gate = _workflow_script(host, [_step("step.started", "scan"), Gate()])
+
+    async def script(d: ReplDriver) -> None:
+        d.type("export it" + ENTER)
+        await d.until(lambda: d.repl.running() and d.repl.foreground.current_tool() is not None
+                      and d.repl.foreground.current_tool().note == "step scan")
+        gate.open()
+        await d.idle()
+        # The run's stream is still open on the host; the REPL let go of it.
+        assert d.repl._workflow_tasks == {}
+        assert not d.repl._child_tasks
+
+    assert "Exported." in run(script, host).output
+
+
 # --- interactions -------------------------------------------------------------
 
 

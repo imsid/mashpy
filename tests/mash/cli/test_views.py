@@ -18,6 +18,7 @@ from mash.cli.views import (
     Step,
     Text,
     Tool,
+    Workflow,
     final_text,
     reduce,
     split_complete_markdown,
@@ -324,3 +325,18 @@ def test_after_the_answer_the_request_is_finishing() -> None:
     assert view.phase == "tool"
     reduce(view, chat_end("response", text="Done."), 2.0)
     assert view.phase == "finishing"
+
+
+def test_a_run_workflow_call_names_its_run() -> None:
+    view = RequestView(agent_id="a", request_id="r", started_at=0.0)
+    [output] = reduce(
+        view,
+        tool_start("t1", "RunWorkflow", {"workflow_id": "export"},
+                   workflow_run={"workflow_id": "export", "dedup_key": "r-0-0"}),
+        1.0,
+    )
+    assert isinstance(output, Workflow)
+    assert (output.workflow_id, output.dedup_key) == ("export", "r-0-0")
+    assert output.call is view.current_tool()
+    # Without the run's key there is nothing to follow.
+    assert reduce(view, tool_start("t2", "RunWorkflow", {"workflow_id": "export"}), 2.0) == []

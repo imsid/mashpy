@@ -632,6 +632,18 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
+    def list_workflow_runs(
+        self, workflow_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """A workflow's runs, newest first."""
+        response = self._request(
+            "GET",
+            f"/api/v1/workflow/{quote(workflow_id, safe='')}/runs",
+            query={"limit": limit},
+        )
+        runs = response.json()["data"].get("runs")
+        return runs if isinstance(runs, list) else []
+
     def get_workflow_run(self, workflow_id: str, run_id: str) -> dict[str, Any]:
         response = self._request(
             "GET",

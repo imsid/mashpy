@@ -408,6 +408,18 @@ class MashHostClientRouteTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
+    def test_list_workflow_runs_reads_the_runs_route(self) -> None:
+        client, session = self._client(
+            {"data": {"runs": [{"run_id": "run-1", "dedup_key": "r-1-0-0"}]}}
+        )
+
+        runs = client.list_workflow_runs("wf/one", limit=10)
+
+        self.assertEqual(runs, [{"run_id": "run-1", "dedup_key": "r-1-0-0"}])
+        self.assertEqual(session.calls[-1]["method"], "GET")
+        self.assertIn("/api/v1/workflow/wf%2Fone/runs", str(session.calls[-1]["url"]))
+        self.assertIn("limit=10", str(session.calls[-1]["url"]))
+
     def test_run_workflow_posts_optional_dedup_key(self) -> None:
         client, session = self._client(
             {
