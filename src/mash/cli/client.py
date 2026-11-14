@@ -446,9 +446,23 @@ class MashHostClient:
                 min(STREAM_RETRY_DELAY * 2 ** (failures - 1), STREAM_RETRY_MAX_DELAY)
             )
 
-    def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        agent_id: str,
+        *,
+        user_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """The agent's sessions, most recently active first; one user's with ``user_id``."""
+        query = {
+            key: value
+            for key, value in (("user_id", user_id), ("limit", limit))
+            if value is not None
+        }
         response = self._request(
-            "GET", f"/api/v1/agent/{quote(agent_id, safe='')}/sessions"
+            "GET",
+            f"/api/v1/agent/{quote(agent_id, safe='')}/sessions",
+            query=query or None,
         )
         sessions = response.json()["data"].get("sessions")
         if not isinstance(sessions, list):

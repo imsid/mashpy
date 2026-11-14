@@ -167,6 +167,9 @@ class FakeHost:
         self.records: list[dict[str, Any]] = []
         self.missing: set[str] = set()
         self.session = {"total_tokens": 0}
+        # The user's sessions, newest first, and each session's turns.
+        self.sessions: list[dict[str, Any]] = []
+        self.history: dict[str, list[dict[str, Any]]] = {}
         # workflow id -> its runs; run id -> the run stream's events and gates.
         self.workflow_runs: dict[str, list[dict[str, Any]]] = {}
         self.workflow_scripts: dict[str, list[Any]] = {}
@@ -264,6 +267,14 @@ class FakeHost:
             and (started_by is None or record.get("started_by") == started_by)
         ]
 
+    def list_sessions(self, agent_id, *, user_id=None, limit=None):
+        self.calls.append(("list_sessions", (agent_id, user_id, limit)))
+        return list(self.sessions)
+
+    def get_history(self, agent_id, session_id, *, limit=None):
+        turns = self.history.get(session_id, [])
+        return turns[-limit:] if limit else list(turns)
+
     def get_session(self, agent_id, session_id):
         return {"agent_id": agent_id, "session_id": session_id, **self.session}
 
@@ -285,7 +296,14 @@ class FakeHost:
 class ReplDriver:
     """Runs a REPL on a pipe inside the current event loop."""
 
-    def __init__(self, host: FakeHost, *, host_id: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        host: FakeHost,
+        *,
+        host_id: str | None = None,
+        target: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.host = host
         self._pipe_context = create_pipe_input()
         self.pipe = self._pipe_context.__enter__()
@@ -297,11 +315,14 @@ class ReplDriver:
         self.repl = Repl(
             host,  # type: ignore[arg-type]
             Target(
-                api_base_url="http://host",
-                agent_id="companion" if host_id else "primary",
-                session_id="s-1",
-                user_id="u-1",
-                host_id=host_id,
+                **{
+                    "api_base_url": "http://host",
+                    "agent_id": "companion" if host_id else "primary",
+                    "session_id": "s-1",
+                    "user_id": "u-1",
+                    "host_id": host_id,
+                    **(target or {}),
+                }
             ),
             console=console,
             history=InMemoryHistory(),

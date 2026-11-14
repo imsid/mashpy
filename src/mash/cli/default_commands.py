@@ -546,8 +546,22 @@ def register_default_commands(shell) -> None:
         else:
             ctx.renderer.error("Usage: /subagent | /subagent <n> | /subagent cancel <n>")
 
+    async def new_command(ctx, args: list[str]) -> None:
+        del ctx, args
+        await shell.switch_session(shell.new_session_id(), resumed=False)
+
+    async def resume_command(ctx, args: list[str]) -> None:
+        del ctx, args
+        await shell.pick_session()
+
     shell.command_registry.register(
         Command(name="help", help="Show available commands", handler=help_command, aliases=("h", "?"))
+    )
+    shell.command_registry.register(
+        Command(name="new", help="Start a new session", handler=new_command)
+    )
+    shell.command_registry.register(
+        Command(name="resume", help="Go on in one of your earlier sessions", handler=resume_command)
     )
     shell.command_registry.register(
         Command(

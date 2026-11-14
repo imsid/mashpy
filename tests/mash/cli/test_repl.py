@@ -720,6 +720,115 @@ def test_a_workflow_run_is_not_followed_after_its_call_ends() -> None:
     assert "Exported." in run(script, host).output
 
 
+# --- sessions -----------------------------------------------------------------
+
+
+def _sessions(host: FakeHost) -> None:
+    import time as _time
+
+    host.sessions = [
+        {"session_id": "s-bills", "first_message": "why was march high",
+         "turn_count": 3, "last_activity_at": _time.time() - 7200},
+        {"session_id": "s-solar", "first_message": "compare solar quotes",
+         "turn_count": 1, "last_activity_at": _time.time() - 3 * 86400},
+    ]
+    host.history["s-solar"] = [
+        {"user_message": "compare solar quotes", "agent_response": "Quote B is cheaper."},
+    ]
+    host.history["s-bills"] = [
+        {"user_message": "first", "agent_response": "one"},
+        {"user_message": "why was march high", "agent_response": "Heating."},
+        {"user_message": "and april?", "agent_response": "Lower."},
+    ]
+
+
+def test_a_resumed_session_starts_with_its_last_two_turns() -> None:
+    host = FakeHost()
+    _sessions(host)
+    host.script("r-1", *simple())
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("go on")
+
+    d = run(script, host, target={"session_id": "s-bills", "resumed": True,
+                                  "title": "why was march high"})
+    lines = [line.rstrip() for line in d.output.splitlines()]
+    assert lines[0] == "mash · u-1 · agent primary · why was march high · /help for commands"
+    assert lines[1:5] == ["› why was march high", "Heating.", "› and april?", "Lower."]
+    assert "› first" not in lines
+    assert host.submitted[0]["session_id"] == "s-bills"
+
+
+def test_resume_picks_one_of_the_users_sessions() -> None:
+    host = FakeHost()
+    _sessions(host)
+    host.script("r-1", chat_end("response", text="ok"), completed("ok"))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("/resume" + ENTER)
+        await d.until(lambda: ("list_sessions", ("primary", "u-1", 20)) in host.calls)
+        await asyncio.sleep(0.05)
+        d.type(DOWN + ENTER)
+        await d.until(lambda: d.repl.context.session_id == "s-solar")
+        await d.until(lambda: "Quote B is cheaper." in d.output)
+        await d.say("go on")
+
+    d = run(script, host)
+    assert "· compare solar quotes ·" in d.output
+    assert "› compare solar quotes" in d.output
+    assert host.submitted[0]["session_id"] == "s-solar"
+
+
+def test_resume_can_be_left_with_ctrl_c_and_says_when_there_is_nothing() -> None:
+    host = FakeHost()
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("/resume")
+        _sessions(host)
+        d.type("/resume" + ENTER)
+        await d.until(lambda: len([c for c in host.calls if c[0] == "list_sessions"]) == 2)
+        await asyncio.sleep(0.05)
+        d.type(CTRL_C)
+        await d.until(lambda: "Kept the current session." in d.output)
+
+    d = run(script, host)
+    assert "No earlier sessions." in d.output
+    assert d.repl.context.session_id == "s-1"
+
+
+def test_new_starts_a_new_session() -> None:
+    host = FakeHost()
+    host.script("r-1", *simple())
+    host.script("r-2", chat_end("response", text="ok"), completed("ok"))
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("one")
+        await d.say("/new")
+        await d.say("two")
+
+    d = run(script, host)
+    assert "New session." in d.output
+    first, second = (s["session_id"] for s in host.submitted)
+    assert first == "s-1" and second not in ("s-1", "")
+    assert d.repl.context.session_id == second
+
+
+def test_the_session_cannot_change_while_a_request_runs() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", trace("chat.start"), gate, *simple())
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(d.repl.running)
+        await d.command("/new")
+        assert d.repl.context.session_id == "s-1"
+        gate.open()
+        await d.idle()
+
+    assert "A request is running in the foreground." in run(script, host).output
+
+
 # --- interactions -------------------------------------------------------------
 
 

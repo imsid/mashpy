@@ -173,7 +173,7 @@ class CommandRegistry:
                 CommandEvent(
                     event_type="command.start",
                     app_id=self._app_id,
-                    session_id=self._session_id,
+                    session_id=getattr(ctx, "session_id", None) or self._session_id,
                     command_name=command_name,
                     args=args_str,
                 )
@@ -191,7 +191,7 @@ class CommandRegistry:
                     CommandEvent(
                         event_type="command.complete",
                         app_id=self._app_id,
-                        session_id=self._session_id,
+                        session_id=getattr(ctx, "session_id", None) or self._session_id,
                         command_name=command_name,
                         duration_ms=int((time.time() - start_time) * 1000),
                     )
@@ -207,7 +207,7 @@ class CommandRegistry:
                     CommandEvent(
                         event_type="command.error",
                         app_id=self._app_id,
-                        session_id=self._session_id,
+                        session_id=getattr(ctx, "session_id", None) or self._session_id,
                         command_name=command_name,
                         error=str(e),
                         duration_ms=int((time.time() - start_time) * 1000),

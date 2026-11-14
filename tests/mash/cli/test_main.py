@@ -319,6 +319,82 @@ def test_repl_debug_is_off_by_default() -> None:
         assert shell.call_args.kwargs["debug"] is True
 
 
+def _repl_target(argv: list[str], sessions: list[dict], picked=None):
+    """Run ``mash repl`` with a fake client; return (exit code, Target or None, client)."""
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import main as cli_main
+    from mash.cli.config import CLIConfig
+
+    client = MagicMock()
+    client.list_sessions.return_value = sessions
+    shell = MagicMock()
+    picker = MagicMock()
+    if isinstance(picked, BaseException):
+        picker.return_value.run.side_effect = picked
+    else:
+        picker.return_value.run.return_value = picked
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
+    with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
+        cli_main, "load_config", return_value=existing
+    ), patch.object(cli_main, "Repl", shell), patch.object(cli_main, "menu", picker):
+        code = cli_main.main(["repl", "--agent", "primary", *argv])
+    target = shell.call_args.args[1] if shell.call_args else None
+    return code, target, client, picker
+
+
+_SESSIONS = [
+    {"session_id": "s-new", "first_message": "why was march high", "turn_count": 2,
+     "last_activity_at": 2.0},
+    {"session_id": "s-old", "first_message": "compare quotes", "turn_count": 1,
+     "last_activity_at": 1.0},
+]
+
+
+def test_repl_continue_goes_on_in_the_users_latest_session() -> None:
+    code, target, client, picker = _repl_target(["--continue"], _SESSIONS[:1])
+    assert code == 0
+    client.list_sessions.assert_called_once_with("primary", user_id="u-42", limit=1)
+    assert (target.session_id, target.resumed, target.title) == (
+        "s-new", True, "why was march high"
+    )
+    picker.assert_not_called()
+
+
+def test_repl_resume_opens_the_picker() -> None:
+    code, target, client, picker = _repl_target(["--resume"], _SESSIONS, picked=_SESSIONS[1])
+    assert code == 0
+    client.list_sessions.assert_called_once_with("primary", user_id="u-42", limit=20)
+    options = picker.call_args.args[0]
+    assert [value["session_id"] for value, _ in options] == ["s-new", "s-old"]
+    assert (target.session_id, target.resumed, target.title) == ("s-old", True, "compare quotes")
+
+
+def test_repl_resume_left_with_ctrl_c_starts_nothing() -> None:
+    code, target, _, _ = _repl_target(["--resume"], _SESSIONS, picked=KeyboardInterrupt())
+    assert code == 130
+    assert target is None
+
+
+def test_repl_continue_without_earlier_sessions_starts_a_new_one(capsys) -> None:
+    code, target, _, _ = _repl_target(["--continue"], [])
+    assert code == 0
+    assert target.resumed is False and target.title == ""
+    assert "No earlier sessions. Starting a new one." in capsys.readouterr().out
+
+
+def test_repl_session_id_resumes_that_session_and_excludes_the_other_flags(capsys) -> None:
+    import pytest
+
+    code, target, client, _ = _repl_target(["--session-id", "s-7"], _SESSIONS)
+    assert code == 0
+    assert (target.session_id, target.resumed) == ("s-7", True)
+    client.list_sessions.assert_not_called()
+    with pytest.raises(SystemExit):
+        _repl_target(["--session-id", "s-7", "--continue"], _SESSIONS)
+    capsys.readouterr()
+
+
 def test_cli_loads_dotenv_from_the_working_directory(tmp_path, monkeypatch) -> None:
     from mash.cli.main import load_env_file
 

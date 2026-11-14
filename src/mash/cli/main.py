@@ -15,10 +15,12 @@ from mash.api.main import add_agent_serve_parser, add_serve_parser
 from mash.cli.browser import add_browser_parser
 from mash.cli.sandbox import add_sandbox_parser
 
+from .ask import menu
 from .client import MashHostClient
 from .config import CLIConfig, load_config, save_config
 from .render import RichRenderer
 from .repl import Repl, Target
+from .sessions import PICKER_HINT, PICKER_LIMIT, session_options, session_title
 
 
 def _print_help(parser: argparse.ArgumentParser) -> int:
@@ -302,7 +304,19 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--limit", type=int, default=None, help="Optional turn limit")
 
     repl = subparsers.add_parser("repl", parents=[common], help="Start an interactive remote REPL")
-    repl.add_argument("--session-id", default=None, help="Remote session id")
+    session = repl.add_mutually_exclusive_group()
+    session.add_argument("--session-id", default=None, help="Remote session id")
+    session.add_argument(
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Go on in your most recent session",
+    )
+    session.add_argument(
+        "--resume",
+        action="store_true",
+        help="Choose one of your earlier sessions to go on in",
+    )
     repl.add_argument(
         "--debug",
         action="store_true",
@@ -475,12 +489,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError(
                     "a user id is required. Use --user-id or `mash connect --user-id`."
                 )
+            session_id, title = args.session_id, ""
+            if args.continue_session or args.resume:
+                earlier = client.list_sessions(
+                    agent_id, user_id=user_id, limit=1 if args.continue_session else PICKER_LIMIT
+                )
+                picked = None
+                if not earlier:
+                    renderer.warn("No earlier sessions. Starting a new one.")
+                elif args.continue_session:
+                    picked = earlier[0]
+                else:
+                    try:
+                        picked = menu(session_options(earlier), hint=PICKER_HINT).run()
+                    except KeyboardInterrupt:
+                        return 130
+                if picked is not None:
+                    session_id, title = str(picked["session_id"]), session_title(picked)
             target = Target(
                 api_base_url=base_url,
                 agent_id=agent_id,
-                session_id=args.session_id or Repl.new_session_id(),
+                session_id=session_id or Repl.new_session_id(),
                 user_id=user_id,
                 host_id=target_host_id,
+                resumed=bool(session_id),
+                title=title,
             )
             Repl(client, target, debug=args.debug).run()
             return 0

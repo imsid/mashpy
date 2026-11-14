@@ -43,6 +43,7 @@ from .common import (
 )
 from .common import (
     get_runtime_store,
+    normalize_optional_text,
 )
 
 
@@ -443,6 +444,7 @@ def build_agent_router() -> APIRouter:
         request: Request,
         agent_id: str,
         limit: Optional[int] = Query(default=None),
+        user_id: Optional[str] = Query(default=None),
     ) -> dict[str, Any]:
         resolved_agent_id, store = _session_store(request, agent_id)
         resolved_limit = parse_limit(
@@ -451,7 +453,10 @@ def build_agent_router() -> APIRouter:
         return success(
             {
                 "sessions": await sessions.list_sessions(
-                    store, app_id=resolved_agent_id, limit=resolved_limit
+                    store,
+                    app_id=resolved_agent_id,
+                    limit=resolved_limit,
+                    user_id=normalize_optional_text(user_id),
                 ),
                 "limit": resolved_limit,
             }

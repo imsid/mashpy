@@ -170,8 +170,13 @@ class MemoryStore(Protocol):
         app_id: str,
         *,
         limit: int,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """The application's ``limit`` most recently active sessions, newest first."""
+        """The application's ``limit`` most recently active sessions, newest first.
+
+        With ``user_id``, only that user's sessions. Each row carries
+        ``first_message``, the start of the session's first user message.
+        """
         ...
 
     async def get_latest_session(

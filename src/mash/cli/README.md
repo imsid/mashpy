@@ -31,7 +31,7 @@ Host-facing commands
 - `hosts [common]`: list defined host compositions.
 - `sessions [common]`: list sessions for the target agent.
 - `history [common] --session-id ID [--limit N]`: show turns for a specific remote session.
-- `repl [common] [--session-id ID] [--debug]`: start the REPL, pinned to the resolved target and user. `--debug` starts it at the detail level, which Ctrl-O also switches. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
+- `repl [common] [--session-id ID | --continue | --resume] [--debug]`: start the REPL, pinned to the resolved target and user. Without a session flag it starts a new session. `--continue` goes on in the user's most recent session for the target, `--resume` opens a picker of the user's sessions (first message, turns, time since last activity), and `--session-id` names one. A resumed session starts with its last two turns, dimmed. `--debug` starts it at the detail level, which Ctrl-O also switches. It needs a user from `--user-id` or `mash connect --user-id`. To change the composition, exit and run `mash compose` (or `mash repl --agent <id>`) again.
 
 Host management
 
@@ -99,6 +99,8 @@ Notes
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
 - `/workflow run <workflow_id> [dedup_key]`: start a workflow run for the REPL's user.
 - `/workflow status <workflow_id> <run_id>`: show workflow run status.
+- `/new`: start a new session without leaving the REPL.
+- `/resume`: open the session picker and go on in the session you choose. Neither works while a request runs in the foreground.
 - `/subagent`: list the children of the last request that started any, with each one's agent, status, tools, tokens, time and what it was asked. `↺` marks a child that continued an earlier session.
 - `/subagent <n>`: show child `n`: what it was asked, then its model steps, tool calls and own answer, read again from its stream. A child still running is followed to its end; Ctrl-C stops reading.
 - `/subagent cancel <n>`: cancel child `n`. The other children go on, and the companion sees the cancelled one's status in its result.
@@ -208,7 +210,8 @@ slow or unreachable.
 - `repl.py`: the REPL loop. It owns the input, follows the foreground request and its children as asyncio tasks, queues messages, and asks interactions.
 - `views.py`: the state of one request and `reduce`, which applies a stream event to it and returns the output that event finished. It prints nothing.
 - `render.py`: the theme, the lines printed for finished output, and the live rows and status bar.
-- `ask.py`: the menu that answers an interaction.
+- `ask.py`: the menu that answers an interaction and picks a session.
+- `sessions.py`: the session picker's rows.
 - `input.py`: the input line: the `prompt_toolkit` session, the Enter and paste bindings, the `/` menu, and the clipboard.
 - `commands.py` and `default_commands.py`: slash-command model, registration, and built-in commands. A handler may be a plain function, which runs on a thread, or a coroutine function.
 - `background.py`: `/bg` parsing, id prefixes, the `--list` tree, and the tasks that follow `bg` requests.

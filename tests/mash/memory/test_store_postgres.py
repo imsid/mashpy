@@ -461,6 +461,31 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latest["session_id"], "session-b")
         self.assertEqual(latest["session_total_tokens"], 7)
 
+    async def test_list_sessions_filters_by_user_and_carries_the_first_message(self) -> None:
+        await self._save_turn(
+            session_id="s-a", user_message="first of a " + "x" * 300,
+            agent_response="one", user_id="u-1",
+        )
+        await self._save_turn(
+            session_id="s-a", user_message="second of a", agent_response="two", user_id="u-1"
+        )
+        await self._save_turn(
+            session_id="s-b", user_message="first of b", agent_response="one", user_id="u-2"
+        )
+
+        everyone = await self.store.list_sessions(app_id=self.app_id, limit=10)
+        mine = await self.store.list_sessions(app_id=self.app_id, limit=10, user_id="u-1")
+        nobody = await self.store.list_sessions(app_id=self.app_id, limit=10, user_id="u-9")
+
+        self.assertEqual([s["session_id"] for s in everyone], ["s-b", "s-a"])
+        self.assertEqual(everyone[0]["first_message"], "first of b")
+        self.assertEqual([s["session_id"] for s in mine], ["s-a"])
+        # The first turn's message, clipped.
+        self.assertTrue(mine[0]["first_message"].startswith("first of a xxx"))
+        self.assertEqual(len(mine[0]["first_message"]), 200)
+        self.assertEqual(mine[0]["turn_count"], 2)
+        self.assertEqual(nobody, [])
+
     async def test_session_rows_count_each_turn_once_and_page_by_activity(self) -> None:
         for session_id, tokens in [("s-1", 5), ("s-2", 1), ("s-1", 9), ("s-3", 2)]:
             await self._save_turn(

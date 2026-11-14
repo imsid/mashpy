@@ -369,11 +369,14 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 `GET /api/v1/agent/{agent_id}/sessions`
 - Lists the agent's most recently active sessions, newest first, each with
-  `session_id`, `turn_count`, `last_activity_at` and `session_total_tokens`.
+  `session_id`, `turn_count`, `last_activity_at`, `session_total_tokens` and
+  `first_message` (the first 200 characters of the session's first user
+  message).
 - Path params:
   - `agent_id`
 - Query params:
   - `limit` (default 50, at most 500)
+  - `user_id` optional: only that user's sessions
 - Returns `sessions` and `limit`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}`

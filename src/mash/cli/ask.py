@@ -29,6 +29,7 @@ def menu(
     options: Sequence[tuple[Any, str]],
     *,
     multiple: bool = False,
+    hint: str | None = None,
     style: BaseStyle | None = None,
     input: Any = None,
     output: Any = None,
@@ -83,7 +84,8 @@ def menu(
     def _leave(event: KeyPressEvent) -> None:
         event.app.exit(exception=EOFError())
 
-    hint = MULTIPLE_HINT if multiple else SINGLE_HINT
+    if hint is None:
+        hint = MULTIPLE_HINT if multiple else SINGLE_HINT
     layout = Layout(
         HSplit(
             [

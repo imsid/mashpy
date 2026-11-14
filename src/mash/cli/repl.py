@@ -51,6 +51,7 @@ from .render import (
     status_bar,
     tool_display,
 )
+from .sessions import PICKER_HINT, PICKER_LIMIT, session_options, session_title
 from .types import CLIContext
 from .views import (
     CANCELLED,
@@ -89,6 +90,10 @@ class Target:
     session_id: str
     user_id: str
     host_id: str | None = None
+    # The session has earlier turns: the REPL starts by showing the last two.
+    resumed: bool = False
+    # The session's first message, for the header line.
+    title: str = ""
 
 
 @dataclass(frozen=True)
@@ -168,6 +173,8 @@ class Repl:
         # The interaction being asked and the application asking it.
         self._asking: tuple[Interaction, Application[Any]] | None = None
         self._draft = ""
+        self._title = target.title
+        self._resumed = target.resumed
         self._exit_armed_at: float | None = None
         self._flash: tuple[str, float] | None = None
         self._session_tokens: int | None = None
@@ -1097,14 +1104,94 @@ class Repl:
     def _banner(self) -> None:
         ctx = self.context
         target = f"host {ctx.host_id}" if ctx.host_id else f"agent {ctx.agent_id}"
+        title = f" · {escape(clip(self._title, 40))}" if self._title else ""
         self.renderer.muted(
-            f"{self.app_name} · {ctx.user_id} · {target} · /help for commands"
+            f"{self.app_name} · {ctx.user_id} · {target}{title} · /help for commands"
+        )
+
+    # --- sessions -------------------------------------------------------------
+
+    async def _recap(self) -> None:
+        """Print the session's last two turns, dimmed."""
+        ctx = self.context
+        try:
+            turns = await asyncio.to_thread(
+                lambda: self.client.get_history(ctx.agent_id, ctx.session_id, limit=2)
+            )
+        except MashHostClientError as exc:
+            self.renderer.warn(f"Could not read the session's history: {exc}")
+            return
+        for turn in turns:
+            self.renderer.muted(escape(PROMPT + clip(str(turn.get("user_message") or ""), 200)))
+            answer = clip(str(turn.get("agent_response") or ""), 400)
+            if answer:
+                self.renderer.muted(escape(answer))
+        if turns:
+            self.renderer.print()
+
+    async def switch_session(
+        self, session_id: str, *, resumed: bool, title: str = ""
+    ) -> bool:
+        """Go on in another session, or a new one, without leaving the REPL."""
+        if self._foreground_task is not None:
+            self.renderer.error(
+                "A request is running in the foreground. Wait for it, or press "
+                "Ctrl-Z to send it to the background first."
+            )
+            return False
+        ctx = self.context
+        ctx.session_id = session_id
+        ctx.session_ids[ctx.agent_id] = session_id
+        ctx.last_request_id = None
+        self._title = title
+        self._session_tokens = None
+        self.last_parent = None
+        self.foreground = None
+        # Background requests are listed per session.
+        await self.watchers.close()
+        if resumed:
+            self._banner()
+            await self._recap()
+            await self.refresh_watchers()
+            await self._refresh_session_tokens()
+        else:
+            self.renderer.info("New session.")
+        self._invalidate()
+        return True
+
+    async def pick_session(self) -> None:
+        """``/resume``: choose one of the user's sessions and go on in it."""
+        ctx = self.context
+        sessions = await asyncio.to_thread(
+            lambda: self.client.list_sessions(
+                ctx.agent_id, user_id=ctx.user_id, limit=PICKER_LIMIT
+            )
+        )
+        if not sessions:
+            self.renderer.warn("No earlier sessions.")
+            return
+        app = menu(
+            session_options(sessions, current=ctx.session_id),
+            hint=PICKER_HINT,
+            style=self._style,
+            **self._terminal,
+        )
+        try:
+            session = await app.run_async()
+        except KeyboardInterrupt:
+            self.renderer.muted("Kept the current session.")
+            return
+        await self.switch_session(
+            str(session["session_id"]), resumed=True, title=session_title(session)
         )
 
     async def run_async(self) -> None:
         """Run the REPL until the user leaves."""
         with patch_stdout(raw=True):
             self._banner()
+            if self._resumed:
+                await self._recap()
+                await self._refresh_session_tokens()
             # A restarted REPL picks up the bg requests still running.
             await self.refresh_watchers()
             try:
