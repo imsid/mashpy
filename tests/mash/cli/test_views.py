@@ -94,6 +94,18 @@ def test_an_open_code_fence_stays_buffered_until_it_closes() -> None:
     assert split_complete_markdown("no boundary yet") == ("", "no boundary yet")
 
 
+def test_a_block_prints_once_the_next_one_starts_at_the_margin() -> None:
+    # A blank line alone is not a boundary yet: the next line may be indented.
+    assert split_complete_markdown("intro\n\n") == ("", "intro\n\n")
+    assert split_complete_markdown("intro\n\nNext") == ("intro\n", "Next")
+    # An indented line after a blank line belongs to the list item above it.
+    item = "1. First\n\n   More about the first\n\n   ```py\n   x = 1\n   ```"
+    assert split_complete_markdown(item) == ("", item)
+    done, rest = split_complete_markdown(item + "\n\n2. Second")
+    assert done == item + "\n"
+    assert rest == "2. Second"
+
+
 def test_chat_end_flushes_the_tail_and_counts_tokens_and_steps() -> None:
     v = view()
     apply(v, delta("The answer."))

@@ -104,22 +104,24 @@ async def build_context_with_history(
             app_id=self.app_id,
             turns=self.agent.config.conversation_history_turns,
         )
+        # A reply's ledger goes before the user message that follows it. In
+        # the reply itself the model reads it as its own writing and copies
+        # it into new replies. Only the model sees it: stored turns keep
+        # their text.
+        ledger_text = ""
         for turn in turns_to_include:
             meta = turn.get("metadata") or {}
             user_text = turn.get("user_message")
             if user_text and meta.get("type") != "summary_checkpoint":
                 context.add_message(
                     MessageRole.USER,
-                    user_text,
+                    _with_ledger(ledger_text, user_text),
                     source="history",
                     trace_id=turn.get("trace_id"),
                 )
+                ledger_text = ""
 
             agent_text = turn.get("agent_response")
-            # Only the model sees the ledger: the stored reply stays its text.
-            ledger_text = format_ledger(meta.get("ledger") or [])
-            if agent_text and ledger_text:
-                agent_text = f"{agent_text}\n\n{ledger_text}"
             if agent_text:
                 context.add_message(
                     MessageRole.ASSISTANT,
@@ -127,9 +129,18 @@ async def build_context_with_history(
                     source="history",
                     trace_id=turn.get("trace_id"),
                 )
+            turn_ledger = format_ledger(meta.get("ledger") or [])
+            if turn_ledger:
+                ledger_text = turn_ledger
+        if ledger_text:
+            message = _with_ledger(ledger_text, message)
 
     context.add_user_message(message)
     return context
+
+
+def _with_ledger(ledger_text: str, message: str) -> str:
+    return f"{ledger_text}\n\n{message}" if ledger_text else message
 
 
 def compute_turn_tokens(response_metadata: Dict[str, Any]) -> int:

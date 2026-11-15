@@ -27,6 +27,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.clipboard import Clipboard
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -39,7 +40,7 @@ from .background import BackgroundWatchers, Notice, list_rows, resolve_prefix, s
 from .client import MashHostClient, MashHostClientError
 from .command_log import RemoteCommandEventLogger
 from .commands import CLIContext, Command, CommandRegistry, ExitRepl
-from .input import PROMPT, InputLine, MenuEntry, history_path
+from .input import CONTINUATION, PROMPT, InputLine, MenuEntry, history_path
 from .render import (
     Fragments,
     OutputPrinter,
@@ -82,6 +83,8 @@ CHILD_DRAIN_SECONDS = 5.0
 # A second Ctrl-C within this many seconds of the first leaves the REPL.
 EXIT_CONFIRM_SECONDS = 2.0
 REFRESH_SECONDS = 0.1
+# At most this many redraws a second, however fast text streams.
+MAX_REDRAWS_PER_SECOND = 30
 
 
 @dataclass(frozen=True)
@@ -231,6 +234,12 @@ class Repl:
                 key_bindings=self._key_bindings(),
                 **self._terminal,
             )
+            app = self._input.session.app
+            # A sent line leaves the input; the REPL prints it when it is
+            # sent (a queued message, when its turn comes), so the live rows
+            # above the input never land in the scrollback with it.
+            app.erase_when_done = True
+            app.min_redraw_interval = 1 / MAX_REDRAWS_PER_SECOND
         return self._input
 
     @property
@@ -364,11 +373,35 @@ class Repl:
         except Exception:
             return 80
 
+    def _streaming(self, width: int) -> Fragments:
+        """The answer's unfinished block, drawn as it will print."""
+        view = self.foreground
+        if view is None or view.ended or not view.tail.strip():
+            return []
+        rendered = self.renderer.render_markdown(view.tail, width).rstrip("\n")
+        lines = rendered.split("\n")
+        try:
+            height = get_app().output.get_size().rows
+        except Exception:
+            height = 24
+        # Leave room for the rows, the input and the status bar.
+        room = max(3, height - 8 - len(view.children))
+        if len(lines) > room:
+            lines = lines[-room:]
+        gap = "\n" if self.renderer.gap_before_markdown() else ""
+        return to_formatted_text(ANSI(gap + "\n".join(lines) + "\n"))
+
     def _message(self) -> Fragments:
-        rows = live_rows(
+        try:
+            if get_app().is_done:
+                return []
+        except Exception:
+            pass
+        width = self._width()
+        rows = self._streaming(width) + live_rows(
             self.foreground,
             self.now(),
-            self._width(),
+            width,
             queued=self.queue,
             tool_lines=self.tool_lines,
         )
@@ -494,6 +527,7 @@ class Repl:
 
     async def _start(self, message: str) -> None:
         ctx = self.context
+        self.renderer.echo(message, PROMPT, CONTINUATION)
         request_id = await asyncio.to_thread(self.submit_message, ctx, message)
         view = RequestView(
             agent_id=ctx.agent_id,
@@ -1342,9 +1376,9 @@ class Repl:
                 text = line.strip()
                 if not text:
                     continue
-                self.renderer.muted(escape(PROMPT + text))
                 try:
                     if text.startswith("/"):
+                        self.renderer.echo(text, PROMPT, CONTINUATION)
                         await self.run_command(text)
                     else:
                         await self.send(text)
@@ -1398,6 +1432,7 @@ class Repl:
                     self._exit_armed_at = None
                     try:
                         if text.startswith("/"):
+                            self.renderer.echo(text, PROMPT, CONTINUATION)
                             await self.run_command(text)
                         else:
                             await self.send(text)

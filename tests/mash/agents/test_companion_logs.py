@@ -52,6 +52,8 @@ class _Router(LLMProvider):
             return _response("done")
         last = request.messages[-1]
         text = "".join(b.data.get("text", "") for b in last.content if b.type == "text")
+        # A follow-up starts with the ledger of the reply before it.
+        text = text.rsplit("</ledger>\n\n", 1)[-1]
         agent_id, prompt = text.split("|", 1)
         call = ToolCall(
             id="call-1", name="RunSubAgents",

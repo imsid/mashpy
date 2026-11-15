@@ -1,9 +1,10 @@
 """The ledger: what an agent's RunSubAgents and RunWorkflow calls returned.
 
 A turn's ``metadata["ledger"]`` holds one entry per ``RunSubAgents`` item and
-per ``RunWorkflow`` call the request made. Replay appends the entries to the
-turn's assistant message, so the agent sees which session or run produced
-each reply when it routes the next message.
+per ``RunWorkflow`` call the request made. Replay puts the entries at the top
+of the user message that follows the turn's reply, so the agent sees which
+session or run produced each reply when it routes the next message. They stay
+out of the reply itself, where the model would copy them into new replies.
 """
 
 from __future__ import annotations
@@ -145,8 +146,8 @@ def merge_ledgers(
 
 
 def format_ledger(entries: Iterable[Dict[str, Any]]) -> str:
-    """The ``[ledger]`` block replay appends to a turn's assistant message."""
-    lines = ["[ledger]"]
+    """The ``<ledger>`` block replay puts before the user message after a reply."""
+    lines = ["<ledger>", "Agent runs behind your previous reply, recorded by the system:"]
     for entry in entries:
         if entry.get("workflow_id"):
             head = f"- workflow {entry.get('workflow_id')}  run {entry.get('run_id')}"
@@ -158,7 +159,10 @@ def format_ledger(entries: Iterable[Dict[str, Any]]) -> str:
         lines.append(head)
         lines.append(f"  asked: {json.dumps(entry.get('asked') or '', ensure_ascii=False)}")
         lines.append(f"  got: {json.dumps(entry.get('got') or '', ensure_ascii=False)}")
-    return "\n".join(lines) if len(lines) > 1 else ""
+    if len(lines) == 2:
+        return ""
+    lines.append("</ledger>")
+    return "\n".join(lines)
 
 
 __all__ = ["build_ledger", "format_ledger", "merge_ledgers"]

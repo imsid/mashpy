@@ -688,6 +688,29 @@ def test_a_workflow_calls_row_shows_the_step_its_run_is_on() -> None:
     assert "Exported." in out
 
 
+def test_the_unfinished_block_is_drawn_above_the_live_row() -> None:
+    host = FakeHost()
+    gate = Gate()
+    host.script("r-1", delta("Done paragraph.\n\nStill wri"), gate, delta("ting."),
+                chat_end("response"), completed("Done paragraph.\n\nStill writing."))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("go" + ENTER)
+        await d.until(lambda: d.repl.running() and d.repl.foreground.tail == "Still wri")
+        live = "".join(text for _, text in d.repl._message())
+        assert live.index("Still wri") < live.index("answering")
+        assert "Done paragraph." not in live
+        gate.open()
+        await d.idle()
+
+    out = run(script, host).output
+    # The message is printed once, when it is sent, then each block once.
+    assert out.count("› go") == 1
+    assert out.count("Done paragraph.") == 1
+    assert out.count("Still writing.") == 1
+    assert out.index("› go") < out.index("Done paragraph.") < out.index("Still writing.")
+
+
 def test_a_workflow_run_that_cannot_be_read_leaves_the_request_alone() -> None:
     host = FakeHost()
     gate = _workflow_script(host, [MashHostClientError("stream broke")])
