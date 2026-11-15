@@ -114,15 +114,27 @@ class RequestRollupTests(unittest.IsolatedAsyncioTestCase):
         done: bool = True,
         host_id: str | None = None,
         workflow_id: str | None = None,
+        parent: str | None = None,
+        model: str | None = None,
     ) -> None:
         common = {"agent": agent, "session": session}
-        await self._event(request, ACCEPTED, created_at=at, dedupe="request.accepted", **common)
+        await self._event(
+            request,
+            ACCEPTED,
+            created_at=at,
+            dedupe="request.accepted",
+            payload={"parent_request_id": f"{self.tag}-{parent}"} if parent else None,
+            **common,
+        )
+        chat = _usage(*tokens)
+        if model:
+            chat["attributes"]["gen_ai.request.model"] = model
         await self._event(
             request,
             CHAT_END,
             created_at=at + 1,
             dedupe="chat.end.0",
-            payload=_usage(*tokens),
+            payload=chat,
             host_id=host_id,
             workflow_id=workflow_id,
             **common,
@@ -222,13 +234,46 @@ class RequestRollupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"{self.tag}-s2", [s["session_id"] for s in by_workflow["sessions"]])
         self.assertNotIn(f"{self.tag}-s1", [s["session_id"] for s in by_workflow["sessions"]])
 
-        self.assertEqual(
-            await self.store.session_usage(f"{self.tag}-s1"),
-            {"total_tokens": 30, "cache_read_tokens": 0, "cache_write_tokens": 0},
+        usage = await self.store.session_usage(f"{self.tag}-s1")
+        self.assertEqual(usage["total_tokens"], 30)
+        self.assertEqual(usage["request_count"], 2)
+        self.assertEqual(usage["subagent_count"], 0)
+        empty = await self.store.session_usage(f"{self.tag}-none")
+        self.assertEqual(empty["total_tokens"], 0)
+        self.assertEqual(empty["agents"], [])
+
+    async def test_session_usage_counts_the_subagent_runs_it_started(self) -> None:
+        await self._request("p1", agent="companion", at=100.0, tokens=(10, 2), model="m-small")
+        await self._request(
+            "c1", agent="research", session="c-s1", at=101.0, tokens=(40, 8),
+            parent="p1", model="m-large",
         )
+        await self._request(
+            "c2", agent="research", session="c-s2", at=102.0, tokens=(20, 4),
+            parent="p1", model="m-large",
+        )
+        await self._request(
+            "c3", agent="code", session="c-s3", at=103.0, tokens=(5, 1), parent="p1",
+            model="m-code",
+        )
+        # Another session's child is not this session's.
+        await self._request("p2", agent="companion", session="s2", at=200.0, tokens=(1, 1))
+        await self._request(
+            "c4", agent="research", session="c-s4", at=201.0, tokens=(99, 99), parent="p2"
+        )
+
+        usage = await self.store.session_usage(f"{self.tag}-s1")
+        self.assertEqual(usage["total_tokens"], 12 + 48 + 24 + 6)
+        self.assertEqual(usage["request_count"], 1)
+        self.assertEqual(usage["subagent_count"], 3)
         self.assertEqual(
-            await self.store.session_usage(f"{self.tag}-none"),
-            {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0},
+            [(a["agent_id"], a["models"], a["request_count"], a["subagent_count"],
+              a["input_tokens"], a["output_tokens"]) for a in usage["agents"]],
+            [
+                (self._agent("companion"), ["m-small"], 1, 0, 10, 2),
+                (self._agent("research"), ["m-large"], 0, 2, 60, 12),
+                (self._agent("code"), ["m-code"], 0, 1, 5, 1),
+            ],
         )
 
     async def test_migration_backfills_the_rollup_from_the_log(self) -> None:

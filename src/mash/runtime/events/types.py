@@ -193,3 +193,33 @@ def accepted_request(event: RuntimeEvent) -> Optional[AcceptedRequest]:
             else None
         ),
     )
+
+
+def usage_totals(agents: list[dict[str, Any]]) -> dict[str, Any]:
+    """A session's usage: its per-agent rows, ordered, and their sums.
+
+    Agents the session's own requests ran come first, then subagents by
+    tokens, most first.
+    """
+    agents = sorted(
+        agents,
+        key=lambda a: (
+            a["request_count"] == 0,
+            -(a["input_tokens"] + a["output_tokens"]),
+            a["agent_id"],
+        ),
+    )
+
+    def total(key: str) -> int:
+        return sum(int(agent[key]) for agent in agents)
+
+    return {
+        "request_count": total("request_count"),
+        "subagent_count": total("subagent_count"),
+        "input_tokens": total("input_tokens"),
+        "output_tokens": total("output_tokens"),
+        "total_tokens": total("input_tokens") + total("output_tokens"),
+        "cache_read_tokens": total("cache_read_tokens"),
+        "cache_write_tokens": total("cache_write_tokens"),
+        "agents": agents,
+    }

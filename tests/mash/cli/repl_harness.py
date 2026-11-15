@@ -172,7 +172,6 @@ class FakeHost:
         self.agents: list[dict[str, Any]] = []
         self.tools: list[dict[str, Any]] = []
         self.skills: list[dict[str, Any]] = []
-        self.usage: list[dict[str, Any]] = []
         # None: the deployment has no Cortex, or no browsers.
         self.cortex: dict[str, Any] | None = None
         self.browser_sites: list[dict[str, Any]] | None = None
@@ -292,10 +291,6 @@ class FakeHost:
 
     def list_skills(self):
         return list(self.skills)
-
-    def get_usage(self, agent_id, *, session_id=None, from_ts=None, bucket="day"):
-        self.calls.append(("get_usage", (agent_id, from_ts)))
-        return list(self.usage)
 
     def _cortex(self):
         if self.cortex is None:

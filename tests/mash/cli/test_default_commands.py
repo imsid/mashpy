@@ -155,25 +155,61 @@ def test_tools_says_when_there_are_none() -> None:
 # --- /usage --------------------------------------------------------------------
 
 
-def test_usage_shows_the_session_and_today() -> None:
+def test_usage_shows_each_agent_and_the_subagents_it_ran() -> None:
     host = FakeHost()
-    host.session = {"total_tokens": 12_300, "cache_read_tokens": 8000, "cache_write_tokens": 900}
-    host.usage = [
-        {"request_count": 2, "input_tokens": 30_000, "output_tokens": 1500},
-        {"request_count": 3, "input_tokens": 10_000, "output_tokens": 600},
-    ]
-    out, host = say("/usage", host=host)
-    assert "This session: 12k tokens (cache: 8.0k read, 900 written)" in out
-    assert "Today, primary: 5 requests · 40k in · 2.1k out" in out
-    # Today starts at local midnight.
-    import time
-    from datetime import datetime
+    host.session = {
+        "usage": {
+            "request_count": 2,
+            "subagent_count": 3,
+            "total_tokens": 61_800,
+            "input_tokens": 58_000,
+            "output_tokens": 3800,
+            "cache_read_tokens": 30_000,
+            "cache_write_tokens": 900,
+            "agents": [
+                {"agent_id": "companion", "models": ["claude-haiku-4-5"],
+                 "request_count": 2, "subagent_count": 0, "input_tokens": 8000,
+                 "output_tokens": 800, "cache_read_tokens": 6000, "cache_write_tokens": 0},
+                {"agent_id": "research", "models": ["claude-sonnet-4-6"],
+                 "request_count": 0, "subagent_count": 3, "input_tokens": 50_000,
+                 "output_tokens": 3000, "cache_read_tokens": 24_000,
+                 "cache_write_tokens": 900},
+            ],
+        }
+    }
+    out, _ = say("/usage", host=host)
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    assert "2 requests · 3 subagent runs · 62k tokens" in lines
+    assert any(
+        line.split() == ["companion", "claude-haiku-4-5", "2", "8.0k", "800", "6.0k", "0"]
+        for line in lines
+    )
+    assert any(
+        line.split() == ["↳", "research", "claude-sonnet-4-6", "3", "50k", "3.0k", "24k", "900"]
+        for line in lines
+    )
+    assert any(
+        line.split() == ["Total", "5", "58k", "3.8k", "30k", "900"] for line in lines
+    )
+    assert "Today" not in out
 
-    [(_, (agent_id, from_ts))] = [call for call in host.calls if call[0] == "get_usage"]
-    midnight = datetime.fromtimestamp(from_ts)
-    assert agent_id == "primary"
-    assert (midnight.hour, midnight.minute, midnight.second) == (0, 0, 0)
-    assert 0 <= time.time() - from_ts < 86400 + 3600
+
+def test_usage_of_one_agent_has_no_total_row() -> None:
+    host = FakeHost()
+    host.session = {
+        "usage": {
+            "request_count": 1, "subagent_count": 0, "total_tokens": 1200,
+            "agents": [
+                {"agent_id": "primary", "models": ["gpt-5"], "request_count": 1,
+                 "subagent_count": 0, "input_tokens": 1000, "output_tokens": 200,
+                 "cache_read_tokens": 0, "cache_write_tokens": 0},
+            ],
+        }
+    }
+    out, _ = say("/usage", host=host)
+    assert "1 request · 1.2k tokens" in out
+    assert "subagent" not in out
+    assert "Total" not in out
 
 
 # --- /memory -------------------------------------------------------------------

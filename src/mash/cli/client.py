@@ -394,29 +394,6 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def get_usage(
-        self,
-        agent_id: str,
-        *,
-        session_id: str | None = None,
-        from_ts: float | None = None,
-        bucket: str = "day",
-    ) -> list[dict[str, Any]]:
-        """The agent's token usage in ``hour`` or ``day`` buckets."""
-        query = {
-            key: value
-            for key, value in (
-                ("agent_id", agent_id),
-                ("session_id", session_id),
-                ("from_ts", from_ts),
-                ("bucket", bucket),
-            )
-            if value is not None
-        }
-        response = self._request("GET", "/api/v1/telemetry/usage", query=query)
-        buckets = response.json()["data"].get("buckets")
-        return buckets if isinstance(buckets, list) else []
-
     def list_tools(self) -> list[dict[str, Any]]:
         """The pool's tools, each as ``{"tool", "agents"}``."""
         tools = self._request("GET", "/api/v1/tools").json()["data"].get("tools")

@@ -266,7 +266,7 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.list_thought_traces(self._pool, app_id, limit=limit, trace_id=trace_id)
 
-    async def session_usage(self, session_id: str) -> dict[str, int]:
+    async def session_usage(self, session_id: str) -> dict[str, Any]:
         await self.open()
         return await loaders.session_usage(self._pool, session_id)
 

@@ -19,6 +19,7 @@ from mash.runtime.events.types import (
     accepted_request,
     accepted_user_id,
     event_attributes,
+    usage_totals,
 )
 from mash.workflows.store import WorkflowStepEventRecord
 
@@ -542,18 +543,57 @@ class _TestRuntimeStore:
         )
         return summaries[: max(1, int(limit))]
 
-    async def session_usage(self, session_id: str) -> dict[str, int]:
+    async def session_usage(self, session_id: str) -> dict[str, Any]:
         async with self._lock:
-            events = [e for e in self._events if e.session_id == session_id]
-        totals = {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+            states = dict(self._request_state)
+            events = list(self._events)
+        tree = {rid for rid, state in states.items() if state.session_id == session_id}
+        while True:
+            more = {
+                rid
+                for rid, state in states.items()
+                if state.parent_request_id in tree and rid not in tree
+            }
+            if not more:
+                break
+            tree |= more
+        agents: dict[str, dict[str, Any]] = {}
+
+        def row(agent_id: str) -> dict[str, Any]:
+            return agents.setdefault(
+                agent_id,
+                {
+                    "agent_id": agent_id,
+                    "models": [],
+                    "request_count": 0,
+                    "subagent_count": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                },
+            )
+
+        for rid in tree:
+            state = states[rid]
+            key = "subagent_count" if state.parent_request_id else "request_count"
+            row(state.agent_id or "")[key] += 1
         for event in events:
+            if event.request_id not in tree:
+                continue
             if event.event_type != RuntimeEventType.CHAT_END.value:
                 continue
-            usage = semconv.token_usage(event_attributes(event.payload))
-            totals["total_tokens"] += usage["input"] + usage["output"]
-            totals["cache_read_tokens"] += usage["cache_read"]
-            totals["cache_write_tokens"] += usage["cache_write"]
-        return totals
+            entry = row(states[event.request_id].agent_id or "")
+            attributes = event_attributes(event.payload)
+            usage = semconv.token_usage(attributes)
+            entry["input_tokens"] += usage["input"]
+            entry["output_tokens"] += usage["output"]
+            entry["cache_read_tokens"] += usage["cache_read"]
+            entry["cache_write_tokens"] += usage["cache_write"]
+            model = attributes.get(semconv.GEN_AI_REQUEST_MODEL)
+            if model and model not in entry["models"]:
+                entry["models"] = sorted([*entry["models"], str(model)])
+        return usage_totals(list(agents.values()))
 
     async def list_sessions(
         self,
