@@ -411,6 +411,18 @@ def test_agent_scoped_request_and_session_routes() -> None:
             assert listed["limit"] == 50
             newest = client.get("/api/v1/agent/primary/sessions", params={"limit": 1})
             assert [s["session_id"] for s in newest.json()["data"]["sessions"]] == ["s2"]
+            # Each row carries the session's first message, and user_id
+            # keeps only that user's sessions.
+            assert [s["first_message"] for s in listed["sessions"]] == ["again", "hello"]
+            other = client.post(
+                "/api/v1/agent/primary/request",
+                json={"message": "mine", "session_id": "s3", "user_id": "u-2"},
+            )
+            _collect_terminal_response(client, "primary", other.json()["data"]["request_id"])
+            mine = client.get("/api/v1/agent/primary/sessions", params={"user_id": "u-2"})
+            assert [s["session_id"] for s in mine.json()["data"]["sessions"]] == ["s3"]
+            theirs = client.get("/api/v1/agent/primary/sessions", params={"user_id": "u-1"})
+            assert [s["session_id"] for s in theirs.json()["data"]["sessions"]] == ["s2", "s1"]
 
             history = client.get("/api/v1/agent/primary/sessions/s1/history")
             assert history.status_code == 200
@@ -636,6 +648,55 @@ def test_async_request_stream_and_auth() -> None:
                             break
                 assert "request.accepted" in names
                 assert names[-1] == "request.completed"
+
+
+def _read_sse(stream) -> list[tuple[int | None, str]]:
+    """(id, event name) for each frame of an events stream, to its terminal frame."""
+    frames: list[tuple[int | None, str]] = []
+    seq: int | None = None
+    name = None
+    for line in stream.iter_lines():
+        text = line if isinstance(line, str) else line.decode("utf-8")
+        if text.startswith("id:"):
+            seq = int(text.split(":", 1)[1].strip())
+        elif text.startswith("event:"):
+            name = text.split(":", 1)[1].strip()
+        elif text.startswith("data:") and name:
+            frames.append((seq, name))
+            if name in {"request.completed", "request.error", "request.cancelled"}:
+                break
+            seq, name = None, None
+    return frames
+
+
+def test_request_events_carry_ids_and_start_after_a_cursor() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        with _build_test_client(Path(tmp)) as client:
+            submitted = client.post(
+                "/api/v1/agent/research/request",
+                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
+            )
+            request_id = submitted.json()["data"]["request_id"]
+            url = f"/api/v1/agent/research/request/{request_id}/events"
+
+            with client.stream("GET", url) as stream:
+                frames = _read_sse(stream)
+            ids = [seq for seq, _ in frames]
+            assert frames[-1][1] == "request.completed"
+            assert all(isinstance(seq, int) for seq in ids)
+            assert ids == sorted(set(ids))
+            assert len(frames) >= 3
+
+            # A reader that has the first two events gets the rest, once.
+            with client.stream("GET", url, params={"after": ids[1]}) as stream:
+                rest = _read_sse(stream)
+            assert rest == frames[2:]
+
+            # The last event's seq as the cursor: nothing is left to send.
+            with client.stream("GET", url, params={"after": ids[-1]}) as stream:
+                assert _read_sse(stream) == []
+
+            assert client.get(url, params={"after": -1}).status_code == 422
 
 
 def test_same_session_overlap_completes_without_waiting_event() -> None:

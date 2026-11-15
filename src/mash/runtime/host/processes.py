@@ -171,7 +171,7 @@ class AgentProcessProvider:
 
     def _argv(self, child: _Child) -> list[str]:
         return [
-            sys.executable, "-m", "mash.cli.main", "agent", "serve",
+            sys.executable, "-m", "mash.cli", "agent", "serve",
             "--host-app", self._host_app,
             "--agent", child.agent_id,
             "--host", "127.0.0.1",

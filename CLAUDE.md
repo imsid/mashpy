@@ -168,6 +168,25 @@ mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
 mash repl --agent assistant
 ```
 
+For a script, `mash run` submits one request, prints its answer on stdout and
+exits:
+
+```bash
+mash run --agent assistant "summarize yesterday's errors"
+```
+
+## App Clients
+
+Ship a branded terminal client with `from mash.cli import App`. Construct
+`App(name="fudge", default_host="fudge", default_base_url="http://localhost:8001",
+env_prefix="FUDGE", default_user=getpass.getuser)` and return `app.main()`
+from the project's console entrypoint. It opens the REPL with no command and
+also provides `run`, `workflow`, `sessions` and `status`. Use `default_agent`
+for a bare agent. `commands`, `theme`, `tool_lines` and `workflow_renderers`
+customize it; operator commands are off by default. See the CLI README for
+connection precedence and examples. The entrypoint is `mash.cli.app:main`;
+`python -m mash.cli` runs it as a module.
+
 ## Minimal Workflow-Only Scaffold
 
 A pool needs no user agents. A workflow of pure `CodeStep`s deploys the same
@@ -205,7 +224,8 @@ def build_pool():
 ```
 
 Run it the same way, then start runs over the API
-(`POST /api/v1/workflow/export/run`) or the CLI. `mash workflows` lists the
+(`POST /api/v1/workflow/export/run`) or the CLI
+(`mash workflow run export --input '{"table": "bills"}'`). `mash workflows` lists the
 deployment's workflows.
 
 ## AgentSpec Contract
@@ -645,6 +665,9 @@ input schema. The companion runs one with
 `RunWorkflow(workflow_id, input, timeout_seconds)`, which starts a run for the
 request's user through the host's `/h2a` relay and waits for its result. On a
 timeout it returns `timed_out` with the `run_id`, and the run keeps going.
+The REPL shows the step the run is on, and `/subagent` lists the last
+request's children, shows one (`/subagent 2`) or cancels one
+(`/subagent cancel 2`).
 
 The companion reads what its agents did with three tools, each keyed by an
 `agent_id` with a `session_id` and/or `trace_id` from its ledger:
@@ -756,15 +779,17 @@ In the REPL:
 
 ```bash
 › /bg set a timer for 2 mins     # submit in the background, back to the prompt
-› /bg --list                     # the session's bg requests
-› /bg --switch a1b2c3d4          # bring one to the foreground, replay and follow it
-› /bg --kill a1b2c3d4            # cancel it and its children
+› /bg list                       # the session's bg requests
+› /bg switch a1b2c3d4            # bring one to the foreground, replay and follow it
+› /bg kill a1b2c3d4              # cancel it and its children
 ```
 
-Ctrl-Z while a request streams sends it to the background. Ids are the first
-8 characters of the request id, and any unique prefix works. While the prompt
-is idle, the REPL prints when each `bg` request you started is done, fails,
-is cancelled or needs input (`/bg --switch` to answer).
+Ctrl-Z while a request runs sends it to the background. Ids are the first
+8 characters of the request id, and any unique prefix works. The REPL prints
+when each `bg` request you started is done, fails, is cancelled or needs
+input (`/bg switch` to answer). The input stays open while a request runs:
+a message sent then is queued, Ctrl-C cancels the request, and Ctrl-O shows
+each model step and each child's tool calls.
 
 ## Workflows
 
@@ -826,7 +851,8 @@ pool = (
   user's sandbox. A resumed run keeps its user.
 - Run, resume, inspect, and stream over the API (`POST /workflow/{id}/run`,
   `.../runs/{run_id}/resume`, `.../runs/{run_id}`, `.../runs/{run_id}/events`) or
-  the REPL (`/workflow run|status|resume`, which runs for the connection's user).
+  the REPL (`/workflow run|status|resume`, which runs for the connection's user)
+  or the shell (`mash workflow run|status|resume`).
 
 ## Cortex (User Memory)
 

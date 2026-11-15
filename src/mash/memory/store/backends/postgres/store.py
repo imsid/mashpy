@@ -16,6 +16,9 @@ from ...protocol import MemoryStore
 import asyncio
 
 
+# A session row carries this much of the session's first user message.
+FIRST_MESSAGE_CHARS = 200
+
 class PostgresStore(MemoryStore):
     """Async Postgres-backed conversation store with signals."""
 
@@ -629,19 +632,42 @@ class PostgresStore(MemoryStore):
             for row in rows
         ]
 
-    async def list_sessions(self, app_id: str, *, limit: int) -> List[Dict[str, Any]]:
+    async def list_sessions(
+        self, app_id: str, *, limit: int, user_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        params: List[Any] = [app_id]
+        user_filter = ""
+        if user_id is not None:
+            # A session belongs to the user of its turns.
+            user_filter = """
+                  AND EXISTS (
+                      SELECT 1 FROM memory_turns AS u
+                      WHERE u.session_id = s.session_id
+                        AND u.app_id = s.app_id
+                        AND u.user_id = %s
+                  )"""
+            params.append(user_id)
+        params.append(int(limit))
         await self.open()
         async with self._pool.connection() as conn:
             rows = await self._fetchall(
                 conn,
-                """
-                SELECT session_id, turn_count, last_activity_at, session_total_tokens
-                FROM memory_session
-                WHERE app_id = %s
-                ORDER BY last_activity_at DESC, session_id ASC
+                f"""
+                SELECT s.session_id, s.turn_count, s.last_activity_at,
+                       s.session_total_tokens,
+                       (
+                           SELECT LEFT(t.user_message, {FIRST_MESSAGE_CHARS})
+                           FROM memory_turns AS t
+                           WHERE t.session_id = s.session_id AND t.app_id = s.app_id
+                           ORDER BY t.created_at ASC, t.trace_id ASC
+                           LIMIT 1
+                       ) AS first_message
+                FROM memory_session AS s
+                WHERE s.app_id = %s{user_filter}
+                ORDER BY s.last_activity_at DESC, s.session_id ASC
                 LIMIT %s
                 """,
-                (app_id, int(limit)),
+                params,
             )
 
         return [
@@ -650,6 +676,7 @@ class PostgresStore(MemoryStore):
                 "turn_count": int(row["turn_count"] or 0),
                 "last_activity_at": float(row["last_activity_at"] or 0.0),
                 "session_total_tokens": int(row["session_total_tokens"] or 0),
+                "first_message": str(row["first_message"] or ""),
             }
             for row in rows
         ]

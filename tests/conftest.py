@@ -846,10 +846,14 @@ class _TestMemoryStore:
             rows = rows[-limit:]
         return rows
 
-    async def list_sessions(self, app_id: str, *, limit: int) -> list[dict[str, Any]]:
+    async def list_sessions(
+        self, app_id: str, *, limit: int, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         for t in self._turns:
             if t["app_id"] != app_id:
+                continue
+            if user_id is not None and t.get("user_id") != user_id:
                 continue
             row = seen.setdefault(
                 t["session_id"],
@@ -858,6 +862,7 @@ class _TestMemoryStore:
                     "turn_count": 0,
                     "last_activity_at": 0.0,
                     "session_total_tokens": 0,
+                    "first_message": str(t.get("user_message") or "")[:200],
                 },
             )
             row["turn_count"] += 1

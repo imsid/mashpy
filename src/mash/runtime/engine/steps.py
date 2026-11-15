@@ -123,6 +123,14 @@ def _tool_start_payload(tool_call: ToolCall) -> dict[str, Any]:
                 }
                 for index, item in enumerate(items)
             ]
+    elif tool_call.name == "RunWorkflow":
+        # The run's id is the host's to assign, but its dedup key is fixed by
+        # this call's position, so a reader can find the run and follow its
+        # steps while the call runs.
+        prefix = get_subagent_id_prefix()
+        workflow_id = str((tool_call.arguments or {}).get("workflow_id") or "").strip()
+        if prefix and workflow_id:
+            payload["workflow_run"] = {"workflow_id": workflow_id, "dedup_key": prefix}
     return payload
 
 

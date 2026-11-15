@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from mash.cli.client import MashHostClient
 from mash.cli.config import load_config
 from mash.cli.render import RichRenderer
-from mash.cli.shell import MashRemoteShell, ShellTarget
+from mash.cli.session import Repl, Target
 
 from . import store
 from .catalog.agents.pilot import PILOT_AGENT_ID
@@ -233,17 +233,16 @@ def _run_repl(
     user_id = args.user_id or (saved.user_id if saved else None)
     if not user_id:
         raise ValueError("a user id is required. Use --user-id or `mash connect --user-id`.")
-    target = ShellTarget(
+    target = Target(
         api_base_url=base_url,
         agent_id=agent_id,
-        session_id=args.session_id or MashRemoteShell.new_session_id(),
+        session_id=args.session_id or Repl.new_session_id(),
         user_id=user_id,
         host_id=host_id,
     )
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3
     # (default_commands reads ctx.host_id).
-    shell = MashRemoteShell(client, target)
-    shell.run()
+    Repl(client, target, app_name="pilot").run()
     return 0
 
 

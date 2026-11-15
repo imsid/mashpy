@@ -52,7 +52,7 @@ An agent process starts, follows, answers and cancels its `RunSubAgents` childre
 
 `POST /h2a/workflow/{workflow_id}/run`
 - Body: `{parent: {request_id}, input, dedup_key?}`. Sent by `RunWorkflow` with the agent's token.
-- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's user. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another.
+- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's user. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another. The call's `execute_tool.start` event carries `workflow_run: {workflow_id, dedup_key}`, so a client following the request can find the run in `GET /workflow/{workflow_id}/runs` and read its events.
 - Returns `{run_id, workflow_id, status, result, error}` with `202`. An input the workflow's `input_model` refuses is `422 INVALID_INPUT` with the validation errors in `error.details`.
 
 `GET /h2a/workflow/{workflow_id}/runs/{run_id}?parent_request_id=`
@@ -258,8 +258,13 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Path params:
   - `agent_id`
   - `request_id`
+- Query params:
+  - `after` (optional, default `0`): the `id` of the last event the reader
+    has. The stream starts at the next event. A reader that lost its
+    connection passes the last `id` it saw and misses or repeats nothing.
 - Response type: `text/event-stream`
 - Emits runtime events with:
+  - `id: <seq>`, the event's place in the request's stream, starting at 1
   - `event: <event_name>`
   - `data: <json payload>`
 - Streamed token output arrives as `event: agent.trace` frames whose
@@ -364,11 +369,14 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 `GET /api/v1/agent/{agent_id}/sessions`
 - Lists the agent's most recently active sessions, newest first, each with
-  `session_id`, `turn_count`, `last_activity_at` and `session_total_tokens`.
+  `session_id`, `turn_count`, `last_activity_at`, `session_total_tokens` and
+  `first_message` (the first 200 characters of the session's first user
+  message).
 - Path params:
   - `agent_id`
 - Query params:
   - `limit` (default 50, at most 500)
+  - `user_id` optional: only that user's sessions
 - Returns `sessions` and `limit`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}`

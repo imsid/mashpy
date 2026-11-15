@@ -5,15 +5,37 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Protocol
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Dict, List, Optional, Protocol, Union
 
 from mash.logging.events import CommandEvent
 
-if TYPE_CHECKING:
-    from .types import CLIContext
+from .client import MashHostClient
+from .render import RichRenderer
 
-CommandHandler = Callable[["CLIContext", List[str]], None]
+
+@dataclass
+class CLIContext:
+    """Context for CLI operations."""
+
+    api_base_url: str
+    agent_id: str
+    session_id: str
+    user_id: str
+    client: MashHostClient
+    renderer: RichRenderer
+    session_ids: Dict[str, str] = field(default_factory=dict)
+    host_id: str | None = None
+    last_request_id: str | None = None
+
+# A handler is a plain function, which the REPL runs in a worker thread so a
+# slow host call never freezes the input, or a coroutine function, which runs
+# on the REPL's event loop and may follow streams and ask the user things.
+CommandHandler = Callable[["CLIContext", List[str]], Union[None, Awaitable[None]]]
+
+
+class ExitRepl(Exception):
+    """Raised by a command to leave the REPL."""
 
 
 class SupportsCommandEventLogger(Protocol):
@@ -31,6 +53,8 @@ class Command:
     help: str
     handler: CommandHandler
     aliases: tuple[str, ...] = ()
+    # The heading /help lists the command under; "" lists it under "More".
+    group: str = ""
 
 
 class CommandRegistry:
@@ -125,7 +149,7 @@ class CommandRegistry:
         """
         return sorted(self._commands.values(), key=lambda c: c.name)
 
-    def execute(self, ctx: CLIContext, line: str) -> bool:
+    async def execute(self, ctx: CLIContext, line: str) -> bool:
         """Execute a command if the line is a command.
 
         Args:
@@ -166,14 +190,17 @@ class CommandRegistry:
                 CommandEvent(
                     event_type="command.start",
                     app_id=self._app_id,
-                    session_id=self._session_id,
+                    session_id=getattr(ctx, "session_id", None) or self._session_id,
                     command_name=command_name,
                     args=args_str,
                 )
             )
 
         try:
-            command.handler(ctx, args)
+            if inspect.iscoroutinefunction(command.handler):
+                await command.handler(ctx, args)
+            else:
+                await asyncio.to_thread(command.handler, ctx, args)
 
             # Log command completion
             if self._event_logger:
@@ -181,11 +208,13 @@ class CommandRegistry:
                     CommandEvent(
                         event_type="command.complete",
                         app_id=self._app_id,
-                        session_id=self._session_id,
+                        session_id=getattr(ctx, "session_id", None) or self._session_id,
                         command_name=command_name,
                         duration_ms=int((time.time() - start_time) * 1000),
                     )
                 )
+        except ExitRepl:
+            raise
         except Exception as e:
             ctx.renderer.error(f"Command failed: {str(e)}")
 
@@ -195,7 +224,7 @@ class CommandRegistry:
                     CommandEvent(
                         event_type="command.error",
                         app_id=self._app_id,
-                        session_id=self._session_id,
+                        session_id=getattr(ctx, "session_id", None) or self._session_id,
                         command_name=command_name,
                         error=str(e),
                         duration_ms=int((time.time() - start_time) * 1000),

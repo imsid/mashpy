@@ -412,6 +412,11 @@ scaffolding from the REPL.
 
 ## Documentation
 
+An app can ship its own terminal client with `mash.cli.App`: set its name,
+default host or agent, deployment URL and user, then expose `app.main` as a
+console entrypoint. It includes the live REPL and one-shot commands. See the
+[CLI README](src/mash/cli/README.md#ship-your-own-client) for the app kit.
+
 - [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
 - [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
 - [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem

@@ -94,6 +94,7 @@ class AgentClientLike(Protocol):
         request_id: str,
         *,
         timeout: Optional[float] = None,
+        after: int = 0,
     ) -> AsyncIterator[Dict[str, Any]]: ...
 
     async def get_request_status(
@@ -442,7 +443,12 @@ class AgentClient:
         request_id: str,
         *,
         timeout: Optional[float] = None,
+        after: int = 0,
     ) -> AsyncIterator[Dict[str, Any]]:
+        """Yield the request's events after seq ``after`` (0: from the first).
+
+        Each event carries ``seq`` when the agent sent one.
+        """
         headers = dict(self._headers)
         headers["Accept"] = "text/event-stream"
         # No read timeout by default: a stream is quiet while the request
@@ -460,6 +466,7 @@ class AgentClient:
                 async with client.stream(
                     "GET",
                     self._request_stream_url(request_id),
+                    params={"after": int(after)} if after else None,
                     headers=headers,
                     timeout=timeout_config,
                 ) as response:
@@ -472,6 +479,7 @@ class AgentClient:
                         )
 
                     event_name: Optional[str] = None
+                    event_seq: Optional[int] = None
                     data_lines: list[str] = []
                     async for line in response.aiter_lines():
                         if line is None:
@@ -480,11 +488,18 @@ class AgentClient:
                         if not stripped:
                             parsed = self._parse_raw_event(event_name, data_lines)
                             if parsed is not None:
+                                if event_seq is not None:
+                                    parsed["seq"] = event_seq
                                 yield parsed
                             event_name = None
+                            event_seq = None
                             data_lines = []
                             continue
                         if stripped.startswith(":"):
+                            continue
+                        if stripped.startswith("id:"):
+                            raw_seq = stripped[3:].strip()
+                            event_seq = int(raw_seq) if raw_seq.isdigit() else None
                             continue
                         if stripped.startswith("event:"):
                             event_name = stripped[6:].strip()

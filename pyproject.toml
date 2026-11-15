@@ -27,10 +27,10 @@ dependencies = [
   "pydantic>=2.0",
   "psycopg[binary]>=3.2.0",
   "psycopg_pool>=3.2.0",
-  "prompt_toolkit>=3.0.36",
+  "prompt_toolkit>=3.0.52",
+  "pyperclip>=1.9.0",
   "python-dotenv>=1.0.0",
   "PyYAML>=6.0.2",
-  "requests>=2.31.0",
   "rich>=13.7.1",
   "starlette>=0.52.0",
   "tomli>=2.0.1; python_version < '3.11'",
@@ -46,7 +46,7 @@ Issues = "https://github.com/imsid/mashpy/issues"
 Changelog = "https://github.com/imsid/mashpy/blob/main/CHANGELOG.md"
 
 [project.scripts]
-mash = "mash.cli.main:main"
+mash = "mash.cli.app:main"
 pilot = "pilot.cli:main"
 
 [project.optional-dependencies]

@@ -439,8 +439,15 @@ class AgentServer:
         if isinstance(request_id, Response):
             return request_id
 
+        # ``after`` is the seq of the last event the reader has; the stream
+        # starts at the next one.
+        try:
+            after = max(0, int(request.query_params.get("after") or 0))
+        except ValueError:
+            return _json_error(400, "INVALID_REQUEST", "after must be an integer")
+
         async def _generate():
-            cursor = 0
+            cursor = after
             while True:
                 if await request.is_disconnected():
                     break
@@ -452,6 +459,8 @@ class AgentServer:
                 if events:
                     for event in events:
                         event_data_json = json.dumps(event["data"], ensure_ascii=True)
+                        if event.get("seq") is not None:
+                            yield f"id: {event['seq']}\n"
                         yield f"event: {event['event']}\n"
                         yield f"data: {event_data_json}\n\n"
                 elif done:

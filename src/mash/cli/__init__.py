@@ -1,15 +1,17 @@
 """Mash remote CLI package."""
 
+from .app import App
 from .client import MashHostClient, MashHostClientError
 from .commands import Command, CommandRegistry
-from .shell import MashRemoteShell, ShellTarget
-from .types import CLIContext
+from .session import Repl, Target
+from .commands import CLIContext
 
 __all__ = [
+    "App",
     "MashHostClient",
     "MashHostClientError",
-    "MashRemoteShell",
-    "ShellTarget",
+    "Repl",
+    "Target",
     "CLIContext",
     "Command",
     "CommandRegistry",

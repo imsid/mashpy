@@ -108,7 +108,7 @@ Streaming renders as formatted markdown. The chain renderer buffers `chat.delta`
 
 ## Building on it
 
-The same pieces are public for your own interface: `MashHostClient` for any Python application, and `MashRemoteShell`, `Command`, and `CLIContext` for a CLI with your own slash commands. [Building an Agent CLI](building-agent-clis.md) walks through that end to end, and [the deploy guide](how-to-deploy.md) covers putting the API on the network.
+The same pieces are public for your own interface: `MashHostClient` for any Python application, and `Repl`, `Command`, and `CLIContext` for a CLI with your own slash commands. [Building an Agent CLI](building-agent-clis.md) walks through that end to end, and [the deploy guide](how-to-deploy.md) covers putting the API on the network.
 
 Every request that crosses this surface leaves runtime events behind. The next post covers the pauses for people built into the loop: tool approval and `AskUser`.
 

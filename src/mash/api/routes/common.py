@@ -188,9 +188,13 @@ def parse_limit(raw: Optional[int], *, default: int, max_value: int) -> int:
     return max(1, min(int(raw), max_value))
 
 
-def build_runtime_event_sse_payload(event_name: str, payload: Any) -> str:
+def build_runtime_event_sse_payload(
+    event_name: str, payload: Any, *, seq: Optional[int] = None
+) -> str:
+    """One SSE frame; ``seq`` becomes its ``id:`` line, the reader's cursor."""
     data = json.dumps(payload, ensure_ascii=True)
-    return f"event: {event_name}\ndata: {data}\n\n"
+    id_line = f"id: {seq}\n" if seq is not None else ""
+    return f"{id_line}event: {event_name}\ndata: {data}\n\n"
 
 
 def get_client(request: Request, agent_id: str) -> AgentClientLike:

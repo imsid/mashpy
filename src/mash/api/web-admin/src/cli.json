@@ -645,10 +645,32 @@
           },
           {
             "flags": [
-              "--show-thinking"
+              "--continue"
             ],
-            "name": "show_thinking",
-            "help": "Print each step's model thinking under that step",
+            "name": "continue_session",
+            "help": "Go on in your most recent session",
+            "positional": false,
+            "required": false,
+            "default": false,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--resume"
+            ],
+            "name": "resume",
+            "help": "Choose one of your earlier sessions to go on in",
+            "positional": false,
+            "required": false,
+            "default": false,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--debug"
+            ],
+            "name": "debug",
+            "help": "Start at the detail level: each model turn, its thinking, and tool results",
             "positional": false,
             "required": false,
             "default": false,
@@ -656,6 +678,290 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "name": "run",
+        "help": "Submit one request, print its answer and exit",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "message"
+            ],
+            "name": "message",
+            "help": "The message; read from stdin when omitted",
+            "positional": true,
+            "required": true,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--session-id"
+            ],
+            "name": "session_id",
+            "help": "Remote session id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--continue"
+            ],
+            "name": "continue_session",
+            "help": "Go on in your most recent session",
+            "positional": false,
+            "required": false,
+            "default": false,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--json"
+            ],
+            "name": "json_output",
+            "help": "Print each stream event as one JSON object per line",
+            "positional": false,
+            "required": false,
+            "default": false,
+            "choices": null
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "name": "workflow",
+        "help": "Run, inspect and resume workflow runs",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Target agent id (bare-agent targeting)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--host"
+            ],
+            "name": "host_id",
+            "help": "Target host id",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--user-id"
+            ],
+            "name": "user_id",
+            "help": "User to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": [
+          {
+            "name": "list",
+            "help": "List the workflows you can run",
+            "args": [],
+            "subcommands": []
+          },
+          {
+            "name": "run",
+            "help": "Start a run and follow its steps to the end",
+            "args": [
+              {
+                "flags": [
+                  "workflow_id"
+                ],
+                "name": "workflow_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--input"
+                ],
+                "name": "input",
+                "help": "The workflow's input: a JSON object, or @file to read one",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--dedup-key"
+                ],
+                "name": "dedup_key",
+                "help": "A key that names the run",
+                "positional": false,
+                "required": false,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--no-follow"
+                ],
+                "name": "no_follow",
+                "help": "Print the run id and exit without following",
+                "positional": false,
+                "required": false,
+                "default": false,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "status",
+            "help": "Show a run's status, steps and result",
+            "args": [
+              {
+                "flags": [
+                  "workflow_id"
+                ],
+                "name": "workflow_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "run_id"
+                ],
+                "name": "run_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "resume",
+            "help": "Resume a failed run from its failed step",
+            "args": [
+              {
+                "flags": [
+                  "workflow_id"
+                ],
+                "name": "workflow_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "run_id"
+                ],
+                "name": "run_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          }
+        ]
       },
       {
         "name": "host",
@@ -1112,13 +1418,18 @@
   "repl": {
     "commands": [
       {
-        "name": "agent",
-        "help": "List available agents (host members only when connected through a host)",
+        "name": "agents",
+        "help": "The agents your requests can reach and what each is for",
         "aliases": []
       },
       {
         "name": "bg",
-        "help": "Run a request in the background, or list, switch to and kill them (/bg <message> | --list | --switch <id> | --kill <id>); Ctrl-Z sends the streaming request to the background",
+        "help": "Run a message in the background: /bg <message> | list | switch <id> | kill <id>",
+        "aliases": []
+      },
+      {
+        "name": "browser",
+        "help": "Sites your browser is signed in to: /browser | forget <site>",
         "aliases": []
       },
       {
@@ -1129,8 +1440,18 @@
         ]
       },
       {
+        "name": "compact",
+        "help": "Summarize the session so far to free up context",
+        "aliases": []
+      },
+      {
+        "name": "copy",
+        "help": "Copy the last answer, or its last code block (/copy code)",
+        "aliases": []
+      },
+      {
         "name": "exit",
-        "help": "Exit the application",
+        "help": "Leave",
         "aliases": [
           "quit",
           "q"
@@ -1138,50 +1459,65 @@
       },
       {
         "name": "feedback",
-        "help": "Send feedback or a bug report about this session (/feedback <message>)",
+        "help": "Send a note or bug report about this session",
         "aliases": []
       },
       {
         "name": "help",
-        "help": "Show available commands",
+        "help": "Show the commands",
         "aliases": [
           "h",
           "?"
         ]
       },
       {
-        "name": "history",
-        "help": "View conversation history",
+        "name": "keys",
+        "help": "Show the keys",
         "aliases": []
       },
       {
-        "name": "host",
-        "help": "List defined hosts (retarget with `mash compose`)",
+        "name": "memory",
+        "help": "What is remembered about you: /memory | add <text> | forget <id>",
         "aliases": []
       },
       {
-        "name": "session",
-        "help": "Show current remote session info",
+        "name": "new",
+        "help": "Start a new session",
         "aliases": []
       },
       {
-        "name": "sessions",
-        "help": "List remote sessions for the current agent",
+        "name": "resume",
+        "help": "Go on in one of your earlier sessions",
         "aliases": []
       },
       {
-        "name": "status",
-        "help": "Show deployment status",
+        "name": "retry",
+        "help": "Run the last request again",
+        "aliases": []
+      },
+      {
+        "name": "subagent",
+        "help": "The last request's subagents: list, show one (<n>) or cancel one (cancel <n>)",
+        "aliases": []
+      },
+      {
+        "name": "tools",
+        "help": "The tools and skills of those agents",
         "aliases": []
       },
       {
         "name": "trace",
-        "help": "Show trace analysis for recent traces (/trace [N])",
+        "help": "Timing and tool statistics of recent requests (/trace [n])",
+        "aliases": []
+      },
+      {
+        "name": "usage",
+        "help": "Tokens used by this session and today",
         "aliases": []
       },
       {
         "name": "workflow",
-        "help": "List, run, inspect, and resume workflows; bare `/workflow` lists (host-attached only when connected through a host)",
+        "help": "List, run, inspect and resume workflows",
         "aliases": []
       }
     ]

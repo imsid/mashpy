@@ -1,26 +1,33 @@
-"""Background requests in the REPL: /bg, Ctrl-Z, and idle watching."""
+"""Background requests in the REPL: /bg, Ctrl-Z, and watching."""
 
 from __future__ import annotations
 
-import os
-import signal
-import threading
-import time
-import unittest
-from typing import Any, cast
-from unittest.mock import patch
+import asyncio
+from typing import Any
+
+import pytest
 
 from mash.cli.background import (
     BG_USAGE,
+    BackgroundWatchers,
     BgCommand,
-    RequestWatcher,
     list_rows,
     parse_bg_args,
     resolve_prefix,
 )
 from mash.cli.client import MashHostClientError
-from mash.cli.shell import MashRemoteShell, ShellTarget
-
+from tests.mash.cli.repl_harness import (
+    CTRL_Z,
+    ENTER,
+    FakeHost,
+    Gate,
+    ReplDriver,
+    chat_end,
+    completed,
+    interaction,
+    run_repl,
+    trace,
+)
 
 PARENT = "a1b2c3d4-0000-4000-8000-000000000001"
 CHILD_1 = "c1c1c1c1-0000-5000-8000-000000000002"
@@ -42,430 +49,449 @@ def _record(request_id: str, **fields: Any) -> dict[str, Any]:
     }
 
 
-class ParseTests(unittest.TestCase):
-    def test_the_four_forms(self) -> None:
-        self.assertEqual(
-            parse_bg_args(["set", "a", "timer"]),
-            BgCommand(action="start", message="set a timer"),
-        )
-        self.assertEqual(parse_bg_args(["--list"]), BgCommand(action="list"))
-        self.assertEqual(
-            parse_bg_args(["--switch", "a1b2"]), BgCommand(action="switch", request_id="a1b2")
-        )
-        self.assertEqual(
-            parse_bg_args(["--kill", "a1b2"]), BgCommand(action="kill", request_id="a1b2")
-        )
-
-    def test_a_message_that_starts_with_a_flag_word_is_a_message(self) -> None:
-        self.assertEqual(
-            parse_bg_args(["list", "my", "files"]),
-            BgCommand(action="start", message="list my files"),
-        )
-
-    def test_usage_errors(self) -> None:
-        for args in ([], ["--list", "x"], ["--switch"], ["--kill", "a", "b"], ["--later"]):
-            with self.subTest(args=args):
-                self.assertEqual(parse_bg_args(args), BG_USAGE)
+# --- parsing ------------------------------------------------------------------
 
 
-class PrefixTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.records = [_record(PARENT), _record(OTHER), _record(CHILD_1)]
-
-    def test_a_unique_prefix_resolves(self) -> None:
-        self.assertEqual(resolve_prefix("c1", self.records)["request_id"], CHILD_1)
-        self.assertEqual(resolve_prefix("a1b2c3", self.records)["request_id"], PARENT)
-
-    def test_an_ambiguous_prefix_is_an_error_message(self) -> None:
-        message = resolve_prefix("a1b2", self.records)
-        self.assertIsInstance(message, str)
-        self.assertIn("matches 2 requests", message)
-        self.assertIn("a1b2c3d4", message)
-
-    def test_an_unknown_prefix_is_an_error_message(self) -> None:
-        self.assertEqual(
-            resolve_prefix("zz", self.records), "No background request matches 'zz'."
-        )
+def test_the_four_forms() -> None:
+    assert parse_bg_args(["set", "a", "timer"]) == BgCommand(action="start", message="set a timer")
+    assert parse_bg_args(["list"]) == BgCommand(action="list")
+    assert parse_bg_args(["switch", "a1b2"]) == BgCommand(action="switch", request_id="a1b2")
+    assert parse_bg_args(["kill", "a1b2"]) == BgCommand(action="kill", request_id="a1b2")
 
 
-class ListRowsTests(unittest.TestCase):
-    def test_children_are_indented_under_their_parent(self) -> None:
-        records = [
-            _record(CHILD_2, parent_request_id=PARENT, started_by="primary", started_at=3.0),
-            _record(CHILD_1, parent_request_id=PARENT, started_by="primary", started_at=2.0),
-            _record(OTHER, status="completed", started_at=1.5),
-            _record(PARENT, started_at=1.0),
-        ]
-        self.assertEqual(
-            [row[0] for row in list_rows(records)],
-            ["a1b2ffff", "a1b2c3d4", "  └ c1c1c1c1", "  └ c2c2c2c2"],
-        )
-        self.assertEqual(list_rows(records)[0][2:], ["completed", "user"])
-        self.assertEqual(list_rows(records)[2][3], "primary")
+def test_a_message_that_starts_with_a_subcommand_word_is_a_message() -> None:
+    assert parse_bg_args(["list", "my", "files"]) == BgCommand(
+        action="start", message="list my files"
+    )
+    assert parse_bg_args(["kill", "the", "old", "export"]) == BgCommand(
+        action="start", message="kill the old export"
+    )
+    assert parse_bg_args(["--list"]) == BgCommand(action="start", message="--list")
 
-    def test_a_child_of_an_unlisted_parent_is_shown_at_the_top(self) -> None:
-        rows = list_rows([_record(CHILD_1, parent_request_id="fg-parent")])
-        self.assertEqual(rows[0][0], "c1c1c1c1")
+
+@pytest.mark.parametrize("args", [[], ["switch"], ["kill"]])
+def test_usage_errors(args: list[str]) -> None:
+    assert parse_bg_args(args) == BG_USAGE
+
+
+# --- id prefixes --------------------------------------------------------------
+
+
+def test_a_unique_prefix_resolves() -> None:
+    records = [_record(PARENT), _record(OTHER), _record(CHILD_1)]
+    assert resolve_prefix("c1", records)["request_id"] == CHILD_1  # type: ignore[index]
+    assert resolve_prefix("a1b2c3", records)["request_id"] == PARENT  # type: ignore[index]
+
+
+def test_an_ambiguous_prefix_is_an_error_message() -> None:
+    message = resolve_prefix("a1b2", [_record(PARENT), _record(OTHER)])
+    assert isinstance(message, str)
+    assert "matches 2 requests" in message
+    assert "a1b2c3d4" in message
+
+
+def test_an_unknown_prefix_is_an_error_message() -> None:
+    assert resolve_prefix("zz", [_record(PARENT)]) == "No background request matches 'zz'."
+
+
+# --- list rows ----------------------------------------------------------------
+
+
+def test_children_are_indented_under_their_parent() -> None:
+    records = [
+        _record(CHILD_2, parent_request_id=PARENT, started_by="primary", started_at=3.0),
+        _record(CHILD_1, parent_request_id=PARENT, started_by="primary", started_at=2.0),
+        _record(OTHER, status="completed", started_at=1.5),
+        _record(PARENT, started_at=1.0),
+    ]
+    rows = list_rows(records)
+    assert [row[0] for row in rows] == ["a1b2ffff", "a1b2c3d4", "  └ c1c1c1c1", "  └ c2c2c2c2"]
+    assert rows[0][2:] == ["completed", "user"]
+    assert rows[2][3] == "primary"
+
+
+def test_a_child_of_an_unlisted_parent_is_shown_at_the_top() -> None:
+    rows = list_rows([_record(CHILD_1, parent_request_id="fg-parent")])
+    assert rows[0][0] == "c1c1c1c1"
+
+
+# --- watchers -----------------------------------------------------------------
 
 
 class _StreamClient:
-    def __init__(self, events: list[dict[str, Any]], *, hold: float = 0.0) -> None:
+    """Streams scripted events; a ``Gate`` holds the stream open."""
+
+    def __init__(self, *events: Any) -> None:
         self.events = events
-        self.hold = hold
+        self.calls: list[tuple[str, str, int]] = []
 
-    def stream_request(self, agent_id: str, request_id: str):
-        del agent_id, request_id
+    async def request_events(self, agent_id: str, request_id: str, *, after: int = 0):
+        self.calls.append((agent_id, request_id, after))
         for event in self.events:
-            yield event
-        if self.hold:
-            time.sleep(self.hold)
+            if isinstance(event, Gate):
+                await event.wait()
+            elif isinstance(event, Exception):
+                raise event
+            else:
+                yield event
 
 
-class WatcherTests(unittest.TestCase):
-    def _watch(self, events: list[dict[str, Any]], *, hold: float = 0.0) -> list[list]:
-        notices: list[list] = []
-        watcher = RequestWatcher(
-            _StreamClient(events, hold=hold), "primary", PARENT, notices.append, input_delay=0.05
-        )
-        watcher.start()
-        watcher.join(5)
-        return notices
+def _watch(*events: Any, wait: float = 0.0) -> list[list[tuple[str, str]]]:
+    notices: list[list[tuple[str, str]]] = []
 
-    def test_completed_prints_done_and_the_response(self) -> None:
-        notices = self._watch(
-            [{"event": "request.completed", "data": {"response": {"text": "Timer is up."}}}]
-        )
-        self.assertEqual(notices, [[("info", "[a1b2c3d4] done"), ("markdown", "Timer is up.")]])
+    async def main() -> None:
+        watchers = BackgroundWatchers(_StreamClient(*events), notices.append, input_delay=0.05)
+        watchers.watch("primary", PARENT)
+        if wait:
+            await asyncio.sleep(wait)
+            await watchers.close()
+        else:
+            await watchers.join()
 
-    def test_failed_and_cancelled(self) -> None:
-        self.assertEqual(
-            self._watch([{"event": "request.error", "data": {"error": "boom"}}]),
-            [[("error", "[a1b2c3d4] failed: boom")]],
-        )
-        self.assertEqual(
-            self._watch([{"event": "request.cancelled", "data": {}}]),
-            [[("warn", "[a1b2c3d4] cancelled")]],
-        )
+    asyncio.run(main())
+    return notices
 
-    def test_an_open_interaction_asks_for_input(self) -> None:
-        notices = self._watch(
-            [{"event": "request.interaction.create", "data": {"interaction_id": "i-1"}}],
-            hold=0.3,
-        )
-        self.assertEqual(
-            notices,
-            [[("warn", "[a1b2c3d4] needs your input: /bg --switch a1b2c3d4")]],
-        )
 
-    def test_an_answered_interaction_in_the_replay_is_not_announced(self) -> None:
-        notices = self._watch(
+def test_completed_prints_done_and_the_response() -> None:
+    assert _watch(completed("Timer is up.")) == [
+        [("info", "[a1b2c3d4] done"), ("markdown", "Timer is up.")]
+    ]
+
+
+def test_failed_and_cancelled() -> None:
+    assert _watch({"event": "request.error", "data": {"error": "boom"}}) == [
+        [("error", "[a1b2c3d4] failed: boom")]
+    ]
+    assert _watch({"event": "request.cancelled", "data": {}}) == [
+        [("warn", "[a1b2c3d4] cancelled")]
+    ]
+
+
+def test_an_open_interaction_asks_for_input() -> None:
+    notices = _watch(interaction("i-1", "approval", "Approve?"), Gate(), wait=0.3)
+    assert notices == [[("warn", "[a1b2c3d4] needs your input: /bg switch a1b2c3d4")]]
+
+
+def test_an_answered_interaction_in_the_replay_is_not_announced() -> None:
+    notices = _watch(
+        interaction("i-1", "approval", "Approve?"),
+        {"event": "request.interaction.ack", "data": {"interaction_id": "i-1"}},
+        trace("chat.start"),
+        Gate(),
+        wait=0.3,
+    )
+    assert notices == []
+
+
+def test_a_stream_that_breaks_is_reported() -> None:
+    assert _watch(MashHostClientError("connection lost")) == [
+        [("error", "[a1b2c3d4] stopped watching: connection lost")]
+    ]
+
+
+def test_a_silenced_watcher_prints_nothing() -> None:
+    notices: list[Any] = []
+    gate = Gate()
+
+    async def main() -> None:
+        watchers = BackgroundWatchers(_StreamClient(gate, completed("x")), notices.append)
+        watchers.watch("primary", PARENT)
+        await asyncio.sleep(0.01)
+        assert watchers.watching() == [PARENT]
+        watchers.silence(PARENT)
+        gate.open()
+        await asyncio.sleep(0.05)
+        assert watchers.watching() == []
+
+    asyncio.run(main())
+    assert notices == []
+
+
+def test_a_request_is_watched_once_and_from_the_given_cursor() -> None:
+    client = _StreamClient(Gate())
+
+    async def main() -> None:
+        watchers = BackgroundWatchers(client, lambda notice: None)
+        watchers.watch("primary", PARENT, after=7)
+        watchers.watch("primary", PARENT)
+        await asyncio.sleep(0.01)
+        await watchers.close()
+
+    asyncio.run(main())
+    assert client.calls == [("primary", PARENT, 7)]
+
+
+def test_refresh_watches_only_running_bg_requests_the_user_started() -> None:
+    client = _StreamClient(Gate())
+
+    async def main() -> None:
+        watchers = BackgroundWatchers(client, lambda notice: None)
+        watchers.refresh(
             [
-                {"event": "request.interaction.create", "data": {"interaction_id": "i-1"}},
-                {"event": "request.interaction.ack", "data": {"interaction_id": "i-1"}},
-                {"event": "agent.trace", "data": {}},
-            ],
-            hold=0.3,
+                _record(PARENT),
+                _record(OTHER, status="completed"),
+                _record(CHILD_1, parent_request_id=PARENT, started_by="primary"),
+                _record(CHILD_2, mode="fg"),
+            ]
         )
-        self.assertEqual(notices, [])
+        await asyncio.sleep(0.01)
+        assert watchers.watching() == [PARENT]
+        await watchers.close()
 
-    def test_a_silenced_watcher_prints_nothing(self) -> None:
-        notices: list[list] = []
-        gate = threading.Event()
-
-        class _Gated:
-            def stream_request(self, agent_id, request_id):
-                gate.wait(5)
-                yield {"event": "request.completed", "data": {"response": {"text": "x"}}}
-
-        watcher = RequestWatcher(_Gated(), "primary", PARENT, notices.append)
-        watcher.start()
-        watcher.silence()
-        gate.set()
-        watcher.join(5)
-        self.assertEqual(notices, [])
+    asyncio.run(main())
 
 
-class _ShellClient:
-    """A fake host client for the shell's /bg flows."""
-
-    def __init__(self) -> None:
-        self.records: list[dict[str, Any]] = []
-        self.submitted: list[dict[str, Any]] = []
-        self.modes: list[tuple[str, str, str]] = []
-        self.cancelled: list[tuple[str, str]] = []
-        self.list_calls: list[dict[str, Any]] = []
-        self.stream: Any = None
-        self.mode_error: Exception | None = None
-
-    def submit_request(self, agent_id, *, message, session_id, user_id, mode="fg"):
-        self.submitted.append({"agent_id": agent_id, "message": message, "mode": mode})
-        return PARENT
-
-    def submit_host_request(self, host_id, *, message, session_id, user_id, mode="fg"):
-        self.submitted.append({"host_id": host_id, "message": message, "mode": mode})
-        return {"request_id": PARENT, "agent_id": "primary"}
-
-    def list_session_requests(self, agent_id, session_id, **filters):
-        self.list_calls.append(filters)
-        return [
-            r
-            for r in self.records
-            if all(r.get(key) == value for key, value in filters.items())
-        ]
-
-    def set_request_mode(self, agent_id, request_id, mode):
-        if self.mode_error is not None:
-            raise self.mode_error
-        self.modes.append((agent_id, request_id, mode))
-        return {"request_id": request_id, "mode": mode}
-
-    def cancel_request(self, agent_id, request_id):
-        self.cancelled.append((agent_id, request_id))
-        return {"status": "cancelled"}
-
-    def stream_request(self, agent_id, request_id):
-        yield from self.stream(agent_id, request_id)
-
-    def post_interaction(self, *args, **kwargs):
-        return {}
+# --- /bg and Ctrl-Z in the REPL -------------------------------------------------
 
 
-def _completes(text: str):
-    def _stream(agent_id, request_id):
-        del agent_id, request_id
-        yield {"event": "request.completed", "data": {"response": {"text": text}}}
-
-    return _stream
+def run(script, host: FakeHost, **kwargs: Any) -> ReplDriver:
+    return asyncio.run(run_repl(script, host, **kwargs))
 
 
-class BgCommandTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.client = _ShellClient()
-        self.client.stream = _completes("ok")
-        self.shell = self._shell()
-        self.watched: list[tuple[str, str]] = []
-        self.silenced: list[str] = []
-        patch.object(
-            self.shell.watchers, "watch", side_effect=lambda a, r: self.watched.append((a, r))
-        ).start()
-        patch.object(
-            self.shell.watchers, "silence", side_effect=self.silenced.append
-        ).start()
-        self.addCleanup(patch.stopall)
+def test_bg_message_submits_in_the_background_and_reports_when_done() -> None:
+    host = FakeHost()
+    host.request_ids = [PARENT]
+    gate = Gate()
+    host.script(PARENT, trace("chat.start"), gate, completed("Timer is up."))
 
-    def _shell(self, host_id: str | None = None) -> MashRemoteShell:
-        return MashRemoteShell(
-            cast(Any, self.client),
-            ShellTarget(
-                api_base_url="http://localhost:8000",
-                agent_id="primary",
-                session_id="s-1",
-                user_id="u-1",
-                host_id=host_id,
-            ),
-        )
+    async def script(d: ReplDriver) -> None:
+        d.type("/bg set a timer for 1 min" + ENTER)
+        await d.until(lambda: "running in the background" in d.output)
+        # The prompt is free: nothing runs in the foreground.
+        assert not d.repl.running()
+        gate.open()
+        await d.until(lambda: "[a1b2c3d4] done" in d.output)
 
-    def _run(self, line: str) -> None:
-        self.shell.command_registry.execute(self.shell.context, line)
-
-    def test_bg_message_submits_in_the_background_and_watches_it(self) -> None:
-        with patch.object(self.shell.renderer, "info") as info:
-            self._run("/bg set a timer for 1 min")
-        self.assertEqual(
-            self.client.submitted,
-            [{"agent_id": "primary", "message": "set a timer for 1 min", "mode": "bg"}],
-        )
-        self.assertEqual(self.watched, [("primary", PARENT)])
-        info.assert_called_with("\\[a1b2c3d4] running in the background")
-
-    def test_bg_message_through_a_host(self) -> None:
-        self.shell = self._shell(host_id="assistant")
-        patch.object(self.shell.watchers, "watch").start()
-        self._run("/bg list my files")
-        self.assertEqual(
-            self.client.submitted,
-            [{"host_id": "assistant", "message": "list my files", "mode": "bg"}],
-        )
-
-    def test_list_shows_children_under_their_parent(self) -> None:
-        self.client.records = [
-            _record(CHILD_1, parent_request_id=PARENT, started_by="primary", started_at=2.0),
-            _record(PARENT, started_at=1.0),
-        ]
-        with patch.object(self.shell.renderer, "table") as table:
-            self._run("/bg --list")
-        headers, rows = table.call_args.args
-        self.assertEqual(headers, ["ID", "Message", "Status", "Started by"])
-        self.assertEqual([row[0] for row in rows], ["a1b2c3d4", "  └ c1c1c1c1"])
-        self.assertEqual(self.client.list_calls, [{"mode": "bg"}])
-
-    def test_switch_brings_a_request_to_the_foreground_and_follows_it(self) -> None:
-        self.client.records = [_record(PARENT)]
-        self.client.stream = _completes("Timer is up.")
-        with patch.object(self.shell.renderer, "markdown") as markdown:
-            self._run("/bg --switch a1b2")
-        self.assertEqual(self.client.modes, [("primary", PARENT, "fg")])
-        self.assertEqual(self.silenced, [PARENT])
-        markdown.assert_called_with("Timer is up.")
-
-    def test_switch_to_a_child_leaves_its_mode(self) -> None:
-        self.client.records = [
-            _record(CHILD_1, agent_id="research", parent_request_id=PARENT, started_by="primary")
-        ]
-        streamed: list[tuple[str, str]] = []
-
-        def _stream(agent_id, request_id):
-            streamed.append((agent_id, request_id))
-            yield {"event": "request.completed", "data": {"response": {"text": "r"}}}
-
-        self.client.stream = _stream
-        with patch.object(self.shell.renderer, "markdown"):
-            self._run("/bg --switch c1")
-        self.assertEqual(self.client.modes, [])
-        self.assertEqual(streamed, [("research", CHILD_1)])
-
-    def test_switch_and_kill_report_a_bad_prefix(self) -> None:
-        self.client.records = [_record(PARENT), _record(OTHER)]
-        with patch.object(self.shell.renderer, "error") as error:
-            self._run("/bg --switch a1b2")
-            self._run("/bg --kill zz")
-        self.assertIn("matches 2 requests", error.call_args_list[0].args[0])
-        self.assertEqual(
-            error.call_args_list[1].args[0], "No background request matches 'zz'."
-        )
-        self.assertEqual(self.client.modes, [])
-        self.assertEqual(self.client.cancelled, [])
-
-    def test_kill_calls_the_cancel_route_on_the_requests_agent(self) -> None:
-        self.client.records = [_record(CHILD_1, agent_id="research", parent_request_id=PARENT)]
-        with patch.object(self.shell.renderer, "warn") as warn:
-            self._run("/bg --kill c1c1")
-        self.assertEqual(self.client.cancelled, [("research", CHILD_1)])
-        self.assertEqual(self.silenced, [CHILD_1])
-        warn.assert_called_with("\\[c1c1c1c1] cancelled")
-
-    def test_a_usage_error_is_printed(self) -> None:
-        with patch.object(self.shell.renderer, "error") as error:
-            self._run("/bg")
-        error.assert_called_once_with(BG_USAGE)
-
-    def test_after_a_foreground_request_the_shell_watches_running_bg_requests(self) -> None:
-        self.client.records = [
-            _record(PARENT),
-            _record(OTHER, status="completed"),
-            _record(CHILD_1, parent_request_id=PARENT, started_by="primary"),
-        ]
-        with patch.object(self.shell.renderer, "markdown"):
-            self.shell.handle_repl_message(self.shell.context, "hello")
-        self.assertEqual(
-            self.client.list_calls[-1],
-            {"mode": "bg", "status": "running", "started_by": "user"},
-        )
-        self.assertEqual(self.watched, [("primary", PARENT)])
+    out = run(script, host).output
+    assert host.submitted[0]["message"] == "set a timer for 1 min"
+    assert host.submitted[0]["mode"] == "bg"
+    assert "[a1b2c3d4] running in the background" in out
+    assert "Timer is up." in out
 
 
-@unittest.skipUnless(hasattr(signal, "SIGTSTP"), "needs SIGTSTP")
-class CtrlZTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.client = _ShellClient()
-        self.shell = MashRemoteShell(
-            cast(Any, self.client),
-            ShellTarget(
-                api_base_url="http://localhost:8000",
-                agent_id="primary",
-                session_id="s-1",
-                user_id="u-1",
-            ),
-        )
-        self.watched: list[tuple[str, str]] = []
-        patch.object(
-            self.shell.watchers, "watch", side_effect=lambda a, r: self.watched.append((a, r))
-        ).start()
-        self.addCleanup(patch.stopall)
+def test_bg_message_through_a_host() -> None:
+    host = FakeHost()
+    host.request_ids = [PARENT]
+    host.script(PARENT, completed("ok"))
 
-    @staticmethod
-    def _ctrl_z_while_waiting(agent_id, request_id):
-        """A stream that sends Ctrl-Z and then waits for an event that never comes."""
-        del agent_id, request_id
-        yield {
-            "event": "agent.trace",
-            "data": {"event_type": "mash.context_load.end", "payload": {}},
-        }
-        os.kill(os.getpid(), signal.SIGTSTP)
-        time.sleep(5)
-        yield {"event": "request.completed", "data": {"response": {"text": "late"}}}
+    async def script(d: ReplDriver) -> None:
+        d.type("/bg list my files" + ENTER)
+        await d.until(lambda: "[a1b2c3d4] done" in d.output)
 
-    def test_ctrl_z_moves_the_request_to_the_background(self) -> None:
-        self.client.stream = self._ctrl_z_while_waiting
-        before = signal.getsignal(signal.SIGTSTP)
-        started = time.monotonic()
-        with patch.object(self.shell.renderer, "info") as info:
-            outcome = self.shell.follow_request(self.shell.context, "primary", PARENT)
-
-        self.assertEqual(outcome, "backgrounded")
-        self.assertLess(time.monotonic() - started, 4)
-        self.assertEqual(self.client.modes, [("primary", PARENT, "bg")])
-        self.assertEqual(self.watched, [("primary", PARENT)])
-        info.assert_called_with("\\[a1b2c3d4] moved to the background")
-        self.assertEqual(signal.getsignal(signal.SIGTSTP), before)
-
-    def test_ctrl_z_on_a_child_leaves_its_mode(self) -> None:
-        self.client.stream = self._ctrl_z_while_waiting
-        with patch.object(self.shell.renderer, "info"):
-            outcome = self.shell.follow_request(
-                self.shell.context, "research", CHILD_1, child=True
-            )
-        self.assertEqual(outcome, "backgrounded")
-        self.assertEqual(self.client.modes, [])
-        self.assertEqual(self.watched, [])
-
-    def test_a_request_that_finished_meanwhile_still_returns_to_the_prompt(self) -> None:
-        self.client.stream = self._ctrl_z_while_waiting
-        self.client.mode_error = MashHostClientError("409: request is completed")
-        with patch.object(self.shell.renderer, "info"), patch.object(
-            self.shell.renderer, "warn"
-        ) as warn:
-            outcome = self.shell.follow_request(self.shell.context, "primary", PARENT)
-        self.assertEqual(outcome, "backgrounded")
-        self.assertIn("could not move to the background", warn.call_args.args[0])
-
-    def test_notices_wait_until_the_stream_read_ends(self) -> None:
-        printed: list[str] = []
-
-        def _stream(agent_id, request_id):
-            del agent_id, request_id
-            self.shell.notify([("info", "[ffffffff] done")])
-            self.assertEqual(printed, [])
-            yield {"event": "request.completed", "data": {"response": {"text": "ok"}}}
-
-        self.client.stream = _stream
-        with patch.object(self.shell.renderer, "info", side_effect=printed.append), patch.object(
-            self.shell.renderer, "markdown"
-        ):
-            self.shell.follow_request(self.shell.context, "primary", PARENT)
-        self.assertEqual(printed, ["\\[ffffffff] done"])
+    run(script, host, host_id="assistant")
+    assert host.submitted[0]["host_id"] == "assistant"
+    assert host.submitted[0]["message"] == "list my files"
+    assert host.stream_calls == [("companion", PARENT, 0)]
 
 
+def test_list_shows_children_under_their_parent() -> None:
+    host = FakeHost()
+    host.records = [
+        _record(CHILD_1, parent_request_id=PARENT, started_by="primary", started_at=2.0,
+                status="completed"),
+        _record(PARENT, started_at=1.0, status="completed"),
+    ]
 
-class RichOutputTests(unittest.TestCase):
-    def test_short_ids_survive_rich_markup(self) -> None:
-        from io import StringIO
+    async def script(d: ReplDriver) -> None:
+        await d.say("/bg list")
 
-        out = StringIO()
-        shell = MashRemoteShell(
-            cast(Any, _ShellClient()),
-            ShellTarget(
-                api_base_url="http://localhost:8000",
-                agent_id="primary",
-                session_id="s-1",
-                user_id="u-1",
-            ),
-        )
-        shell.renderer.console.file = out
-        shell.notify([("info", "[a1b2c3d4] done"), ("warn", "[a1b2c3d4] cancelled")])
-        self.assertIn("[a1b2c3d4] done", out.getvalue())
-        self.assertIn("[a1b2c3d4] cancelled", out.getvalue())
+    lines = run(script, host).output.splitlines()
+    parent = next(i for i, line in enumerate(lines) if "a1b2c3d4" in line)
+    assert "└ c1c1c1c1" in lines[parent + 1]
+    assert "Started by" in "\n".join(lines)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_list_with_nothing_in_the_background_says_so() -> None:
+    async def script(d: ReplDriver) -> None:
+        await d.say("/bg list")
+
+    assert "No background requests in this session." in run(script, FakeHost()).output
+
+
+def test_switch_brings_a_request_to_the_foreground_and_follows_it() -> None:
+    host = FakeHost()
+    host.records = [_record(PARENT)]
+    gate = Gate()
+    host.script(PARENT, chat_end("response", text="Timer is up."), gate, completed("Timer is up."))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("/bg switch a1b2" + ENTER)
+        await d.until(d.repl.running)
+        assert d.repl.foreground.request_id == PARENT
+        host.records = []
+        gate.open()
+        await d.idle()
+
+    out = run(script, host).output
+    assert host.modes == [("primary", PARENT, "fg")]
+    assert out.count("Timer is up.") == 1
+    # Followed in the foreground, so no background notice is printed for it.
+    assert "[a1b2c3d4] done" not in out
+
+
+def test_switch_to_a_child_leaves_its_mode() -> None:
+    host = FakeHost()
+    host.records = [
+        _record(CHILD_1, agent_id="research", parent_request_id=PARENT, started_by="primary")
+    ]
+    host.script(CHILD_1, completed("r"))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("/bg switch c1" + ENTER)
+        await d.until(lambda: ("research", CHILD_1, 0) in host.stream_calls)
+        await d.idle()
+
+    run(script, host)
+    assert host.modes == []
+
+
+def test_switch_while_a_request_runs_is_refused() -> None:
+    host = FakeHost()
+    host.records = [_record(PARENT)]
+    gate = Gate()
+    host.script("r-1", trace("chat.start"), gate, completed("ok"))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("hello" + ENTER)
+        await d.until(d.repl.running)
+        d.type("/bg switch a1b2" + ENTER)
+        await d.until(lambda: "Press Ctrl-Z" in d.output)
+        host.records = []
+        gate.open()
+        await d.idle()
+
+    run(script, host)
+    assert host.modes == []
+
+
+def test_switch_and_kill_report_a_bad_prefix() -> None:
+    host = FakeHost()
+    host.records = [_record(PARENT, status="completed"), _record(OTHER, status="completed")]
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("/bg switch a1b2")
+        await d.say("/bg kill zz")
+
+    out = run(script, host).output
+    assert "'a1b2' matches 2 requests (a1b2c3d4, a1b2ffff)" in out
+    assert "No background request matches 'zz'." in out
+    assert host.modes == []
+    assert host.cancelled == []
+
+
+def test_kill_calls_the_cancel_route_on_the_requests_agent() -> None:
+    host = FakeHost()
+    host.records = [
+        _record(CHILD_1, agent_id="research", parent_request_id=PARENT, started_by="primary")
+    ]
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("/bg kill c1c1")
+
+    out = run(script, host).output
+    assert host.cancelled == [("research", CHILD_1)]
+    assert "[c1c1c1c1] cancelled" in out
+
+
+def test_a_usage_error_is_printed() -> None:
+    async def script(d: ReplDriver) -> None:
+        await d.say("/bg")
+
+    assert BG_USAGE in run(script, FakeHost()).output
+
+
+def test_after_a_foreground_request_running_bg_requests_are_watched() -> None:
+    host = FakeHost()
+    host.records = [
+        _record(PARENT),
+        _record(OTHER, status="completed"),
+        _record(CHILD_1, parent_request_id=PARENT, started_by="primary"),
+    ]
+    host.script("r-1", chat_end("response", text="hi"), completed("hi"))
+    host.script(PARENT, completed("Background answer."))
+
+    async def script(d: ReplDriver) -> None:
+        await d.say("hello")
+        await d.until(lambda: "[a1b2c3d4] done" in d.output)
+
+    out = run(script, host).output
+    assert "Background answer." in out
+    assert {call[1] for call in host.stream_calls} == {"r-1", PARENT}
+
+
+def test_ctrl_z_moves_the_request_to_the_background() -> None:
+    host = FakeHost()
+    host.request_ids = [PARENT]
+    gate = Gate()
+    host.script(PARENT, trace("chat.start"), gate, chat_end("response", text="Late answer."),
+                completed("Late answer."))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("long task" + ENTER)
+        await d.until(lambda: d.repl.running() and d.repl.foreground.cursor == 1)
+        d.type(CTRL_Z)
+        await d.until(lambda: "moved to the background" in d.output)
+        assert not d.repl.running()
+        gate.open()
+        await d.until(lambda: "[a1b2c3d4] done" in d.output)
+
+    out = run(script, host).output
+    assert host.modes == [("primary", PARENT, "bg")]
+    # The watcher goes on from the event the foreground stopped at.
+    assert host.stream_calls == [("primary", PARENT, 0), ("primary", PARENT, 1)]
+    assert "Late answer." in out
+    assert host.cancelled == []
+
+
+def test_ctrl_z_sends_the_next_queued_message() -> None:
+    host = FakeHost()
+    host.script("r-1", trace("chat.start"), Gate())
+    host.script("r-2", chat_end("response", text="Second."), completed("Second."))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("one" + ENTER)
+        await d.until(d.repl.running)
+        d.type("two" + ENTER)
+        await d.until(lambda: d.repl.queue == ["two"])
+        d.type(CTRL_Z)
+        await d.until(lambda: len(host.submitted) == 2)
+        await d.until(lambda: "Second." in d.output)
+
+    run(script, host)
+    assert [s["message"] for s in host.submitted] == ["one", "two"]
+
+
+def test_a_request_that_finished_meanwhile_still_returns_to_the_prompt() -> None:
+    host = FakeHost()
+    host.request_ids = [PARENT]
+    host.script(PARENT, trace("chat.start"), Gate())
+
+    def refuse(agent_id: str, request_id: str, mode: str) -> dict[str, Any]:
+        raise MashHostClientError("request is completed", status_code=409)
+
+    host.set_request_mode = refuse  # type: ignore[method-assign]
+
+    async def script(d: ReplDriver) -> None:
+        d.type("long task" + ENTER)
+        await d.until(d.repl.running)
+        d.type(CTRL_Z)
+        await d.until(lambda: "could not move to the background" in d.output)
+        assert not d.repl.running()
+
+    out = run(script, host).output
+    assert "[a1b2c3d4] could not move to the background: request is completed" in out
+    assert "moved to the background" not in out
+
+
+def test_ctrl_z_with_nothing_running_does_nothing() -> None:
+    host = FakeHost()
+    host.script("r-1", chat_end("response", text="hi"), completed("hi"))
+
+    async def script(d: ReplDriver) -> None:
+        d.type(CTRL_Z)
+        await asyncio.sleep(0.05)
+        await d.say("hello")
+
+    out = run(script, host).output
+    assert host.modes == []
+    assert "hi" in out
