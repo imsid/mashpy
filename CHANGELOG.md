@@ -9,6 +9,17 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.39.0](https://github.com/imsid/mashpy/compare/mashpy-v0.38.1...mashpy-v0.39.0) (2026-11-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** redesign the terminal client and add the App kit ([#279](https://github.com/imsid/mashpy/issues/279))
+
+### Features
+
+* **cli:** redesign the terminal client and add the App kit ([#279](https://github.com/imsid/mashpy/issues/279)) ([4911707](https://github.com/imsid/mashpy/commit/4911707e18f63a471d0b317e65a5cae6231413ce))
+
 ## [0.38.1](https://github.com/imsid/mashpy/compare/mashpy-v0.38.0...mashpy-v0.38.1) (2026-11-14)
 
 
