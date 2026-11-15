@@ -688,6 +688,22 @@ def test_a_workflow_calls_row_shows_the_step_its_run_is_on() -> None:
     assert "Exported." in out
 
 
+def test_a_sent_paste_is_printed_as_its_placeholder_and_sent_in_full() -> None:
+    host = FakeHost()
+    host.script("r-1", *simple("Read it."))
+    block = "\n".join(f"line {n}" for n in range(50))
+
+    async def script(d: ReplDriver) -> None:
+        d.type("see: \x1b[200~" + block + "\x1b[201~" + ENTER)
+        await d.until(lambda: host.submitted)
+        await d.idle()
+
+    out = run(script, host).output
+    assert "› see: [pasted 50 lines #1]" in out
+    assert "line 49" not in out
+    assert host.submitted[0]["message"] == "see: " + block
+
+
 def test_the_unfinished_block_is_drawn_above_the_live_row() -> None:
     host = FakeHost()
     gate = Gate()
@@ -840,7 +856,9 @@ def test_a_resumed_session_starts_with_its_last_two_turns() -> None:
                                   "title": "why was march high"})
     lines = [line.rstrip() for line in d.output.splitlines()]
     assert lines[0] == "mash · u-1 · agent primary · why was march high · /help for commands"
-    assert lines[1:5] == ["› why was march high", "Heating.", "› and april?", "Lower."]
+    assert lines[1:9] == [
+        "", "› why was march high", "", "Heating.", "", "› and april?", "", "Lower.",
+    ]
     assert "› first" not in lines
     assert host.submitted[0]["session_id"] == "s-bills"
 

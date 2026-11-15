@@ -189,6 +189,22 @@ def test_a_fast_tool_shows_no_duration() -> None:
     assert text == "  ✓ search\n"
 
 
+def test_a_failed_tool_shows_the_last_line_of_a_traceback() -> None:
+    traceback = 'Traceback (most recent call last):\n  File "x.py", line 1\nValueError: boom\n'
+    text = printed(
+        tool_start("t1", "run_code", {"language": "python", "code": "x"}),
+        tool_end("t1", "run_code", content=traceback, is_error=True),
+    )
+    assert text.splitlines() == ["  ✗ python: x", "    ValueError: boom"]
+
+
+def test_long_code_lines_fold_instead_of_being_cropped() -> None:
+    out, buffer = renderer(30)
+    line = "value = compute(first_argument, second_argument)"
+    out.markdown(f"```python\n{line}\n```")
+    assert "".join(buffer.getvalue().split("\n")) == line
+
+
 def test_a_failed_tool_shows_the_first_line_of_its_error() -> None:
     text = printed(
         tool_start("t1", "run_code", {"language": "python", "code": "x"}),
@@ -284,7 +300,7 @@ def test_children_are_announced_and_each_ends_on_one_line() -> None:
     assert buffer.getvalue().splitlines() == [
         "  ● Asking 2 agents: energy, review",
         "    ✓ energy · 1 tool · 12s · 4.1k",
-        "    ✗ review ↺ · 0 tools · 6.0s failed: model overloaded",
+        "    ✗ review ↺ · 0 tools · 6.0s · failed: model overloaded",
     ]
 
 

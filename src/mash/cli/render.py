@@ -271,7 +271,19 @@ class _PlainCodeBlock(CodeBlock):
             code, self.lexer_name, theme=self.theme, background_color="default"
         ).highlight(code)
         text.rstrip()
-        yield text
+        # A line longer than the width continues on the next line, cut at the
+        # width: cropped, the printed code would miss what did not fit, and
+        # wrapped at words, it would lose the spaces where it broke.
+        width = max(1, options.max_width)
+        lines = []
+        for line in text.split("\n", allow_blank=True):
+            if len(line) > width:
+                lines.extend(line.divide(range(width, len(line), width)))
+            else:
+                lines.append(line)
+        folded = RichText("\n").join(lines)
+        folded.no_wrap = True
+        yield folded
 
 
 class _LeftHeading(Heading):
@@ -350,6 +362,13 @@ class Renderer(Protocol):
         """Render a line holding a link, never broken across lines."""
         ...
 
+    def section(self, text: str, style: str = "info") -> None:
+        """A line that starts a new part of the output, after a blank line."""
+        if self._last not in (None, "blank"):
+            self._console.print()
+        self._console.print(text, style=style)
+        self._last = "line"
+
     def warn(self, text: str) -> None:
         """Render warning text."""
         ...
@@ -420,6 +439,13 @@ class RichRenderer:
         # anyone copying it; soft wrapping leaves the wrapping to the terminal.
         self._emit("line", text, style="info", soft_wrap=True)
 
+    def section(self, text: str, style: str = "info") -> None:
+        """A line that starts a new part of the output, after a blank line."""
+        if self._last not in (None, "blank"):
+            self._console.print()
+        self._console.print(text, style=style)
+        self._last = "line"
+
     def warn(self, text: str) -> None:
         """Render warning text."""
         self._emit("line", text, style="warn")
@@ -440,11 +466,11 @@ class RichRenderer:
         self._console.print(rendered, soft_wrap=True, highlight=False)
         self._last = "echo"
 
-    def markdown(self, text: str) -> None:
+    def markdown(self, text: str, *, dim: bool = False) -> None:
         """Render Markdown-formatted text, with nothing drawn around it."""
         if not text.strip():
             return
-        self._emit("markdown", Trimmed(AnswerMarkdown(text)))
+        self._emit("markdown", Trimmed(AnswerMarkdown(text)), style="dim" if dim else None)
 
     def gap_before_markdown(self) -> bool:
         """Whether the next Markdown block prints after a blank line."""
@@ -499,11 +525,17 @@ def _mark(view: RequestView) -> tuple[str, str]:
     return CANCEL_MARK, "muted"
 
 
-def _first_line(text: str) -> str:
-    for line in str(text or "").splitlines():
-        if line.strip():
-            return line.strip()
-    return ""
+def _error_line(text: str) -> str:
+    """The line of an error that says what went wrong.
+
+    A Python traceback says it last; most other errors say it first.
+    """
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if lines[0].startswith("Traceback"):
+        return lines[-1]
+    return lines[0]
 
 
 def _stats(view: RequestView, now: float) -> str:
@@ -589,7 +621,7 @@ class OutputPrinter:
         timing = f" [muted]{fmt_seconds(seconds)}[/muted]" if seconds >= 1 else ""
         prefix = self._prefix(view)
         if call.is_error:
-            reason = escape(clip(_first_line(call.result), 160))
+            reason = escape(clip(_error_line(call.result), 160))
             self._print(f"{prefix}[error]{ERROR_MARK}[/error] {line}{timing}")
             if reason:
                 self._print(f"{prefix}  [muted]{reason}[/muted]")
@@ -621,9 +653,9 @@ class OutputPrinter:
             f"{continued} [muted]· {tools} · {_stats(view, now)}[/muted]"
         )
         if view.status == FAILED:
-            line += f" [error]failed: {escape(clip(view.error or '', 160))}[/error]"
+            line += f" [muted]·[/muted] [error]failed: {escape(clip(view.error or '', 160))}[/error]"
         elif view.status == CANCELLED:
-            line += " [muted]cancelled[/muted]"
+            line += " [muted]· cancelled[/muted]"
         self._print(line)
 
     def summary(self, view: RequestView, now: float) -> None:

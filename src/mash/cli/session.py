@@ -139,6 +139,34 @@ _CLOSED: Any = object()
 _VIEW_CALL: Any = object()
 
 
+def _excerpt(markdown: str, limit: int = 600) -> str:
+    """The start of an answer, cut at a line end, for a resumed session's recap."""
+    text = markdown.strip()
+    if len(text) <= limit:
+        return text
+    cut = text.rfind("\n", 0, limit)
+    head = text[: cut if cut > 0 else limit].rstrip()
+    if head.count("```") % 2:
+        head += "\n```"
+    return head + "\n\n…"
+
+
+def _merge(fragments: Any) -> Fragments:
+    """Fragments with runs of one style joined.
+
+    The ANSI parser gives one fragment per character, and prompt_toolkit lays
+    out each one on every redraw: a long block slowed the stream down.
+    """
+    merged: Fragments = []
+    for fragment in fragments:
+        style, text = fragment[0], fragment[1]
+        if merged and merged[-1][0] == style:
+            merged[-1] = (style, merged[-1][1] + text)
+        else:
+            merged.append((style, text))
+    return merged
+
+
 class Repl:
     """Interactive session with a Mash deployment."""
 
@@ -212,6 +240,10 @@ class Repl:
         self._flash: tuple[str, float] | None = None
         self._session_tokens: int | None = None
         self._side_tasks: set[asyncio.Task[Any]] = set()
+        # Sent messages that hold pastes -> what the input showed for them.
+        self._typed: dict[str, str] = {}
+        # The live area's last drawing of the unfinished block, and its key.
+        self._streaming_cache: tuple[tuple[Any, ...], Fragments] | None = None
         self._style = Style.from_dict(prompt_style_rules(theme))
         # The input is opened when the REPL runs, so a Repl can be built (to
         # register commands, or in tests) without a terminal.
@@ -347,6 +379,8 @@ class Repl:
                 self.renderer.error(escape(text))
             else:
                 self.renderer.info(escape(text))
+        if any(kind == "markdown" for kind, _ in notice):
+            self.renderer.print()
 
     async def refresh_watchers(self) -> None:
         """Watch the session's running bg requests the user started."""
@@ -378,18 +412,24 @@ class Repl:
         view = self.foreground
         if view is None or view.ended or not view.tail.strip():
             return []
-        rendered = self.renderer.render_markdown(view.tail, width).rstrip("\n")
-        lines = rendered.split("\n")
         try:
             height = get_app().output.get_size().rows
         except Exception:
             height = 24
         # Leave room for the rows, the input and the status bar.
         room = max(3, height - 8 - len(view.children))
+        gap = self.renderer.gap_before_markdown()
+        key = (view.tail, width, room, gap)
+        if self._streaming_cache is not None and self._streaming_cache[0] == key:
+            return self._streaming_cache[1]
+        rendered = self.renderer.render_markdown(view.tail, width).rstrip("\n")
+        lines = rendered.split("\n")
         if len(lines) > room:
             lines = lines[-room:]
-        gap = "\n" if self.renderer.gap_before_markdown() else ""
-        return to_formatted_text(ANSI(gap + "\n".join(lines) + "\n"))
+        text = ("\n" if gap else "") + "\n".join(lines) + "\n"
+        fragments = _merge(to_formatted_text(ANSI(text)))
+        self._streaming_cache = (key, fragments)
+        return fragments
 
     def _message(self) -> Fragments:
         try:
@@ -527,7 +567,7 @@ class Repl:
 
     async def _start(self, message: str) -> None:
         ctx = self.context
-        self.renderer.echo(message, PROMPT, CONTINUATION)
+        self.renderer.echo(self._typed.pop(message, message), PROMPT, CONTINUATION)
         request_id = await asyncio.to_thread(self.submit_message, ctx, message)
         view = RequestView(
             agent_id=ctx.agent_id,
@@ -1146,7 +1186,7 @@ class Repl:
             prompt = f"[{origin['agent_id']}] {prompt}"
         if self._interactions:
             prompt = f"{prompt} · {len(self._interactions)} more waiting"
-        self.renderer.info(escape(prompt))
+        self.renderer.section(escape(prompt))
 
         if interaction_type == "browser":
             url = str(payload.get("url") or "")
@@ -1241,7 +1281,11 @@ class Repl:
         if isinstance(result, _Interrupted):
             self._draft = result.draft
             return None
-        return self.input.finish(result)
+        message = self.input.finish(result)
+        # The message is printed as typed: a collapsed paste stays collapsed.
+        if message and result.strip() != message:
+            self._typed[message] = result.strip()
+        return message
 
     @contextlib.contextmanager
     def _sigint_cancels(self, task: asyncio.Task[Any]) -> Iterator[None]:
@@ -1289,10 +1333,10 @@ class Repl:
             self.renderer.warn(f"Could not read the session's history: {exc}")
             return
         for turn in turns:
-            self.renderer.muted(escape(PROMPT + clip(str(turn.get("user_message") or ""), 200)))
-            answer = clip(str(turn.get("agent_response") or ""), 400)
-            if answer:
-                self.renderer.muted(escape(answer))
+            self.renderer.echo(
+                clip(str(turn.get("user_message") or ""), 200), PROMPT, CONTINUATION
+            )
+            self.renderer.markdown(_excerpt(str(turn.get("agent_response") or "")), dim=True)
         if turns:
             self.renderer.print()
 
