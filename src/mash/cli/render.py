@@ -10,13 +10,20 @@ that return formatted text (``live_rows``, ``status_bar``) feed
 
 from __future__ import annotations
 
+import asyncio
+import io
+import re
+import sys
 from collections.abc import Callable, Mapping
 from typing import Any, List, Optional, Protocol
 
+from prompt_toolkit.application import get_app_or_none
+from prompt_toolkit.application.run_in_terminal import in_terminal
 from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.markdown import CodeBlock, Markdown
+from rich.markdown import CodeBlock, Heading, Markdown
 from rich.markup import escape
+from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text as RichText
@@ -62,8 +69,130 @@ CANCEL_MARK = "–"
 CONTINUED_MARK = "↺"
 
 
+# Rich's Markdown defaults put inline code on a black background, color
+# headings and quotes magenta, and draw tables in cyan. Answers read better in
+# the terminal's own colors with a few accents.
+MARKDOWN_THEME: dict[str, str] = {
+    "markdown.code": "cyan",
+    "markdown.code_block": "none",
+    "markdown.block_quote": "italic dim",
+    "markdown.list": "none",
+    "markdown.item.bullet": "dim",
+    "markdown.item.number": "dim",
+    "markdown.hr": "dim",
+    "markdown.h1": "bold underline",
+    "markdown.h1.border": "dim",
+    "markdown.h2": "bold",
+    "markdown.h3": "bold",
+    "markdown.h4": "bold italic",
+    "markdown.h5": "italic",
+    "markdown.h6": "italic dim",
+    "markdown.link": "cyan",
+    "markdown.link_url": "dim",
+    "markdown.table.border": "dim",
+    "markdown.table.header": "bold",
+}
+
+
 def rich_theme(theme: Mapping[str, str] | None = None) -> Theme:
-    return Theme({**DEFAULT_THEME, **dict(theme or {})})
+    return Theme({**MARKDOWN_THEME, **DEFAULT_THEME, **dict(theme or {})})
+
+
+# Terminals that support it hold the screen while these bracket a redraw, so
+# erasing the live area, printing above it and drawing it again shows as one
+# frame. Others ignore them.
+# An OSC sequence, such as a terminal hyperlink's start or end.
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+SYNC_BEGIN = "\x1b[?2026h"
+SYNC_END = "\x1b[?2026l"
+
+
+class TerminalFile(io.TextIOBase):
+    """The console's file: text goes above the live area, at once.
+
+    ``patch_stdout`` batches writes on a thread and prints them up to 200ms
+    later, while the live area redraws right away: a finished paragraph left
+    the live area before it showed up above, and the screen jumped. Here the
+    writes made before the next redraw are printed together: the live area is
+    erased, the text printed and the live area drawn again, in one frame.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pending: list[str] = []
+        self._scheduled = False
+
+    def isatty(self) -> bool:
+        stream = sys.__stdout__
+        return bool(stream is not None and stream.isatty())
+
+    def fileno(self) -> int:
+        stream = sys.__stdout__
+        if stream is None:
+            raise OSError("no terminal")
+        return stream.fileno()
+
+    @property
+    def encoding(self) -> str:  # type: ignore[override]
+        return getattr(sys.__stdout__, "encoding", None) or "utf-8"
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        app = get_app_or_none()
+        loop = getattr(app, "loop", None)
+        if app is None or not app.is_running or loop is None or app.is_done:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            return len(text)
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is loop:
+            self._queue(app, text)
+        else:
+            loop.call_soon_threadsafe(self._queue, app, text)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+    def _queue(self, app: Any, text: str) -> None:
+        self._pending.append(text)
+        if not self._scheduled:
+            # Created now, so it runs before the redraw this write's caller
+            # asks for next.
+            self._scheduled = True
+            app.loop.create_task(self._emit(app))
+
+    def _take(self) -> str:
+        text = "".join(self._pending)
+        self._pending.clear()
+        self._scheduled = False
+        return text
+
+    async def _emit(self, app: Any) -> None:
+        output = app.output
+        output.write_raw(SYNC_BEGIN)
+        try:
+            async with in_terminal():
+                # prompt_toolkit turns autowrap off while it draws; long
+                # lines printed here (links) wrap like ordinary output.
+                output.enable_autowrap()
+                output.write_raw(self._take())
+                output.flush()
+        finally:
+            if self._scheduled:
+                # Cancelled before printing: print what waited, as is.
+                sys.stdout.write(self._take())
+                sys.stdout.flush()
+            output.write_raw(SYNC_END)
+            output.flush()
 
 
 def prompt_style_rules(theme: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -142,6 +271,27 @@ class _PlainCodeBlock(CodeBlock):
             code, self.lexer_name, theme=self.theme, background_color="default"
         ).highlight(code)
         text.rstrip()
+        # A line longer than the width continues on the next line, cut at the
+        # width: cropped, the printed code would miss what did not fit, and
+        # wrapped at words, it would lose the spaces where it broke.
+        width = max(1, options.max_width)
+        lines = []
+        for line in text.split("\n", allow_blank=True):
+            if len(line) > width:
+                lines.extend(line.divide(range(width, len(line), width)))
+            else:
+                lines.append(line)
+        folded = RichText("\n").join(lines)
+        folded.no_wrap = True
+        yield folded
+
+
+class _LeftHeading(Heading):
+    """A heading on the left, in its style: no centered or boxed titles."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        text = self.text.copy()
+        text.justify = "left"
         yield text
 
 
@@ -152,11 +302,53 @@ class AnswerMarkdown(Markdown):
         **Markdown.elements,
         "fence": _PlainCodeBlock,
         "code_block": _PlainCodeBlock,
+        "heading_open": _LeftHeading,
     }
 
     def __init__(self, markup: str) -> None:
         # ansi_dark leaves plain code in the terminal's own foreground color.
         super().__init__(markup, code_theme="ansi_dark")
+
+
+def _rstrip_line(line: list[Segment]) -> list[Segment]:
+    """A rendered line without the spaces Rich pads it with to the width."""
+    segments = list(line)
+    while segments:
+        last = segments[-1]
+        if last.control:
+            break
+        text = last.text.rstrip(" ")
+        if text:
+            segments[-1] = Segment(text, last.style)
+            break
+        segments.pop()
+    return segments
+
+
+class Trimmed:
+    """A renderable printed without trailing spaces or blank lines around it.
+
+    Rich pads each line to the console width and ends lists, quotes and
+    tables with a blank line. Printed as is, copied text carries the padding
+    and blocks printed one by one get uneven gaps; the renderer adds the gaps
+    between blocks itself.
+    """
+
+    def __init__(self, renderable: Any) -> None:
+        self.renderable = renderable
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        lines = [
+            _rstrip_line(line)
+            for line in console.render_lines(self.renderable, options, pad=False)
+        ]
+        while lines and not "".join(segment.text for segment in lines[0]).strip():
+            lines.pop(0)
+        while lines and not "".join(segment.text for segment in lines[-1]).strip():
+            lines.pop()
+        for line in lines:
+            yield from line
+            yield Segment.line()
 
 
 class Renderer(Protocol):
@@ -169,6 +361,13 @@ class Renderer(Protocol):
     def link(self, text: str) -> None:
         """Render a line holding a link, never broken across lines."""
         ...
+
+    def section(self, text: str, style: str = "info") -> None:
+        """A line that starts a new part of the output, after a blank line."""
+        if self._last not in (None, "blank"):
+            self._console.print()
+        self._console.print(text, style=style)
+        self._last = "line"
 
     def warn(self, text: str) -> None:
         """Render warning text."""
@@ -200,63 +399,121 @@ class RichRenderer:
         *,
         theme: Mapping[str, str] | None = None,
     ) -> None:
-        # Rich tables should own wrapping/layout. Enabling console-level soft
-        # wrapping lets the terminal wrap rendered box lines after layout,
-        # which can visually clip bordered output at narrow widths.
-        self._console = console or Console(theme=rich_theme(theme))
+        self._console = console or Console(file=TerminalFile(), theme=rich_theme(theme))
+        # What was printed last, for the blank lines between blocks: None,
+        # "blank", "line" (one-line output), "markdown", or "echo" (the
+        # user's message, which everything after it is set apart from).
+        self._last: str | None = None
 
     @property
     def console(self) -> Console:
         """Get the underlying Rich console."""
         return self._console
 
+    def _gap(self, kind: str) -> bool:
+        """Whether a blank line goes before output of ``kind``."""
+        last = self._last
+        if last in (None, "blank"):
+            return False
+        if last in ("echo", "markdown"):
+            return True
+        return kind == "markdown"
+
+    def _emit(self, kind: str, *args: Any, **kwargs: Any) -> None:
+        if self._gap(kind):
+            self._console.print()
+        self._console.print(*args, **kwargs)
+        self._last = kind
+
     def info(self, text: str) -> None:
         """Render informational text."""
-        self._console.print(text, style="info")
+        self._emit("line", text, style="info")
 
     def muted(self, text: str) -> None:
         """Render secondary text."""
-        self._console.print(text, style="muted")
+        self._emit("line", text, style="muted")
 
     def link(self, text: str) -> None:
         """Render a line holding a link, never broken across lines."""
         # Rich breaks long lines with real newlines, which breaks a URL for
         # anyone copying it; soft wrapping leaves the wrapping to the terminal.
-        self._console.print(text, style="info", soft_wrap=True)
+        self._emit("line", text, style="info", soft_wrap=True)
+
+    def section(self, text: str, style: str = "info") -> None:
+        """A line that starts a new part of the output, after a blank line."""
+        if self._last not in (None, "blank"):
+            self._console.print()
+        self._console.print(text, style=style)
+        self._last = "line"
 
     def warn(self, text: str) -> None:
         """Render warning text."""
-        self._console.print(text, style="warn")
+        self._emit("line", text, style="warn")
 
     def error(self, text: str) -> None:
         """Render error text."""
-        self._console.print(text, style="error")
+        self._emit("line", text, style="error")
 
-    def markdown(self, text: str) -> None:
+    def echo(self, text: str, prompt: str, continuation: str) -> None:
+        """The user's message as sent, under the prompt mark."""
+        lines = text.split("\n")
+        rendered = RichText(prompt, style="accent bold")
+        rendered.append(lines[0])
+        for line in lines[1:]:
+            rendered.append("\n" + continuation + line)
+        if self._last not in (None, "blank"):
+            self._console.print()
+        self._console.print(rendered, soft_wrap=True, highlight=False)
+        self._last = "echo"
+
+    def markdown(self, text: str, *, dim: bool = False) -> None:
         """Render Markdown-formatted text, with nothing drawn around it."""
         if not text.strip():
             return
-        self._console.print(AnswerMarkdown(text))
+        self._emit("markdown", Trimmed(AnswerMarkdown(text)), style="dim" if dim else None)
+
+    def gap_before_markdown(self) -> bool:
+        """Whether the next Markdown block prints after a blank line."""
+        return self._gap("markdown")
+
+    def render_markdown(self, text: str, width: int) -> str:
+        """``text`` as it would print, in ANSI codes, for the live area.
+
+        Terminal hyperlinks are left out: prompt_toolkit cannot draw them, so
+        a link shows as its text until the block prints.
+        """
+        with self._console.capture() as capture:
+            self._console.print(Trimmed(AnswerMarkdown(text)), width=max(20, width))
+        return _OSC.sub("", capture.get())
 
     def table(self, headers: List[str], rows: List[List[str]]) -> None:
-        """Render a table."""
-        table = Table(box=box.SIMPLE_HEAD)
-
-        for header in headers:
-            table.add_column(header, style="accent")
-
+        """Render a table: the first column accented, the last one wrapping."""
+        table = Table(box=box.SIMPLE_HEAD, header_style="bold", show_edge=False)
+        for index, header in enumerate(headers):
+            last = index == len(headers) - 1 and len(headers) > 1
+            table.add_column(
+                header,
+                style="accent" if index == 0 else None,
+                no_wrap=not last,
+                overflow="fold" if last else "ellipsis",
+            )
         for row in rows:
             table.add_row(*row)
-
-        self._console.print(table)
+        self._emit("line", Trimmed(table))
 
     def clear(self) -> None:
         """Clear the terminal screen."""
         self._console.clear()
+        self._last = None
 
     def print(self, *args: Any, **kwargs: Any) -> None:
-        """Print to console."""
-        self._console.print(*args, **kwargs)
+        """Print to console; with nothing to print, a blank line."""
+        if not args:
+            if self._last != "blank":
+                self._console.print(**kwargs)
+            self._last = "blank"
+            return
+        self._emit("line", *args, **kwargs)
 
 
 def _mark(view: RequestView) -> tuple[str, str]:
@@ -268,11 +525,17 @@ def _mark(view: RequestView) -> tuple[str, str]:
     return CANCEL_MARK, "muted"
 
 
-def _first_line(text: str) -> str:
-    for line in str(text or "").splitlines():
-        if line.strip():
-            return line.strip()
-    return ""
+def _error_line(text: str) -> str:
+    """The line of an error that says what went wrong.
+
+    A Python traceback says it last; most other errors say it first.
+    """
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if lines[0].startswith("Traceback"):
+        return lines[-1]
+    return lines[0]
 
 
 def _stats(view: RequestView, now: float) -> str:
@@ -358,7 +621,7 @@ class OutputPrinter:
         timing = f" [muted]{fmt_seconds(seconds)}[/muted]" if seconds >= 1 else ""
         prefix = self._prefix(view)
         if call.is_error:
-            reason = escape(clip(_first_line(call.result), 160))
+            reason = escape(clip(_error_line(call.result), 160))
             self._print(f"{prefix}[error]{ERROR_MARK}[/error] {line}{timing}")
             if reason:
                 self._print(f"{prefix}  [muted]{reason}[/muted]")
@@ -390,9 +653,9 @@ class OutputPrinter:
             f"{continued} [muted]· {tools} · {_stats(view, now)}[/muted]"
         )
         if view.status == FAILED:
-            line += f" [error]failed: {escape(clip(view.error or '', 160))}[/error]"
+            line += f" [muted]·[/muted] [error]failed: {escape(clip(view.error or '', 160))}[/error]"
         elif view.status == CANCELLED:
-            line += " [muted]cancelled[/muted]"
+            line += " [muted]· cancelled[/muted]"
         self._print(line)
 
     def summary(self, view: RequestView, now: float) -> None:
@@ -492,9 +755,6 @@ def live_rows(
             fragments.extend(
                 _row(child, now, width, tool_lines, lead=lead, name_width=name_width)
             )
-        tail = _first_line(view.tail.splitlines()[-1]) if view.tail.strip() else ""
-        if tail:
-            fragments.append(("class:live.muted", f"  {clip(tail, width - 4)}\n"))
     for message in queued or []:
         fragments.append(("class:live.muted", f"  queued: {clip(message, width - 12)}\n"))
     return fragments

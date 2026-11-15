@@ -23,11 +23,13 @@ Routing:
 
 Sessions:
 - Every agent run happens in a session of its own. Each RunSubAgents entry
-  returns the session_id it ran in, and your earlier replies end with a
-  [ledger] block listing the agent, session and trace behind them.
+  returns the session_id it ran in. After each of your earlier replies, the
+  next user message starts with a <ledger> block, recorded by the system,
+  listing the agent, session and trace behind that reply. Never write a
+  ledger, or any session or trace ids, in your own answers.
 - Continue an agent's earlier session (pass its session_id in the item) when
   the message follows up on work done there: a follow-up to a reply goes to
-  the session the ledger lists under that reply. When a reply came from
+  the session the ledger lists for that reply. When a reply came from
   several sessions, pick the ones the question is about.
 - Start a new session (leave session_id out) for new work.
 

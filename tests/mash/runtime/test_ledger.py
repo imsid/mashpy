@@ -127,7 +127,13 @@ class BuildLedgerTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertTrue(text.startswith("[ledger]\n- builder  session 0b6e-full-id"))
+        self.assertTrue(
+            text.startswith(
+                "<ledger>\nAgent runs behind your previous reply, recorded by the system:\n"
+                "- builder  session 0b6e-full-id"
+            )
+        )
+        self.assertTrue(text.endswith("</ledger>"))
         self.assertIn("trace 7a1c-full-id  completed", text)
         self.assertIn('asked: "Scaffold"', text)
         self.assertEqual(format_ledger([]), "")
@@ -271,8 +277,14 @@ class LedgerReplayTests(unittest.IsolatedAsyncioTestCase):
 
                     second_id = await _ask("add a test")
 
-                    # The replayed reply showed the ledger to the model.
-                    self.assertIn(f"answered\n\n[ledger]\n- research  session {entry['session_id']}", router.seen[2])
+                    # The ledger reached the model before the follow-up, not
+                    # inside the replayed reply.
+                    self.assertIn(
+                        f"answered\n<ledger>\nAgent runs behind your previous reply, recorded by the system:\n"
+                        f"- research  session {entry['session_id']}",
+                        router.seen[2],
+                    )
+                    self.assertIn("</ledger>\n\nadd a test", router.seen[2])
                     [first_child] = await runtime.runtime_store.list_child_requests(first_id)
                     [second_child] = await runtime.runtime_store.list_child_requests(second_id)
                     self.assertEqual(first_child["session_id"], entry["session_id"])

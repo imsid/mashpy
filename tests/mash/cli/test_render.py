@@ -94,6 +94,55 @@ def test_markdown_links_are_terminal_hyperlinks(monkeypatch) -> None:
     assert "https://host/files/report.html" in buffer.getvalue()
 
 
+def test_blocks_are_set_apart_by_one_blank_line_without_padding() -> None:
+    out, buffer = renderer(60)
+    out.echo("summarize", "› ", "  ")
+    out.markdown("# Summary")
+    out.markdown("- one\n- two")
+    out.markdown("> a quote")
+    out.markdown("| a | b |\n|---|---|\n| 1 | 2 |")
+    out.markdown("Done.")
+    text = buffer.getvalue()
+    assert "\n\n\n" not in text
+    assert all(line == line.rstrip() for line in text.splitlines())
+    assert text.startswith("› summarize\n\nSummary\n\n • one\n • two\n\n▌ a quote\n\n")
+    assert text.endswith("\n\nDone.\n")
+
+
+def test_tool_lines_after_an_answer_are_set_apart_and_kept_together() -> None:
+    out, buffer = renderer(60)
+    out.markdown("Looking.")
+    out.print("  ✓ one")
+    out.print("  ✓ two")
+    out.print()
+    out.print()
+    assert buffer.getvalue() == "Looking.\n\n  ✓ one\n  ✓ two\n\n"
+
+
+def test_headings_print_on_the_left() -> None:
+    out, buffer = renderer(60)
+    out.markdown("# Title")
+    assert buffer.getvalue() == "Title\n"
+
+
+def test_the_live_area_draws_markdown_as_it_will_print_without_hyperlinks(monkeypatch) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    console = Console(file=io.StringIO(), width=60, force_terminal=True, theme=rich_theme())
+    live = RichRenderer(console).render_markdown("See [the report](https://host/r.html)", 60)
+    assert "the report" in live
+    assert "\x1b]8;" not in live
+
+
+def test_a_table_wraps_its_last_column_instead_of_clipping_it() -> None:
+    out, buffer = renderer(50)
+    sentence = "Run code in the user's sandbox and see everything it prints."
+    out.table(["Tool", "Does"], [["run_code", sentence]])
+    text = " ".join(buffer.getvalue().split())
+    assert sentence in text
+    assert "…" not in text
+
+
 def test_link_stays_on_one_line_past_console_width() -> None:
     out, buffer = renderer(40)
     url = "http://127.0.0.1:8000/browser/s/" + "t" * 80 + "/vnc.html?autoconnect=1"
@@ -138,6 +187,22 @@ def test_default_level_prints_one_line_per_tool_and_the_answer() -> None:
 def test_a_fast_tool_shows_no_duration() -> None:
     text = printed(tool_start("t1", "search"), tool_end("t1", "search", duration_ms=40))
     assert text == "  ✓ search\n"
+
+
+def test_a_failed_tool_shows_the_last_line_of_a_traceback() -> None:
+    traceback = 'Traceback (most recent call last):\n  File "x.py", line 1\nValueError: boom\n'
+    text = printed(
+        tool_start("t1", "run_code", {"language": "python", "code": "x"}),
+        tool_end("t1", "run_code", content=traceback, is_error=True),
+    )
+    assert text.splitlines() == ["  ✗ python: x", "    ValueError: boom"]
+
+
+def test_long_code_lines_fold_instead_of_being_cropped() -> None:
+    out, buffer = renderer(30)
+    line = "value = compute(first_argument, second_argument)"
+    out.markdown(f"```python\n{line}\n```")
+    assert "".join(buffer.getvalue().split("\n")) == line
 
 
 def test_a_failed_tool_shows_the_first_line_of_its_error() -> None:
@@ -235,7 +300,7 @@ def test_children_are_announced_and_each_ends_on_one_line() -> None:
     assert buffer.getvalue().splitlines() == [
         "  ● Asking 2 agents: energy, review",
         "    ✓ energy · 1 tool · 12s · 4.1k",
-        "    ✗ review ↺ · 0 tools · 6.0s failed: model overloaded",
+        "    ✗ review ↺ · 0 tools · 6.0s · failed: model overloaded",
     ]
 
 
@@ -299,7 +364,8 @@ def test_the_live_row_shows_what_the_request_is_doing() -> None:
     assert "thinking" in text_of(live_rows(view, 13.0, 80))
     reduce(view, delta("Partial answer so far"), 14.0)
     rows = text_of(live_rows(view, 14.0, 80))
-    assert "answering" in rows and "Partial answer so far" in rows
+    # The streamed text itself is drawn by the REPL, above the rows.
+    assert "answering" in rows and "Partial answer so far" not in rows
     reduce(view, interaction("i-1", "approval", "Approve?"), 15.0)
     assert "waiting on you" in text_of(live_rows(view, 15.0, 80))
 

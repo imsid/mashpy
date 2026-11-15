@@ -209,7 +209,11 @@ like any other terminal output.
   `RunSubAgents` call prints `Asking 2 agents: energy, review` and then one
   line per child as it ends, with its tool count, tokens and time.
 - The answer prints as markdown, one finished block at a time while it
-  streams, and once in total.
+  streams, and once in total. The block still being written is drawn above
+  the live rows as it will print, and moves into the scrollback in place
+  when it is done.
+- A message is printed under the `›` mark when it is sent: a queued message
+  when its turn comes.
 - A message sent while a request runs is queued and sent when that request
   ends. Up on an empty input takes the last queued message back for editing.
 - Ctrl-C clears the input when it has text. With an empty input it cancels

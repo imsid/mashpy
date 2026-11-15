@@ -183,8 +183,11 @@ def split_complete_markdown(buffer: str) -> tuple[str, str]:
     """Split streamed text into (printable, remainder).
 
     Markdown needs whole blocks to format (a code fence is not valid until it
-    closes), so the printable part ends at the last blank line outside an open
-    code fence. The remainder waits for more text.
+    closes), so the printable part ends at a blank line outside an open code
+    fence, once the next block has started at the left margin. A line indented
+    after a blank line still belongs to the block above (a list item's second
+    paragraph or code), and splitting there would print it as a code block.
+    The remainder waits for more text.
     """
     lines = buffer.split("\n")
     fence_open = False
@@ -193,7 +196,10 @@ def split_complete_markdown(buffer: str) -> tuple[str, str]:
         if line.lstrip().startswith("```"):
             fence_open = not fence_open
             continue
-        if not fence_open and line.strip() == "":
+        if fence_open or line.strip() or index + 1 >= len(lines):
+            continue
+        following = lines[index + 1]
+        if following.strip() and not following[0].isspace():
             boundary = index + 1
     if boundary == 0:
         return "", buffer

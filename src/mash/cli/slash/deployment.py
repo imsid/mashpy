@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from rich.markup import escape
 
@@ -24,6 +25,13 @@ def _host_workflow_ids(host: dict) -> set[str]:
     if not isinstance(workflows, list):
         return set()
     return {str(workflow_id) for workflow_id in workflows}
+
+
+def _summary(description: str) -> str:
+    """A description's first sentence, on one line, for a table cell."""
+    paragraph = " ".join(description.strip().split("\n\n")[0].split())
+    first = re.split(r"(?<=[.!?])\s+(?=[A-Z`(])", paragraph, maxsplit=1)[0]
+    return first
 
 
 def register(shell) -> None:
@@ -77,7 +85,7 @@ def register(shell) -> None:
                         [
                             escape(str(described.get("name") or "")),
                             escape(", ".join(used_by)),
-                            escape(clip(str(described.get("description") or ""), 70)),
+                            escape(_summary(str(described.get("description") or ""))),
                         ]
                     )
             return sorted(found)

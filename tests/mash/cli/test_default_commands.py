@@ -131,6 +131,23 @@ def test_tools_lists_the_tools_and_skills_of_the_targets_agents() -> None:
     assert "other" not in out
 
 
+def test_tools_shows_the_first_sentence_of_each_description_in_full() -> None:
+    host = FakeHost()
+    host.agents = AGENTS
+    first = (
+        "Run code on your computer: a Linux sandbox that belongs to the user you "
+        "are working for, where files persist between calls."
+    )
+    host.tools = [
+        {"tool": {"name": "run_code", "description": first + " Use it to analyse data.\n\nMore."},
+         "agents": ["energy"]},
+    ]
+    out, _ = say("/tools", host=host, host_id="fudge")
+    flat = " ".join(out.split())
+    assert first in flat
+    assert "Use it to analyse data" not in flat
+
+
 def test_tools_says_when_there_are_none() -> None:
     assert "These agents have no tools or skills." in say("/tools")[0]
 
