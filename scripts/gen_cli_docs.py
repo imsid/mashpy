@@ -14,9 +14,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from mash.cli.app import build_parser
 from mash.cli.commands import CommandRegistry
-from mash.cli.default_commands import register_default_commands
-from mash.cli.main import build_parser
+from mash.cli.slash import register_default_commands
 
 OUT_PATH = (
     Path(__file__).resolve().parent.parent

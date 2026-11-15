@@ -1,7 +1,7 @@
 # AGENTS Guide for `src/mash/cli`
 
 ## What Must Stay True
-- `main.py` remains the CLI entrypoint.
+- `app.py` owns `App` and CLI dispatch; `__main__.py` supports `python -m mash.cli`.
 - Shell, REPL, and rendering behavior stay inside this package.
 - Command dispatch and client-side session routing remain coherent across local and remote usage.
 - Public exports from `src/mash/cli/__init__.py` remain stable unless intentionally changed.

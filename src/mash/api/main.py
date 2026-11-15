@@ -174,6 +174,6 @@ def _run_agent_serve_command(args) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from mash.cli.main import main as cli_main
+    from mash.cli.app import main as cli_main
 
     return cli_main(["host", "serve", *(argv or ())])

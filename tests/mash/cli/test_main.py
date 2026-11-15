@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from mash.cli.main import build_parser
+from mash.cli.app import build_parser
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +83,7 @@ def test_build_parser_accepts_workflows_subcommand() -> None:
 def test_connect_validates_connection_before_saving(tmp_path) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
 
     fake_client = MagicMock()
     fake_client.health.return_value = {"status": "ok"}
@@ -116,7 +116,7 @@ def test_connect_validates_connection_before_saving(tmp_path) -> None:
 def test_connect_fails_loudly_and_saves_nothing_when_unreachable(tmp_path) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
 
     fake_client = MagicMock()
     fake_client.health.side_effect = RuntimeError("connection refused")
@@ -140,7 +140,7 @@ def test_connect_fails_loudly_and_saves_nothing_when_unreachable(tmp_path) -> No
 def test_workflows_subcommand_lists_deployment_workflows(capsys) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
 
     fake_client = MagicMock()
     fake_client.list_workflows.return_value = [
@@ -174,7 +174,7 @@ def test_workflows_subcommand_lists_deployment_workflows(capsys) -> None:
 def test_compose_defines_host_and_saves_config(tmp_path, monkeypatch) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
 
     fake_client = MagicMock()
     fake_client.define_host.return_value = {
@@ -216,7 +216,7 @@ def test_compose_defines_host_and_saves_config(tmp_path, monkeypatch) -> None:
 def test_compose_reuses_saved_connection(tmp_path) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     fake_client = MagicMock()
@@ -261,7 +261,7 @@ def test_compose_no_longer_takes_a_primary() -> None:
 def test_connect_saves_the_user_id(tmp_path) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
 
     fake_client = MagicMock()
     fake_client.health.return_value = {"status": "ok"}
@@ -285,7 +285,7 @@ def test_connect_saves_the_user_id(tmp_path) -> None:
 def test_repl_requires_a_user_id(capsys) -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     fake_client = MagicMock()
@@ -305,7 +305,7 @@ def test_repl_requires_a_user_id(capsys) -> None:
 def test_repl_debug_is_off_by_default() -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     shell = MagicMock()
@@ -323,7 +323,7 @@ def _repl_target(argv: list[str], sessions: list[dict], picked=None):
     """Run ``mash repl`` with a fake client; return (exit code, Target or None, client)."""
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     client = MagicMock()
@@ -396,7 +396,7 @@ def test_repl_session_id_resumes_that_session_and_excludes_the_other_flags(capsy
 
 
 def test_cli_loads_dotenv_from_the_working_directory(tmp_path, monkeypatch) -> None:
-    from mash.cli.main import load_env_file
+    from mash.cli.app import load_env_file
 
     (tmp_path / ".env").write_text("MASH_TEST_FROM_FILE=file\nMASH_TEST_SET=file\n")
     monkeypatch.chdir(tmp_path)
@@ -412,7 +412,7 @@ def test_cli_loads_dotenv_from_the_working_directory(tmp_path, monkeypatch) -> N
 
 def test_agent_processes_never_read_dotenv(tmp_path, monkeypatch) -> None:
     """The host leaves its secret out of an agent's environment; .env must not restore it."""
-    from mash.cli.main import load_env_file
+    from mash.cli.app import load_env_file
 
     (tmp_path / ".env").write_text("MASH_HOST_SECRET=from-file\n")
     monkeypatch.chdir(tmp_path)
@@ -429,7 +429,7 @@ def test_importing_the_library_reads_no_dotenv() -> None:
         "def refuse(*args, **kwargs):\n"
         "    raise SystemExit('the library loaded .env')\n"
         "dotenv.load_dotenv = refuse\n"
-        "import mash, mash.api, mash.core.config, mash.mcp, mash.runtime, mash.cli.main\n"
+        "import mash, mash.api, mash.core.config, mash.mcp, mash.runtime, mash.cli.app\n"
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -441,7 +441,7 @@ def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, user_id: s
     import io
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     client = MagicMock()
@@ -482,7 +482,7 @@ def test_run_submits_the_message_in_a_new_session() -> None:
 def test_run_returns_the_requests_exit_status() -> None:
     from unittest.mock import MagicMock, patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
@@ -570,7 +570,7 @@ class _WorkflowClient:
 def _workflow(argv: list[str], client: _WorkflowClient, *, user_id: str | None = "u-42") -> int:
     from unittest.mock import patch
 
-    from mash.cli import main as cli_main
+    from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
     existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id=user_id)

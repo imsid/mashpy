@@ -21,7 +21,7 @@ from rich.console import Console
 
 from mash.cli.client import MashHostClientError
 from mash.cli.render import rich_theme
-from mash.cli.repl import Repl, Target
+from mash.cli.session import Repl, Target
 
 ENTER = "\r"
 CTRL_C = "\x03"

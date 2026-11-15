@@ -729,7 +729,7 @@ def _piped(lines: str, host: FakeHost) -> str:
     from rich.console import Console
 
     from mash.cli.render import rich_theme
-    from mash.cli.repl import Repl, Target
+    from mash.cli.session import Repl, Target
 
     buffer = io.StringIO()
     repl = Repl(
@@ -738,7 +738,7 @@ def _piped(lines: str, host: FakeHost) -> str:
         console=Console(file=buffer, width=100, force_terminal=False, color_system=None,
                         theme=rich_theme()),
     )
-    with patch("mash.cli.repl.sys.stdin", io.StringIO(lines)):
+    with patch("mash.cli.session.sys.stdin", io.StringIO(lines)):
         asyncio.run(repl.run_async())
     return buffer.getvalue()
 
@@ -1033,7 +1033,7 @@ def _browser(keys: str) -> tuple[FakeHost, str, str]:
     host.script("r-1", interaction("i-1", "browser", "Sign in to PG&E", url=url), gate, *simple())
 
     async def script(d: ReplDriver) -> None:
-        with patch("mash.cli.repl.webbrowser.open") as opened:
+        with patch("mash.cli.session.webbrowser.open") as opened:
             d.type("go" + ENTER)
             await d.until(_asking(d))
             opened.assert_called_once_with(url)

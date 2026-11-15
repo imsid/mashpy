@@ -5,13 +5,28 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Protocol, Union
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Dict, List, Optional, Protocol, Union
 
 from mash.logging.events import CommandEvent
 
-if TYPE_CHECKING:
-    from .types import CLIContext
+from .client import MashHostClient
+from .render import RichRenderer
+
+
+@dataclass
+class CLIContext:
+    """Context for CLI operations."""
+
+    api_base_url: str
+    agent_id: str
+    session_id: str
+    user_id: str
+    client: MashHostClient
+    renderer: RichRenderer
+    session_ids: Dict[str, str] = field(default_factory=dict)
+    host_id: str | None = None
+    last_request_id: str | None = None
 
 # A handler is a plain function, which the REPL runs in a worker thread so a
 # slow host call never freezes the input, or a coroutine function, which runs

@@ -46,7 +46,7 @@ Issues = "https://github.com/imsid/mashpy/issues"
 Changelog = "https://github.com/imsid/mashpy/blob/main/CHANGELOG.md"
 
 [project.scripts]
-mash = "mash.cli.main:main"
+mash = "mash.cli.app:main"
 pilot = "pilot.cli:main"
 
 [project.optional-dependencies]

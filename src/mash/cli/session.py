@@ -38,8 +38,7 @@ from .ask import menu
 from .background import BackgroundWatchers, Notice, list_rows, resolve_prefix, short_id
 from .client import MashHostClient, MashHostClientError
 from .command_log import RemoteCommandEventLogger
-from .commands import Command, CommandRegistry, ExitRepl
-from .default_commands import register_default_commands
+from .commands import CLIContext, Command, CommandRegistry, ExitRepl
 from .input import PROMPT, InputLine, MenuEntry, history_path
 from .render import (
     Fragments,
@@ -55,7 +54,7 @@ from .render import (
     tool_display,
 )
 from .sessions import PICKER_HINT, PICKER_LIMIT, session_options, session_title
-from .types import CLIContext
+from .slash import register_default_commands
 from .views import (
     CANCELLED,
     COMPLETED,

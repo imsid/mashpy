@@ -175,6 +175,18 @@ exits:
 mash run --agent assistant "summarize yesterday's errors"
 ```
 
+## App Clients
+
+Ship a branded terminal client with `from mash.cli import App`. Construct
+`App(name="fudge", default_host="fudge", default_base_url="http://localhost:8001",
+env_prefix="FUDGE", default_user=getpass.getuser)` and return `app.main()`
+from the project's console entrypoint. It opens the REPL with no command and
+also provides `run`, `workflow`, `sessions` and `status`. Use `default_agent`
+for a bare agent. `commands`, `theme`, `tool_lines` and `workflow_renderers`
+customize it; operator commands are off by default. See the CLI README for
+connection precedence and examples. The entrypoint is `mash.cli.app:main`;
+`python -m mash.cli` runs it as a module.
+
 ## Minimal Workflow-Only Scaffold
 
 A pool needs no user agents. A workflow of pure `CodeStep`s deploys the same

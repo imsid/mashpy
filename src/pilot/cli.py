@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from mash.cli.client import MashHostClient
 from mash.cli.config import load_config
 from mash.cli.render import RichRenderer
-from mash.cli.repl import Repl, Target
+from mash.cli.session import Repl, Target
 
 from . import store
 from .catalog.agents.pilot import PILOT_AGENT_ID

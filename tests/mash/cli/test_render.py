@@ -84,7 +84,9 @@ def test_code_blocks_print_without_padding() -> None:
     assert buffer.getvalue().splitlines() == ["x = 1", "print(x)"]
 
 
-def test_markdown_links_are_terminal_hyperlinks() -> None:
+def test_markdown_links_are_terminal_hyperlinks(monkeypatch) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
     buffer = io.StringIO()
     console = Console(file=buffer, width=60, force_terminal=True, theme=rich_theme())
     RichRenderer(console).markdown("[the report](https://host/files/report.html)")

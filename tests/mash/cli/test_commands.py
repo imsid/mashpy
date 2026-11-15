@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 import unittest
 from unittest.mock import patch
 
-from mash.cli.repl import Repl, Target
+from mash.cli.session import Repl, Target
 
 if TYPE_CHECKING:
     from mash.cli.client import MashHostClient

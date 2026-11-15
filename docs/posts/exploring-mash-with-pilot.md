@@ -140,7 +140,7 @@ also serves the admin dashboard, with the trace drawer and span tree, at
 | `/help`, `/clear`, `/exit` | shell basics |
 | `/feedback <message>` | record a note or bug report for the session |
 
-Pilot's CLI is a thin layer over `MashRemoteShell` and `MashHostClient`:
+Pilot's CLI is a thin layer over `Repl` and `MashHostClient`:
 argument parsing, the storefront commands, and local persistence for
 compositions. [Building an Agent CLI](building-agent-clis.md) walks through
 building the same thing for your own agent.

@@ -2,6 +2,53 @@
 
 `src/mash/cli` contains the `mash` command line, the REPL, and terminal rendering.
 
+## Ship your own client
+
+An app wraps the same command line with its own name and defaults:
+
+```python
+import getpass
+from mash.cli import App
+
+app = App(
+    name="fudge",
+    default_host="fudge",
+    default_base_url="http://127.0.0.1:8001",
+    env_prefix="FUDGE",
+    default_user=getpass.getuser,
+)
+
+def main() -> int:
+    return app.main()
+```
+
+Register `fudge = "fudge.cli:main"` in `[project.scripts]`. Running `fudge`
+opens the REPL; `fudge run "hello"`, `fudge repl --continue`, `fudge workflow
+run export`, `fudge sessions` and `fudge status` use the same connection.
+The host must already exist on the deployment. Use `default_agent` instead
+of `default_host` for a bare agent; setting both is an error. Without either,
+the client resolves the deployment's sole host or agent, or asks for a target.
+
+Flags override environment variables. `env_prefix="FUDGE"` reads
+`FUDGE_API_BASE_URL`, `FUDGE_API_KEY` and `FUDGE_USER_ID` before their `MASH_`
+equivalents. The app's default URL comes next, then the saved connection.
+Saved keys and users apply only when the saved URL matches the resolved URL.
+The user falls back to `default_user`, a string or a callable. `connect`
+validates and saves the resolved connection and user.
+
+`commands` takes extra `Command` objects; a handler receives `CLIContext`
+and a list of arguments, and may be synchronous or async. `tool_lines` maps
+tool names to functions taking the arguments dict and returning a display
+line. `workflow_renderers` maps workflow ids to result callbacks.
+`theme` overrides the shared palette (`accent`, `agent`, `ok`, `error`,
+`warn`, `muted`, `info`) in Rich output and the live input area. `name` also
+sets the header and history file under `~/.mash/history/`.
+
+Apps omit `compose`, `host`, `agent`, `sandbox` and `browser` operator
+commands unless `operator_commands=True`. The built-in `mash` command is
+`App(name="mash", operator_commands=True)` and prints help when invoked
+without a command.
+
 ## Top-Level Commands
 
 Global
@@ -238,20 +285,21 @@ runs on a background thread and never blocks or breaks the session if the host i
 slow or unreachable.
 
 ## Main Components
-- `main.py`: top-level parser, command dispatch, and command execution.
+- `app.py`: `App`, the top-level parser, command dispatch, and command execution. `__main__.py` runs it with `python -m mash.cli`.
 - `oneshot.py`: `mash run`: one request, its answer on stdout, an exit status.
 - `client.py`: HTTP client used to talk to hosted Mash agents.
-- `repl.py`: the REPL loop. It owns the input, follows the foreground request and its children as asyncio tasks, queues messages, and asks interactions.
+- `session.py`: the REPL loop. It owns the input, follows the foreground request and its children as asyncio tasks, queues messages, and asks interactions.
 - `views.py`: the state of one request and `reduce`, which applies a stream event to it and returns the output that event finished. It prints nothing.
 - `render.py`: the theme, the lines printed for finished output, and the live rows and status bar.
 - `ask.py`: the menu that answers an interaction and picks a session.
 - `sessions.py`: the session picker's rows.
 - `input.py`: the input line: the `prompt_toolkit` session, the Enter and paste bindings, the `/` menu, and the clipboard.
-- `commands.py` and `default_commands.py`: slash-command model, registration, and built-in commands. A handler may be a plain function, which runs on a thread, or a coroutine function.
+- `commands.py` and `slash/`: command context, registration, and built-in commands grouped by purpose. A handler may be a plain function, which runs on a thread, or a coroutine function.
 - `background.py`: `/bg` parsing, id prefixes, the `list` tree, and the tasks that follow `bg` requests.
-- `config.py` and `types.py`: saved connection config and the context passed to commands.
+- `config.py`: saved connection config.
 
 ## Public Exports
+- `App`
 - `MashHostClient`, `MashHostClientError`
 - `Repl`, `Target`
 - `CLIContext`

@@ -1,6 +1,6 @@
 ---
 title: Building an Agent CLI
-description: Build your own CLI for your Mash agents. Wrap the remote shell, connect and compose through it, and add your own REPL commands.
+description: Ship a branded terminal client with mash.cli.App.
 date: 2026-06-08
 author: imsid
 tags:
@@ -10,538 +10,91 @@ tags:
 
 # Building an Agent CLI
 
-This guide walks through building your own CLI, `my-cli`, for your Mash
-agents. You define agents with `AgentSpec` subclasses, deploy them as a pool
-with `mash host serve`, wrap the Mash remote shell in your own entrypoint,
-then teach it to compose a host and carry custom REPL commands.
+A Mash app ships its own client by configuring `App`. It uses the same live
+REPL, request streaming, session picker and one-shot commands as `mash`.
+Deploy your pool first and define a host with `HostBuilder.host(...)` or
+`mash compose --host my-app --agents my-agent,docs-copilot`.
 
-## Overview
-
-A Mash agent CLI has four layers:
-
-1. **Agent definitions**: `AgentSpec` subclasses plus a `build_pool()`
-   function that registers them into a `Pool`.
-2. **Host server**: `mash host serve` (or programmatic `run_host`) exposes
-   the pool over HTTP.
-3. **CLI client**: a Python entrypoint that creates a `MashRemoteShell` and
-   runs the interactive REPL. This is `my-cli`.
-4. **Host composition**: a `Host` naming the agents the built-in companion
-   routes to, which `my-cli` defines on startup.
-
-```
-┌──────────────┐         HTTP/SSE          ┌─────────────────────┐
-│  my-cli      │ ◄─────────────────────►   │  Agent Pool         │
-│  (cli.py)    │    MashHostClient         │  (spec.py)          │
-└──────────────┘                           │  hosts: assistant…  │
-                                           └─────────────────────┘
-```
-
-The pool is the unit of deploy. A host is the unit of composition: it picks a
-set of agents from the pool. Every request to a host runs on the built-in
-`companion`, which gets a directory of exactly that set, per request, and
-routes to them with `RunSubAgents`. The same pool can serve several hosts at
-once.
-
-## Step 1: Define the Pool
-
-Create `my_agent/spec.py`. Every agent registers with `AgentMetadata`, the
-self-description the companion routes by:
+## Define the client
 
 ```python
-from mash.core.config import AgentConfig
-from mash.core.llm import AnthropicProvider
-from mash.runtime import AgentMetadata, AgentSpec, HostBuilder
-from mash.skills import SkillRegistry
-from mash.tools.registry import ToolRegistry
+# my_app/cli.py
+import getpass
+from mash.cli import App, Command
 
 
-class MyAgentSpec(AgentSpec):
-    def get_agent_id(self) -> str:
-        return "my-agent"
-
-    def build_tools(self) -> ToolRegistry:
-        # run_code comes from the host when it has sandboxes.
-        return ToolRegistry()
-
-    def build_skills(self) -> SkillRegistry:
-        return SkillRegistry()
-
-    def build_llm(self):
-        return AnthropicProvider(app_id="my-agent")
-
-    def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(
-            app_id="my-agent",
-            system_prompt="You are a helpful coding assistant.",
-        )
+def hello(ctx, args):
+    ctx.renderer.info(f"Hello, {ctx.user_id}!")
 
 
-class DocsCopilotSpec(AgentSpec):
-    # same shape: get_agent_id() -> "docs-copilot", its own tools and prompt
-    ...
+app = App(
+    name="my-app",
+    default_host="my-app",
+    default_base_url="http://127.0.0.1:8000",
+    env_prefix="MY_APP",
+    default_user=getpass.getuser,
+    commands=[Command(name="hello", help="Say hello", handler=hello, group="App")],
+    theme={"accent": "green"},
+    tool_lines={"search_docs": lambda args: f"Searching docs for {args.get('query', '')}"},
+)
 
 
-def build_pool():
-    return (
-        HostBuilder()
-        .agent(
-            MyAgentSpec(),
-            metadata=AgentMetadata(
-                display_name="My Agent",
-                description="Coding assistant for my workspace.",
-                capabilities=["run code"],
-                usage_guidance="Default agent for user requests.",
-            ),
-        )
-        .agent(
-            DocsCopilotSpec(),
-            metadata=AgentMetadata(
-                display_name="Docs Copilot",
-                description="Answers questions about the project docs.",
-                capabilities=["documentation"],
-                usage_guidance="Use for documentation questions.",
-            ),
-        )
-        .build()
-    )
+def main() -> int:
+    return app.main()
 ```
 
-Every agent is registered the same way. Which agents work together comes from
-a host composition, which `my-cli` will define in Step 3. (A `.host(...)` call on
-the builder can also ship a composition with the deploy; this guide defines
-it from the CLI instead.)
-
-Start the server:
-
-```bash
-mash host serve --host-app my_agent.spec:build_pool --port 8000
-```
-
-## Step 2: Wrap the Shell as `my-cli`
-
-Create `my_agent/cli.py`. The minimum viable CLI is a `MashHostClient`
-pointed at the deployment, a `ShellTarget` naming an agent, and a
-`MashRemoteShell` running the REPL:
-
-```python
-import argparse
-import os
-
-from mash.cli import MashHostClient, MashRemoteShell, ShellTarget
-
-DEFAULT_BASE_URL = os.environ.get("MY_CLI_API_URL", "http://127.0.0.1:8000")
-
-
-def main():
-    parser = argparse.ArgumentParser(prog="my-cli")
-    parser.add_argument("--api-base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--api-key", default=os.environ.get("MASH_API_KEY"))
-    parser.add_argument("--user-id", required=True, help="the user requests act for")
-    args = parser.parse_args()
-
-    client = MashHostClient(args.api_base_url, api_key=args.api_key)
-    try:
-        agents = client.list_agents()
-        target = ShellTarget(
-            api_base_url=args.api_base_url,
-            agent_id=agents[0]["agent_id"],
-            session_id=MashRemoteShell.new_session_id(),
-            user_id=args.user_id,
-        )
-        MashRemoteShell(client, target).run()
-    finally:
-        client.close()
-
-
-if __name__ == "__main__":
-    main()
-```
-
-Run it:
-
-```bash
-python -m my_agent.cli --user-id u-1
-```
-
-This already gives you a working terminal client against the first agent in
-the pool: messages go to the agent for the user you passed (every request acts
-for one, and its code runs in that user's sandbox), responses stream back with live
-chain-of-thought rendering, and the shell ships these built-in commands:
-
-| Command | What it does |
-|---|---|
-| `/help` | List all registered commands |
-| `/status` | Show deployment, current host, agent, and session |
-| `/agents` | List pooled agents |
-| `/hosts` | List defined host compositions |
-| `/session` | Show current session info (model, tokens, etc.) |
-| `/sessions` | List all sessions for the current agent |
-| `/history [N]` | View conversation history |
-| `/workflow list\|run\|status` | List, run, and inspect workflows |
-| `/trace [N]` | Show timing analysis for recent traces |
-| `/feedback <message>` | Record a note or bug report for the current session |
-| `/clear` | Clear the screen |
-| `/exit` | Exit the REPL |
-
-The imports this guide builds on, all from `mash.cli`:
-
-| Import | Purpose |
-|---|---|
-| `MashHostClient` | HTTP client that talks to the host API |
-| `MashRemoteShell` | Interactive shell with REPL, rendering, and command dispatch |
-| `ShellTarget` | Connection target (URL, agent id, session id, user id, optional host id) |
-| `Command` | Defines a slash command (name, help text, handler) |
-| `CLIContext` | Passed to every command handler (client, renderer, session state) |
-
-The minimal version talks to one agent directly. Composition is the next
-step.
-
-## Step 3: Connect and Compose
-
-`my-cli` owns its composition. On startup it defines a host over the pool
-and pins the shell to it, so every message goes to the companion with the
-host's agents wired in:
-
-```python
-import argparse
-import os
-
-from mash.cli import MashHostClient, MashRemoteShell, ShellTarget
-
-DEFAULT_BASE_URL = os.environ.get("MY_CLI_API_URL", "http://127.0.0.1:8000")
-HOST_ID = "assistant"
-
-
-def main():
-    parser = argparse.ArgumentParser(prog="my-cli")
-    parser.add_argument("--api-base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--api-key", default=os.environ.get("MASH_API_KEY"))
-    parser.add_argument("--user-id", required=True, help="the user requests act for")
-    parser.add_argument("--agent", default=None, help="bare-agent mode, skips the host")
-    args = parser.parse_args()
-
-    client = MashHostClient(args.api_base_url, api_key=args.api_key)
-    try:
-        if args.agent:
-            # Bare agent: no composition, no companion
-            agent_id, host_id = args.agent, None
-        else:
-            # Define (or refresh) the CLI's composition, then target it.
-            # The PUT is idempotent, so running this on every startup is fine
-            # and also covers server restarts.
-            client.define_host(HOST_ID, agents=["my-agent", "docs-copilot"])
-            # The companion takes every host request.
-            agent_id = "companion"
-            host_id = HOST_ID
-
-        target = ShellTarget(
-            api_base_url=args.api_base_url,
-            agent_id=agent_id,
-            session_id=MashRemoteShell.new_session_id(),
-            user_id=args.user_id,
-            host_id=host_id,
-        )
-        shell = MashRemoteShell(client, target)
-
-        # Register custom commands here (see Step 4)
-
-        shell.run()
-    finally:
-        client.close()
-```
-
-`define_host` issues `PUT /v1/hosts/assistant` to the deployment. If the
-composition references an agent that isn't in the pool, the server rejects
-it with a clear error before any shell starts. Hosts are in-memory on the
-server, so defining on every startup also covers deployment restarts.
-
-When `ShellTarget.host_id` is set, the shell submits every REPL message via
-`POST /v1/hosts/{host_id}/request` and streams the response from the agent
-the server names in its reply, the companion. When it's `None`, messages go
-straight to `POST /v1/agent/{agent_id}/request` and that one agent answers.
-
-The target is fixed for the shell's lifetime; there is no command for
-switching it inside the REPL. A CLI that offers several teams exposes them
-as entrypoint flags and starts the shell with the chosen one:
-
-```bash
-my-cli                          # the assistant composition
-my-cli --agent docs-copilot     # one agent, no companion
-```
-
-The stock `mash` CLI drives the same flow generically (`mash connect`,
-`mash compose`, `mash agents`, `mash hosts`, `mash repl`), which is handy
-for poking at a deployment before your CLI exists.
-
-## Step 4: Add Custom Commands
-
-Custom commands are where your CLI becomes domain-specific. Each command
-is a `Command` with a name, help text, and a handler function that receives
-`CLIContext` and a list of string arguments.
-
-When a command sends a message to the agent, it should respect the shell's
-target: route through the host when one is set, so the companion can route
-the request among the composition's agents.
-
-```python
-from mash.cli import Command
-
-
-def submit_through_target(ctx, message):
-    """Submit a message via the shell's host when set, else the bare agent.
-
-    Returns (request_id, agent_id_to_stream_from).
-    """
-    if ctx.host_id:
-        accepted = ctx.client.submit_host_request(
-            ctx.host_id,
-            message=message,
-            session_id=ctx.session_id,
-            user_id=ctx.user_id,
-        )
-        return accepted["request_id"], accepted["agent_id"]
-    request_id = ctx.client.submit_request(
-        ctx.agent_id,
-        message=message,
-        session_id=ctx.session_id,
-        user_id=ctx.user_id,
-    )
-    return request_id, ctx.agent_id
-
-
-def register_my_commands(shell):
-    def deploy_command(ctx, args):
-        if not args:
-            ctx.renderer.error("Usage: /deploy <environment>")
-            return
-        env = args[0]
-        ctx.renderer.info(f"Deploying to {env}...")
-
-        request_id, stream_agent_id = submit_through_target(
-            ctx, f"Generate a deploy checklist for {env}"
-        )
-        for event in ctx.client.stream_request(stream_agent_id, request_id):
-            event_name = event.get("event")
-            payload = event.get("data") or {}
-
-            if event_name == "agent.trace":
-                shell.render_runtime_trace_payload(payload)
-                continue
-            if event_name == "request.completed":
-                response = (payload.get("response") or {}).get("text", "")
-                if response:
-                    ctx.renderer.markdown(response)
-                break
-
-    shell.register_command(
-        Command(
-            name="deploy",
-            help="Generate a deploy checklist for an environment",
-            handler=deploy_command,
-        )
-    )
-```
-
-Then register it in your CLI entrypoint before `shell.run()`:
-
-```python
-shell = MashRemoteShell(client, target)
-register_my_commands(shell)
-shell.run()
-```
-
-### CLIContext reference
-
-Every command handler receives `ctx: CLIContext` with these attributes:
-
-| Attribute | Type | Description |
-|---|---|---|
-| `ctx.client` | `MashHostClient` | HTTP client for the host API |
-| `ctx.renderer` | `RichRenderer` | Terminal output (info, error, markdown, tables) |
-| `ctx.agent_id` | `str` | The target agent (`companion` when a host is set) |
-| `ctx.host_id` | `str \| None` | The host composition the shell is pinned to, if any |
-| `ctx.session_id` | `str` | Current session id |
-| `ctx.last_request_id` | `str \| None` | The id of the most recent request submitted in this shell |
-| `ctx.api_base_url` | `str` | Host base URL |
-| `ctx.session_ids` | `dict` | Map of agent id to session id |
-
-### Host-related client methods
-
-`MashHostClient` covers the composition surface, so custom commands and
-entrypoints never need raw HTTP:
-
-```python
-client.list_hosts()                                  # GET  /v1/hosts
-client.get_host("assistant")                         # GET  /v1/hosts/assistant
-client.define_host("assistant",                      # PUT  /v1/hosts/assistant
-                   agents=["my-agent", "docs-copilot"],
-                   workflows=[])
-client.submit_host_request("assistant",              # POST /v1/hosts/assistant/request
-                           message="...",
-                           session_id="s-1",
-                           user_id="u-1")
-```
-
-`submit_host_request` returns `{"request_id", "agent_id", "session_id", "user_id"}`.
-Stream from the returned `agent_id` with the same `stream_request` used for
-bare submissions.
-
-### Renderer methods
-
-`ctx.renderer` provides these output methods:
-
-```python
-ctx.renderer.info("Status message")
-ctx.renderer.warn("Warning message")
-ctx.renderer.error("Error message")
-ctx.renderer.markdown("**Rich** markdown output")
-ctx.renderer.print("Plain text")
-ctx.renderer.table(["Col A", "Col B"], [["row1a", "row1b"], ["row2a", "row2b"]])
-ctx.renderer.clear()
-```
-
-## Step 5: Wire Up Workflow Commands
-
-If your pool has registered workflows, the built-in `/workflow` command
-handles listing, running, and checking status. But you can also create
-dedicated commands for specific workflows that provide a better UX.
-
-Workflow runs target a registered agent directly and don't involve host
-composition, so this pattern is the same regardless of how the shell is
-targeted. Here is the pattern, shown for a changelog workflow; the Mash
-Pilot project's `/quiz` command follows the same shape:
-
-```python
-from mash.cli import Command
-
-
-def register_changelog_command(shell):
-    WORKFLOW_ID = "my-changelog"
-
-    def changelog_command(ctx, args):
-        commit_count = 5
-        if args:
-            commit_count = int(args[0])
-
-        # Start the workflow
-        run = ctx.client.run_workflow(
-            WORKFLOW_ID,
-            workflow_input={"commit_count": commit_count},
-        )
-        run_id = run.get("run_id")
-        ctx.renderer.info(f"Workflow started: {run_id}")
-
-        # Stream workflow events with real-time trace rendering
-        try:
-            for event in ctx.client.stream_workflow_run(WORKFLOW_ID, run_id):
-                event_name = event.get("event")
-                payload = event.get("data") or {}
-                task_agent_id = payload.get("task_agent_id") or ""
-
-                if event_name == "agent.trace":
-                    shell.render_runtime_trace_payload(
-                        payload,
-                        trace_label="Changelog",
-                        agent_id=task_agent_id or None,
-                    )
-                    continue
-
-                if event_name == "request.completed":
-                    response = (payload.get("response") or {}).get("text", "")
-                    ctx.renderer.markdown(response)
-                    break
-        finally:
-            shell.chain_renderer.finish_trace()
-
-    shell.register_command(
-        Command(
-            name="changelog",
-            help="Generate a changelog from recent commits",
-            handler=changelog_command,
-        )
-    )
-```
-
-Key points:
-
-- `ctx.client.run_workflow()` starts a workflow run and returns its id.
-- `ctx.client.stream_workflow_run()` yields SSE events as the workflow
-  executes.
-- `shell.render_runtime_trace_payload()` renders the agent's chain of
-  thought in real time (steps, tool calls, token counts, durations).
-- Always call `shell.chain_renderer.finish_trace()` in a `finally` block
-  to clean up the trace renderer.
-
-## Step 6: Package as a Console Script
-
-Add your CLI to `pyproject.toml` so it installs as a shell command:
+Use `default_agent="my-agent"` instead of `default_host` to talk directly to
+one agent. The app's target can be overridden with `--host` or `--agent`.
+The host and its composition belong to the deployment; opening the client
+does not change them.
+
+Register the executable in `pyproject.toml`:
 
 ```toml
 [project.scripts]
-my-cli = "my_agent.cli:main"
+my-app = "my_app.cli:main"
 ```
 
-After `pip install -e .`, users can run:
+Install the project, then run:
 
 ```bash
-my-cli --api-base-url http://localhost:8000
+my-app
+my-app repl --continue
+my-app repl --resume
+my-app run "summarize yesterday's errors"
+my-app workflow run export --input '{"table": "bills"}'
+my-app status
 ```
 
-## Full Example: Pilot CLI
+## Connection and user
 
-The Pilot project, at [`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/)
-in the mashpy repo, is a real-world example that follows this pattern. Its structure:
+Flags override environment variables. `MY_APP_API_BASE_URL`, `MY_APP_API_KEY`
+and `MY_APP_USER_ID` take precedence over the corresponding `MASH_` variables.
+The default URL is used next, then the connection saved by `connect`. Saved
+credentials and users are used only for the same deployment URL. The user
+falls back to `default_user`, which can be a string or a callable.
 
-```
-pilot/
-  catalog/
-    agents/     # one package per agent: pilot/ (the guide) plus a
-                # copilot per mashpy module (cli, api, mcp, runtime, workflow)
-    workflows/  # workflow definitions and their REPL commands (quiz)
-    __init__.py # CATALOG: the explicit registry build_pool() reads
-  spec.py       # build_pool(): registers the catalog as a flat pool
-  cli.py        # CLI entrypoint with MashRemoteShell + storefront commands
-  store.py      # the host config file (source of truth for compositions)
-  tools.py      # Custom tools (UpdateDocsTool)
-  prompt.py     # System prompt construction
-  skills/
-    build-mash-agent/SKILL.md
-    build-mash-host/SKILL.md
-    build-mash-workflow/SKILL.md
-    mash-quiz/SKILL.md
+```bash
+my-app connect --user-id sam
+my-app repl --user-id sam --agent docs-copilot
 ```
 
-`spec.py` registers the catalog into the pool; hosts are configuration, not
-code. The CLI entrypoint (`pilot/cli.py`):
+The app name appears in its header and names its history file under
+`~/.mash/history/`. Operator commands are omitted unless the app sets
+`operator_commands=True`.
 
-1. Parse args and resolve the connection
-2. For `pilot repl --host <id>`, publish the configured host compositions
-   to the deployment (`store.publish_hosts`, idempotent PUTs), fetch the
-   merged view of the requested host with `get_host`, and build a
-   `ShellTarget` for the companion (or a bare agent id for `--agent`)
-3. Create the `MashRemoteShell` and register Pilot's scoped commands:
-   `/quiz` when the host attaches the `pilot-quiz` workflow (the stock
-   `/agents` and `/workflow` commands are host-scoped natively)
-4. Call `shell.run()`
+## Extend the REPL
 
-`/quiz` relies on a workflow registered during `build_pool()`; the command
-triggers a run and streams the output, including the durable `AskUser`
-interactions the quiz asks its questions through.
+A `Command` handler receives the current `CLIContext` and parsed argument
+list. It may be an async function; synchronous handlers run in a worker
+thread so input and streaming stay responsive. Use `ctx.renderer` for output.
+Commands appear in `/help` and slash completion, grouped by `Command.group`.
 
-## Summary
+`tool_lines` callbacks receive tool arguments and return a short line, used
+both while a call runs and when it finishes. `theme` applies to Rich and
+prompt_toolkit. `workflow_renderers={"export": render_export}` supplies a
+callback for that workflow's result, in the REPL and top-level workflow
+commands.
 
-| What you write | What it does |
-|---|---|
-| `AgentSpec` subclasses | Define each agent's tools, skills, LLM, and system prompt |
-| `build_pool()` function | Registers agents and workflows into a `Pool` |
-| CLI entrypoint | Defines the host composition, creates `MashRemoteShell` pinned to it, registers commands |
-| Custom `Command` handlers | Domain-specific slash commands using `CLIContext`, routed through the shell's target |
-| Workflow commands | Start workflows and stream real-time execution traces |
-
-The `mash.cli` module handles connection management, the REPL loop,
-command dispatch, host-routed submission, chain-of-thought rendering, and
-all the built-in commands. Your CLI code only needs to define the
-composition and the commands that are specific to your agents' domain.
-
-For the same composition flow driven purely over HTTP, without the CLI,
-see [Building Dynamic Hosts over the API](building-dynamic-hosts-apis.md).
+For the complete command and customization reference, see the
+[CLI README](../../src/mash/cli/README.md).
