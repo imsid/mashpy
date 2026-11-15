@@ -630,8 +630,6 @@ class Repl:
         except Exception:
             return
         total = info.get("total_tokens")
-        if total is None:
-            total = info.get("session_total_tokens")
         if isinstance(total, int):
             self._session_tokens = total
 

@@ -11,14 +11,15 @@ from typing import Any
 
 from ..memory.store import MemoryStore
 from .events import RuntimeStore
+from .events.types import usage_totals
 
 
-async def session_event_token_totals(
+async def session_usage(
     runtime_store: RuntimeStore | None, session_id: str
-) -> dict[str, int]:
-    """Tokens a session's requests used, across every agent."""
+) -> dict[str, Any]:
+    """Tokens a session used, its subagent runs included, by agent."""
     if runtime_store is None:
-        return {"total_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+        return usage_totals([])
     return await runtime_store.session_usage(session_id)
 
 
@@ -42,10 +43,11 @@ async def session_info(
     model: Any,
     max_steps: Any,
 ) -> dict[str, Any]:
-    # total_tokens is the true spend recorded in the event log across every agent
-    # in the session (matching the admin rollup); session_total_tokens is the
-    # memory context budget, which compaction resets.
-    event_totals = await session_event_token_totals(runtime_store, session_id)
+    # total_tokens is the true spend recorded in the event log: every agent's
+    # requests in the session and the subagent runs they started, in sessions
+    # of their own. session_total_tokens is the memory context budget, which
+    # compaction resets.
+    usage = await session_usage(runtime_store, session_id)
     return {
         "app_id": app_id,
         "agent_id": app_id,
@@ -55,9 +57,10 @@ async def session_info(
         "session_total_tokens": await session_total_tokens(
             store, app_id=app_id, session_id=session_id
         ),
-        "total_tokens": event_totals["total_tokens"],
-        "cache_read_tokens": event_totals["cache_read_tokens"],
-        "cache_write_tokens": event_totals["cache_write_tokens"],
+        "total_tokens": usage["total_tokens"],
+        "cache_read_tokens": usage["cache_read_tokens"],
+        "cache_write_tokens": usage["cache_write_tokens"],
+        "usage": usage,
     }
 
 

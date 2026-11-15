@@ -56,9 +56,9 @@ def text_of(fragments: list[tuple[str, str]]) -> str:
 
 
 def test_token_and_time_formats() -> None:
-    assert [fmt_tokens(n) for n in (0, 950, 4100, 9999, 18_400, 1_200_000)] == [
-        "0", "950", "4.1k", "10.0k", "18k", "1.2M",
-    ]
+    assert [
+        fmt_tokens(n) for n in (0, 950, 4100, 9999, 18_400, 18_600, 999_600, 1_200_000)
+    ] == ["0", "950", "4.1k", "10k", "18k", "19k", "1.0M", "1.2M"]
     assert [fmt_seconds(s) for s in (0.84, 9.99, 12.7, 65, 3605)] == [
         "0.8s", "10.0s", "12s", "1m05s", "60m05s",
     ]
@@ -416,3 +416,31 @@ def test_a_theme_overrides_the_palette_in_both_libraries() -> None:
     assert rules["live.spinner"] == "magenta"
     assert rules["live.muted"] == "#888888"
     assert rich_theme({"accent": "magenta"}).styles["accent"].color.name == "magenta"
+
+
+def _table(width: int) -> list[str]:
+    out, buffer = renderer(width)
+    out.table(
+        ["Agent", "Model", "Runs", "In", "Out"],
+        [["companion", "claude-haiku-4-5", "2", "33k", "1.3k"],
+         ["↳ research", "claude-sonnet-4-6", "3", "111k", "8.9k"]],
+        numeric=3,
+        footer=["Total", "", "5", "144k", "10k"],
+    )
+    return [line.rstrip() for line in buffer.getvalue().splitlines()]
+
+
+def test_numeric_table_right_aligns_and_totals() -> None:
+    lines = _table(80)
+    assert lines[2].split() == ["companion", "claude-haiku-4-5", "2", "33k", "1.3k"]
+    assert set(lines[4].strip()) == {"─"}
+    assert lines[5].split() == ["Total", "5", "144k", "10k"]
+    # Numbers line up on the right.
+    assert lines[2].endswith(" 1.3k") and lines[3].endswith(" 8.9k")
+
+
+def test_narrow_numeric_table_keeps_its_numbers_and_drops_the_model() -> None:
+    lines = _table(36)
+    assert lines[0].split() == ["Agent", "Runs", "In", "Out"]
+    assert lines[3].split() == ["↳", "research", "3", "111k", "8.9k"]
+    assert all("…" not in line for line in lines)

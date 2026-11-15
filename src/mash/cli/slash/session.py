@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from ..commands import Command
 from ..render import fmt_tokens
 from .groups import GROUP_SESSION
@@ -31,27 +29,7 @@ def register(shell) -> None:
 
     def usage_command(ctx, _args: list[str]) -> None:
         session = ctx.client.get_session(ctx.agent_id, ctx.session_id)
-        total = session.get("total_tokens")
-        if total is None:
-            total = session.get("session_total_tokens")
-        line = f"This session: {fmt_tokens(int(total or 0))} tokens"
-        cache_read = int(session.get("cache_read_tokens") or 0)
-        cache_write = int(session.get("cache_write_tokens") or 0)
-        if cache_read or cache_write:
-            line += (
-                f" (cache: {fmt_tokens(cache_read)} read, "
-                f"{fmt_tokens(cache_write)} written)"
-            )
-        ctx.renderer.info(line)
-        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        buckets = ctx.client.get_usage(ctx.agent_id, from_ts=midnight.timestamp())
-        requests = sum(int(bucket.get("request_count") or 0) for bucket in buckets)
-        tokens_in = sum(int(bucket.get("input_tokens") or 0) for bucket in buckets)
-        tokens_out = sum(int(bucket.get("output_tokens") or 0) for bucket in buckets)
-        ctx.renderer.info(
-            f"Today, {ctx.agent_id}: {requests} request{'' if requests == 1 else 's'} · "
-            f"{fmt_tokens(tokens_in)} in · {fmt_tokens(tokens_out)} out"
-        )
+        show_usage(ctx.renderer, ctx.session_id, session.get("usage") or {})
 
     def copy_command(ctx, args: list[str]) -> None:
         if args not in ([], ["code"]):
@@ -69,10 +47,70 @@ def register(shell) -> None:
         compact_command,
         GROUP_SESSION,
     )
-    add("usage", "Tokens used by this session and today", usage_command, GROUP_SESSION)
+    add(
+        "usage",
+        "Tokens this session used, by agent, subagents included",
+        usage_command,
+        GROUP_SESSION,
+    )
     add(
         "copy",
         "Copy the last answer, or its last code block (/copy code)",
         copy_command,
         GROUP_SESSION,
+    )
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def show_usage(renderer, session_id: str, usage: dict) -> None:
+    """The session's tokens: one row per agent, its subagents under it."""
+    agents = [a for a in usage.get("agents") or [] if isinstance(a, dict)]
+    requests = int(usage.get("request_count") or 0)
+    runs = int(usage.get("subagent_count") or 0)
+    summary = [_plural(requests, "request")]
+    if runs:
+        summary.append(_plural(runs, "subagent run"))
+    summary.append(f"{fmt_tokens(int(usage.get('total_tokens') or 0))} tokens")
+    renderer.section(f"Session {session_id}")
+    renderer.muted(" · ".join(summary))
+    if not agents:
+        return
+
+    def counts(row: dict) -> list[str]:
+        return [
+            fmt_tokens(int(row.get(key) or 0))
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            )
+        ]
+
+    rows = []
+    for agent in agents:
+        subagent = not agent.get("request_count")
+        name = str(agent.get("agent_id") or "")
+        runs_here = int(agent.get("request_count") or 0) + int(
+            agent.get("subagent_count") or 0
+        )
+        rows.append(
+            [
+                f"↳ {name}" if subagent else name,
+                ", ".join(agent.get("models") or []) or "—",
+                str(runs_here),
+                *counts(agent),
+            ]
+        )
+    footer = None
+    if len(rows) > 1:
+        footer = ["Total", "", str(requests + runs), *counts(usage)]
+    renderer.table(
+        ["Agent", "Model", "Runs", "In", "Out", "Cache read", "Cache write"],
+        rows,
+        numeric=5,
+        footer=footer,
     )

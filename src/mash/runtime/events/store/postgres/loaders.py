@@ -23,6 +23,7 @@ from ...types import (
     accepted_request,
     accepted_user_id,
     event_attributes,
+    usage_totals,
 )
 
 
@@ -1274,26 +1275,74 @@ async def list_sessions(
     return {"sessions": sessions, "total": total}
 
 
-async def session_usage(pool: Any, session_id: str) -> dict[str, int]:
-    """Tokens a session's requests used, across every agent."""
+# A session's requests and every request they started, at any depth: the
+# companion's children run in sessions of their own.
+_SESSION_TREE = """
+    WITH RECURSIVE tree(request_id, agent_id, parent_request_id) AS (
+        SELECT request_id, agent_id, parent_request_id
+        FROM runtime_request
+        WHERE session_id = %s
+        UNION
+        SELECT child.request_id, child.agent_id, child.parent_request_id
+        FROM runtime_request AS child
+        JOIN tree ON child.parent_request_id = tree.request_id
+    )
+"""
+
+
+async def session_usage(pool: Any, session_id: str) -> dict[str, Any]:
+    """Tokens a session used, its requests' subagent runs included, by agent."""
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                """
-                SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
-                       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-                       COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens
-                FROM runtime_request
-                WHERE session_id = %s
+                _SESSION_TREE
+                + """
+                SELECT tree.agent_id,
+                       COUNT(*) FILTER (WHERE tree.parent_request_id IS NULL)
+                           AS request_count,
+                       COUNT(*) FILTER (WHERE tree.parent_request_id IS NOT NULL)
+                           AS subagent_count,
+                       COALESCE(SUM(r.input_tokens), 0) AS input_tokens,
+                       COALESCE(SUM(r.output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(r.cache_read_tokens), 0) AS cache_read_tokens,
+                       COALESCE(SUM(r.cache_write_tokens), 0) AS cache_write_tokens
+                FROM tree
+                JOIN runtime_request AS r ON r.request_id = tree.request_id
+                GROUP BY tree.agent_id
                 """,
                 (session_id,),
             )
-            row = await cursor.fetchone()
-    return {
-        "total_tokens": int(row["total_tokens"]),
-        "cache_read_tokens": int(row["cache_read_tokens"]),
-        "cache_write_tokens": int(row["cache_write_tokens"]),
-    }
+            rows = await cursor.fetchall()
+            await cursor.execute(
+                _SESSION_TREE
+                + """
+                SELECT DISTINCT tree.agent_id,
+                       e.payload -> 'attributes' ->> 'gen_ai.request.model' AS model
+                FROM tree
+                JOIN runtime_event_log AS e
+                  ON e.request_id = tree.request_id AND e.event_type = %s
+                """,
+                (session_id, RuntimeEventType.CHAT_END.value),
+            )
+            model_rows = await cursor.fetchall()
+    models: dict[str, list[str]] = {}
+    for row in model_rows:
+        if row["model"]:
+            models.setdefault(str(row["agent_id"] or ""), []).append(str(row["model"]))
+    agents = [
+        {
+            "agent_id": str(row["agent_id"] or ""),
+            "models": sorted(models.get(str(row["agent_id"] or ""), [])),
+            "request_count": int(row["request_count"]),
+            "subagent_count": int(row["subagent_count"]),
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+            "cache_read_tokens": int(row["cache_read_tokens"]),
+            "cache_write_tokens": int(row["cache_write_tokens"]),
+        }
+        for row in rows
+    ]
+    return usage_totals(agents)
 
 
 async def aggregate_usage(

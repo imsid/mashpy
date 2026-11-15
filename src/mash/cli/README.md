@@ -147,7 +147,7 @@ Session
 - `/new`: start a new session without leaving the REPL.
 - `/resume`: open the session picker and go on in the session you choose. Neither works while a request runs in the foreground.
 - `/compact`: have the agent summarize the session so far. Later requests start from the summary.
-- `/usage`: the session's tokens, and today's requests and tokens for the agent the REPL talks to (the companion on a host).
+- `/usage`: the tokens the session used, one row per agent with its model, runs, input, output and cache tokens. On a host the companion's row comes first and each agent it ran (`↳`) follows, with the runs it made in sessions of their own; a totals row closes the table.
 - `/copy`: copy the last answer to the system clipboard. `/copy code` copies its last code block. Where there is no system clipboard, Ctrl-Y pastes the text into the input.
 
 Requests
@@ -225,7 +225,7 @@ like any other terminal output.
   ends.
 - Ctrl-L clears the screen.
 - The status bar shows the target, the number of `bg` requests being watched,
-  the session's tokens, and the keys that apply.
+  the session's tokens (its subagent runs included), and the keys that apply.
 
 When stdin is a pipe or a file, the REPL reads one message or command per
 line and runs each to its end before reading the next. Nothing is live in

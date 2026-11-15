@@ -384,6 +384,16 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Path params:
   - `agent_id`
   - `session_id`
+- Returns `agent_id`, `session_id`, `model`, `max_steps`,
+  `session_total_tokens` (the context budget, which compaction resets), and
+  what the session's requests spent with the subagent runs they started, which
+  run in sessions of their own: `total_tokens` (input plus output),
+  `cache_read_tokens`, `cache_write_tokens`, and `usage`:
+  `{ request_count, subagent_count, input_tokens, output_tokens, total_tokens,
+  cache_read_tokens, cache_write_tokens, agents }`. `agents` has a row per
+  agent, `{ agent_id, models, request_count, subagent_count, input_tokens,
+  output_tokens, cache_read_tokens, cache_write_tokens }`; agents the
+  session's own requests ran come first, then subagents by tokens.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests`
 - Lists the session's requests from every agent in it, newest first, read from

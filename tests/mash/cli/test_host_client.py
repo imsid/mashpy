@@ -438,18 +438,6 @@ class MashHostClientRouteTests(unittest.TestCase):
         self.assertIn("/api/v1/agent/primary/sessions/s%201/compact", compact["url"])
         self.assertEqual(compact["json"], {"reason": "manual"})
 
-    def test_get_usage_sends_only_the_filters_given(self) -> None:
-        client, session = self._client({"data": {"buckets": [{"input_tokens": 5}]}})
-        self.assertEqual(
-            client.get_usage("primary", from_ts=100.0), [{"input_tokens": 5}]
-        )
-        url = str(session.calls[0]["url"])
-        self.assertIn("/api/v1/telemetry/usage", url)
-        self.assertIn("agent_id=primary", url)
-        self.assertIn("from_ts=100.0", url)
-        self.assertIn("bucket=day", url)
-        self.assertNotIn("session_id", url)
-
     def test_tools_and_skills_read_the_pool_routes(self) -> None:
         client, session = self._client(
             {"data": {"tools": [{"tool": {"name": "t"}, "agents": ["a"]}]}},

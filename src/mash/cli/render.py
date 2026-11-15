@@ -20,6 +20,7 @@ from typing import Any, List, Optional, Protocol
 from prompt_toolkit.application import get_app_or_none
 from prompt_toolkit.application.run_in_terminal import in_terminal
 from rich import box
+from rich.cells import cell_len
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import CodeBlock, Heading, Markdown
 from rich.markup import escape
@@ -221,13 +222,13 @@ def prompt_style_rules(theme: Mapping[str, str] | None = None) -> dict[str, str]
 
 
 def fmt_tokens(count: int) -> str:
-    """``950``, ``4.1k``, ``18k``, ``1.2M``."""
+    """``950``, ``4.1k``, ``18k``, ``1.2M``, each rounded to the nearest."""
     if count < 1000:
         return str(count)
-    if count < 10_000:
+    if count < 9950:
         return f"{count / 1000:.1f}k"
-    if count < 1_000_000:
-        return f"{count // 1000}k"
+    if count < 999_500:
+        return f"{round(count / 1000)}k"
     return f"{count / 1_000_000:.1f}M"
 
 
@@ -381,13 +382,25 @@ class Renderer(Protocol):
         """Render Markdown-formatted text."""
         ...
 
-    def table(self, headers: List[str], rows: List[List[str]]) -> None:
-        """Render a table."""
+    def table(
+        self,
+        headers: List[str],
+        rows: List[List[str]],
+        *,
+        numeric: int = 0,
+        footer: Optional[List[str]] = None,
+    ) -> None:
+        """Render a table; the last ``numeric`` columns are right-aligned
+        numbers, and ``footer`` is a totals row under a rule."""
         ...
 
     def clear(self) -> None:
         """Clear the terminal screen."""
         ...
+
+
+# SIMPLE_HEAD with a rule over the footer too.
+_SIMPLE_HEAD_FOOT = box.Box("    \n    \n ── \n    \n    \n ── \n    \n    \n")
 
 
 class RichRenderer:
@@ -431,7 +444,7 @@ class RichRenderer:
 
     def muted(self, text: str) -> None:
         """Render secondary text."""
-        self._emit("line", text, style="muted")
+        self._emit("line", text, style="muted", highlight=False)
 
     def link(self, text: str) -> None:
         """Render a line holding a link, never broken across lines."""
@@ -443,7 +456,7 @@ class RichRenderer:
         """A line that starts a new part of the output, after a blank line."""
         if self._last not in (None, "blank"):
             self._console.print()
-        self._console.print(text, style=style)
+        self._console.print(text, style=style, highlight=False)
         self._last = "line"
 
     def warn(self, text: str) -> None:
@@ -486,19 +499,63 @@ class RichRenderer:
             self._console.print(Trimmed(AnswerMarkdown(text)), width=max(20, width))
         return _OSC.sub("", capture.get())
 
-    def table(self, headers: List[str], rows: List[List[str]]) -> None:
-        """Render a table: the first column accented, the last one wrapping."""
-        table = Table(box=box.SIMPLE_HEAD, header_style="bold", show_edge=False)
-        for index, header in enumerate(headers):
-            last = index == len(headers) - 1 and len(headers) > 1
+    def table(
+        self,
+        headers: List[str],
+        rows: List[List[str]],
+        *,
+        numeric: int = 0,
+        footer: Optional[List[str]] = None,
+    ) -> None:
+        """Render a table: the first column accented, the last one wrapping.
+
+        The last ``numeric`` columns hold numbers: right-aligned and never
+        cut. When they leave the text columns between them and the first
+        too little room, those columns are left out. ``footer`` is a totals
+        row, set off by a rule.
+        """
+        columns = list(range(len(headers)))
+        fixed: list[int] = []
+        widths: dict[int, int] = {}
+        if numeric:
+            first_number = len(headers) - numeric
+
+            def width(index: int) -> int:
+                cells = [headers[index], *(row[index] for row in rows)]
+                if footer is not None:
+                    cells.append(footer[index])
+                return max(cell_len(cell) for cell in cells)
+
+            fixed = [0, *range(first_number, len(headers))]
+            widths = {i: width(i) for i in fixed}
+            # Each column is padded by a space on either side.
+            room = self._console.width - sum(widths[i] + 2 for i in fixed)
+            middle = [i for i in columns if i not in fixed]
+            if middle and room < sum(min(width(i), 8) + 2 for i in middle):
+                columns = fixed
+        table = Table(
+            box=_SIMPLE_HEAD_FOOT if footer is not None else box.SIMPLE_HEAD,
+            header_style="bold",
+            show_edge=False,
+            show_footer=footer is not None,
+            footer_style="bold",
+        )
+        for position, index in enumerate(columns):
+            number = index >= len(headers) - numeric
+            last = position == len(columns) - 1 and len(columns) > 1 and not number
             table.add_column(
-                header,
-                style="accent" if index == 0 else None,
-                no_wrap=not last,
+                headers[index],
+                footer=footer[index] if footer is not None else "",
+                style="accent" if position == 0 else None,
+                justify="right" if number else "left",
+                # Rich narrows only wrappable columns: in a numeric table,
+                # the text columns between the first and the numbers.
+                no_wrap=not last and (not numeric or index in fixed),
                 overflow="fold" if last else "ellipsis",
+                min_width=widths.get(index),
             )
         for row in rows:
-            table.add_row(*row)
+            table.add_row(*(row[index] for index in columns))
         self._emit("line", Trimmed(table))
 
     def clear(self) -> None:
