@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.39.2](https://github.com/imsid/mashpy/compare/mashpy-v0.39.1...mashpy-v0.39.2) (2026-11-15)
+
+
+### Bug Fixes
+
+* **cli:** /usage and the status bar count subagent runs ([#283](https://github.com/imsid/mashpy/issues/283)) ([7ea16ff](https://github.com/imsid/mashpy/commit/7ea16ff5fcda8cd79276c177d360a0429e192bf9))
+
 ## [0.39.1](https://github.com/imsid/mashpy/compare/mashpy-v0.39.0...mashpy-v0.39.1) (2026-11-15)
 
 
