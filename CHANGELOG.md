@@ -9,6 +9,13 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.39.1](https://github.com/imsid/mashpy/compare/mashpy-v0.39.0...mashpy-v0.39.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **cli:** clean streaming, Markdown spacing, /tools and ledger leaks ([#281](https://github.com/imsid/mashpy/issues/281)) ([2ad621e](https://github.com/imsid/mashpy/commit/2ad621e14a8e79553c63e7e39130ce49892bf7fb))
+
 ## [0.39.0](https://github.com/imsid/mashpy/compare/mashpy-v0.38.1...mashpy-v0.39.0) (2026-11-15)
 
 
