@@ -80,8 +80,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id=request_id,
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id=trace_id,
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -92,8 +91,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id=request_id,
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id=trace_id,
                 event_type=RuntimeEventType.INVOKE_AGENT_END.value,
@@ -143,8 +141,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-running",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id="tr-r",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -172,7 +169,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         time.sleep(0.01)
         await runtime.store.save_turn(
-            "tr-later", "s-1", runtime.app_id, "next", "answer", {}, 0,
+            "tr-later", "s-1", runtime.agent_id, "next", "answer", {}, 0,
         )
 
         result = await runtime.resume_request("req-4")
@@ -186,7 +183,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # A newer replayable turn in the same session, from a different trace.
         time.sleep(0.01)
         await runtime.store.save_turn(
-            "tr-later", "s-1", runtime.app_id, "next", "answer", {}, 0,
+            "tr-later", "s-1", runtime.agent_id, "next", "answer", {}, 0,
         )
 
         with self.assertRaises(RequestStaleError):
@@ -208,7 +205,7 @@ class ResumeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         # The request's own completed turn (same trace) must not count as stale.
         await runtime.store.save_turn(
-            "tr-0", "s-1", runtime.app_id, "hi", "done", {}, 0,
+            "tr-0", "s-1", runtime.agent_id, "hi", "done", {}, 0,
         )
 
         result = await runtime.resume_request("req-3")

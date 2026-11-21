@@ -78,7 +78,7 @@ class BuilderSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=BUILDER_AGENT_ID,
+            agent_id=BUILDER_AGENT_ID,
             system_prompt=[
                 {
                     "type": "text",

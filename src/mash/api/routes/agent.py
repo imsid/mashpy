@@ -454,7 +454,7 @@ def build_agent_router() -> APIRouter:
             {
                 "sessions": await sessions.list_sessions(
                     store,
-                    app_id=resolved_agent_id,
+                    agent_id=resolved_agent_id,
                     limit=resolved_limit,
                     user_id=normalize_optional_text(user_id),
                 ),
@@ -474,7 +474,7 @@ def build_agent_router() -> APIRouter:
             await sessions.session_info(
                 store,
                 state.pool.get_runtime_store(),
-                app_id=resolved_agent_id,
+                agent_id=resolved_agent_id,
                 session_id=resolved_session_id,
                 model=settings["model"],
                 max_steps=settings["max_steps"],
@@ -538,7 +538,7 @@ def build_agent_router() -> APIRouter:
         return success(
             {
                 "turns": await sessions.history_turns(
-                    store, app_id=resolved_agent_id, session_id=session_id, limit=limit
+                    store, agent_id=resolved_agent_id, session_id=session_id, limit=limit
                 )
             }
         )
@@ -565,7 +565,7 @@ def build_agent_router() -> APIRouter:
                 "definitions": build_default_signal_collector().get_signal_definitions(),
                 "turns": await sessions.session_signals(
                     store,
-                    app_id=resolved_agent_id,
+                    agent_id=resolved_agent_id,
                     session_id=normalized_session_id,
                     limit=limit,
                 ),
@@ -607,7 +607,7 @@ def build_agent_router() -> APIRouter:
         resolved_trace_id = require_trace_id(trace_id)
         store = get_runtime_store(request, resolved_agent_id)
         request_id = await store.get_request_id_for_trace(
-            resolved_trace_id, app_id=resolved_agent_id
+            resolved_trace_id, agent_id=resolved_agent_id
         )
         if not request_id:
             raise APIError(
@@ -702,7 +702,7 @@ def build_agent_router() -> APIRouter:
         resolved_trace_id = require_trace_id(trace_id)
         store = get_runtime_store(request, resolved_agent_id)
         events = await store.list_events(
-            app_id=resolved_agent_id,
+            agent_id=resolved_agent_id,
             session_id=resolved_session_id,
             trace_id=resolved_trace_id,
         )

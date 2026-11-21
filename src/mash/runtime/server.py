@@ -63,7 +63,7 @@ class AgentServer:
 
     def __init__(self, runtime: AgentRuntime, *, token: str | None = None) -> None:
         self.runtime = runtime
-        self.agent_id = runtime.app_id
+        self.agent_id = runtime.agent_id
         self._ready_event = asyncio.Event()
         self._startup_error: BaseException | None = None
 
@@ -188,7 +188,7 @@ class AgentServer:
         """Liveness only: no database call, so the host's polls stay cheap."""
         del request
         return JSONResponse(
-            {"status": "ok", "agent_id": self.agent_id, "app_id": self.runtime.app_id}
+            {"status": "ok", "agent_id": self.agent_id}
         )
 
     async def submit_request(self, request: Request) -> Response:

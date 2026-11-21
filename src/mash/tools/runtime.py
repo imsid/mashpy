@@ -22,13 +22,13 @@ class RuntimeToolBuilder:
     def __init__(
         self,
         store: MemoryStore,
-        app_id: str,
+        agent_id: str,
         session_id: str | None = None,
         session_id_provider: Callable[[], str] | None = None,
         user_id: str | None = None,
     ) -> None:
         self._store = store
-        self._app_id = app_id
+        self._agent_id = agent_id
         self._user_id = user_id
         if session_id_provider is not None:
             self._session_id_provider = session_id_provider
@@ -52,7 +52,7 @@ class RuntimeToolBuilder:
 
     def build_get_latest_session_tool(self) -> Tool:
         async def execute(_args: Dict[str, Any]) -> ToolResult:
-            session = await self._store.get_latest_session(app_id=self._app_id)
+            session = await self._store.get_latest_session(agent_id=self._agent_id)
             if session is None:
                 return ToolResult.error("no sessions found for this app")
             return ToolResult(content=json.dumps(session, indent=2), is_error=False)
@@ -71,7 +71,7 @@ class RuntimeToolBuilder:
         async def execute(args: Dict[str, Any]) -> ToolResult:
             raw_session_id = args.get("session_id")
             if raw_session_id is None:
-                latest_session = await self._store.get_latest_session(app_id=self._app_id)
+                latest_session = await self._store.get_latest_session(agent_id=self._agent_id)
                 if latest_session is None:
                     return ToolResult.error("no sessions found for this app")
                 session_id = str(latest_session["session_id"])
@@ -81,7 +81,7 @@ class RuntimeToolBuilder:
                 return ToolResult.error("session_id must be a non-empty string if provided")
 
             trace = await self._store.get_latest_trace(
-                app_id=self._app_id,
+                agent_id=self._agent_id,
                 session_id=session_id,
             )
             if trace is None:
@@ -103,7 +103,7 @@ class RuntimeToolBuilder:
             raw_session_id = args.get("session_id")
             raw_limit = args.get("limit", 5)
             if raw_session_id is None:
-                latest_session = await self._store.get_latest_session(app_id=self._app_id)
+                latest_session = await self._store.get_latest_session(agent_id=self._agent_id)
                 if latest_session is None:
                     return ToolResult.error("no sessions found for this app")
                 session_id = str(latest_session["session_id"])
@@ -118,7 +118,7 @@ class RuntimeToolBuilder:
                 return ToolResult.error("limit must be an integer")
 
             traces = await self._store.list_recent_traces(
-                app_id=self._app_id,
+                agent_id=self._agent_id,
                 session_id=session_id,
                 limit=limit,
             )
@@ -145,7 +145,7 @@ class RuntimeToolBuilder:
         async def execute(args: Dict[str, Any]) -> ToolResult:
             turns = await self._store.get_turns(
                 session_id=self._session_id(),
-                app_id=self._app_id,
+                agent_id=self._agent_id,
                 limit=args.get("limit"),
             )
             messages = []
@@ -188,7 +188,7 @@ class RuntimeToolBuilder:
                 normalized_queries = self._normalize_search_queries(query)
                 results = await self._search_with_prefixes(
                     normalized_queries,
-                    app_id=self._app_id,
+                    agent_id=self._agent_id,
                     limit=limit,
                     session_id=search_session_id,
                     user_id=self._user_id,
@@ -247,7 +247,7 @@ class RuntimeToolBuilder:
         self,
         queries: list[str],
         *,
-        app_id: str,
+        agent_id: str,
         limit: int,
         session_id: str | None,
         user_id: str | None,
@@ -256,7 +256,7 @@ class RuntimeToolBuilder:
         for prefixed_query in queries:
             for result in await self._search_service.search(
                 prefixed_query,
-                app_id=app_id,
+                agent_id=agent_id,
                 limit=limit,
                 session_id=session_id,
                 user_id=user_id,
@@ -306,7 +306,7 @@ class RuntimeToolBuilder:
                 turns = (
                     await self._store.get_turn_by_ids(
                         pairs=lookup_pairs,
-                        app_id=self._app_id,
+                        agent_id=self._agent_id,
                         user_id=self._user_id,
                     )
                     if lookup_pairs

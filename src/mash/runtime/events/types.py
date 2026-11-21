@@ -102,7 +102,7 @@ class FeedbackType(str, Enum):
 class FeedbackRecord:
     """One piece of user feedback captured with its session context."""
 
-    app_id: str
+    agent_id: str
     message: str
     feedback_type: str = FeedbackType.TEXT.value
     feedback_id: int = 0
@@ -118,7 +118,6 @@ class FeedbackRecord:
 class RuntimeEvent:
     """One durable runtime event in append-only storage."""
 
-    app_id: str
     agent_id: str
     event_type: str
     event_id: int = 0

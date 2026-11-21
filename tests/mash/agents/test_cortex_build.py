@@ -84,7 +84,7 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
         *,
         user_id: str | None = "u-1",
         created_at: float,
-        app_id: str = "assistant",
+        agent_id: str = "assistant",
         workflow_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         message: str = "hello",
@@ -92,7 +92,7 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
         await self.memory_store.save_turn(
             trace_id=trace_id,
             session_id="s-1",
-            app_id=app_id,
+            agent_id=agent_id,
             user_message=message,
             agent_response=f"reply to {message}",
             signals={},
@@ -106,7 +106,6 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
     async def _event(self, trace_id: str, event_type: str, payload: dict[str, Any], **kw: Any) -> None:
         await self.runtime_store.append_event(
             RuntimeEvent(
-                app_id="assistant",
                 agent_id="assistant",
                 request_id=f"req-{trace_id}",
                 trace_id=trace_id,
@@ -445,7 +444,7 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
                 ("sub", {"metadata": {"subagent_id": "research"}}),
             ):
                 await memory_store.save_turn(
-                    trace_id=f"{self.user_id}-{trace}", session_id="s", app_id="assistant",
+                    trace_id=f"{self.user_id}-{trace}", session_id="s", agent_id="assistant",
                     user_message="hi", agent_response="yo", signals={}, session_total_tokens=0,
                     user_id=self.user_id, **kwargs,
                 )

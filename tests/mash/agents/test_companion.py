@@ -54,7 +54,7 @@ class CompanionSpecTests(unittest.TestCase):
         config = spec.build_agent_config()
 
         self.assertEqual(spec.get_agent_id(), "companion")
-        self.assertEqual(config.app_id, "companion")
+        self.assertEqual(config.agent_id, "companion")
         self.assertEqual(config.conversation_history_turns, 10)
         self.assertFalse(spec.enable_sandbox())
         self.assertEqual(spec.browser_sites(), [])
@@ -206,8 +206,8 @@ class _WorkflowCaller(LLMProvider):
         )
         return _response(calls=[call])
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -231,9 +231,9 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             ("companion", None, False),
             ("pilot", {"agents": ["pilot"], "workflows": ["changelog"]}, False),
         ]
-        for app_id, host, expected in cases:
-            with self.subTest(app_id=app_id, host=host):
-                runtime = SimpleNamespace(app_id=app_id, get_host_access=lambda: access)
+        for agent_id, host, expected in cases:
+            with self.subTest(agent_id=agent_id, host=host):
+                runtime = SimpleNamespace(agent_id=agent_id, get_host_access=lambda: access)
                 agent = SimpleNamespace(tools=ToolRegistry())
                 configure_run_workflow(runtime, agent, host=host)
                 self.assertEqual("RunWorkflow" in agent.tools, expected)

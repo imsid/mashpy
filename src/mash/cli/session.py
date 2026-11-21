@@ -196,7 +196,7 @@ class Repl:
             self.renderer, detail=lambda: self.detail, tool_lines=tool_lines
         )
         self.command_registry = CommandRegistry(
-            app_id=target.agent_id,
+            agent_id=target.agent_id,
             event_logger=RemoteCommandEventLogger(
                 client, agent_id=target.agent_id, host_id=target.host_id
             ),

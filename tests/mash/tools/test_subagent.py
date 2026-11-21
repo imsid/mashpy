@@ -636,10 +636,10 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         from mash.tools.registry import ToolRegistry
 
         access = SimpleNamespace(get_client=lambda agent_id: None)
-        runtime = SimpleNamespace(app_id="companion", get_host_access=lambda: access)
+        runtime = SimpleNamespace(agent_id="companion", get_host_access=lambda: access)
         for config, expected in (
-            (AgentConfig(app_id="companion", system_prompt="p"), 3600),
-            (AgentConfig(app_id="companion", system_prompt="p", subagent_timeout_seconds=7200), 7200),
+            (AgentConfig(agent_id="companion", system_prompt="p"), 3600),
+            (AgentConfig(agent_id="companion", system_prompt="p", subagent_timeout_seconds=7200), 7200),
         ):
             agent = SimpleNamespace(tools=ToolRegistry(), config=config)
             configure_run_subagents(
@@ -652,7 +652,7 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         from mash.core.config import AgentConfig
 
         with self.assertRaises(ValueError):
-            AgentConfig(app_id="a", system_prompt="p", subagent_timeout_seconds=0)
+            AgentConfig(agent_id="a", system_prompt="p", subagent_timeout_seconds=0)
 
     def test_the_schema_states_the_limits(self) -> None:
         properties = self.tool.parameters["properties"]

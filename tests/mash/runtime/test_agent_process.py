@@ -260,7 +260,6 @@ class H2ARelayAuthTests(unittest.TestCase):
             self.store.append_event(
                 RuntimeEvent(
                     request_id=request_id,
-                    app_id=agent_id,
                     agent_id=agent_id,
                     session_id=session_id,
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -419,7 +418,7 @@ class H2ARelayAuthTests(unittest.TestCase):
             self.memory.save_turn(
                 trace_id=f"{session_id}-t",
                 session_id=session_id,
-                app_id=agent_id,
+                agent_id=agent_id,
                 user_message="earlier brief",
                 agent_response="earlier answer",
                 signals={},
@@ -536,7 +535,6 @@ class H2ARelayAuthTests(unittest.TestCase):
             self.store.append_event(
                 RuntimeEvent(
                     request_id="req-sub",
-                    app_id="research",
                     agent_id="research",
                     session_id="s-1",
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -627,9 +625,9 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 # The subagent ran in its own process, in a session of its own.
                 [child] = await runtime_store.list_child_requests(accepted["request_id"])
                 turns = await memory_store.get_turns(
-                    session_id=child["session_id"], app_id="research"
+                    session_id=child["session_id"], agent_id="research"
                 )
-                turn_users = {(t["app_id"], t["user_id"]) for t in memory_store._turns}
+                turn_users = {(t["agent_id"], t["user_id"]) for t in memory_store._turns}
         finally:
             await primary_server.runtime.shutdown()
             await research_server.runtime.shutdown()

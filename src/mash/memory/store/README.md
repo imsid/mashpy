@@ -29,7 +29,7 @@ Current backend status:
 `save_logs(logs) -> None`
 - Persists one or more structured log rows.
 - Required per-row inputs:
-  - `app_id`
+  - `agent_id`
   - `session_id`
   - `trace_id`
   - `event_class`
@@ -37,28 +37,28 @@ Current backend status:
   - `created_at`
   - `payload`
 
-`get_logs(app_id, session_id=None, trace_id=None, limit=None, after_log_id=None) -> list[dict]`
+`get_logs(agent_id, session_id=None, trace_id=None, limit=None, after_log_id=None) -> list[dict]`
 - Returns reconstructed public event records for one app scope.
 - Expected shape per item:
   - `event_type`
   - `ts`
-  - `app_id`
+  - `agent_id`
   - `session_id`
   - `event_class`
   - `payload`
   - class-specific top-level fields such as `trace_id`, `duration_ms`, `model`, `tool_calls`, `metadata`
 
-`list_recent_log_traces(app_id, session_id, limit=5) -> list[dict]`
+`list_recent_log_traces(agent_id, session_id, limit=5) -> list[dict]`
 - Returns recent trace summaries grouped from the `logs` table.
 - Expected shape per item:
   - `trace_id`
   - `session_id`
-  - `app_id`
+  - `agent_id`
   - `started_at`
   - `last_event_at`
   - `event_count`
 
-`get_latest_log_trace(app_id, session_id) -> dict | None`
+`get_latest_log_trace(agent_id, session_id) -> dict | None`
 - Convenience wrapper over `list_recent_log_traces(..., limit=1)`.
 
 ### Turn Persistence
@@ -68,7 +68,7 @@ Current backend status:
 - Inputs:
   - `trace_id`: used as the stored `trace_id`
   - `session_id`
-  - `app_id`
+  - `agent_id`
   - `user_message`
   - `agent_response`
   - `signals`
@@ -80,7 +80,7 @@ Current backend status:
 Notes:
 - `signals` are backend-defined JSON-compatible values associated with the turn.
 
-`get_turns(session_id, app_id, limit=None) -> list[dict]`
+`get_turns(session_id, agent_id, limit=None) -> list[dict]`
 - Returns conversation turns for one session.
 - Expected shape per item:
   - `trace_id`
@@ -93,19 +93,19 @@ Notes:
 
 Behavior:
 - The contract is chronological turn order.
-- `app_id` is required and scopes reads to one agent.
+- `agent_id` is required and scopes reads to one agent.
 
-`get_replay_turns(session_id, app_id, turns) -> list[dict]`
+`get_replay_turns(session_id, agent_id, turns) -> list[dict]`
 - The turns a request replays into its context, oldest first: the latest
   replayable `summary_checkpoint` turn, if any, then up to `turns` replayable
   turns after it. Same shape as `get_turns`, without `signals`.
 - The runtime calls it with `AgentConfig.conversation_history_turns` when it
   loads a request's context; the Postgres store reads only those rows.
 
-`get_turn(trace_id, app_id, session_id=None) -> dict | None`
-- One turn by its trace id, the primary key, when it belongs to `app_id` (and to `session_id` when given). The row has `trace_id`, `session_id`, `user_message`, `agent_response`, `metadata` and `created_at`.
+`get_turn(trace_id, agent_id, session_id=None) -> dict | None`
+- One turn by its trace id, the primary key, when it belongs to `agent_id` (and to `session_id` when given). The row has `trace_id`, `session_id`, `user_message`, `agent_response`, `metadata` and `created_at`.
 
-`get_turn_by_ids(pairs, app_id) -> list[dict] | None`
+`get_turn_by_ids(pairs, agent_id) -> list[dict] | None`
 - Bulk lookup by exact `{session_id, trace_id}` pairs.
 - Expected shape per returned item:
   - `trace_id`
@@ -114,11 +114,11 @@ Behavior:
   - `agent_response`
 
 Behavior:
-- `app_id` is required and scopes reads to one agent.
+- `agent_id` is required and scopes reads to one agent.
 - Missing pairs are omitted.
 - Returns `None` when no requested pairs are valid or found.
 
-`get_session_signals(session_id, app_id, limit=None) -> list[dict]`
+`get_session_signals(session_id, agent_id, limit=None) -> list[dict]`
 - Returns chronological per-turn signal payloads for one session.
 - Expected shape per item:
   - `trace_id`
@@ -127,13 +127,13 @@ Behavior:
 
 Behavior:
 - The contract is chronological turn order.
-- `app_id` is required and scopes reads to one agent.
+- `agent_id` is required and scopes reads to one agent.
 - Turns with no persisted signals must still be returned with `signals = {}`.
 - This method returns signal values only; signal definitions are runtime-owned metadata surfaced by the runtime/API layer.
 
 ### Session Listing And Trace Lookup
 
-`list_sessions(app_id, *, limit) -> list[dict]`
+`list_sessions(agent_id, *, limit) -> list[dict]`
 - Returns the app's `limit` most recently active sessions, newest first.
 - The Postgres store reads them from `memory_session`, one row per app and
   session that `save_turn` updates in the turn's transaction, so the cost
@@ -144,10 +144,10 @@ Behavior:
   - `last_activity_at`
   - `session_total_tokens`
 
-`get_latest_session(app_id) -> dict | None`
-- Convenience wrapper returning the first item from `list_sessions(app_id, limit=1)`.
+`get_latest_session(agent_id) -> dict | None`
+- Convenience wrapper returning the first item from `list_sessions(agent_id, limit=1)`.
 
-`list_recent_traces(app_id, session_id, limit=5) -> list[dict]`
+`list_recent_traces(agent_id, session_id, limit=5) -> list[dict]`
 - Returns recent turns/traces for a specific session within an app.
 - Expected shape per item:
   - `trace_id`
@@ -157,26 +157,26 @@ Behavior:
   - `metadata`
   - `created_at`
 
-`get_latest_trace(app_id, session_id) -> dict | None`
+`get_latest_trace(agent_id, session_id) -> dict | None`
 - Convenience wrapper over `list_recent_traces(..., limit=1)`.
 
 ### Search Methods
 
-`keyword_search(column, query_term, limit, session_id=None, app_id=None) -> list[dict]`
+`keyword_search(column, query_term, limit, session_id=None, agent_id=None) -> list[dict]`
 - Searches one text column by keyword.
 - Inputs:
   - `column`: currently expected to be `user_message` or `agent_response`
   - `query_term`
   - `limit`
   - optional `session_id`
-  - optional `app_id`
+  - optional `agent_id`
 - Required hit shape:
   - `trace_id`
   - `session_id`
   - `score`
   - `preview`
 
-`semantic_search(column, query_term, query_embedding, limit, session_id=None, app_id=None) -> list[dict]`
+`semantic_search(column, query_term, query_embedding, limit, session_id=None, agent_id=None) -> list[dict]`
 - Protocol hook for semantic/vector retrieval over one text column.
 - Required hit shape matches `keyword_search`.
 - Not implemented in the built-in backend.

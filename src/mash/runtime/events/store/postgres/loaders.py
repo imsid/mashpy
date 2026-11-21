@@ -43,7 +43,6 @@ def dict_to_event(row: dict[str, Any]) -> RuntimeEvent:
         ),
         request_seq=(int(request_seq) if request_seq is not None else None),
         trace_id=row.get("trace_id"),
-        app_id=str(row["app_id"]),
         agent_id=str(row["agent_id"]),
         session_id=row.get("session_id"),
         host_id=row.get("host_id"),
@@ -67,7 +66,7 @@ def dict_to_feedback(row: dict[str, Any]) -> FeedbackRecord:
         feedback_id=int(row["feedback_id"]),
         feedback_type=str(row["feedback_type"]),
         message=str(row["message"]),
-        app_id=str(row["app_id"]),
+        agent_id=str(row["agent_id"]),
         host_id=row.get("host_id"),
         session_id=row.get("session_id"),
         request_id=row.get("request_id"),
@@ -193,7 +192,7 @@ async def _project_mode(cursor: Any, event: RuntimeEvent) -> None:
 
 
 _EVENT_RETURNING = """
-    event_id, request_id, seq AS request_seq, trace_id, app_id,
+    event_id, request_id, seq AS request_seq, trace_id,
     agent_id, session_id, host_id, workflow_id, workflow_run_id,
     event_type, loop_index, step_key, dedupe_key, payload, created_at
 """
@@ -210,12 +209,12 @@ _APPEND_REQUEST_EVENT = f"""
         RETURNING last_seq
     )
     INSERT INTO runtime_event_log (
-        request_id, trace_id, app_id, agent_id, session_id, host_id,
+        request_id, trace_id, agent_id, session_id, host_id,
         workflow_id, workflow_run_id, seq,
         event_type, loop_index, step_key, dedupe_key, payload, created_at
     )
     SELECT
-        %(request_id)s::text, %(trace_id)s::text, %(app_id)s::text,
+        %(request_id)s::text, %(trace_id)s::text,
         %(agent_id)s::text, %(session_id)s::text, %(host_id)s::text,
         %(workflow_id)s::text, %(workflow_run_id)s::text, next.last_seq,
         %(event_type)s::text, %(loop_index)s::integer, %(step_key)s::text,
@@ -229,12 +228,12 @@ _APPEND_REQUEST_EVENT = f"""
 
 _APPEND_EVENT = f"""
     INSERT INTO runtime_event_log (
-        request_id, trace_id, app_id, agent_id, session_id, host_id,
+        request_id, trace_id, agent_id, session_id, host_id,
         workflow_id, workflow_run_id, seq,
         event_type, loop_index, step_key, dedupe_key, payload, created_at
     )
     VALUES (
-        NULL, %(trace_id)s, %(app_id)s, %(agent_id)s, %(session_id)s, %(host_id)s,
+        NULL, %(trace_id)s, %(agent_id)s, %(session_id)s, %(host_id)s,
         %(workflow_id)s, %(workflow_run_id)s, NULL,
         %(event_type)s, %(loop_index)s, %(step_key)s, %(dedupe_key)s,
         %(payload)s::jsonb, %(created_at)s
@@ -253,7 +252,6 @@ def _event_params(event: RuntimeEvent) -> dict[str, Any]:
     return {
         "request_id": event.request_id,
         "trace_id": event.trace_id,
-        "app_id": event.app_id,
         "agent_id": event.agent_id,
         "session_id": event.session_id,
         "host_id": event.host_id,
@@ -369,17 +367,17 @@ async def append_feedback(pool: Any, feedback: FeedbackRecord) -> FeedbackRecord
             await cursor.execute(
                 """
                 INSERT INTO runtime_feedback (
-                    feedback_type, message, app_id, host_id, session_id,
+                    feedback_type, message, agent_id, host_id, session_id,
                     request_id, trace_id, context, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                RETURNING feedback_id, feedback_type, message, app_id, host_id,
+                RETURNING feedback_id, feedback_type, message, agent_id, host_id,
                           session_id, request_id, trace_id, context, created_at
                 """,
                 (
                     feedback.feedback_type,
                     feedback.message,
-                    feedback.app_id,
+                    feedback.agent_id,
                     feedback.host_id,
                     feedback.session_id,
                     feedback.request_id,
@@ -409,7 +407,7 @@ async def list_request_events(
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                SELECT event_id, request_id, seq AS request_seq, trace_id,
                        agent_id, session_id, host_id, event_type, loop_index, step_key,
                        dedupe_key, payload, created_at
                 FROM runtime_event_log
@@ -430,8 +428,8 @@ async def list_session_events(
 ) -> list[RuntimeEvent]:
     """Fetch a session's events across *all* agents (primary + subagents).
 
-    Unlike :func:`list_events`, this is not scoped to one ``app_id`` — subagents
-    log under their own app_id but share the session, so metrics aggregation
+    Unlike :func:`list_events`, this is not scoped to one ``agent_id`` — subagents
+    log under their own agent_id but share the session, so metrics aggregation
     needs the whole session in one pass. The bulky ``response`` body is stripped
     from terminal events since only ``response_metadata`` (stop_reason, tokens)
     is needed here.
@@ -442,7 +440,7 @@ async def list_session_events(
         clauses.append("event_type = ANY(%s)")
         params.append(list(event_types))
     query = f"""
-        SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+        SELECT event_id, request_id, seq AS request_seq, trace_id,
                agent_id, session_id, host_id, event_type, loop_index, step_key,
                dedupe_key,
                CASE
@@ -463,7 +461,7 @@ async def list_session_events(
 
 async def list_events(
     pool: Any,
-    app_id: str,
+    agent_id: str,
     *,
     session_id: str | None = None,
     trace_id: str | None = None,
@@ -473,8 +471,8 @@ async def list_events(
     after_event_id: int = 0,
     limit: int | None = None,
 ) -> list[RuntimeEvent]:
-    clauses = ["app_id = %s", "event_id > %s"]
-    params: list[Any] = [app_id, int(after_event_id)]
+    clauses = ["agent_id = %s", "event_id > %s"]
+    params: list[Any] = [agent_id, int(after_event_id)]
     if session_id is not None:
         clauses.append("session_id = %s")
         params.append(session_id)
@@ -492,11 +490,11 @@ async def list_events(
         params.append(f"{event_type_prefix}%")
     if limit is not None:
         query = f"""
-            SELECT event_id, request_id, request_seq, trace_id, app_id,
+            SELECT event_id, request_id, request_seq, trace_id,
                    agent_id, session_id, host_id, event_type, loop_index, step_key,
                    dedupe_key, payload, created_at
             FROM (
-                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                SELECT event_id, request_id, seq AS request_seq, trace_id,
                        agent_id, session_id, host_id, event_type, loop_index, step_key,
                        dedupe_key, payload, created_at
                 FROM runtime_event_log
@@ -509,7 +507,7 @@ async def list_events(
         params.append(max(1, int(limit)))
     else:
         query = f"""
-            SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+            SELECT event_id, request_id, seq AS request_seq, trace_id,
                    agent_id, session_id, host_id, event_type, loop_index, step_key,
                    dedupe_key, payload, created_at
             FROM runtime_event_log
@@ -543,7 +541,7 @@ async def get_request_id_for_trace(
     pool: Any,
     trace_id: str,
     *,
-    app_id: str | None = None,
+    agent_id: str | None = None,
 ) -> str | None:
     """The request a trace belongs to, or None if it has none.
 
@@ -555,9 +553,9 @@ async def get_request_id_for_trace(
     """
     clauses = ["trace_id = %s", "request_id IS NOT NULL"]
     params: list[Any] = [trace_id]
-    if app_id is not None:
-        clauses.append("app_id = %s")
-        params.append(app_id)
+    if agent_id is not None:
+        clauses.append("agent_id = %s")
+        params.append(agent_id)
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
@@ -582,7 +580,7 @@ async def list_request_ends(
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                SELECT event_id, request_id, seq AS request_seq, trace_id,
                        agent_id, session_id, host_id, workflow_id, workflow_run_id,
                        event_type, loop_index, step_key, dedupe_key,
                        payload - 'response' AS payload, created_at
@@ -875,7 +873,7 @@ async def read_request_stream(
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT event_id, request_id, seq AS request_seq, trace_id, app_id,
+                SELECT event_id, request_id, seq AS request_seq, trace_id,
                        agent_id, session_id, host_id, event_type, loop_index, step_key,
                        dedupe_key, payload, created_at
                 FROM runtime_event_log
@@ -1009,7 +1007,7 @@ async def list_child_requests(
 
 async def list_feedback(
     pool: Any,
-    app_id: str,
+    agent_id: str,
     *,
     after: float,
     before: float | None = None,
@@ -1018,8 +1016,8 @@ async def list_feedback(
     q: str | None = None,
     limit: int | None = None,
 ) -> list[FeedbackRecord]:
-    clauses = ["app_id = %s", "created_at > %s"]
-    params: list[Any] = [app_id, float(after)]
+    clauses = ["agent_id = %s", "created_at > %s"]
+    params: list[Any] = [agent_id, float(after)]
     if before is not None:
         clauses.append("created_at < %s")
         params.append(float(before))
@@ -1046,7 +1044,7 @@ async def list_feedback(
         order_by = "created_at DESC, feedback_id DESC"
 
     query = f"""
-        SELECT feedback_id, feedback_type, message, app_id, host_id,
+        SELECT feedback_id, feedback_type, message, agent_id, host_id,
                session_id, request_id, trace_id, context, created_at
         FROM runtime_feedback
         WHERE {' AND '.join(clauses)}
@@ -1081,7 +1079,7 @@ _REQUEST_STATUS_BY_TRACE_STATUS = {
 
 async def list_recent_traces(
     pool: Any,
-    app_id: str | None = None,
+    agent_id: str | None = None,
     *,
     session_id: str | None = None,
     host_id: str | None = None,
@@ -1091,14 +1089,14 @@ async def list_recent_traces(
     """The most recently active traces, newest first; one per request.
 
     The page comes from ``runtime_request`` by ``last_event_at``; the event
-    log is read only for the requests on it. ``app_id=None`` lists a
+    log is read only for the requests on it. ``agent_id=None`` lists a
     session's traces across every agent (primary, subagents, workflow steps).
     """
     filters = ["trace_id IS NOT NULL"]
     params: list[Any] = []
-    if app_id is not None:
+    if agent_id is not None:
         filters.append("agent_id = %s")
-        params.append(app_id)
+        params.append(agent_id)
     if session_id is not None:
         filters.append("session_id = %s")
         params.append(session_id)
@@ -1150,45 +1148,45 @@ async def list_recent_traces(
 
 
 async def list_thought_traces(
-    pool: Any, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
+    pool: Any, agent_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Newest thought-bearing traces, with all their original summaries.
 
     Filter empty/non-string summaries before limiting *traces*, never events.
     One statement gives the selected traces and their contents one snapshot.
-    app_id scopes both selection and returned events, including shared traces.
+    agent_id scopes both selection and returned events, including shared traces.
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute("""
                 WITH recent AS (
-                    SELECT app_id, trace_id, MAX(created_at) AS latest_thought_at,
+                    SELECT agent_id, trace_id, MAX(created_at) AS latest_thought_at,
                            MAX(event_id) AS latest_event_id
                     FROM runtime_event_log
                     WHERE trace_id IS NOT NULL
                       AND event_type = 'chat.end'
                       AND jsonb_typeof(payload -> 'thought_summary') = 'string'
                       AND payload ->> 'thought_summary' ~ '[^[:space:]]'
-                      AND (%s::text IS NULL OR app_id = %s)
+                      AND (%s::text IS NULL OR agent_id = %s)
                       AND (%s::text IS NULL OR trace_id = %s)
-                    GROUP BY app_id, trace_id
+                    GROUP BY agent_id, trace_id
                     ORDER BY latest_thought_at DESC, latest_event_id DESC
                     LIMIT %s
                 )
-                SELECT t.event_id, t.app_id, t.agent_id, t.trace_id, t.session_id,
+                SELECT t.event_id, t.agent_id, t.trace_id, t.session_id,
                        t.request_id, t.created_at, t.payload ->> 'thought_summary' AS thought_summary,
                        r.latest_thought_at
-                FROM recent r JOIN runtime_event_log t USING (app_id, trace_id)
+                FROM recent r JOIN runtime_event_log t USING (agent_id, trace_id)
                 WHERE t.event_type = 'chat.end'
                   AND jsonb_typeof(t.payload -> 'thought_summary') = 'string'
                   AND t.payload ->> 'thought_summary' ~ '[^[:space:]]'
                 ORDER BY r.latest_thought_at DESC, r.latest_event_id DESC,
                          t.created_at, t.event_id
-            """, (app_id, app_id, trace_id, trace_id, max(1, min(limit, 50))))
+            """, (agent_id, agent_id, trace_id, trace_id, max(1, min(limit, 50))))
             rows = await cursor.fetchall()
     traces: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        key = (row['app_id'], row['trace_id'])
+        key = (row['agent_id'], row['trace_id'])
         trace = traces.setdefault(key, {
             'trace_id': row['trace_id'], 'agent_id': row['agent_id'],
             'session_id': row['session_id'], 'latest_thought_at': row['latest_thought_at'],
@@ -1347,7 +1345,7 @@ async def session_usage(pool: Any, session_id: str) -> dict[str, Any]:
 
 async def aggregate_usage(
     pool: Any,
-    app_id: str,
+    agent_id: str,
     *,
     host_id: str | None = None,
     session_id: str | None = None,
@@ -1359,12 +1357,12 @@ async def aggregate_usage(
     # Placeholders are bound in SQL text order: the two bucket divisors and
     # the tool-end event type live in the SELECT, ahead of the WHERE-clause
     # filters.
-    filters = ["app_id = %s"]
+    filters = ["agent_id = %s"]
     params: list[Any] = [
         bucket_seconds,
         bucket_seconds,
         RuntimeEventType.EXECUTE_TOOL_END.value,
-        app_id,
+        agent_id,
     ]
     if host_id is not None:
         filters.append("host_id = %s")
@@ -1423,17 +1421,17 @@ async def aggregate_usage(
 
 async def count_tool_invocations(
     pool: Any,
-    app_id: str,
+    agent_id: str,
     *,
     from_ts: float | None = None,
     to_ts: float | None = None,
 ) -> list[dict[str, Any]]:
     filters = [
-        "app_id = %s",
+        "agent_id = %s",
         f"event_type = '{RuntimeEventType.EXECUTE_TOOL_END.value}'",
         "payload->'attributes'->>'gen_ai.tool.name' IS NOT NULL",
     ]
-    params: list[Any] = [app_id]
+    params: list[Any] = [agent_id]
     if from_ts is not None:
         filters.append("created_at >= %s")
         params.append(float(from_ts))
@@ -1456,18 +1454,18 @@ async def count_tool_invocations(
 
 async def count_skill_invocations(
     pool: Any,
-    app_id: str,
+    agent_id: str,
     *,
     from_ts: float | None = None,
     to_ts: float | None = None,
 ) -> list[dict[str, Any]]:
     filters = [
-        "app_id = %s",
+        "agent_id = %s",
         f"event_type = '{RuntimeEventType.EXECUTE_TOOL_END.value}'",
         "payload->'attributes'->>'gen_ai.tool.name' = 'Skill'",
         "payload->'result'->'metadata'->>'skill_name' IS NOT NULL",
     ]
-    params: list[Any] = [app_id]
+    params: list[Any] = [agent_id]
     if from_ts is not None:
         filters.append("created_at >= %s")
         params.append(float(from_ts))

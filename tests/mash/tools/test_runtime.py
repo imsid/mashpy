@@ -24,10 +24,10 @@ class FakeStore:
     async def get_turn_by_ids(
         self,
         pairs: list[dict[str, str]],
-        app_id: str,
+        agent_id: str,
         user_id: str | None = None,
     ) -> list[dict[str, object]] | None:
-        del app_id
+        del agent_id
         self.turn_lookup_calls.append(list(pairs))
         self.turn_lookup_user_ids.append(user_id)
         if self.turn_lookup_error is not None:
@@ -46,7 +46,7 @@ class FakeSearchService:
         self,
         query: str,
         *,
-        app_id: str,
+        agent_id: str,
         limit: int = 10,
         session_id: str | None = None,
         user_id: str | None = None,
@@ -54,7 +54,7 @@ class FakeSearchService:
         self.calls.append(
             {
                 "query": query,
-                "app_id": app_id,
+                "agent_id": agent_id,
                 "limit": limit,
                 "session_id": session_id,
                 "user_id": user_id,
@@ -72,7 +72,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
         self.store = FakeStore()
         self.builder = RuntimeToolBuilder(
             store=self.store,  # type: ignore[arg-type]
-            app_id="db",
+            agent_id="db",
             session_id="s1",
             user_id="u-1",
         )
@@ -124,7 +124,7 @@ class RuntimeSearchToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_without_a_user_only_the_session_is_searchable(self) -> None:
         builder = RuntimeToolBuilder(
             store=self.store,  # type: ignore[arg-type]
-            app_id="db",
+            agent_id="db",
             session_id="s1",
         )
         builder._search_service = self.search_service  # type: ignore[assignment]
@@ -254,7 +254,7 @@ class RuntimeFullTurnMessageToolTests(unittest.IsolatedAsyncioTestCase):
         self.store = FakeStore()
         self.builder = RuntimeToolBuilder(
             store=self.store,  # type: ignore[arg-type]
-            app_id="db",
+            agent_id="db",
             session_id="s1",
             user_id="u-1",
         )
@@ -399,7 +399,7 @@ class RuntimeFullTurnWithoutUserTests(unittest.IsolatedAsyncioTestCase):
         self.store = FakeStore()
         builder = RuntimeToolBuilder(
             store=self.store,  # type: ignore[arg-type]
-            app_id="db",
+            agent_id="db",
             session_id="s1",
         )
         builder._search_service = FakeSearchService()  # type: ignore[assignment]
@@ -443,7 +443,7 @@ class RuntimeToolMetadataTests(unittest.TestCase):
     def setUp(self) -> None:
         self.builder = RuntimeToolBuilder(
             store=FakeStore(),  # type: ignore[arg-type]
-            app_id="db",
+            agent_id="db",
             session_id="s1",
         )
         self.builder._search_service = FakeSearchService()  # type: ignore[assignment]
@@ -472,7 +472,7 @@ class RuntimeToolMetadataTests(unittest.TestCase):
         )
         user_builder = RuntimeToolBuilder(
             store=FakeStore(),  # type: ignore[arg-type]
-            app_id="db",
+            agent_id="db",
             session_id="s1",
             user_id="u-1",
         )

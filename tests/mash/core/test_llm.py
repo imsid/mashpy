@@ -67,7 +67,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_openai_send_omits_temperature_for_gpt5_models(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
@@ -91,7 +91,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_openai_send_keeps_temperature_for_non_gpt5_models(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-4.1"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
@@ -115,7 +115,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_openai_send_maps_structured_output_to_text_format(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-4.1"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
@@ -150,7 +150,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_openai_send_streams_when_requested(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-4.1"
-        provider._app_id = "test"
+        provider._agent_id = "test"
 
         final_response = SimpleNamespace(text="streamed", tool_calls=[], usage=None)
         events = [
@@ -332,7 +332,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def _anthropic_call(self, request: LLMRequest) -> dict:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock()))
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="", tool_calls=[], provider_metadata={})
@@ -409,7 +409,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_anthropic_send_maps_structured_output_to_output_config(self) -> None:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock()))
         provider._parse_anthropic_response = Mock(
             return_value=SimpleNamespace(text="{}", tool_calls=[], provider_metadata={})
@@ -442,7 +442,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_anthropic_send_streams_when_requested(self) -> None:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
 
         final_message = SimpleNamespace(text="streamed", tool_calls=[], usage=None)
         stream_obj = _FakeAnthropicStream(["hello ", "world"], final_message)
@@ -487,7 +487,7 @@ class LLMProviderContractTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(stop_reason=stop_reason):
                 provider = object.__new__(AnthropicProvider)
                 provider._model = "claude-sonnet-4-5"
-                provider._app_id = "test"
+                provider._agent_id = "test"
 
                 final_message = SimpleNamespace(
                     content=[SimpleNamespace(type="text", text="partial answer")],
@@ -538,7 +538,7 @@ class GeminiProviderContractTests(unittest.IsolatedAsyncioTestCase):
         provider = object.__new__(GeminiProvider)
         provider._web_search = False
         provider._model = "gemini-3.5-flash"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._stateful = stateful
         provider._thought_summaries_enabled = False
         provider._event_logger = None
@@ -1331,7 +1331,7 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
     def _make_provider(self, **client):
         provider = object.__new__(OSSCompatibleProvider)
         provider._model = "qwen3"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._default_provider_options = {}
         provider._on_tool_call_leak = "warn"
         provider._client = SimpleNamespace(
@@ -2078,7 +2078,7 @@ class OSSCompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
     def test_constructor_rejects_invalid_leak_action(self) -> None:
         with self.assertRaises(ValueError):
             OSSCompatibleProvider(
-                app_id="t", model="qwen3", on_tool_call_leak="bogus"
+                agent_id="t", model="qwen3", on_tool_call_leak="bogus"
             )
 
     async def test_send_rejects_tools_without_native_tool_calling(self) -> None:
@@ -2121,7 +2121,7 @@ class LogRequestErrorTests(unittest.TestCase):
             def capabilities(self):  # pragma: no cover
                 return LLMCapabilities()
 
-        provider = _StubProvider(app_id="test", model="m")
+        provider = _StubProvider(agent_id="test", model="m")
         with self.assertLogs("mash.core.llm.base", level="WARNING") as log_ctx:
             provider._log_request_error(ValueError("oops"))
         self.assertTrue(any("oops" in line for line in log_ctx.output))
@@ -2287,7 +2287,7 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_routes_to_beta_endpoint_when_betas_present(self) -> None:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-6"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         beta_create = AsyncMock()
         provider._client = SimpleNamespace(
             messages=SimpleNamespace(create=AsyncMock()),
@@ -2317,7 +2317,7 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_passes_thinking_param_to_api(self) -> None:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-6"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         beta_create = AsyncMock()
         provider._client = SimpleNamespace(
             messages=SimpleNamespace(create=AsyncMock()),
@@ -2351,7 +2351,7 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_uses_standard_endpoint_without_betas(self) -> None:
         provider = object.__new__(AnthropicProvider)
         provider._model = "claude-sonnet-4-6"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         standard_create = AsyncMock()
         provider._client = SimpleNamespace(
             messages=SimpleNamespace(create=standard_create),
@@ -2710,7 +2710,7 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-5.5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
@@ -2740,7 +2740,7 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_no_warning_when_reasoning_absent(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-5.5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )
@@ -2764,7 +2764,7 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_no_warning_when_max_tokens_sufficient(self) -> None:
         provider = object.__new__(OpenAIProvider)
         provider._model = "gpt-5.5"
-        provider._app_id = "test"
+        provider._agent_id = "test"
         provider._client = SimpleNamespace(
             responses=SimpleNamespace(create=AsyncMock())
         )

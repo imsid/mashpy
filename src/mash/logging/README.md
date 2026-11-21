@@ -39,7 +39,7 @@ All logged events inherit this base shape:
 {
   "event_type": "string",
   "ts": 1710000000.123,
-  "app_id": "string",
+  "agent_id": "string",
   "session_id": "string or null",
   "event_class": "LogEvent subclass name",
   "payload": {}
@@ -49,7 +49,7 @@ All logged events inherit this base shape:
 Base field notes:
 - `event_type`: stable event name used for routing and filtering.
 - `ts`: Unix timestamp in seconds.
-- `app_id`: application identifier for the host/agent/app that emitted the event.
+- `agent_id`: id of the agent that emitted the event.
 - `session_id`: conversation or runtime session when available.
 - `event_class`: one of the concrete dataclass names above.
 - `payload`: event-specific structured data.
@@ -57,7 +57,7 @@ Base field notes:
 
 Storage notes:
 - SQLite stores the common envelope in top-level `logs` columns:
-  `app_id`, `session_id`, `trace_id`, `event_class`, `event_type`, `created_at`.
+  `agent_id`, `session_id`, `trace_id`, `event_class`, `event_type`, `created_at`.
 - Remaining event fields are stored in the row's JSON `payload` column and reconstructed back into the current public event shape on reads.
 
 ## Lightweight Schema By Event Class

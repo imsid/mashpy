@@ -77,8 +77,8 @@ class _ToolThenDoneLLM(LLMProvider):
             usage=usage,
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _Spec(AgentSpec):
@@ -103,7 +103,7 @@ class _Spec(AgentSpec):
         return self.llm
 
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id="shared-tools", system_prompt="test")
+        return AgentConfig(agent_id="shared-tools", system_prompt="test")
 
 
 class SharedToolsTests(unittest.IsolatedAsyncioTestCase):

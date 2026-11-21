@@ -4,7 +4,7 @@ Each takes an ``agent_id`` with a ``session_id`` and/or a ``trace_id``, and
 every read is keyed by both, on an index or primary key:
 
 - ``list_recent_traces(agent_id, session_id=...)``: ``runtime_request`` by session
-- ``get_request_id_for_trace(trace_id, app_id=agent_id)``: the event log's trace index
+- ``get_request_id_for_trace(trace_id, agent_id=agent_id)``: the event log's trace index
 - ``list_request_events(request_id)`` and ``list_events(agent_id, trace_id=...)``
 - ``get_turns(session_id, agent_id)`` and ``get_turn(trace_id, agent_id)``
 - ``get_request_identity(request_id)``: ``runtime_request`` by primary key
@@ -87,7 +87,7 @@ class AgentLogReader:
 
     async def check_trace(self, agent_id: str, trace_id: str) -> tuple[Optional[str], Optional[str]]:
         """The request behind the trace, and a refusal if it is not ours."""
-        request_id = await self.runtime_store.get_request_id_for_trace(trace_id, app_id=agent_id)
+        request_id = await self.runtime_store.get_request_id_for_trace(trace_id, agent_id=agent_id)
         if request_id is None:
             return None, f"no trace '{trace_id}' of '{agent_id}'"
         return request_id, await self.check_request(request_id, agent_id)
@@ -142,7 +142,7 @@ class ListAgentTracesTool(_LogTool):
         limit = _limit(args.get("limit"), DEFAULT_TRACES, MAX_TRACES)
         traces = traces[:limit]
         turns = await self._reader.memory_store.get_turns(
-            session_id=session_id, app_id=agent_id, limit=limit
+            session_id=session_id, agent_id=agent_id, limit=limit
         )
         asked = {turn["trace_id"]: turn.get("user_message") or "" for turn in turns}
         return self._json(
@@ -285,7 +285,7 @@ class GetAgentTurnsTool(_LogTool):
             return ToolResult.error(refused)
         turns = await memory.get_turns(
             session_id=session_id,
-            app_id=agent_id,
+            agent_id=agent_id,
             limit=_limit(args.get("limit"), DEFAULT_TURNS, MAX_TURNS),
         )
         if not turns:

@@ -46,7 +46,6 @@ class RequestEvents:
                 event_id=next(_EVENT_IDS),
                 request_id=self.request_id,
                 request_seq=len(self.events) + 1,
-                app_id=self.agent_id,
                 agent_id=self.agent_id,
                 trace_id=self.trace_id,
                 session_id=self.session_id,

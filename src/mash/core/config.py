@@ -12,7 +12,7 @@ SystemPrompt = str | List[Dict[str, Any]]
 class AgentConfig:
     """Configuration for agent behavior."""
 
-    app_id: str
+    agent_id: str
     system_prompt: SystemPrompt
     max_steps: int = 30
     max_tokens: int = 4096
@@ -35,8 +35,8 @@ class AgentConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration."""
-        if not self.app_id:
-            raise ValueError("app_id is required")
+        if not self.agent_id:
+            raise ValueError("agent_id is required")
         if isinstance(self.system_prompt, str):
             if not self.system_prompt:
                 raise ValueError("system_prompt is required")

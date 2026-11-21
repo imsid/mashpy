@@ -69,7 +69,6 @@ class SandboxRelayTests(unittest.TestCase):
             self.store.append_event(
                 RuntimeEvent(
                     request_id=request_id,
-                    app_id=agent_id,
                     agent_id=agent_id,
                     session_id="s-1",
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -201,7 +200,6 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
         await self.store.append_event(
             RuntimeEvent(
                 request_id="req-1",
-                app_id="research",
                 agent_id="research",
                 session_id="s-1",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,

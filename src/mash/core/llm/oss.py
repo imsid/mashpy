@@ -79,7 +79,7 @@ class OSSCompatibleProvider(BaseLLMProvider):
 
     def __init__(
         self,
-        app_id: str,
+        agent_id: str,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
@@ -88,7 +88,7 @@ class OSSCompatibleProvider(BaseLLMProvider):
         on_tool_call_leak: str = "warn",
     ) -> None:
         super().__init__(
-            app_id=app_id,
+            agent_id=agent_id,
             model=model or self.DEFAULT_MODEL,
             event_logger=event_logger,
         )

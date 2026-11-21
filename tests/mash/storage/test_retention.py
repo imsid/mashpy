@@ -78,7 +78,7 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
     async def _cleanup(self) -> None:
         like = f"{self.tag}%"
         with psycopg.connect(self.url, autocommit=True) as conn:
-            conn.execute("DELETE FROM runtime_event_log WHERE app_id LIKE %s", (like,))
+            conn.execute("DELETE FROM runtime_event_log WHERE agent_id LIKE %s", (like,))
             conn.execute("DELETE FROM runtime_request WHERE request_id LIKE %s", (like,))
             conn.execute("DELETE FROM runtime_request_seq WHERE request_id LIKE %s", (like,))
             conn.execute("DELETE FROM runtime_blob WHERE sha256 LIKE %s", (like,))
@@ -110,8 +110,8 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
     def _event(self, request_id: str | None, seq: int | None, created_at: float) -> None:
         self._sql(
             "INSERT INTO runtime_event_log "
-            "(request_id, app_id, agent_id, seq, event_type, payload, created_at) "
-            "VALUES (%s, %s, 'a', %s, 'chat.delta', '{}'::jsonb, %s)",
+            "(request_id, agent_id, seq, event_type, payload, created_at) "
+            "VALUES (%s, %s, %s, 'chat.delta', '{}'::jsonb, %s)",
             (request_id, f"{self.tag}-app", seq, created_at),
         )
 
@@ -188,7 +188,7 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
                 2,
             )
         unowned = self._sql(
-            "SELECT created_at FROM runtime_event_log WHERE app_id = %s AND request_id IS NULL",
+            "SELECT created_at FROM runtime_event_log WHERE agent_id = %s AND request_id IS NULL",
             (f"{self.tag}-app",),
         )
         self.assertEqual([row[0] for row in unowned], [RECENT])

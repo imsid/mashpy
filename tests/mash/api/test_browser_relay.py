@@ -128,7 +128,6 @@ class BrowserRelayTests(unittest.TestCase):
             self.store.append_event(
                 RuntimeEvent(
                     request_id=request_id,
-                    app_id=agent_id,
                     agent_id=agent_id,
                     session_id="s-1",
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,

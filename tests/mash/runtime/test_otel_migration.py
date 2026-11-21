@@ -42,16 +42,17 @@ class OtelEventNameMigrationTests(unittest.TestCase):
             (self.request_id,),
         )
         # The database already has every migration applied; this test replays
-        # 009 over rows written the old way.
+        # 009's row rewrite over rows written the old way. Its closing index
+        # statement names a column 019 dropped, so the replay stops before it.
 
     def _insert(self, seq: int, event_type: str, payload: dict, *, trace_id: str | None = "t-1",
                 loop_index: int | None = None) -> None:
         self.conn.execute(
             """
             INSERT INTO runtime_event_log (
-                request_id, trace_id, app_id, agent_id, session_id, seq, event_type,
+                request_id, trace_id, agent_id, session_id, seq, event_type,
                 loop_index, payload, created_at
-            ) VALUES (%s, %s, 'writer', 'writer', 's-1', %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, 'writer', 's-1', %s, %s, %s, %s, %s)
             """,
             (self.request_id, trace_id, seq, event_type, loop_index, json.dumps(payload), 100.0 + seq),
         )
@@ -83,7 +84,8 @@ class OtelEventNameMigrationTests(unittest.TestCase):
         self._insert(11, "runtime.turn.persisted", {})
         self._insert(12, "runtime.request.failed", {"status": "error", "error": "boom", "error_type": "RuntimeError"})
 
-        self.conn.execute(_MIGRATION.read_text())
+        rewrite, _ = _MIGRATION.read_text().split("-- The thoughts feed reads chat.end now.")
+        self.conn.execute(rewrite)
 
         rows = self._rows()
         self.assertEqual(

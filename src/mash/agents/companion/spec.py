@@ -35,8 +35,8 @@ class _UnconfiguredLLM(LLMProvider):
             "ANTHROPIC_API_KEY or OSS_BASE_URL on the host"
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 def build_companion_metadata() -> AgentMetadata:
@@ -104,7 +104,7 @@ class CompanionSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=COMPANION_AGENT_ID,
+            agent_id=COMPANION_AGENT_ID,
             system_prompt=COMPANION_PROMPT,
             # Ledger entries are short, so the companion keeps more turns.
             conversation_history_turns=10,

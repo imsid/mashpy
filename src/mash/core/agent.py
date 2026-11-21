@@ -378,8 +378,7 @@ class Agent:
                 assistant_text = self._truncate_assistant_text(assistant_text)
             self._chain_renderer.on_runtime_event(
                 RuntimeEvent(
-                    app_id=self.config.app_id,
-                    agent_id=self.config.app_id,
+                    agent_id=self.config.agent_id,
                     session_id=self._session_id,
                     trace_id=self._trace_id,
                     event_type=RuntimeEventType.CHAT_END.value,
@@ -413,8 +412,7 @@ class Agent:
         if self._chain_renderer:
             self._chain_renderer.on_runtime_event(
                 RuntimeEvent(
-                    app_id=self.config.app_id,
-                    agent_id=self.config.app_id,
+                    agent_id=self.config.agent_id,
                     session_id=self._session_id,
                     trace_id=self._trace_id,
                     event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
@@ -776,8 +774,7 @@ class Agent:
             return
         self._chain_renderer.on_runtime_event(
             RuntimeEvent(
-                app_id=self.config.app_id,
-                agent_id=self.config.app_id,
+                agent_id=self.config.agent_id,
                 session_id=self._session_id,
                 trace_id=self._trace_id,
                 event_type=RuntimeEventType.STEP_END.value,

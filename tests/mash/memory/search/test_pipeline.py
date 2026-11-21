@@ -29,7 +29,7 @@ class FakeSearchStore:
         query_term: str,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[dict[str, object]]:
         self.calls.append(
@@ -39,7 +39,7 @@ class FakeSearchStore:
                 "query_term": query_term,
                 "limit": limit,
                 "session_id": session_id,
-                "app_id": app_id,
+                "agent_id": agent_id,
                 "user_id": user_id,
             }
         )
@@ -52,7 +52,7 @@ class FakeSearchStore:
         query_embedding: list[float] | None,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[dict[str, object]]:
         self.calls.append(
@@ -63,7 +63,7 @@ class FakeSearchStore:
                 "query_embedding": query_embedding,
                 "limit": limit,
                 "session_id": session_id,
-                "app_id": app_id,
+                "agent_id": agent_id,
                 "user_id": user_id,
             }
         )
@@ -79,7 +79,7 @@ class FailingKeywordStore(FakeSearchStore):
         query_term: str,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[dict[str, object]]:
         raise RuntimeError("keyword retrieval failed")
@@ -343,7 +343,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
             "@user:foo",
             limit=2,
             session_id="s1",
-            app_id="app1",
+            agent_id="app1",
         )
 
         self.assertEqual(len(results), 2)
@@ -360,7 +360,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.store.calls), 2)
         for call in self.store.calls:
             self.assertEqual(call["session_id"], "s1")
-            self.assertEqual(call["app_id"], "app1")
+            self.assertEqual(call["agent_id"], "app1")
 
     async def test_honors_limit_and_supports_keyword_only(self) -> None:
         self.store.keyword_hits = [
@@ -372,7 +372,7 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
             retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=False),
         )
 
-        results = await service.search("@agent:test", limit=1, app_id="app1")
+        results = await service.search("@agent:test", limit=1, agent_id="app1")
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].trace_id, "t1")
@@ -390,14 +390,14 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
             retrieval_config=RetrievalConfig(enable_keyword=False, enable_semantic=True),
         )
 
-        results = await service.search("@user:test", app_id="app1")
+        results = await service.search("@user:test", agent_id="app1")
 
         self.assertEqual([r.trace_id for r in results], ["t9"])
         self.assertEqual([r.session_id for r in results], ["s3"])
         self.assertEqual(len(self.store.calls), 1)
         self.assertEqual(self.store.calls[0]["method"], "semantic")
 
-    def test_search_requires_app_id(self) -> None:
+    def test_search_requires_agent_id(self) -> None:
         service = MemorySearchService(
             self.store,  # type: ignore[arg-type]
         )
@@ -410,16 +410,16 @@ class MemorySearchServiceTests(unittest.IsolatedAsyncioTestCase):
             retrieval_config=RetrievalConfig(enable_keyword=True, enable_semantic=True),
         )
         with self.assertRaises(ValueError):
-            await service.search("hello", app_id="app1")
+            await service.search("hello", agent_id="app1")
 
     async def test_retrieval_failure_raises(self) -> None:
         service = MemorySearchService(FailingKeywordStore())  # type: ignore[arg-type]
         with self.assertRaises(RuntimeError):
-            await service.search("@user:boom", app_id="app1")
+            await service.search("@user:boom", agent_id="app1")
 
     async def test_non_positive_limit_returns_nothing(self) -> None:
         service = MemorySearchService(self.store)  # type: ignore[arg-type]
-        self.assertEqual(await service.search("@user:x", limit=0, app_id="app1"), [])
+        self.assertEqual(await service.search("@user:x", limit=0, agent_id="app1"), [])
         self.assertEqual(self.store.calls, [])
 
 

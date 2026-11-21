@@ -167,7 +167,7 @@ def _save_workflow_turn(
         memory_store.save_turn(
             trace_id=turn_id,
             session_id=f"session-{run_id.replace(':', '-')}",
-            app_id="changelog-agent",
+            agent_id="changelog-agent",
             user_message=user_message,
             agent_response=agent_response,
             signals={},
@@ -1088,7 +1088,6 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
                         request_id=None,
                         request_seq=None,
                         trace_id="t-sub",
-                        app_id="research",
                         agent_id="research",
                         session_id="s-multi",
                         host_id="assistant",
@@ -1278,13 +1277,13 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
                 "/api/v1/telemetry/memory/search",
                 params={
                     "q": "@user: hello",
-                    "app_id": "primary",
+                    "agent_id": "primary",
                     "session_id": "s-1",
                 },
             )
             assert search.status_code == 200
             payload = search.json()["data"]
-            assert payload["app_id"] == "primary"
+            assert payload["agent_id"] == "primary"
             assert payload["session_id"] == "s-1"
             assert payload["results"]
             assert payload["results"][0]["preview"]

@@ -77,29 +77,29 @@ def _delete_request_rows(database_url: str, *request_ids: str) -> None:
             )
 
 
-def _delete_app_session_rows(database_url: str, *, app_id: str, session_id: str) -> None:
+def _delete_app_session_rows(database_url: str, *, agent_id: str, session_id: str) -> None:
     with psycopg.connect(database_url, autocommit=True) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "DELETE FROM runtime_event_log WHERE app_id = %s AND session_id = %s",
-                (app_id, session_id),
+                "DELETE FROM runtime_event_log WHERE agent_id = %s AND session_id = %s",
+                (agent_id, session_id),
             )
 
 
-def _delete_app_rows(database_url: str, app_id: str) -> None:
+def _delete_app_rows(database_url: str, agent_id: str) -> None:
     with psycopg.connect(database_url, autocommit=True) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "DELETE FROM runtime_event_log WHERE app_id = %s",
-                (app_id,),
+                "DELETE FROM runtime_event_log WHERE agent_id = %s",
+                (agent_id,),
             )
             cursor.execute(
                 "DELETE FROM runtime_request WHERE agent_id = %s",
-                (app_id,),
+                (agent_id,),
             )
             cursor.execute(
                 "DELETE FROM runtime_request_seq WHERE request_id LIKE %s",
-                (f"{app_id}-%",),
+                (f"{agent_id}-%",),
             )
 
 
@@ -120,7 +120,7 @@ def _fetch_committed_rows(database_url: str, request_id: str) -> list[dict[str, 
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT event_id, request_id, app_id, agent_id, seq, event_type
+                SELECT event_id, request_id, agent_id, agent_id, seq, event_type
                 FROM runtime_event_log
                 WHERE request_id = %s
                 ORDER BY seq ASC
@@ -144,7 +144,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         _delete_request_rows(self.database_url, self.request_id)
         _delete_app_session_rows(
             self.database_url,
-            app_id="store-test",
+            agent_id="store-test",
             session_id="session-1",
         )
 
@@ -156,7 +156,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
             metadata = {"user_id": user_id} if user_id else {}
             await self.store.append_event(
                 RuntimeEvent(
-                    app_id="store-test",
                     agent_id="store-test",
                     request_id=request_id,
                     session_id=session_id,
@@ -176,7 +175,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         accepted = await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -199,7 +197,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         completed = await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -234,7 +231,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.store.append_event(
                 RuntimeEvent(
-                    app_id="store-test",
                     agent_id="store-test",
                     request_id=self.request_id,
                     session_id="session-1",
@@ -247,7 +243,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -262,7 +257,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         status = _end_status(dedupe)
         return await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -276,7 +270,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_request_identity_is_recorded(self) -> None:
         await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -369,7 +362,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_scoped_events_are_queryable_without_request_id(self) -> None:
         event = await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 session_id="session-1",
                 trace_id="trace-1",
@@ -409,7 +401,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(delay)
         await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -423,7 +414,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     def _delta(self, index: int) -> RuntimeEvent:
         return RuntimeEvent(
-            app_id="store-test",
             agent_id="store-test",
             request_id=self.request_id,
             session_id="session-1",
@@ -454,7 +444,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_events_without_a_request_have_no_seq(self) -> None:
         event = await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 session_id="session-1",
                 event_type="chat.delta",
@@ -467,7 +456,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_terminal_event_still_projects(self) -> None:
         def _event(event_type: str, dedupe: str, *args: str) -> RuntimeEvent:
             return RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -503,7 +491,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -564,7 +551,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_checkpoint_with_a_missing_blob_fails_loudly(self) -> None:
         await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-1",
@@ -606,7 +592,6 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
         self.assertFalse(await self.store.has_request(self.request_id))
         await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test",
                 agent_id="store-test",
                 request_id=self.request_id,
                 session_id="session-recovery",
@@ -625,7 +610,6 @@ class PostgresRuntimeStoreConnectionRecoveryTests(unittest.IsolatedAsyncioTestCa
 
             await self.store.append_event(
                 RuntimeEvent(
-                    app_id="store-test",
                     agent_id="store-test",
                     request_id=self.request_id,
                     session_id="session-recovery",
@@ -658,7 +642,6 @@ class PostgresRequestCheckpointTests(unittest.IsolatedAsyncioTestCase):
     async def _accept(self) -> None:
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.agent_id,
                 agent_id=self.agent_id,
                 request_id=self.request_id,
                 session_id="s-1",
@@ -688,7 +671,6 @@ class PostgresRequestCheckpointTests(unittest.IsolatedAsyncioTestCase):
 
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.agent_id,
                 agent_id=self.agent_id,
                 request_id=self.request_id,
                 session_id="s-1",
@@ -750,7 +732,6 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await self.store.append_event(
                     RuntimeEvent(
-                        app_id="store-test",
                         agent_id="store-test",
                         request_id=self.request_id,
                         session_id="session-1",
@@ -770,29 +751,29 @@ class HostedRuntimeEventVisibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(END, event_types)
 
 
-def _delete_feedback_rows(database_url: str, app_id: str) -> None:
+def _delete_feedback_rows(database_url: str, agent_id: str) -> None:
     with psycopg.connect(database_url, autocommit=True) as conn:
         with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM runtime_feedback WHERE app_id = %s", (app_id,))
+            cursor.execute("DELETE FROM runtime_feedback WHERE agent_id = %s", (agent_id,))
 
 
 class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         _require_postgres_runtime_support()
         self.database_url = _runtime_database_url()
-        self.app_id = f"feedback-{uuid.uuid4()}"
+        self.agent_id = f"feedback-{uuid.uuid4()}"
         self.store = PostgresRuntimeStore(self.database_url)
         await self.store.open()
-        _delete_feedback_rows(self.database_url, self.app_id)
+        _delete_feedback_rows(self.database_url, self.agent_id)
 
     async def asyncTearDown(self) -> None:
         await self.store.close()
-        _delete_feedback_rows(self.database_url, self.app_id)
+        _delete_feedback_rows(self.database_url, self.agent_id)
 
     async def test_append_and_list_feedback_round_trip(self) -> None:
         stored = await self.store.append_feedback(
             FeedbackRecord(
-                app_id=self.app_id,
+                agent_id=self.agent_id,
                 message="the trace output is hard to read",
                 host_id="assistant",
                 session_id="s-1",
@@ -803,7 +784,7 @@ class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(stored.feedback_id, 0)
         self.assertEqual(stored.feedback_type, "text")
 
-        listed = await self.store.list_feedback(self.app_id, after=0.0, limit=10)
+        listed = await self.store.list_feedback(self.agent_id, after=0.0, limit=10)
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0].message, "the trace output is hard to read")
         self.assertEqual(listed[0].session_id, "s-1")
@@ -812,7 +793,7 @@ class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_feedback_filters_and_orders(self) -> None:
         await self.store.append_feedback(
             FeedbackRecord(
-                app_id=self.app_id,
+                agent_id=self.agent_id,
                 message="streaming hangs on long replies",
                 session_id="s-1",
                 created_at=100.0,
@@ -820,7 +801,7 @@ class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.store.append_feedback(
             FeedbackRecord(
-                app_id=self.app_id,
+                agent_id=self.agent_id,
                 message="trace rendering needs colors",
                 session_id="s-2",
                 created_at=200.0,
@@ -828,23 +809,23 @@ class PostgresFeedbackStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         # Default sort is created_at DESC.
-        listed = await self.store.list_feedback(self.app_id, after=0.0)
+        listed = await self.store.list_feedback(self.agent_id, after=0.0)
         self.assertEqual([f.created_at for f in listed], [200.0, 100.0])
 
         # after is an exclusive created_at lower bound.
-        after_first = await self.store.list_feedback(self.app_id, after=150.0)
+        after_first = await self.store.list_feedback(self.agent_id, after=150.0)
         self.assertEqual([f.session_id for f in after_first], ["s-2"])
 
         # before is an exclusive upper bound.
-        before_second = await self.store.list_feedback(self.app_id, after=0.0, before=150.0)
+        before_second = await self.store.list_feedback(self.agent_id, after=0.0, before=150.0)
         self.assertEqual([f.session_id for f in before_second], ["s-1"])
 
         # session filter.
-        only_s1 = await self.store.list_feedback(self.app_id, after=0.0, session_id="s-1")
+        only_s1 = await self.store.list_feedback(self.agent_id, after=0.0, session_id="s-1")
         self.assertEqual([f.session_id for f in only_s1], ["s-1"])
 
         # full-text q matches on message terms.
-        matched = await self.store.list_feedback(self.app_id, after=0.0, q="streaming")
+        matched = await self.store.list_feedback(self.agent_id, after=0.0, q="streaming")
         self.assertEqual([f.session_id for f in matched], ["s-1"])
 
 
@@ -852,21 +833,20 @@ class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         _require_postgres_runtime_support()
         self.database_url = _runtime_database_url()
-        self.app_id = f"traces-{uuid.uuid4().hex[:8]}"
+        self.agent_id = f"traces-{uuid.uuid4().hex[:8]}"
         self.store = PostgresRuntimeStore(self.database_url)
         await self.store.open()
-        _delete_app_rows(self.database_url, self.app_id)
+        _delete_app_rows(self.database_url, self.agent_id)
 
     async def asyncTearDown(self) -> None:
         await self.store.close()
-        _delete_app_rows(self.database_url, self.app_id)
+        _delete_app_rows(self.database_url, self.agent_id)
 
     async def _append(self, *, trace_id: str, host_id: str, created_at: float) -> None:
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.app_id,
-                agent_id=self.app_id,
-                request_id=f"{self.app_id}-{trace_id}",
+                agent_id=self.agent_id,
+                request_id=f"{self.agent_id}-{trace_id}",
                 session_id="session-1",
                 trace_id=trace_id,
                 host_id=host_id,
@@ -882,7 +862,7 @@ class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
         await self._append(trace_id="t-a", host_id="assistant", created_at=100.0)
         await self._append(trace_id="t-b", host_id="ops", created_at=200.0)
 
-        traces = await self.store.list_recent_traces(self.app_id)
+        traces = await self.store.list_recent_traces(self.agent_id)
         by_trace = {item["trace_id"]: item for item in traces}
         self.assertEqual(by_trace["t-a"]["host_id"], "assistant")
         self.assertEqual(by_trace["t-b"]["host_id"], "ops")
@@ -891,7 +871,7 @@ class TraceHostFilterTests(unittest.IsolatedAsyncioTestCase):
         await self._append(trace_id="t-a", host_id="assistant", created_at=100.0)
         await self._append(trace_id="t-b", host_id="ops", created_at=200.0)
 
-        only_ops = await self.store.list_recent_traces(self.app_id, host_id="ops")
+        only_ops = await self.store.list_recent_traces(self.agent_id, host_id="ops")
         self.assertEqual([item["trace_id"] for item in only_ops], ["t-b"])
         self.assertTrue(all(item["host_id"] == "ops" for item in only_ops))
 
@@ -900,14 +880,14 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         _require_postgres_runtime_support()
         self.database_url = _runtime_database_url()
-        self.app_id = f"traces-{uuid.uuid4().hex[:8]}"
+        self.agent_id = f"traces-{uuid.uuid4().hex[:8]}"
         self.store = PostgresRuntimeStore(self.database_url)
         await self.store.open()
-        _delete_app_rows(self.database_url, self.app_id)
+        _delete_app_rows(self.database_url, self.agent_id)
 
     async def asyncTearDown(self) -> None:
         await self.store.close()
-        _delete_app_rows(self.database_url, self.app_id)
+        _delete_app_rows(self.database_url, self.agent_id)
 
     async def _append(
         self,
@@ -918,13 +898,12 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         status: str | None = None,
     ) -> None:
         # Each trace is one request; its first event is the accepted one.
-        request_id = f"{self.app_id}-{trace_id}"
+        request_id = f"{self.agent_id}-{trace_id}"
         if not await self.store.has_request(request_id):
             accepted = RuntimeEventType.INVOKE_AGENT_START.value
             await self.store.append_event(
                 RuntimeEvent(
-                    app_id=self.app_id,
-                    agent_id=self.app_id,
+                    agent_id=self.agent_id,
                     request_id=request_id,
                     session_id="session-1",
                     trace_id=trace_id,
@@ -938,8 +917,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             )
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.app_id,
-                agent_id=self.app_id,
+                agent_id=self.agent_id,
                 request_id=request_id,
                 session_id="session-1",
                 trace_id=trace_id,
@@ -972,7 +950,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         )
         await self._append(trace_id="t-retried", event_type=END, created_at=401.0, status="ok")
 
-        traces = await self.store.list_recent_traces(self.app_id)
+        traces = await self.store.list_recent_traces(self.agent_id)
         by_trace = {item["trace_id"]: item["status"] for item in traces}
         self.assertEqual(by_trace["t-done"], "completed")
         self.assertEqual(by_trace["t-failed"], "error")
@@ -1006,7 +984,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             created_at=202.0,
         )
 
-        traces = await self.store.list_recent_traces(self.app_id)
+        traces = await self.store.list_recent_traces(self.agent_id)
         by_trace = {item["trace_id"]: item["status"] for item in traces}
         self.assertEqual(by_trace["t-cancel"], "cancelled")
         self.assertEqual(by_trace["t-resumed"], "in_progress")
@@ -1015,8 +993,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         """The admin UI addresses a request by the trace it already shows."""
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.app_id,
-                agent_id=self.app_id,
+                agent_id=self.agent_id,
                 session_id="session-1",
                 trace_id="t-req",
                 request_id="req-abc",
@@ -1026,15 +1003,14 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(
-            await self.store.get_request_id_for_trace("t-req", app_id=self.app_id),
+            await self.store.get_request_id_for_trace("t-req", agent_id=self.agent_id),
             "req-abc",
         )
         # A trace with no request (or an unknown trace) resolves to nothing
         # rather than guessing.
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.app_id,
-                agent_id=self.app_id,
+                agent_id=self.agent_id,
                 session_id="session-1",
                 trace_id="t-bare",
                 event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
@@ -1043,10 +1019,10 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertIsNone(
-            await self.store.get_request_id_for_trace("t-bare", app_id=self.app_id)
+            await self.store.get_request_id_for_trace("t-bare", agent_id=self.agent_id)
         )
         self.assertIsNone(
-            await self.store.get_request_id_for_trace("nope", app_id=self.app_id)
+            await self.store.get_request_id_for_trace("nope", agent_id=self.agent_id)
         )
 
     async def test_request_id_for_trace_is_deterministic_on_legacy_rows(self) -> None:
@@ -1059,8 +1035,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         for request_id, created_at in (("req-first", 100.0), ("req-second", 101.0)):
             await self.store.append_event(
                 RuntimeEvent(
-                    app_id=self.app_id,
-                    agent_id=self.app_id,
+                    agent_id=self.agent_id,
                     session_id="session-1",
                     trace_id="t-dup",
                     request_id=request_id,
@@ -1072,7 +1047,7 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(3):
             self.assertEqual(
                 await self.store.get_request_id_for_trace(
-                    "t-dup", app_id=self.app_id
+                    "t-dup", agent_id=self.agent_id
                 ),
                 "req-first",
             )
@@ -1089,16 +1064,16 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
         await self._append(trace_id="t-open", event_type=started, created_at=200.0)
 
         only_done = await self.store.list_recent_traces(
-            self.app_id, status="completed"
+            self.agent_id, status="completed"
         )
         self.assertEqual([item["trace_id"] for item in only_done], ["t-done"])
 
         only_open = await self.store.list_recent_traces(
-            self.app_id, status="in_progress"
+            self.agent_id, status="in_progress"
         )
         self.assertEqual([item["trace_id"] for item in only_open], ["t-open"])
 
-        none = await self.store.list_recent_traces(self.app_id, status="error")
+        none = await self.store.list_recent_traces(self.agent_id, status="error")
         self.assertEqual(none, [])
 
 
@@ -1108,14 +1083,14 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         _require_postgres_runtime_support()
         self.database_url = _runtime_database_url()
-        self.app_id = f"usage-{uuid.uuid4().hex[:8]}"
+        self.agent_id = f"usage-{uuid.uuid4().hex[:8]}"
         self.store = PostgresRuntimeStore(self.database_url)
         await self.store.open()
-        _delete_app_rows(self.database_url, self.app_id)
+        _delete_app_rows(self.database_url, self.agent_id)
 
     async def asyncTearDown(self) -> None:
         await self.store.close()
-        _delete_app_rows(self.database_url, self.app_id)
+        _delete_app_rows(self.database_url, self.agent_id)
 
     async def _append(
         self,
@@ -1127,8 +1102,7 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         await self.store.append_event(
             RuntimeEvent(
-                app_id=self.app_id,
-                agent_id=self.app_id,
+                agent_id=self.agent_id,
                 session_id="session-1",
                 trace_id=trace_id,
                 host_id="assistant",
@@ -1178,7 +1152,7 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
             payload={"attributes": {"gen_ai.usage.input_tokens": 70, "gen_ai.usage.output_tokens": 7}},
         )
 
-        buckets = await self.store.aggregate_usage(self.app_id, bucket="day")
+        buckets = await self.store.aggregate_usage(self.agent_id, bucket="day")
         self.assertEqual(len(buckets), 2)
 
         first, second = buckets
@@ -1206,11 +1180,11 @@ class AggregateUsageTests(unittest.IsolatedAsyncioTestCase):
             )
 
         windowed = await self.store.aggregate_usage(
-            self.app_id, bucket="day", from_ts=day2 - 50.0
+            self.agent_id, bucket="day", from_ts=day2 - 50.0
         )
         self.assertEqual([b["bucket_start"] for b in windowed], [self.DAY * 19602])
 
-        wrong_host = await self.store.aggregate_usage(self.app_id, host_id="nope")
+        wrong_host = await self.store.aggregate_usage(self.agent_id, host_id="nope")
         self.assertEqual(wrong_host, [])
 
 
@@ -1233,7 +1207,7 @@ class ExportStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.store.get_export_cursor(self.cursor_name))
         start = await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test", agent_id="store-test", request_id=self.request_id,
+                agent_id="store-test", request_id=self.request_id,
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                 lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
@@ -1241,7 +1215,7 @@ class ExportStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         end = await self.store.append_event(
             RuntimeEvent(
-                app_id="store-test", agent_id="store-test", request_id=self.request_id,
+                agent_id="store-test", request_id=self.request_id,
                 event_type=END, lifecycle=seed_lifecycle(END, "ok"),
                 dedupe_key="request.completed.0",
                 payload={"status": "ok", "response": {"text": "big"}},

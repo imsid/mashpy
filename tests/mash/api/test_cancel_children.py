@@ -46,7 +46,6 @@ def _append(client: TestClient, request_id: str, agent_id: str, event_type: str,
         _store(client).append_event,
         RuntimeEvent(
             request_id=request_id,
-            app_id=agent_id,
             agent_id=agent_id,
             session_id="s-1",
             trace_id=f"trace-{request_id}",

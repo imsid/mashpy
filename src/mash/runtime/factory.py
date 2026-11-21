@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 def _is_companion(self: "AgentRuntime") -> bool:
     from mash.agents.companion import COMPANION_AGENT_ID
 
-    return self.app_id == COMPANION_AGENT_ID
+    return self.agent_id == COMPANION_AGENT_ID
 
 
 def resolve_host_agents(
@@ -51,7 +51,7 @@ def resolve_host_agents(
     access = self.get_host_access()
     if access is None:
         raise RuntimeError(
-            f"agent '{self.app_id}' received a host snapshot but has no host access"
+            f"agent '{self.agent_id}' received a host snapshot but has no host access"
         )
     resolved: dict[str, AgentMetadata] = {}
     for agent_id in agent_ids:
@@ -89,14 +89,14 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
     for name in SANDBOX_TOOL_NAMES:
         if name in agent.tools:
             raise ValueError(
-                f"agent '{self.app_id}' registers its own '{name}' tool; the host "
+                f"agent '{self.agent_id}' registers its own '{name}' tool; the host "
                 "provides it on the request user's sandbox, so remove it from build_tools()"
             )
     host_api_url, token = self._sandbox_tools
     for tool in build_sandbox_tools(
         host_api_url=host_api_url,
         token=token,
-        agent_id=self.app_id,
+        agent_id=self.agent_id,
         file_roots=self.definition.sandbox_file_roots(),
         env=self.definition.sandbox_env(),
     ):
@@ -110,13 +110,13 @@ def register_browser_tools(self: "AgentRuntime", agent: Agent) -> None:
     for name in browser_tool_names():
         if name in agent.tools:
             raise ValueError(
-                f"agent '{self.app_id}' registers its own '{name}' tool; the host "
+                f"agent '{self.agent_id}' registers its own '{name}' tool; the host "
                 "provides it on the request user's browser, so remove it from build_tools()"
             )
     try:
         check_sites(self.definition.browser_sites())
     except ValueError as exc:
-        raise ValueError(f"agent '{self.app_id}': {exc}") from exc
+        raise ValueError(f"agent '{self.agent_id}': {exc}") from exc
     host_api_url, token = self._browser_tools
     for tool in build_browser_tools(host_api_url=host_api_url, token=token):
         agent.tools.register(tool)
@@ -137,10 +137,10 @@ def build_base_agent(self: "AgentRuntime") -> Agent:
     llm = self.definition.build_llm()
     llm.enable_thought_summaries()
     config = self.definition.build_agent_config()
-    if config.app_id != self.app_id:
+    if config.agent_id != self.agent_id:
         raise ValueError(
-            "AgentSpec.get_agent_id() must match build_agent_config().app_id "
-            f"(got {self.app_id!r} vs {config.app_id!r})"
+            "AgentSpec.get_agent_id() must match build_agent_config().agent_id "
+            f"(got {self.agent_id!r} vs {config.agent_id!r})"
         )
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
     if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
@@ -199,7 +199,7 @@ def configure_runtime_tools(
 ) -> None:
     builder = RuntimeToolBuilder(
         store=self.memory_store,
-        app_id=self.app_id,
+        agent_id=self.agent_id,
         session_id=session_id,
         user_id=user_id,
     )
@@ -260,7 +260,7 @@ def configure_run_subagents(
     agent.tools.register(
         RunSubAgentsTool(
             client_resolver=client_resolver,
-            caller_agent_id=self.app_id,
+            caller_agent_id=self.agent_id,
             session_id=session_id,
             host=host,
             timeout_seconds=agent.config.subagent_timeout_seconds,

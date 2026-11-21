@@ -32,7 +32,7 @@ class ParentRequestMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["parent"]["started_by"], "concierge")
         self.assertEqual(metadata["parent"]["parent_request_id"], "req_1")
         self.assertEqual(metadata["primary_session_id"], "s-1")
-        self.assertEqual(metadata["primary_app_id"], "concierge")
+        self.assertEqual(metadata["primary_agent_id"], "concierge")
         self.assertEqual(metadata["subagent_id"], "research")
         self.assertEqual(metadata["subagent_invoke_opts"], {"mode": "fast"})
         self.assertEqual(metadata["parent"]["request_id"], "req_1")
@@ -173,7 +173,7 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         )
         request_metadata = accepted.payload["request_metadata"]
         self.assertEqual(request_metadata["subagent_id"], "research")
-        self.assertEqual(request_metadata["primary_app_id"], "concierge")
+        self.assertEqual(request_metadata["primary_agent_id"], "concierge")
         self.assertEqual(request_metadata["host"]["host_id"], "assistant")
 
 

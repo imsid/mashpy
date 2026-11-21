@@ -456,7 +456,7 @@ function CliTab({ agentId, agents }) {
   const columns = [
     { key: 'time', header: 'Time', render: (r) => formatTime(r.created_at) },
     ...(allAgents
-      ? [{ key: 'agent', header: 'Agent', render: (r) => <Chip>{r.__agentId || r.app_id}</Chip> }]
+      ? [{ key: 'agent', header: 'Agent', render: (r) => <Chip>{r.__agentId || r.agent_id}</Chip> }]
       : []),
     {
       key: 'event',

@@ -38,7 +38,7 @@ def _test_stores() -> dict:
 
 class _FakeLLMProvider(LLMProvider):
     def __init__(self) -> None:
-        self.last_app_id: str | None = None
+        self.last_agent_id: str | None = None
 
     @property
     def model(self) -> str:
@@ -48,20 +48,20 @@ class _FakeLLMProvider(LLMProvider):
         del request
         raise NotImplementedError
 
-    def set_event_logger(self, logger, app_id: str) -> None:
+    def set_event_logger(self, logger, agent_id: str) -> None:
         del logger
-        self.last_app_id = app_id
+        self.last_agent_id = agent_id
 
 
 class _BaseDefinition(AgentSpec):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
         self.root = root
-        self.app_id = app_id
+        self.agent_id = agent_id
         self.startup_called = False
         self.shutdown_called = False
 
     def get_agent_id(self) -> str:
-        return self.app_id
+        return self.agent_id
 
     def build_tools(self) -> ToolRegistry:
         return ToolRegistry()
@@ -73,7 +73,7 @@ class _BaseDefinition(AgentSpec):
         return _FakeLLMProvider()
 
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id=self.app_id, system_prompt="You are a test app.")
+        return AgentConfig(agent_id=self.agent_id, system_prompt="You are a test app.")
 
     def on_startup(self, runtime: AgentRuntime) -> None:
         del runtime
@@ -127,8 +127,8 @@ class _ToolSignalsLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _ResponseThenFinishLLMProvider(LLMProvider):
@@ -160,8 +160,8 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _SlowFinishLLMProvider(LLMProvider):
@@ -184,8 +184,8 @@ class _SlowFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _AlwaysRespondLLMProvider(LLMProvider):
@@ -204,8 +204,8 @@ class _AlwaysRespondLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _StructuredOutputLLMProvider(LLMProvider):
@@ -239,13 +239,13 @@ class _StructuredOutputLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _SignalsDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.provider = _ToolSignalsLLMProvider()
 
     def build_tools(self) -> ToolRegistry:
@@ -279,7 +279,7 @@ class _SignalsDefinition(_BaseDefinition):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             system_prompt="You are a test app.",
             max_steps=3,
         )
@@ -289,8 +289,8 @@ class _SignalsDefinition(_BaseDefinition):
 
 
 class _ResponseThenFinishDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.provider = _ResponseThenFinishLLMProvider()
 
     def build_llm(self) -> LLMProvider:
@@ -298,7 +298,7 @@ class _ResponseThenFinishDefinition(_BaseDefinition):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             system_prompt="You are a test app.",
             max_steps=3,
         )
@@ -357,8 +357,8 @@ class _TwoToolCallLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _ParallelToolsDefinition(_BaseDefinition):
@@ -374,11 +374,11 @@ class _ParallelToolsDefinition(_BaseDefinition):
         self,
         root: Path,
         *,
-        app_id: str = "test-app",
+        agent_id: str = "test-app",
         second_parallel_safe: bool = True,
         sleep_seconds: float = 0.25,
     ) -> None:
-        super().__init__(root, app_id=app_id)
+        super().__init__(root, agent_id=agent_id)
         self.provider = _TwoToolCallLLMProvider(("tool_a", "tool_b"))
         self.intervals: dict[str, tuple[float, float]] = {}
         self._second_parallel_safe = second_parallel_safe
@@ -428,7 +428,7 @@ class _ParallelToolsDefinition(_BaseDefinition):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             system_prompt="You are a test app.",
             max_steps=3,
         )
@@ -444,12 +444,12 @@ class _ConcurrencyCapDefinition(_BaseDefinition):
         self,
         root: Path,
         *,
-        app_id: str = "test-app",
+        agent_id: str = "test-app",
         tool_count: int = 4,
         max_parallel_tools: int = 2,
         sleep_seconds: float = 0.05,
     ) -> None:
-        super().__init__(root, app_id=app_id)
+        super().__init__(root, agent_id=agent_id)
         self.tool_count = tool_count
         self.max_parallel_tools = max_parallel_tools
         self._sleep_seconds = sleep_seconds
@@ -480,7 +480,7 @@ class _ConcurrencyCapDefinition(_BaseDefinition):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             system_prompt="You are a test app.",
             max_steps=3,
             max_parallel_tools=self.max_parallel_tools,
@@ -496,7 +496,7 @@ class _AlwaysRespondDefinition(_BaseDefinition):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             system_prompt="You are a test app.",
             max_steps=2,
         )
@@ -533,13 +533,13 @@ class _AlwaysToolCallingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _ExhaustsStepBudgetDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.provider = _AlwaysToolCallingLLMProvider()
 
     def build_llm(self) -> LLMProvider:
@@ -562,15 +562,15 @@ class _ExhaustsStepBudgetDefinition(_BaseDefinition):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             system_prompt="You are a test app.",
             max_steps=1,
         )
 
 
 class _StructuredOutputDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.provider = _StructuredOutputLLMProvider()
 
     def build_llm(self) -> LLMProvider:
@@ -595,8 +595,8 @@ class _FakeMCPClient:
 
 
 class _MCPDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.provider = _MCPAssertingLLMProvider()
 
     def build_mcp_servers(self) -> list[MCPServerConfig]:
@@ -654,13 +654,13 @@ class _WebSearchAssertingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _WebSearchDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.provider = _WebSearchAssertingLLMProvider()
 
     def build_llm(self) -> LLMProvider:
@@ -675,14 +675,14 @@ class _WebSearchDefinition(_BaseDefinition):
 
 class _MismatchedDefinition(_BaseDefinition):
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id="different-app-id", system_prompt="Mismatch")
+        return AgentConfig(agent_id="different-app-id", system_prompt="Mismatch")
 
 
 class _CompactionLoggingLLMProvider(BaseLLMProvider):
     provider_name = "test-provider"
 
-    def __init__(self, *, app_id: str) -> None:
-        super().__init__(app_id=app_id, model="test-model")
+    def __init__(self, *, agent_id: str) -> None:
+        super().__init__(agent_id=agent_id, model="test-model")
         self.trace_id_during_send: str | None = None
         self.session_id_during_send: str | None = None
 
@@ -700,12 +700,12 @@ class _CompactionLoggingLLMProvider(BaseLLMProvider):
 
 
 class _CompactionLoggingDefinition(_BaseDefinition):
-    def __init__(self, root: Path, *, app_id: str = "test-app") -> None:
-        super().__init__(root, app_id=app_id)
+    def __init__(self, root: Path, *, agent_id: str = "test-app") -> None:
+        super().__init__(root, agent_id=agent_id)
         self.built_llms: list[_CompactionLoggingLLMProvider] = []
 
     def build_llm(self) -> LLMProvider:
-        llm = _CompactionLoggingLLMProvider(app_id=self.app_id)
+        llm = _CompactionLoggingLLMProvider(agent_id=self.agent_id)
         self.built_llms.append(llm)
         return llm
 
@@ -739,8 +739,8 @@ class _SessionBindingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _SessionBindingDefinition(_BaseDefinition):
@@ -749,9 +749,9 @@ class _SessionBindingDefinition(_BaseDefinition):
         root: Path,
         *,
         expected_session_id: str,
-        app_id: str = "test-app",
+        agent_id: str = "test-app",
     ) -> None:
-        super().__init__(root, app_id=app_id)
+        super().__init__(root, agent_id=agent_id)
         self.runtime: AgentRuntime | None = None
         self.provider = _SessionBindingLLMProvider(
             lambda: self.runtime,
@@ -784,8 +784,8 @@ class _MCPAssertingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -852,7 +852,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.shutdown()
                 self.assertTrue(definition.shutdown_called)
 
-    def test_app_id_mismatch_raises(self) -> None:
+    def test_agent_id_mismatch_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp}):
                 with self.assertRaises(ValueError):
@@ -881,7 +881,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["session_total_tokens"], 3)
                 turns = await runtime.store.get_turns(
                     session_id=runtime.session_id,
-                    app_id=runtime.app_id,
+                    agent_id=runtime.agent_id,
                     limit=1,
                 )
                 self.assertEqual(turns[-1]["user_message"], "hi")
@@ -1087,7 +1087,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 turns = await runtime.store.get_turns(
                     session_id=runtime.session_id,
-                    app_id=runtime.app_id,
+                    agent_id=runtime.agent_id,
                     limit=1,
                 )
                 self.assertEqual(
@@ -1336,7 +1336,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     # Nothing was persisted as a completed turn either.
                     turns = await runtime.store.get_turns(
                         session_id=runtime.session_id,
-                        app_id=runtime.app_id,
+                        agent_id=runtime.agent_id,
                         limit=5,
                     )
                     self.assertEqual(turns, [])
@@ -1353,7 +1353,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     await runtime.store.save_turn(
                         trace_id="turn-1",
                         session_id="s-compact",
-                        app_id=runtime.app_id,
+                        agent_id=runtime.agent_id,
                         user_message="hello",
                         agent_response="world",
                         signals={},
@@ -1402,7 +1402,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
                     turns = await runtime.store.get_turns(
                         session_id="s-tools",
-                        app_id=runtime.app_id,
+                        agent_id=runtime.agent_id,
                         limit=1,
                     )
                     self.assertEqual(len(turns), 1)
@@ -1414,7 +1414,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                     latest_trace = await runtime.store.get_latest_trace(
-                        app_id=runtime.app_id,
+                        agent_id=runtime.agent_id,
                         session_id="s-tools",
                     )
                     self.assertIsNotNone(latest_trace)

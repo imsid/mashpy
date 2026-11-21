@@ -34,7 +34,6 @@ def _test_stores() -> dict:
 def _evt(event_type: str, interaction_id: str | None = None) -> RuntimeEvent:
     payload = {"interaction_id": interaction_id} if interaction_id else {}
     return RuntimeEvent(
-        app_id="a",
         agent_id="a",
         event_type=event_type,
         lifecycle=seed_lifecycle(event_type),
@@ -72,7 +71,6 @@ class PendingInteractionsTests(unittest.TestCase):
 class PublicEventTests(unittest.TestCase):
     def test_cancelled_maps_to_public_event(self) -> None:
         event = RuntimeEvent(
-            app_id="a",
             agent_id="a",
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
             lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, "cancelled"),
@@ -86,7 +84,6 @@ class PublicEventTests(unittest.TestCase):
 
     def _ack(self, payload: dict) -> dict:
         event = RuntimeEvent(
-            app_id="a",
             agent_id="a",
             event_type=RuntimeEventType.INTERACTION_END.value,
             request_id="r",
@@ -143,8 +140,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-1",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id="trace-1",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -197,8 +193,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-3",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id="trace-3",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -213,8 +208,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-3",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id="trace-3",
                 event_type=RuntimeEventType.REQUEST_RESUMED.value,
@@ -245,8 +239,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-4",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id="trace-4",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -270,8 +263,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-2",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 trace_id="trace-2",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,

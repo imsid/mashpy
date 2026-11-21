@@ -45,7 +45,7 @@ def build_telemetry_router() -> APIRouter:
         events = [
             serialize_runtime_event(item)
             for item in await store.list_events(
-                app_id=agent_id,
+                agent_id=agent_id,
                 session_id=normalize_optional_text(session_id),
                 trace_id=normalize_optional_text(trace_id),
                 host_id=normalize_optional_text(host_id),
@@ -68,7 +68,7 @@ def build_telemetry_router() -> APIRouter:
     async def search_memory(
         request: Request,
         q: str,
-        app_id: str,
+        agent_id: str,
         session_id: Optional[str] = None,
         limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
@@ -77,16 +77,16 @@ def build_telemetry_router() -> APIRouter:
         if not query_text:
             raise APIError(code="MISSING_QUERY", message="q is required", status_code=400, details={"param": "q"})
 
-        app_id_value = app_id.strip()
-        if not app_id_value:
+        agent_id_value = agent_id.strip()
+        if not agent_id_value:
             raise APIError(
-                code="MISSING_APP_ID",
-                message="app_id is required",
+                code="MISSING_AGENT_ID",
+                message="agent_id is required",
                 status_code=400,
-                details={"param": "app_id"},
+                details={"param": "agent_id"},
             )
 
-        memory_store = state.pool.get_memory_store(app_id_value)
+        memory_store = state.pool.get_memory_store(agent_id_value)
         if memory_store is None:
             raise APIError(
                 code="MEMORY_SEARCH_UNAVAILABLE",
@@ -102,7 +102,7 @@ def build_telemetry_router() -> APIRouter:
                 query_text,
                 limit=resolved_limit,
                 session_id=normalized_session_id,
-                app_id=app_id_value,
+                agent_id=agent_id_value,
             )
         except ValueError as exc:
             raise APIError(code="SEARCH_VALIDATION_ERROR", message=str(exc), status_code=400) from exc
@@ -114,7 +114,7 @@ def build_telemetry_router() -> APIRouter:
         return success(
             {
                 "results": [asdict(result) for result in results],
-                "app_id": app_id_value,
+                "agent_id": agent_id_value,
                 "session_id": normalized_session_id,
                 "query": query_text,
                 "limit": resolved_limit,
@@ -299,7 +299,6 @@ def build_telemetry_router() -> APIRouter:
         store = get_runtime_store(request, agent_id)
 
         event = RuntimeEvent(
-            app_id=agent_id,
             agent_id=agent_id,
             event_type=event_type,
             session_id=normalize_optional_text(body.session_id),
@@ -330,7 +329,7 @@ def build_telemetry_router() -> APIRouter:
         events = [
             serialize_runtime_event(item)
             for item in await store.list_events(
-                app_id=agent_id,
+                agent_id=agent_id,
                 session_id=normalize_optional_text(session_id),
                 event_type_prefix="command.",
                 limit=resolved_limit,
@@ -359,7 +358,7 @@ def build_telemetry_router() -> APIRouter:
         RunSubAgents children are nested under the call that started them.
         """
         store = get_runtime_store(request, agent_id)
-        request_id = await store.get_request_id_for_trace(trace_id, app_id=agent_id)
+        request_id = await store.get_request_id_for_trace(trace_id, agent_id=agent_id)
         if request_id is None:
             raise APIError(code="TRACE_NOT_FOUND", message=f"no events for trace {trace_id}", status_code=404)
         events, children = await load_request_tree(store, request_id)

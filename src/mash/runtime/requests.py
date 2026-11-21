@@ -103,7 +103,7 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
         return {
             "parent": normalized,
             "primary_session_id": normalized["session_id"],
-            "primary_app_id": normalized["agent_id"],
+            "primary_agent_id": normalized["agent_id"],
             "subagent_id": agent_id,
             "subagent_invoke_opts": dict(invoke_opts),
         }
@@ -142,7 +142,7 @@ async def get_accepted_request(
     )
     if accepted is None:
         return None
-    if accepted.agent_id != self.app_id:
+    if accepted.agent_id != self.agent_id:
         raise RequestIdConflictError(
             f"request_id '{request_id}' belongs to another agent"
         )
@@ -179,7 +179,7 @@ async def submit_request(
     # request, never shown to the model.
     request_metadata: dict[str, Any] = {"user_id": user_id}
     if parent is not None:
-        request_metadata.update(parent_request_metadata(parent, agent_id=self.app_id))
+        request_metadata.update(parent_request_metadata(parent, agent_id=self.agent_id))
     if normalized_structured_output is not None:
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:
@@ -342,8 +342,8 @@ async def _submit_request_inner(
     host_id = host_id_from_request_metadata(request_metadata)
     attributes: dict[str, Any] = {
         semconv.GEN_AI_OPERATION_NAME: semconv.OP_INVOKE_AGENT,
-        semconv.GEN_AI_AGENT_ID: self.app_id,
-        semconv.GEN_AI_AGENT_NAME: self.app_id,
+        semconv.GEN_AI_AGENT_ID: self.agent_id,
+        semconv.GEN_AI_AGENT_NAME: self.agent_id,
         semconv.GEN_AI_CONVERSATION_ID: target_session_id,
         semconv.MASH_REQUEST_ID: request_id,
         semconv.MASH_REQUEST_MODE: mode,
@@ -370,8 +370,7 @@ async def _submit_request_inner(
         self,
         RuntimeEvent(
             request_id=request_id,
-            app_id=self.app_id,
-            agent_id=self.app_id,
+            agent_id=self.agent_id,
             trace_id=str(uuid.uuid4()),
             session_id=target_session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -393,8 +392,7 @@ async def _submit_request_inner(
             self,
             RuntimeEvent(
                 request_id=request_id,
-                app_id=self.app_id,
-                agent_id=self.app_id,
+                agent_id=self.agent_id,
                 trace_id=accepted_event.trace_id,
                 session_id=target_session_id,
                 event_type=RuntimeEventType.INVOKE_AGENT_END.value,
@@ -403,7 +401,7 @@ async def _submit_request_inner(
                 lifecycle=RequestStatus.FAILED,
                 payload={
                     "request_id": request_id,
-                    "agent_id": self.app_id,
+                    "agent_id": self.agent_id,
                     "status": EndStatus.ERROR.value,
                     "session_id": target_session_id,
                     **error,
@@ -438,7 +436,7 @@ async def set_request_mode(
         ),
         None,
     )
-    if accepted is None or accepted.agent_id != self.app_id:
+    if accepted is None or accepted.agent_id != self.agent_id:
         raise KeyError(request_id)
     status = await self.runtime_store.get_request_lifecycle(request_id)
     if status is not None and status.terminal:
@@ -451,15 +449,14 @@ async def set_request_mode(
         self,
         RuntimeEvent(
             request_id=request_id,
-            app_id=self.app_id,
-            agent_id=self.app_id,
+            agent_id=self.agent_id,
             trace_id=next((e.trace_id for e in events if e.trace_id), None),
             session_id=accepted.session_id,
             event_type=RuntimeEventType.REQUEST_MODE_CHANGED.value,
             payload={"mode": mode, "attributes": {semconv.MASH_REQUEST_MODE: mode}},
         ),
     )
-    return {"request_id": request_id, "agent_id": self.app_id, "mode": mode}
+    return {"request_id": request_id, "agent_id": self.agent_id, "mode": mode}
 
 
 def _stream_event(event: RuntimeEvent) -> dict[str, Any]:
@@ -565,7 +562,7 @@ async def resume_request(
     # Stale-session guard: resume replays the request's original context
     # snapshot, so it is unsafe once the session has a newer replayable turn.
     if session_id and status is not RequestStatus.COMPLETED:
-        turns = await self.store.get_turns(session_id, self.app_id)
+        turns = await self.store.get_turns(session_id, self.agent_id)
         if _session_has_later_turn(
             turns,
             accepted_at=accepted_at,
@@ -597,8 +594,7 @@ async def resume_request(
         self,
         RuntimeEvent(
             request_id=request_id,
-            app_id=self.app_id,
-            agent_id=self.app_id,
+            agent_id=self.agent_id,
             trace_id=request_trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.REQUEST_RESUMED.value,
@@ -606,7 +602,7 @@ async def resume_request(
             lifecycle=RequestStatus.RUNNING,
             payload={
                 "request_id": request_id,
-                "agent_id": self.app_id,
+                "agent_id": self.agent_id,
                 "session_id": session_id,
                 "status": "resumed",
                 "previous_status": status.value if status else None,

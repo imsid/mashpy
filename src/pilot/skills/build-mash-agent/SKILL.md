@@ -75,11 +75,11 @@ class AssistantAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="assistant")
+        return AnthropicProvider(agent_id="assistant")
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id="assistant",
+            agent_id="assistant",
             system_prompt="You are a helpful assistant.",
         )
 
@@ -211,15 +211,15 @@ additional wiring needed.
 from mash.core.llm import AnthropicProvider, OpenAIProvider, GeminiProvider
 
 # Pick one:
-llm = AnthropicProvider(app_id="my-agent")                          # Claude
-llm = AnthropicProvider(app_id="my-agent", model="claude-sonnet-4-6")
+llm = AnthropicProvider(agent_id="my-agent")                          # Claude
+llm = AnthropicProvider(agent_id="my-agent", model="claude-sonnet-4-6")
 
-llm = OpenAIProvider(app_id="my-agent")                             # GPT
-llm = OpenAIProvider(app_id="my-agent", model="gpt-5")              # reasoning model
+llm = OpenAIProvider(agent_id="my-agent")                             # GPT
+llm = OpenAIProvider(agent_id="my-agent", model="gpt-5")              # reasoning model
 
-llm = GeminiProvider(app_id="my-agent")                             # Gemini
-llm = GeminiProvider(app_id="my-agent", model="gemini-3.5-pro")
-llm = GeminiProvider(app_id="my-agent", web_search=True)            # Gemini + native grounding
+llm = GeminiProvider(agent_id="my-agent")                             # Gemini
+llm = GeminiProvider(agent_id="my-agent", model="gemini-3.5-pro")
+llm = GeminiProvider(agent_id="my-agent", web_search=True)            # Gemini + native grounding
 ```
 
 OpenAI `gpt-5*` are reasoning models: they ignore `temperature` (the provider
@@ -258,16 +258,16 @@ from mash.core.llm import (
 )
 
 # Self-hosted with Ollama on localhost (no key needed)
-llm = QwenProvider(app_id="my-agent", base_url="http://localhost:11434/v1")
+llm = QwenProvider(agent_id="my-agent", base_url="http://localhost:11434/v1")
 
 # Self-hosted with vLLM on a GPU box, explicit model
-llm = GemmaProvider(app_id="my-agent", model="google/gemma-4-27b-it",
+llm = GemmaProvider(agent_id="my-agent", model="google/gemma-4-27b-it",
                     base_url="http://gpu-box:8000/v1")
 
 # Hosted gateway with a key
 import os
 llm = OSSCompatibleProvider(
-    app_id="my-agent",
+    agent_id="my-agent",
     model="deepseek/deepseek-chat",
     base_url="https://openrouter.ai/api/v1",
     api_key=os.environ["OPENROUTER_API_KEY"],
@@ -281,12 +281,12 @@ engine needs none. Each preset's default model comes from `GEMMA_MODEL`,
 
 ## Step 4: Configure Agent Behavior
 
-`AgentConfig` carries every behavior knob. `app_id` and `system_prompt` are
+`AgentConfig` carries every behavior knob. `agent_id` and `system_prompt` are
 required; the rest have the defaults shown here.
 
 ```python
 AgentConfig(
-    app_id="my-agent",                    # required, must match get_agent_id()
+    agent_id="my-agent",                  # required, must match get_agent_id()
     system_prompt="You are ...",          # required, str or list of content blocks
     max_steps=30,                         # max tool-use loops per request
     max_tokens=4096,                      # LLM output token cap per response

@@ -61,8 +61,8 @@ class _Router(LLMProvider):
         )
         return _response(calls=[call])
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _Recording:
@@ -238,12 +238,12 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(args[0], "builder")
                 self.assertTrue(kwargs["session_id"])
             elif name == "get_request_id_for_trace":
-                self.assertEqual(kwargs["app_id"], "builder")
+                self.assertEqual(kwargs["agent_id"], "builder")
             elif name == "list_events":
                 self.assertEqual(args[0], "builder")
                 self.assertTrue(kwargs["trace_id"])
             elif name == "get_turns":
-                self.assertEqual((kwargs["app_id"], bool(kwargs["session_id"])), ("builder", True))
+                self.assertEqual((kwargs["agent_id"], bool(kwargs["session_id"])), ("builder", True))
             elif name == "get_turn":
                 self.assertEqual(args[1], "builder")
 

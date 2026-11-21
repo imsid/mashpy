@@ -154,7 +154,7 @@ class ChangelogSummarizerSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=CHANGELOG_AGENT_ID,
+            agent_id=CHANGELOG_AGENT_ID,
             system_prompt=[
                 {
                     "type": "text",

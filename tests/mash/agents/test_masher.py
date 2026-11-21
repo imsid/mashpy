@@ -46,8 +46,8 @@ class _FakeLLMProvider(LLMProvider):
         del request
         raise NotImplementedError
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class MasherSpecTests(unittest.TestCase):

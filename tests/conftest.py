@@ -130,7 +130,6 @@ class _TestRuntimeStore:
                     len(request_events) + 1 if request_events is not None else None
                 ),
                 trace_id=event.trace_id,
-                app_id=event.app_id,
                 agent_id=event.agent_id,
                 session_id=event.session_id,
                 host_id=event.host_id,
@@ -275,7 +274,7 @@ class _TestRuntimeStore:
 
     async def list_events(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
@@ -290,7 +289,7 @@ class _TestRuntimeStore:
         filtered = [
             event
             for event in events
-            if event.app_id == app_id
+            if event.agent_id == agent_id
             and event.event_id > int(after_event_id)
             and (session_id is None or event.session_id == session_id)
             and (trace_id is None or event.trace_id == trace_id)
@@ -394,14 +393,14 @@ class _TestRuntimeStore:
         self,
         trace_id: str,
         *,
-        app_id: str | None = None,
+        agent_id: str | None = None,
     ) -> str | None:
         async with self._lock:
             events = list(self._events)
         for event in events:
             if event.trace_id != trace_id or not event.request_id:
                 continue
-            if app_id is not None and event.app_id != app_id:
+            if agent_id is not None and event.agent_id != agent_id:
                 continue
             return str(event.request_id)
         return None
@@ -412,7 +411,7 @@ class _TestRuntimeStore:
                 feedback_id=len(self._feedback) + 1,
                 feedback_type=feedback.feedback_type,
                 message=feedback.message,
-                app_id=feedback.app_id,
+                agent_id=feedback.agent_id,
                 host_id=feedback.host_id,
                 session_id=feedback.session_id,
                 request_id=feedback.request_id,
@@ -425,7 +424,7 @@ class _TestRuntimeStore:
 
     async def list_feedback(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         after: float,
         before: float | None = None,
@@ -440,7 +439,7 @@ class _TestRuntimeStore:
         filtered = [
             record
             for record in records
-            if record.app_id == app_id
+            if record.agent_id == agent_id
             and record.created_at > float(after)
             and (before is None or record.created_at < float(before))
             and (feedback_type is None or record.feedback_type == feedback_type)
@@ -479,15 +478,15 @@ class _TestRuntimeStore:
 
     async def get_latest_trace(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
     ) -> dict[str, Any] | None:
-        traces = await self.list_recent_traces(app_id, session_id=session_id, limit=1)
+        traces = await self.list_recent_traces(agent_id, session_id=session_id, limit=1)
         return traces[0] if traces else None
 
     async def list_recent_traces(
         self,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         *,
         session_id: str | None = None,
         host_id: str | None = None,
@@ -499,7 +498,7 @@ class _TestRuntimeStore:
             events = list(self._events)
         grouped: dict[tuple[str, str | None], list[RuntimeEvent]] = {}
         for event in events:
-            if (app_id is not None and event.app_id != app_id) or event.trace_id is None:
+            if (agent_id is not None and event.agent_id != agent_id) or event.trace_id is None:
                 continue
             if session_id is not None and event.session_id != session_id:
                 continue
@@ -681,7 +680,7 @@ class _TestMemoryStore:
 
     async def get_logs(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str | None = None,
         trace_id: str | None = None,
         limit: int | None = None,
@@ -690,7 +689,7 @@ class _TestMemoryStore:
         del after_log_id
         rows = [
             r for r in self._logs
-            if r.get("app_id") == app_id
+            if r.get("agent_id") == agent_id
             and (session_id is None or r.get("session_id") == session_id)
             and (trace_id is None or r.get("trace_id") == trace_id)
         ]
@@ -699,22 +698,22 @@ class _TestMemoryStore:
         return rows
 
     async def get_latest_log_trace(
-        self, app_id: str, session_id: str
+        self, agent_id: str, session_id: str
     ) -> dict[str, Any] | None:
-        del app_id, session_id
+        del agent_id, session_id
         return None
 
     async def list_recent_log_traces(
-        self, app_id: str, session_id: str, limit: int = 5
+        self, agent_id: str, session_id: str, limit: int = 5
     ) -> list[dict[str, Any]]:
-        del app_id, session_id, limit
+        del agent_id, session_id, limit
         return []
 
     async def save_turn(
         self,
         trace_id: str,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         user_message: str,
         agent_response: str,
         signals: dict[str, Any],
@@ -733,7 +732,7 @@ class _TestMemoryStore:
             {
                 "trace_id": trace_id,
                 "session_id": session_id,
-                "app_id": app_id,
+                "agent_id": agent_id,
                 "user_message": user_message,
                 "agent_response": agent_response,
                 "signals": signals,
@@ -752,7 +751,7 @@ class _TestMemoryStore:
     async def get_turns(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         rows = [
@@ -767,19 +766,19 @@ class _TestMemoryStore:
                 "created_at": float(t.get("created_at") or 0.0),
             }
             for t in self._turns
-            if t["session_id"] == session_id and t["app_id"] == app_id
+            if t["session_id"] == session_id and t["agent_id"] == agent_id
         ]
         if limit is not None:
             rows = rows[-limit:]
         return rows
 
     async def get_turn(
-        self, trace_id: str, app_id: str, session_id: str | None = None
+        self, trace_id: str, agent_id: str, session_id: str | None = None
     ) -> dict[str, Any] | None:
         for t in self._turns:
             if (
                 t["trace_id"] == trace_id
-                and t["app_id"] == app_id
+                and t["agent_id"] == agent_id
                 and (session_id is None or t["session_id"] == session_id)
             ):
                 return {
@@ -793,11 +792,11 @@ class _TestMemoryStore:
         return None
 
     async def get_replay_turns(
-        self, session_id: str, app_id: str, turns: int
+        self, session_id: str, agent_id: str, turns: int
     ) -> list[dict[str, Any]]:
         rows = [
             row
-            for row in await self.get_turns(session_id=session_id, app_id=app_id)
+            for row in await self.get_turns(session_id=session_id, agent_id=agent_id)
             if row["replayable"]
         ]
         for row in rows:
@@ -833,7 +832,7 @@ class _TestMemoryStore:
             {
                 "trace_id": t["trace_id"],
                 "session_id": t["session_id"],
-                "app_id": t["app_id"],
+                "agent_id": t["agent_id"],
                 "user_message": t.get("user_message", ""),
                 "agent_response": t.get("agent_response", ""),
                 "created_at": float(t.get("created_at") or 0.0),
@@ -846,7 +845,7 @@ class _TestMemoryStore:
 
     async def list_workflow_turns(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         workflow_id: str,
         workflow_run_id: str | None = None,
@@ -859,7 +858,7 @@ class _TestMemoryStore:
         del start_time, end_time
         rows = [
             t for t in self._turns
-            if t["app_id"] == app_id
+            if t["agent_id"] == agent_id
             and t.get("workflow_id") == workflow_id
             and (workflow_run_id is None or t.get("workflow_run_id") == workflow_run_id)
         ]
@@ -871,7 +870,7 @@ class _TestMemoryStore:
         return rows
 
     async def get_session_signals(
-        self, session_id: str, app_id: str, limit: int | None = None
+        self, session_id: str, agent_id: str, limit: int | None = None
     ) -> list[dict[str, Any]]:
         rows = [
             {
@@ -880,18 +879,18 @@ class _TestMemoryStore:
                 "signals": t.get("signals") or {},
             }
             for t in self._turns
-            if t["session_id"] == session_id and t["app_id"] == app_id
+            if t["session_id"] == session_id and t["agent_id"] == agent_id
         ]
         if limit is not None:
             rows = rows[-limit:]
         return rows
 
     async def list_sessions(
-        self, app_id: str, *, limit: int, user_id: str | None = None
+        self, agent_id: str, *, limit: int, user_id: str | None = None
     ) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         for t in self._turns:
-            if t["app_id"] != app_id:
+            if t["agent_id"] != agent_id:
                 continue
             if user_id is not None and t.get("user_id") != user_id:
                 continue
@@ -914,18 +913,18 @@ class _TestMemoryStore:
         rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
         return rows[:limit]
 
-    async def get_latest_session(self, app_id: str) -> dict[str, Any] | None:
-        sessions = await self.list_sessions(app_id, limit=1)
+    async def get_latest_session(self, agent_id: str) -> dict[str, Any] | None:
+        sessions = await self.list_sessions(agent_id, limit=1)
         return sessions[0] if sessions else None
 
     async def get_latest_trace(
-        self, app_id: str, session_id: str
+        self, agent_id: str, session_id: str
     ) -> dict[str, Any] | None:
-        traces = await self.list_recent_traces(app_id, session_id, limit=1)
+        traces = await self.list_recent_traces(agent_id, session_id, limit=1)
         return traces[0] if traces else None
 
     async def list_recent_traces(
-        self, app_id: str, session_id: str, limit: int = 5
+        self, agent_id: str, session_id: str, limit: int = 5
     ) -> list[dict[str, Any]]:
         rows = [
             {
@@ -937,12 +936,12 @@ class _TestMemoryStore:
                 "created_at": 0.0,
             }
             for t in self._turns
-            if t["app_id"] == app_id and t["session_id"] == session_id
+            if t["agent_id"] == agent_id and t["session_id"] == session_id
         ]
         return list(reversed(rows))[:max(1, int(limit))]
 
     async def get_turn_by_ids(
-        self, pairs: list[dict[str, str]], app_id: str, user_id: str | None = None
+        self, pairs: list[dict[str, str]], agent_id: str, user_id: str | None = None
     ) -> list[dict[str, Any]] | None:
         found = []
         for pair in pairs:
@@ -950,7 +949,7 @@ class _TestMemoryStore:
                 if (
                     t["session_id"] == pair.get("session_id")
                     and t["trace_id"] == pair.get("trace_id")
-                    and t["app_id"] == app_id
+                    and t["agent_id"] == agent_id
                     and (user_id is None or t.get("user_id") == user_id)
                 ):
                     found.append(
@@ -969,7 +968,7 @@ class _TestMemoryStore:
         query_term: str,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         col = str(column)
@@ -978,7 +977,7 @@ class _TestMemoryStore:
         for t in self._turns:
             if session_id is not None and t["session_id"] != session_id:
                 continue
-            if app_id is not None and t["app_id"] != app_id:
+            if agent_id is not None and t["agent_id"] != agent_id:
                 continue
             if user_id is not None and t.get("user_id") != user_id:
                 continue
@@ -1002,10 +1001,10 @@ class _TestMemoryStore:
         query_embedding: list[float] | None,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        del column, query_term, query_embedding, limit, session_id, app_id, user_id
+        del column, query_term, query_embedding, limit, session_id, agent_id, user_id
         return []
 
 

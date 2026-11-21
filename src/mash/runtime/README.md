@@ -752,7 +752,7 @@ unsupported providers use a no-op default. No agent configuration is required.
 The summaries remain in `chat.end`; answers and tool behavior
 are unchanged. No interpreter lifecycle is involved.
 
-`RuntimeStore.list_thought_traces(app_id=None, limit=50, trace_id=None)` reads the latest
+`RuntimeStore.list_thought_traces(agent_id=None, limit=50, trace_id=None)` reads the latest
 thought-bearing traces and all their nonempty summaries from one SQL snapshot.
 Agent/trace filtering and nonempty-string qualification precede the trace limit.
 Admin displays these words in full. The pool uses its existing shared event

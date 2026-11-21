@@ -63,7 +63,7 @@ class KeywordRetriever:
         *,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[RetrievalHit]:
         """Retrieve keyword hits from the configured store backend."""
@@ -76,7 +76,7 @@ class KeywordRetriever:
             query_term=parsed.keyword_query,
             limit=normalized_limit,
             session_id=session_id,
-            app_id=app_id,
+            agent_id=agent_id,
             user_id=user_id,
         )
         return [
@@ -97,7 +97,7 @@ class SemanticRetriever:
         *,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> list[RetrievalHit]:
         """Retrieve semantic hits from the configured store backend."""
@@ -111,7 +111,7 @@ class SemanticRetriever:
             query_embedding=parsed.semantic_embedding,
             limit=normalized_limit,
             session_id=session_id,
-            app_id=app_id,
+            agent_id=agent_id,
             user_id=user_id,
         )
         return [
@@ -149,7 +149,7 @@ class HybridRetrievalOrchestrator:
         *,
         limit: int,
         session_id: str | None = None,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         user_id: str | None = None,
     ) -> HybridRetrievalOutputs:
         """Run enabled retrieval methods and return their independent outputs."""
@@ -161,7 +161,7 @@ class HybridRetrievalOrchestrator:
                 parsed,
                 limit=limit,
                 session_id=session_id,
-                app_id=app_id,
+                agent_id=agent_id,
                 user_id=user_id,
             )
 
@@ -170,7 +170,7 @@ class HybridRetrievalOrchestrator:
                 parsed,
                 limit=limit,
                 session_id=session_id,
-                app_id=app_id,
+                agent_id=agent_id,
                 user_id=user_id,
             )
 

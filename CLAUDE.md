@@ -125,11 +125,11 @@ class AssistantAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="assistant")
+        return AnthropicProvider(agent_id="assistant")
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id="assistant",
+            agent_id="assistant",
             system_prompt="You are a helpful assistant.",
         )
 
@@ -271,7 +271,7 @@ and the other `mash.logging` helpers. The runtime calls a tool's `shutdown()`, `
 
 ```python
 AgentConfig(
-    app_id="my-agent",                    # required, must match get_agent_id()
+    agent_id="my-agent",                  # required, must match get_agent_id()
     system_prompt="You are ...",          # required, str or list of content blocks
     max_steps=30,                         # max think/act loops per request
     max_tokens=4096,                      # LLM output token cap per response
@@ -296,16 +296,16 @@ AgentConfig(
 from mash.core.llm import AnthropicProvider, OpenAIProvider, GeminiProvider
 
 # Anthropic (default model from ANTHROPIC_MODEL env, fallback claude-haiku-4-5-20251001)
-llm = AnthropicProvider(app_id="my-agent")
-llm = AnthropicProvider(app_id="my-agent", model="claude-sonnet-4-6-20250514")
+llm = AnthropicProvider(agent_id="my-agent")
+llm = AnthropicProvider(agent_id="my-agent", model="claude-sonnet-4-6-20250514")
 
 # OpenAI (default from OPENAI_MODEL env, fallback gpt-5-mini)
-llm = OpenAIProvider(app_id="my-agent")
-llm = OpenAIProvider(app_id="my-agent", model="gpt-5")
+llm = OpenAIProvider(agent_id="my-agent")
+llm = OpenAIProvider(agent_id="my-agent", model="gpt-5")
 
 # Gemini (default from GEMINI_MODEL env, fallback gemini-3.5-flash)
-llm = GeminiProvider(app_id="my-agent")
-llm = GeminiProvider(app_id="my-agent", model="gemini-2.5-pro")
+llm = GeminiProvider(agent_id="my-agent")
+llm = GeminiProvider(agent_id="my-agent", model="gemini-2.5-pro")
 ```
 
 ### Open-source models
@@ -326,14 +326,14 @@ from mash.core.llm import (
 
 # Family presets (model from GEMMA_MODEL/QWEN_MODEL/DEEPSEEK_MODEL/LLAMA_MODEL env).
 # base_url from OSS_BASE_URL env, fallback http://localhost:11434/v1 (Ollama).
-llm = GemmaProvider(app_id="my-agent", base_url="http://localhost:11434/v1")
-llm = QwenProvider(app_id="my-agent", model="Qwen/Qwen3-32B",
+llm = GemmaProvider(agent_id="my-agent", base_url="http://localhost:11434/v1")
+llm = QwenProvider(agent_id="my-agent", model="Qwen/Qwen3-32B",
                    base_url="http://gpu-box:8000/v1")  # vLLM
 
 # Generic endpoint (e.g. a hosted gateway with a key).
 import os
 llm = OSSCompatibleProvider(
-    app_id="my-agent",
+    agent_id="my-agent",
     model="deepseek-ai/DeepSeek-V3",
     base_url="https://api.together.xyz/v1",
     api_key=os.environ["TOGETHER_API_KEY"],

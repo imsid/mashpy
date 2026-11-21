@@ -154,8 +154,8 @@ class _SummaryLLM(LLMProvider):
             usage=LLMTokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class CompactionLedgerTests(unittest.IsolatedAsyncioTestCase):
@@ -170,13 +170,13 @@ class CompactionLedgerTests(unittest.IsolatedAsyncioTestCase):
             ]
         ):
             await store.save_turn(
-                trace_id=f"t{index}", session_id="s", app_id="companion",
+                trace_id=f"t{index}", session_id="s", agent_id="companion",
                 user_message=f"m{index}", agent_response=f"r{index}", signals={},
                 session_total_tokens=0, metadata={"ledger": ledger} if ledger else {},
             )
 
         _, trace_id = await compact_conversation(
-            store=store, llm=_SummaryLLM(), app_id="companion", session_id="s",
+            store=store, llm=_SummaryLLM(), agent_id="companion", session_id="s",
             max_tokens=100, temperature=0.0, turn_limit=2, reason="manual",
             session_total_tokens_reset=0,
         )
@@ -234,8 +234,8 @@ class _RoutingProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class LedgerReplayTests(unittest.IsolatedAsyncioTestCase):

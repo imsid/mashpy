@@ -208,8 +208,8 @@ class _ToolCallingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _MetadataReadingAgentSpec(AgentSpec):
@@ -234,7 +234,7 @@ class _MetadataReadingAgentSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=self.agent_id, system_prompt=f"You are {self.agent_id}."
+            agent_id=self.agent_id, system_prompt=f"You are {self.agent_id}."
         )
 
 
@@ -257,8 +257,8 @@ class _CompanionLLM(LLMProvider):
     async def send(self, request):
         return await self.inner.send(request)
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -650,7 +650,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(sessions[0]["session_id"], "repl-session-1")
 
                     run_turns = await worker.memory_store.list_workflow_turns(
-                        app_id="worker", workflow_id="wf"
+                        agent_id="worker", workflow_id="wf"
                     )
                     self.assertEqual(len(run_turns), 1)
                     self.assertEqual(run_turns[0]["workflow_run_id"], run_id)
@@ -658,7 +658,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                     # The run's trace events are queryable by workflow_run_id.
                     events = await worker.runtime_store.list_events(
-                        app_id="worker", workflow_run_id=run_id
+                        agent_id="worker", workflow_run_id=run_id
                     )
                     self.assertTrue(events)
                     self.assertTrue(
@@ -778,11 +778,11 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     expected_subagent_session = await _child_session(research, accepted["request_id"])
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
-                        app_id=research.app_id,
+                        agent_id=research.agent_id,
                         limit=1,
                     )
                     self.assertEqual(turns[-1]["user_message"], "analyze")
-                    self.assertEqual(turns[-1]["metadata"]["primary_app_id"], "companion")
+                    self.assertEqual(turns[-1]["metadata"]["primary_agent_id"], "companion")
                     self.assertEqual(turns[-1]["metadata"]["primary_session_id"], "s-1")
                 finally:
                     await pool.close()
@@ -888,7 +888,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id=await _child_session(research, accepted["request_id"]),
-                        app_id=research.app_id,
+                        agent_id=research.agent_id,
                         limit=1,
                     )
                     self.assertEqual(turns[-1]["user_message"], "analyze")
@@ -929,7 +929,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
                         session_id=await _child_session(research, accepted["request_id"]),
-                        app_id=research.app_id,
+                        agent_id=research.agent_id,
                         limit=1,
                     )
                     self.assertEqual(turns[-1]["user_message"], "analyze")
@@ -1284,7 +1284,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     expected_subagent_session = await _child_session(research, request_id)
                     turns = await research.store.get_turns(
                         session_id=expected_subagent_session,
-                        app_id=research.app_id,
+                        agent_id=research.agent_id,
                         limit=1,
                     )
                     self.assertEqual(turns[-1]["user_message"], "analyze")
@@ -1343,7 +1343,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(metadata_["subagent_id"], "research")
                     self.assertEqual(metadata_["parent"]["request_id"], "req-1")
                     turns = await research.store.get_turns(
-                        session_id=child_id, app_id="research"
+                        session_id=child_id, agent_id="research"
                     )
                     self.assertEqual(len(turns), 1)
                 finally:
@@ -1396,7 +1396,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("build csv", seen)
                     research = _agent_runtime(pool, "research")
                     turns = await research.store.get_turns(
-                        session_id=rss["session_id"], app_id="research"
+                        session_id=rss["session_id"], agent_id="research"
                     )
                     self.assertEqual(len(turns), 2)
                     self.assertTrue(all(turn["replayable"] for turn in turns))

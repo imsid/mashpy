@@ -27,7 +27,7 @@ class _Store:
 
 
 class _Runtime:
-    app_id = "agent-a"
+    agent_id = "agent-a"
 
     def __init__(self) -> None:
         self.runtime_store = _Store()

@@ -17,7 +17,7 @@ Memory store protocol and backend implementations.
 - Preserve `MemoryStore` method signatures and return payload shapes across backends.
 - Memory search retrieval must access storage through `MemoryStore.keyword_search()` and `MemoryStore.semantic_search()`.
 - Keep search result contracts stable (`trace_id`, `session_id`, `score`, `preview` for store-level search hits).
-- `get_turns()` and `get_turn_by_ids()` must require `app_id` scoping so cross-agent reads cannot mix sessions.
+- `get_turns()` and `get_turn_by_ids()` must require `agent_id` scoping so cross-agent reads cannot mix sessions.
 
 ## Built-In Backend Notes
 - `save_turn()` stores the `trace_id` argument as the row PK (`trace_id` column).

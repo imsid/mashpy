@@ -60,8 +60,7 @@ class RequestModeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id=request_id,
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                 lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
@@ -127,8 +126,7 @@ class RequestModeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-2",
-                app_id=runtime.app_id,
-                agent_id=runtime.app_id,
+                agent_id=runtime.agent_id,
                 session_id="s-1",
                 event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                 lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_END.value, "ok"),
@@ -177,7 +175,6 @@ class RequestModeRouteTests(unittest.TestCase):
                 self.store.append_event,
                 RuntimeEvent(
                     request_id="req-1",
-                    app_id="mode-app",
                     agent_id="mode-app",
                     session_id="s-1",
                     event_type=event_type,

@@ -27,7 +27,7 @@ class MemoryStore(Protocol):
 
     async def get_logs(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         limit: Optional[int] = None,
@@ -38,7 +38,7 @@ class MemoryStore(Protocol):
 
     async def get_latest_log_trace(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Return the latest trace summary from persisted logs."""
@@ -46,7 +46,7 @@ class MemoryStore(Protocol):
 
     async def list_recent_log_traces(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
@@ -57,7 +57,7 @@ class MemoryStore(Protocol):
         self,
         trace_id: str,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
@@ -84,7 +84,7 @@ class MemoryStore(Protocol):
     async def get_turns(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Get conversation turns for a session."""
@@ -93,12 +93,12 @@ class MemoryStore(Protocol):
     async def get_turn(
         self,
         trace_id: str,
-        app_id: str,
+        agent_id: str,
         session_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """One turn by its trace id (the primary key), or None.
 
-        Only a turn of ``app_id``, and of ``session_id`` when given. The row has
+        Only a turn of ``agent_id``, and of ``session_id`` when given. The row has
         ``trace_id``, ``session_id``, ``user_message``, ``agent_response``,
         ``metadata`` and ``created_at``.
         """
@@ -107,7 +107,7 @@ class MemoryStore(Protocol):
     async def get_replay_turns(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         turns: int,
     ) -> List[Dict[str, Any]]:
         """The turns a request replays into its context, oldest first.
@@ -128,7 +128,7 @@ class MemoryStore(Protocol):
 
         Leaves out workflow and subagent turns: these are the turns where the
         user spoke to the pool. Each row has ``trace_id``, ``session_id``,
-        ``app_id``, ``user_message``, ``agent_response`` and ``created_at``.
+        ``agent_id``, ``user_message``, ``agent_response`` and ``created_at``.
         """
         ...
 
@@ -138,7 +138,7 @@ class MemoryStore(Protocol):
 
     async def list_workflow_turns(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         workflow_id: str,
         workflow_run_id: Optional[str] = None,
@@ -159,7 +159,7 @@ class MemoryStore(Protocol):
     async def get_session_signals(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Get chronological per-turn signal payloads for a session."""
@@ -167,7 +167,7 @@ class MemoryStore(Protocol):
 
     async def list_sessions(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         limit: int,
         user_id: Optional[str] = None,
@@ -181,14 +181,14 @@ class MemoryStore(Protocol):
 
     async def get_latest_session(
         self,
-        app_id: str,
+        agent_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Return the most recent persisted session for one application."""
         ...
 
     async def get_latest_trace(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Return the most recent trace for a session in one application."""
@@ -196,7 +196,7 @@ class MemoryStore(Protocol):
 
     async def list_recent_traces(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
@@ -206,7 +206,7 @@ class MemoryStore(Protocol):
     async def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],
-        app_id: str,
+        agent_id: str,
         user_id: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Get turns by exact session/turn identifier pairs in one lookup.
@@ -221,7 +221,7 @@ class MemoryStore(Protocol):
         query_term: str,
         limit: int,
         session_id: Optional[str] = None,
-        app_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search turns by keyword in a single column."""
@@ -234,7 +234,7 @@ class MemoryStore(Protocol):
         query_embedding: Optional[List[float]],
         limit: int,
         session_id: Optional[str] = None,
-        app_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search turns semantically in a single column."""

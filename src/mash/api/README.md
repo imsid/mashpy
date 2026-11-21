@@ -800,12 +800,12 @@ messages, which can quote inputs; without it a failed span keeps its
 - Searches observability memory records.
 - Query params:
   - `q` required non-empty string
-  - `app_id` required non-empty string
+  - `agent_id` required non-empty string
   - `session_id` optional
   - `limit` optional, clamped to `1..50`
 - Returns:
   - `results`
-  - `app_id`
+  - `agent_id`
   - `session_id`
   - `query`
   - `limit`

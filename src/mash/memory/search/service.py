@@ -41,7 +41,7 @@ class MemorySearchService:
         self,
         query: str,
         *,
-        app_id: str,
+        agent_id: str,
         limit: int = 10,
         session_id: str | None = None,
         user_id: str | None = None,
@@ -60,7 +60,7 @@ class MemorySearchService:
             parsed_query,
             limit=normalized_limit,
             session_id=session_id,
-            app_id=app_id,
+            agent_id=agent_id,
             user_id=user_id,
         )
         fused_hits = await self._reranker.rerank(

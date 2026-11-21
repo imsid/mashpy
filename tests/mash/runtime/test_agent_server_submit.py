@@ -16,7 +16,7 @@ class _Store:
 
 
 class _Runtime:
-    app_id = "agent-a"
+    agent_id = "agent-a"
 
     def __init__(self) -> None:
         self.runtime_store = _Store()
@@ -37,7 +37,7 @@ class _Runtime:
         return self.known.get(request_id)
 
     def describe(self) -> dict:
-        return {"agent_id": self.app_id, "tools": [{"name": "bash"}], "skills": []}
+        return {"agent_id": self.agent_id, "tools": [{"name": "bash"}], "skills": []}
 
     async def compact_session(self, **kwargs) -> tuple:
         self.compactions.append(kwargs)
@@ -47,7 +47,7 @@ class _Runtime:
         self.submissions.append(kwargs)
         return {
             "request_id": "req-1",
-            "agent_id": self.app_id,
+            "agent_id": self.agent_id,
             "session_id": kwargs["session_id"],
             "status": "accepted",
         }

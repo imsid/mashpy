@@ -78,7 +78,7 @@ class CortexAgentSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=CORTEX_AGENT_ID,
+            agent_id=CORTEX_AGENT_ID,
             system_prompt=_CURATOR_PROMPT,
             max_steps=4,
         )

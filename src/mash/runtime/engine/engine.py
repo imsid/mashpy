@@ -87,7 +87,7 @@ class RequestEngine:
         return self._runtime.runtime_store
 
     async def open(self) -> None:
-        for request_id in await self._store.list_running_requests(self._runtime.app_id):
+        for request_id in await self._store.list_running_requests(self._runtime.agent_id):
             if request_id in self._tasks:
                 continue
             try:
@@ -286,7 +286,7 @@ class RequestEngine:
 
     def _spawn(self, request_id: str, coro: Any) -> None:
         task = asyncio.create_task(
-            coro, name=f"mash-request-{self._runtime.app_id}-{request_id}"
+            coro, name=f"mash-request-{self._runtime.agent_id}-{request_id}"
         )
         self._tasks[request_id] = task
 

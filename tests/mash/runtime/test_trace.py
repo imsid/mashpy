@@ -17,7 +17,6 @@ from mash.runtime.events.types import RuntimeEventType
 class RuntimeTraceTests(unittest.TestCase):
     def test_response_preview_only_returns_for_response_thinking(self) -> None:
         response_event = RuntimeEvent(
-            app_id="primary",
             agent_id="primary",
             event_type=RuntimeEventType.CHAT_END.value,
             payload={
@@ -26,7 +25,6 @@ class RuntimeTraceTests(unittest.TestCase):
             },
         )
         finish_event = RuntimeEvent(
-            app_id="primary",
             agent_id="primary",
             event_type=RuntimeEventType.CHAT_END.value,
             payload={
@@ -35,7 +33,6 @@ class RuntimeTraceTests(unittest.TestCase):
             },
         )
         tool_event = RuntimeEvent(
-            app_id="primary",
             agent_id="primary",
             event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
             payload={"assistant_text": "no preview"},
@@ -61,12 +58,12 @@ class RuntimeTraceTests(unittest.TestCase):
                     "duration_ms": 123,
                 },
             },
-            app_id="primary",
+            agent_id="primary",
         )
 
         assert event is not None
         self.assertEqual(event.event_type, RuntimeEventType.CHAT_END.value)
-        self.assertEqual(event.app_id, "primary")
+        self.assertEqual(event.agent_id, "primary")
         self.assertEqual(event.agent_id, "primary")
         self.assertEqual(event.trace_id, "trace-1")
         self.assertEqual(event.session_id, "s-1")
@@ -78,7 +75,6 @@ class RuntimeTraceTests(unittest.TestCase):
         trace = build_reasoning_trace(
             [
                 RuntimeEvent(
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
@@ -93,7 +89,6 @@ class RuntimeTraceTests(unittest.TestCase):
                     },
                 ),
                 RuntimeEvent(
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                     trace_id="trace-1",
@@ -102,7 +97,6 @@ class RuntimeTraceTests(unittest.TestCase):
                     payload={"attributes": {"gen_ai.tool.name": "bash"}, "duration_ms": 45},
                 ),
                 RuntimeEvent(
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.STEP_END.value,
                     trace_id="trace-1",
@@ -115,7 +109,6 @@ class RuntimeTraceTests(unittest.TestCase):
                     },
                 ),
                 RuntimeEvent(
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
@@ -135,7 +128,6 @@ class RuntimeTraceTests(unittest.TestCase):
             [
                 RuntimeEvent(
                     event_id=1,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     trace_id="trace-1",
@@ -145,7 +137,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=2,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
@@ -160,7 +151,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=3,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                     trace_id="trace-1",
@@ -171,7 +161,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=4,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.STEP_END.value,
                     trace_id="trace-1",
@@ -182,7 +171,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=5,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
@@ -211,7 +199,6 @@ class RuntimeTraceTests(unittest.TestCase):
             [
                 RuntimeEvent(
                     event_id=1,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
@@ -225,7 +212,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=2,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
@@ -239,7 +225,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=3,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
@@ -260,7 +245,6 @@ class RuntimeTraceTests(unittest.TestCase):
             [
                 RuntimeEvent(
                     event_id=1,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.CHAT_END.value,
                     trace_id="trace-1",
@@ -274,7 +258,6 @@ class RuntimeTraceTests(unittest.TestCase):
                 ),
                 RuntimeEvent(
                     event_id=2,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.INVOKE_AGENT_END.value,
                     trace_id="trace-1",
@@ -294,7 +277,6 @@ class RuntimeTraceTests(unittest.TestCase):
             [
                 RuntimeEvent(
                     event_id=1,
-                    app_id="primary",
                     agent_id="primary",
                     event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
                     trace_id="trace-1",

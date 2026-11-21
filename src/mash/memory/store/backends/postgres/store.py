@@ -56,7 +56,7 @@ class PostgresStore(MemoryStore):
             payload = log.get("payload")
             rows.append(
                 (
-                    str(log["app_id"]),
+                    str(log["agent_id"]),
                     log.get("session_id"),
                     log.get("trace_id"),
                     str(log["event_class"]),
@@ -72,7 +72,7 @@ class PostgresStore(MemoryStore):
                     await cursor.executemany(
                         """
                         INSERT INTO memory_logs (
-                            app_id,
+                            agent_id,
                             session_id,
                             trace_id,
                             event_class,
@@ -87,14 +87,14 @@ class PostgresStore(MemoryStore):
 
     async def get_logs(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         limit: Optional[int] = None,
         after_log_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        params: List[Any] = [app_id]
-        filters = ["app_id = %s"]
+        params: List[Any] = [agent_id]
+        filters = ["agent_id = %s"]
 
         if session_id is not None:
             filters.append("session_id = %s")
@@ -115,7 +115,7 @@ class PostgresStore(MemoryStore):
 
         if after_log_id is None and normalized_limit is not None:
             sql = f"""
-                SELECT id, app_id, session_id, trace_id, event_class, event_type, created_at, payload
+                SELECT id, agent_id, session_id, trace_id, event_class, event_type, created_at, payload
                 FROM memory_logs
                 WHERE {where_clause}
                 ORDER BY id DESC
@@ -125,7 +125,7 @@ class PostgresStore(MemoryStore):
             reverse_results = True
         else:
             sql = f"""
-                SELECT id, app_id, session_id, trace_id, event_class, event_type, created_at, payload
+                SELECT id, agent_id, session_id, trace_id, event_class, event_type, created_at, payload
                 FROM memory_logs
                 WHERE {where_clause}
                 ORDER BY id ASC
@@ -144,7 +144,7 @@ class PostgresStore(MemoryStore):
         return [
             inflate_logged_event(
                 log_id=int(row["id"]),
-                app_id=str(row["app_id"]),
+                agent_id=str(row["agent_id"]),
                 session_id=(
                     None if row["session_id"] is None else str(row["session_id"])
                 ),
@@ -159,11 +159,11 @@ class PostgresStore(MemoryStore):
 
     async def get_latest_log_trace(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
         traces = await self.list_recent_log_traces(
-            app_id=app_id,
+            agent_id=agent_id,
             session_id=session_id,
             limit=1,
         )
@@ -171,7 +171,7 @@ class PostgresStore(MemoryStore):
 
     async def list_recent_log_traces(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
@@ -184,27 +184,27 @@ class PostgresStore(MemoryStore):
                 SELECT
                     trace_id,
                     session_id,
-                    app_id,
+                    agent_id,
                     MIN(created_at) AS started_at,
                     MAX(created_at) AS last_event_at,
                     COUNT(*) AS event_count
                 FROM memory_logs
-                WHERE app_id = %s
+                WHERE agent_id = %s
                   AND session_id = %s
                   AND trace_id IS NOT NULL
                   AND BTRIM(trace_id) != ''
-                GROUP BY app_id, session_id, trace_id
+                GROUP BY agent_id, session_id, trace_id
                 ORDER BY last_event_at DESC, started_at DESC, trace_id DESC
                 LIMIT %s
                 """,
-                (app_id, session_id, normalized_limit),
+                (agent_id, session_id, normalized_limit),
             )
 
         return [
             {
                 "trace_id": str(row["trace_id"]),
                 "session_id": str(row["session_id"]),
-                "app_id": str(row["app_id"]),
+                "agent_id": str(row["agent_id"]),
                 "started_at": float(row["started_at"] or 0.0),
                 "last_event_at": float(row["last_event_at"] or 0.0),
                 "event_count": int(row["event_count"] or 0),
@@ -216,7 +216,7 @@ class PostgresStore(MemoryStore):
         self,
         trace_id: str,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
@@ -244,7 +244,7 @@ class PostgresStore(MemoryStore):
                         INSERT INTO memory_turns (
                             trace_id,
                             session_id,
-                            app_id,
+                            agent_id,
                             user_message,
                             agent_response,
                             session_total_tokens,
@@ -258,15 +258,15 @@ class PostgresStore(MemoryStore):
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                         ON CONFLICT (trace_id) DO NOTHING
-                        RETURNING app_id, session_id, created_at, session_total_tokens
+                        RETURNING agent_id, session_id, created_at, session_total_tokens
                         )
                         INSERT INTO memory_session AS s (
-                            app_id, session_id, turn_count, last_activity_at,
+                            agent_id, session_id, turn_count, last_activity_at,
                             session_total_tokens
                         )
-                        SELECT app_id, session_id, 1, created_at, session_total_tokens
+                        SELECT agent_id, session_id, 1, created_at, session_total_tokens
                         FROM turn
-                        ON CONFLICT (app_id, session_id) DO UPDATE
+                        ON CONFLICT (agent_id, session_id) DO UPDATE
                         SET turn_count = s.turn_count + 1,
                             last_activity_at = GREATEST(
                                 s.last_activity_at, EXCLUDED.last_activity_at
@@ -278,7 +278,7 @@ class PostgresStore(MemoryStore):
                         (
                             trace_id,
                             session_id,
-                            app_id,
+                            agent_id,
                             user_message,
                             agent_response,
                             int(session_total_tokens),
@@ -297,7 +297,7 @@ class PostgresStore(MemoryStore):
                             INSERT INTO memory_signals (
                                 trace_id,
                                 session_id,
-                                app_id,
+                                agent_id,
                                 signal_name,
                                 signal_value
                             )
@@ -308,7 +308,7 @@ class PostgresStore(MemoryStore):
                                 (
                                     trace_id,
                                     session_id,
-                                    app_id,
+                                    agent_id,
                                     signal_name,
                                     json.dumps(signal_value, default=str),
                                 )
@@ -320,11 +320,11 @@ class PostgresStore(MemoryStore):
     async def get_turns(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         await self.open()
-        params: list[Any] = [session_id, app_id]
+        params: list[Any] = [session_id, agent_id]
         async with self._pool.connection() as conn:
             if limit is None:
                 rows = await self._fetchall(
@@ -332,7 +332,7 @@ class PostgresStore(MemoryStore):
                     """
                     SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
-                    WHERE session_id = %s AND app_id = %s
+                    WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at ASC, trace_id ASC
                     """,
                     params,
@@ -343,7 +343,7 @@ class PostgresStore(MemoryStore):
                     """
                     SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
                     FROM memory_turns
-                    WHERE session_id = %s AND app_id = %s
+                    WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at DESC, trace_id DESC
                     LIMIT %s
                     """,
@@ -380,13 +380,13 @@ class PostgresStore(MemoryStore):
     async def get_turn(
         self,
         trace_id: str,
-        app_id: str,
+        agent_id: str,
         session_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         await self.open()
-        # By primary key; app_id and session_id only narrow the one row.
-        clauses = ["trace_id = %s", "app_id = %s"]
-        params: list[Any] = [trace_id, app_id]
+        # By primary key; agent_id and session_id only narrow the one row.
+        clauses = ["trace_id = %s", "agent_id = %s"]
+        params: list[Any] = [trace_id, agent_id]
         if session_id is not None:
             clauses.append("session_id = %s")
             params.append(session_id)
@@ -418,7 +418,7 @@ class PostgresStore(MemoryStore):
     async def get_replay_turns(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         turns: int,
     ) -> List[Dict[str, Any]]:
         await self.open()
@@ -428,14 +428,14 @@ class PostgresStore(MemoryStore):
                 """
                 WITH summary AS (
                     SELECT trace_id, created_at FROM memory_turns
-                    WHERE session_id = %s AND app_id = %s
+                    WHERE session_id = %s AND agent_id = %s
                       AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
                     ORDER BY created_at DESC, trace_id DESC
                     LIMIT 1
                 ),
                 tail AS (
                     SELECT trace_id FROM memory_turns AS turn
-                    WHERE session_id = %s AND app_id = %s
+                    WHERE session_id = %s AND agent_id = %s
                       AND replayable
                       AND (
                           NOT EXISTS (SELECT 1 FROM summary)
@@ -451,7 +451,7 @@ class PostgresStore(MemoryStore):
                 WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
                 ORDER BY created_at ASC, trace_id ASC
                 """,
-                (session_id, app_id, session_id, app_id, max(0, int(turns))),
+                (session_id, agent_id, session_id, agent_id, max(0, int(turns))),
             )
         replay: List[Dict[str, Any]] = []
         for row in rows:
@@ -487,7 +487,7 @@ class PostgresStore(MemoryStore):
     ) -> List[Dict[str, Any]]:
         await self.open()
         sql = f"""
-            SELECT trace_id, session_id, app_id, user_message, agent_response, created_at
+            SELECT trace_id, session_id, agent_id, user_message, agent_response, created_at
             FROM memory_turns
             WHERE {self._USER_TURNS_FILTER}
             ORDER BY created_at ASC, trace_id ASC
@@ -499,7 +499,7 @@ class PostgresStore(MemoryStore):
             {
                 "trace_id": str(row["trace_id"]),
                 "session_id": str(row["session_id"]),
-                "app_id": str(row["app_id"]),
+                "agent_id": str(row["agent_id"]),
                 "user_message": str(row["user_message"] or ""),
                 "agent_response": str(row["agent_response"] or ""),
                 "created_at": float(row["created_at"]),
@@ -516,7 +516,7 @@ class PostgresStore(MemoryStore):
 
     async def list_workflow_turns(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         workflow_id: str,
         workflow_run_id: Optional[str] = None,
@@ -530,8 +530,8 @@ class PostgresStore(MemoryStore):
         if normalized_limit == 0:
             return []
 
-        params: List[Any] = [app_id, workflow_id]
-        filters = ["app_id = %s", "workflow_id = %s"]
+        params: List[Any] = [agent_id, workflow_id]
+        filters = ["agent_id = %s", "workflow_id = %s"]
         if workflow_run_id is not None:
             filters.append("workflow_run_id = %s")
             params.append(workflow_run_id)
@@ -589,11 +589,11 @@ class PostgresStore(MemoryStore):
     async def get_session_signals(
         self,
         session_id: str,
-        app_id: str,
+        agent_id: str,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         await self.open()
-        params: list[Any] = [session_id, app_id]
+        params: list[Any] = [session_id, agent_id]
         async with self._pool.connection() as conn:
             if limit is None:
                 rows = await self._fetchall(
@@ -601,7 +601,7 @@ class PostgresStore(MemoryStore):
                     """
                     SELECT trace_id, created_at
                     FROM memory_turns
-                    WHERE session_id = %s AND app_id = %s
+                    WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at ASC, trace_id ASC
                     """,
                     params,
@@ -612,7 +612,7 @@ class PostgresStore(MemoryStore):
                     """
                     SELECT trace_id, created_at
                     FROM memory_turns
-                    WHERE session_id = %s AND app_id = %s
+                    WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at DESC, trace_id DESC
                     LIMIT %s
                     """,
@@ -633,9 +633,9 @@ class PostgresStore(MemoryStore):
         ]
 
     async def list_sessions(
-        self, app_id: str, *, limit: int, user_id: Optional[str] = None
+        self, agent_id: str, *, limit: int, user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        params: List[Any] = [app_id]
+        params: List[Any] = [agent_id]
         user_filter = ""
         if user_id is not None:
             # A session belongs to the user of its turns.
@@ -643,7 +643,7 @@ class PostgresStore(MemoryStore):
                   AND EXISTS (
                       SELECT 1 FROM memory_turns AS u
                       WHERE u.session_id = s.session_id
-                        AND u.app_id = s.app_id
+                        AND u.agent_id = s.agent_id
                         AND u.user_id = %s
                   )"""
             params.append(user_id)
@@ -658,12 +658,12 @@ class PostgresStore(MemoryStore):
                        (
                            SELECT LEFT(t.user_message, {FIRST_MESSAGE_CHARS})
                            FROM memory_turns AS t
-                           WHERE t.session_id = s.session_id AND t.app_id = s.app_id
+                           WHERE t.session_id = s.session_id AND t.agent_id = s.agent_id
                            ORDER BY t.created_at ASC, t.trace_id ASC
                            LIMIT 1
                        ) AS first_message
                 FROM memory_session AS s
-                WHERE s.app_id = %s{user_filter}
+                WHERE s.agent_id = %s{user_filter}
                 ORDER BY s.last_activity_at DESC, s.session_id ASC
                 LIMIT %s
                 """,
@@ -681,17 +681,17 @@ class PostgresStore(MemoryStore):
             for row in rows
         ]
 
-    async def get_latest_session(self, app_id: str) -> Optional[Dict[str, Any]]:
-        sessions = await self.list_sessions(app_id=app_id, limit=1)
+    async def get_latest_session(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        sessions = await self.list_sessions(agent_id=agent_id, limit=1)
         return sessions[0] if sessions else None
 
     async def get_latest_trace(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
         traces = await self.list_recent_traces(
-            app_id=app_id,
+            agent_id=agent_id,
             session_id=session_id,
             limit=1,
         )
@@ -699,7 +699,7 @@ class PostgresStore(MemoryStore):
 
     async def list_recent_traces(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
@@ -717,11 +717,11 @@ class PostgresStore(MemoryStore):
                     metadata,
                     created_at
                 FROM memory_turns
-                WHERE app_id = %s AND session_id = %s
+                WHERE agent_id = %s AND session_id = %s
                 ORDER BY created_at DESC, trace_id DESC
                 LIMIT %s
                 """,
-                (app_id, session_id, normalized_limit),
+                (agent_id, session_id, normalized_limit),
             )
 
         traces: List[Dict[str, Any]] = []
@@ -748,7 +748,7 @@ class PostgresStore(MemoryStore):
     async def get_turn_by_ids(
         self,
         pairs: List[Dict[str, str]],
-        app_id: str,
+        agent_id: str,
         user_id: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         await self.open()
@@ -770,7 +770,7 @@ class PostgresStore(MemoryStore):
         params: List[Any] = []
         for session_id, trace_id, idx in requested_rows:
             params.extend([session_id, trace_id, idx])
-        params.append(app_id)
+        params.append(agent_id)
         user_filter = ""
         if user_id is not None:
             user_filter = "AND t.user_id = %s"
@@ -789,7 +789,7 @@ class PostgresStore(MemoryStore):
             JOIN memory_turns AS t
               ON t.session_id = r.session_id
              AND t.trace_id = r.trace_id
-            WHERE t.app_id = %s {user_filter}
+            WHERE t.agent_id = %s {user_filter}
             ORDER BY r.ord ASC
         """
 
@@ -821,7 +821,7 @@ class PostgresStore(MemoryStore):
         query_term: str,
         limit: int,
         session_id: Optional[str] = None,
-        app_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         normalized_limit = max(0, int(limit))
@@ -841,9 +841,9 @@ class PostgresStore(MemoryStore):
         if session_id is not None:
             filters.append("session_id = %s")
             params.append(session_id)
-        if app_id is not None:
-            filters.append("app_id = %s")
-            params.append(app_id)
+        if agent_id is not None:
+            filters.append("agent_id = %s")
+            params.append(agent_id)
         if user_id is not None:
             filters.append("user_id = %s")
             params.append(user_id)
@@ -882,10 +882,10 @@ class PostgresStore(MemoryStore):
         query_embedding: Optional[List[float]],
         limit: int,
         session_id: Optional[str] = None,
-        app_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        del column, query_term, query_embedding, limit, session_id, app_id, user_id
+        del column, query_term, query_embedding, limit, session_id, agent_id, user_id
         raise NotImplementedError("PostgresStore.semantic_search is not implemented yet")
 
     @staticmethod

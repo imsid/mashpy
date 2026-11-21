@@ -122,7 +122,7 @@ def _clip(value: Any, limit: int) -> str:
 
 
 async def _tool_calls(runtime_store: Any, turn: dict[str, Any]) -> list[BundleToolCall]:
-    events = await runtime_store.list_events(turn["app_id"], trace_id=turn["trace_id"])
+    events = await runtime_store.list_events(turn["agent_id"], trace_id=turn["trace_id"])
     arguments: dict[str, Any] = {}
     calls: list[BundleToolCall] = []
     for event in events:
@@ -171,7 +171,7 @@ def _build_collect(context: CortexRuntimeContext):
         used = 0
         for turn in turns:
             bundle_turn = BundleTurn(
-                agent_id=turn["app_id"],
+                agent_id=turn["agent_id"],
                 session_id=turn["session_id"],
                 trace_id=turn["trace_id"],
                 created_at=turn["created_at"],

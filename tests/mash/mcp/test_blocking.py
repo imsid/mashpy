@@ -36,7 +36,7 @@ class _LLM(LLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         raise NotImplementedError
 
-    def set_event_logger(self, logger, app_id: str) -> None:
+    def set_event_logger(self, logger, agent_id: str) -> None:
         return None
 
 
@@ -63,7 +63,7 @@ class _Spec(AgentSpec):
         return _LLM()
 
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id="mcp-test", system_prompt="test")
+        return AgentConfig(agent_id="mcp-test", system_prompt="test")
 
     def build_mcp_servers(self) -> list[MCPServerConfig]:
         return self._servers

@@ -82,7 +82,6 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
             self.request_ids.append(request_id)
         return await self.store.append_event(
             RuntimeEvent(
-                app_id=agent_id,
                 agent_id=agent_id,
                 request_id=request_id,
                 session_id=self.session_id,

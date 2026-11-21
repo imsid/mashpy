@@ -369,7 +369,7 @@ async def _persist_turn_payload(
     trace_id = response_metadata.get("trace_id")
     resolved_trace_id = str(trace_id or uuid.uuid4())
     latest_turns = await runtime.store.get_turns(
-        session_id=session_id, app_id=runtime.app_id, limit=1
+        session_id=session_id, agent_id=runtime.agent_id, limit=1
     )
     latest_turn = latest_turns[-1] if latest_turns else None
     if latest_turn is not None and str(latest_turn.get("trace_id")) == resolved_trace_id:
@@ -396,7 +396,7 @@ async def _persist_turn_payload(
             user_id=user_id_from_request_metadata(response_metadata),
             trace_id=resolved_trace_id,
             session_id=session_id,
-            app_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             user_message=message,
             agent_response=response.text,
             signals=signals,
@@ -457,8 +457,7 @@ async def start_request_trace(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=accepted_trace_id or str(uuid.uuid4()),
             session_id=session_id,
             event_type=RuntimeEventType.CONTEXT_LOAD_START.value,
@@ -506,8 +505,7 @@ async def load_request_context(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.CONTEXT_LOAD_END.value,
@@ -545,8 +543,7 @@ async def plan_request_step(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
@@ -579,8 +576,7 @@ async def plan_request_step(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
@@ -649,8 +645,7 @@ async def _execute_and_record_tool_call(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
@@ -678,8 +673,7 @@ async def _execute_and_record_tool_call(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
@@ -856,8 +850,7 @@ async def commit_request_step(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             loop_index=loop_index,
@@ -1054,8 +1047,7 @@ async def emit_interaction_create(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INTERACTION_START.value,
@@ -1100,8 +1092,7 @@ async def emit_interaction_ack(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INTERACTION_END.value,
@@ -1171,8 +1162,7 @@ async def complete_request(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
@@ -1180,7 +1170,7 @@ async def complete_request(
             lifecycle=RequestStatus.COMPLETED,
             payload={
                 "request_id": request_id,
-                "agent_id": runtime.app_id,
+                "agent_id": runtime.agent_id,
                 "session_id": session_id,
                 "trace_id": trace_id,
                 **dict(turn_payload or {}),
@@ -1202,8 +1192,7 @@ async def emit_request_cancelled(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
@@ -1211,7 +1200,7 @@ async def emit_request_cancelled(
             lifecycle=RequestStatus.CANCELLED,
             payload={
                 "request_id": request_id,
-                "agent_id": runtime.app_id,
+                "agent_id": runtime.agent_id,
                 "session_id": session_id,
                 "status": EndStatus.CANCELLED.value,
                 "attributes": {semconv.MASH_REQUEST_STATUS: EndStatus.CANCELLED.value},
@@ -1232,8 +1221,7 @@ async def fail_request(
         runtime,
         RuntimeEvent(
             request_id=request_id,
-            app_id=runtime.app_id,
-            agent_id=runtime.app_id,
+            agent_id=runtime.agent_id,
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
@@ -1241,7 +1229,7 @@ async def fail_request(
             lifecycle=RequestStatus.FAILED,
             payload={
                 "request_id": request_id,
-                "agent_id": runtime.app_id,
+                "agent_id": runtime.agent_id,
                 "session_id": session_id,
                 **dict(error_payload or {}),
                 "status": EndStatus.ERROR.value,

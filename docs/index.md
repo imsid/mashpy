@@ -82,11 +82,11 @@ class SupportAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="support")
+        return AnthropicProvider(agent_id="support")
 
     def build_agent_config(self):
         return AgentConfig(
-            app_id="support",
+            agent_id="support",
             system_prompt="You answer product and account questions.",
         )
 
@@ -102,11 +102,11 @@ class ResearchAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="research")
+        return AnthropicProvider(agent_id="research")
 
     def build_agent_config(self):
         return AgentConfig(
-            app_id="research",
+            agent_id="research",
             system_prompt="You handle research-heavy questions in depth.",
         )
 ```

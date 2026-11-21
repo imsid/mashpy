@@ -14,12 +14,11 @@ class StartRequestTraceReplayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         runtime_store, _ = build_test_stores()
         self.runtime_store = runtime_store
-        self.runtime = SimpleNamespace(app_id="agent-a", runtime_store=runtime_store)
+        self.runtime = SimpleNamespace(agent_id="agent-a", runtime_store=runtime_store)
 
     async def test_returns_the_trace_id_minted_on_accept(self) -> None:
         await self.runtime_store.append_event(
             RuntimeEvent(
-                app_id="agent-a",
                 agent_id="agent-a",
                 request_id="req-1",
                 trace_id="11111111-2222-3333-4444-555555555555",

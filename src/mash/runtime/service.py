@@ -44,7 +44,7 @@ class AgentRuntime:
         memory_store: MemoryStore,
     ) -> None:
         self.definition = definition
-        self.app_id = definition.get_agent_id()
+        self.agent_id = definition.get_agent_id()
         self.runtime_database_url = _resolve_runtime_database_url(runtime_database_url)
         if not isinstance(session_id, str):
             raise TypeError("session_id must be a string")
@@ -78,7 +78,7 @@ class AgentRuntime:
         # Built once: the spec's tools, skills and LLM serve every request.
         self.agent = factory_helpers.build_base_agent(self)
         self.agent.set_event_logger(self.event_logger, self.session_id)
-        self.agent.llm.set_event_logger(self.event_logger, self.app_id)
+        self.agent.llm.set_event_logger(self.event_logger, self.agent_id)
         self.system_prompt: SystemPrompt = self.agent.config.system_prompt
         self.tools = self.agent.tools
         self.skills = self.agent.skills
@@ -133,7 +133,7 @@ class AgentRuntime:
             servers.append(self._web_search_server)
         if not servers:
             return
-        self.mcp_manager = MCPManager(event_logger=self.event_logger, app_id=self.app_id)
+        self.mcp_manager = MCPManager(event_logger=self.event_logger, agent_id=self.agent_id)
         await self.mcp_manager.connect_all(servers)
         factory_helpers.register_mcp_tools(self, self.agent)
 
@@ -245,7 +245,7 @@ class AgentRuntime:
         if self.definition.enable_runtime_tools():
             listed.extend(
                 RuntimeToolBuilder(
-                    store=self.memory_store, app_id=self.app_id, session_id=self.session_id
+                    store=self.memory_store, agent_id=self.agent_id, session_id=self.session_id
                 ).build_tools()
             )
         tools = []
@@ -270,7 +270,7 @@ class AgentRuntime:
             }
             for skill in self.skills.list_skills()
         ]
-        return {"agent_id": self.app_id, "tools": tools, "skills": skills}
+        return {"agent_id": self.agent_id, "tools": tools, "skills": skills}
 
     async def get_accepted_request(self, request_id: str) -> dict[str, Any] | None:
         self.require_open()

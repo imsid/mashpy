@@ -306,7 +306,6 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime_store.append_event(
             RuntimeEvent(
                 request_id="req-loop",
-                app_id="engine-app",
                 agent_id="engine-app",
                 session_id="s-1",
                 trace_id="trace-loop",

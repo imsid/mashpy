@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-_ENVELOPE_FIELDS = frozenset({"event_type", "ts", "app_id", "session_id", "event_class"})
+_ENVELOPE_FIELDS = frozenset({"event_type", "ts", "agent_id", "session_id", "event_class"})
 _CLASS_FIELDS: dict[str, tuple[str, ...]] = {
     "CommandEvent": ("command_name", "args", "duration_ms", "error", "trace_id"),
     "MCPEvent": (
@@ -49,7 +49,7 @@ def _require_text(value: Any, field_name: str) -> str:
 
 def _validate_log_event(raw: Dict[str, Any]) -> None:
     event_type = _require_text(raw.get("event_type"), "event_type")
-    _require_text(raw.get("app_id"), "app_id")
+    _require_text(raw.get("agent_id"), "agent_id")
     _require_text(raw.get("event_class"), "event_class")
 
     ts_value = raw.get("ts")
@@ -98,7 +98,7 @@ def normalize_log_event(event: "LogEvent") -> Dict[str, Any]:
             payload[field_name] = value
 
     return {
-        "app_id": str(raw["app_id"]),
+        "agent_id": str(raw["agent_id"]),
         "session_id": raw.get("session_id"),
         "trace_id": trace_id,
         "event_class": event_class,
@@ -111,7 +111,7 @@ def normalize_log_event(event: "LogEvent") -> Dict[str, Any]:
 def inflate_logged_event(
     *,
     log_id: Optional[int],
-    app_id: str,
+    agent_id: str,
     session_id: Optional[str],
     trace_id: Optional[str],
     event_class: str,
@@ -123,7 +123,7 @@ def inflate_logged_event(
     restored: Dict[str, Any] = {
         "event_type": event_type,
         "ts": float(created_at),
-        "app_id": app_id,
+        "agent_id": agent_id,
         "session_id": session_id,
         "event_class": event_class,
         "payload": _normalized_payload(payload.get("payload")),
@@ -152,14 +152,14 @@ class LogEvent:
 
     All events share these common fields:
     - event_type: Categorizes the event (e.g., "command.start", "chat.delta")
-    - app_id: Application identifier
+    - agent_id: Agent identifier
     - session_id: Session identifier for grouping related events
     - payload: Additional event-specific data
     - ts: Unix timestamp when event was created
     """
 
     event_type: str
-    app_id: str
+    agent_id: str
     session_id: Optional[str]
     payload: Dict[str, Any] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
@@ -172,7 +172,7 @@ class LogEvent:
         return {
             "event_type": self.event_type,
             "ts": self.ts,
-            "app_id": self.app_id,
+            "agent_id": self.agent_id,
             "session_id": self.session_id,
             "event_class": type(self).__name__,
             "payload": dict(self.payload),

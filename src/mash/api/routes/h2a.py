@@ -86,7 +86,7 @@ async def _check_continued_session(
         return h2a_error(
             403, "FORBIDDEN", f"sessions of '{agent_id}' cannot be continued"
         )
-    turns = await memory.get_turns(session_id=session_id, app_id=agent_id)
+    turns = await memory.get_turns(session_id=session_id, agent_id=agent_id)
     for turn in turns:
         metadata = turn.get("metadata") or {}
         if (
