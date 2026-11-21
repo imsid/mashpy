@@ -9,6 +9,17 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.40.0](https://github.com/imsid/mashpy/compare/mashpy-v0.39.2...mashpy-v0.40.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* request lifecycle v2: sessions, events and policies ([#285](https://github.com/imsid/mashpy/issues/285))
+
+### Features
+
+* request lifecycle v2: sessions, events and policies ([#285](https://github.com/imsid/mashpy/issues/285)) ([a68224e](https://github.com/imsid/mashpy/commit/a68224ec18bd4dbddc364eb9eed3d93cc6e1dabf))
+
 ## [0.39.2](https://github.com/imsid/mashpy/compare/mashpy-v0.39.1...mashpy-v0.39.2) (2026-11-15)
 
 
