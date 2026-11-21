@@ -1213,7 +1213,7 @@
       },
       {
         "name": "policy",
-        "help": "Create, replace and read the deployment's policies",
+        "help": "Create, replace, read and delete the deployment's policies",
         "args": [
           {
             "flags": [
@@ -1271,6 +1271,24 @@
           {
             "name": "get",
             "help": "Print a policy",
+            "args": [
+              {
+                "flags": [
+                  "policy_id"
+                ],
+                "name": "policy_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "rm",
+            "help": "Delete a policy with its sandbox and browser profile",
             "args": [
               {
                 "flags": [

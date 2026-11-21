@@ -447,7 +447,7 @@ def _run_compose(args: argparse.Namespace, app: App) -> int:
 
 
 def _run_policy(args: argparse.Namespace, app: App) -> int:
-    """``policy put <id> --file <path>`` and ``policy get <id>``: print the policy."""
+    """``policy put <id> --file <path>``, ``get <id>`` and ``rm <id>``."""
     renderer = RichRenderer(theme=app.theme)
     connection = _resolve_saved_connection(args, renderer, app)
     if connection is None:
@@ -461,6 +461,10 @@ def _run_policy(args: argparse.Namespace, app: App) -> int:
             if not isinstance(document, dict):
                 raise ValueError("the policy file must hold a JSON object")
             policy = client.put_policy(args.policy_id, document)
+        elif args.policy_command == "rm":
+            client.delete_policy(args.policy_id)
+            renderer.info(f"Policy {args.policy_id} deleted, with its sandbox and browser.")
+            return 0
         else:
             policy = client.get_policy(args.policy_id)
     except Exception as exc:
@@ -648,7 +652,7 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     add_agent_serve_parser(agent_subparsers)
 
     policy = subparsers.add_parser(
-        "policy", help="Create, replace and read the deployment's policies"
+        "policy", help="Create, replace, read and delete the deployment's policies"
     )
     policy.add_argument("--api-base-url", default=None, help="Mash host base URL")
     policy.add_argument("--api-key", default=None, help="Bearer API key")
@@ -663,6 +667,10 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     )
     policy_get = policy_subparsers.add_parser("get", help="Print a policy")
     policy_get.add_argument("policy_id")
+    policy_rm = policy_subparsers.add_parser(
+        "rm", help="Delete a policy with its sandbox and browser profile"
+    )
+    policy_rm.add_argument("policy_id")
 
     add_sandbox_parser(subparsers)
     add_browser_parser(subparsers)

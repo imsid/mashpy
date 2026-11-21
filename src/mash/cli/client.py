@@ -301,6 +301,14 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
+    def delete_policy(self, policy_id: str) -> dict[str, Any]:
+        """Delete the policy with its sandbox and browser profile."""
+        response = self._request(
+            "DELETE", f"/api/v1/policies/{quote(policy_id, safe='')}", timeout=BROWSER_TIMEOUT
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     # --- events -------------------------------------------------------------
 
     @staticmethod

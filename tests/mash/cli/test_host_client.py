@@ -341,6 +341,13 @@ class MashHostClientRouteTests(unittest.TestCase):
         self.assertTrue(str(put["url"]).endswith("/api/v1/policies/acme%20ws"))
         self.assertEqual(get["method"], "GET")
 
+    def test_a_policy_is_deleted_by_id(self) -> None:
+        client, session = self._client({"data": {"deleted": "acme ws"}})
+        self.assertEqual(client.delete_policy("acme ws"), {"deleted": "acme ws"})
+        [call] = session.calls
+        self.assertEqual(call["method"], "DELETE")
+        self.assertTrue(str(call["url"]).endswith("/api/v1/policies/acme%20ws"))
+
     def test_list_session_requests_passes_its_filters(self) -> None:
         client, session = self._client({"data": {"requests": [{"request_id": "r-1"}, "junk"]}})
         records = client.list_session_requests(

@@ -714,3 +714,32 @@ def test_policy_put_refuses_a_file_that_is_not_an_object(tmp_path, capsys) -> No
         assert cli_main.main(["policy", "put", "acme-ws", "--file", str(path)]) == 1
     client.put_policy.assert_not_called()
     assert "JSON object" in capsys.readouterr().out
+
+
+def test_policy_puts_reads_and_removes_a_policy(tmp_path, capsys) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import app as cli_main
+    from mash.cli.config import CLIConfig
+
+    client = MagicMock()
+    client.put_policy.return_value = {"policy_id": "p-9", "sandbox": False}
+    client.get_policy.return_value = {"policy_id": "p-9", "sandbox": False}
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text('{"sandbox": false}')
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000")
+    with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
+        cli_main, "load_config", return_value=existing
+    ):
+        assert cli_main.main(["policy", "put", "p-9", "--file", str(policy_file)]) == 0
+        assert cli_main.main(["policy", "get", "p-9"]) == 0
+        assert cli_main.main(["policy", "rm", "p-9"]) == 0
+        client.delete_policy.side_effect = RuntimeError("policy 'p-9' has queued or active events")
+        assert cli_main.main(["policy", "rm", "p-9"]) == 1
+    client.put_policy.assert_called_once_with("p-9", {"sandbox": False})
+    client.get_policy.assert_called_once_with("p-9")
+    assert client.delete_policy.call_count == 2
+    out = capsys.readouterr().out
+    assert '"sandbox": false' in out
+    assert "Policy p-9 deleted, with its sandbox and browser." in out
+    assert "queued or active events" in out
