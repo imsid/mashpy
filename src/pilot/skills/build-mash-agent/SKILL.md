@@ -170,8 +170,8 @@ tools.register(AskUserTool())  # durable user questions (hosted runtime only)
 
 Do not register tools named `run_code`, `edit_file`, `sandbox_put` or `sandbox_get`. When
 the host has sandboxes (a reachable Docker daemon), every agent gets
-`run_code`, which runs Python, JavaScript or shell in the request user's
-sandbox in `/home/agent/workspaces/<agent_id>`, and `edit_file`, which changes
+`run_code`, which runs Python, JavaScript or shell in the sandbox of the
+request's policy, in `/home/agent/workspaces/<agent_id>`, and `edit_file`, which changes
 a text file there. `sandbox_put` and
 `sandbox_get` copy files between the agent's machine and that folder, and an
 agent gets them only when its spec returns folders from

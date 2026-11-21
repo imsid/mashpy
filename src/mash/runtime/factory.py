@@ -97,7 +97,7 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
         if name in agent.tools:
             raise ValueError(
                 f"agent '{self.agent_id}' registers its own '{name}' tool; the host "
-                "provides it on the request user's sandbox, so remove it from build_tools()"
+                "provides it on the request policy's sandbox, so remove it from build_tools()"
             )
     host_api_url, token = self._sandbox_tools
     for tool in build_sandbox_tools(
@@ -118,7 +118,7 @@ def register_browser_tools(self: "AgentRuntime", agent: Agent) -> None:
         if name in agent.tools:
             raise ValueError(
                 f"agent '{self.agent_id}' registers its own '{name}' tool; the host "
-                "provides it on the request user's browser, so remove it from build_tools()"
+                "provides it on the request policy's browser, so remove it from build_tools()"
             )
     try:
         check_sites(self.definition.browser_sites())

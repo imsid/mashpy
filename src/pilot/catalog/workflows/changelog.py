@@ -142,7 +142,7 @@ class ChangelogSummarizerSpec(AgentSpec):
         return CHANGELOG_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # run_code comes from the run user's sandbox.
+        # run_code comes from the sandbox of the run's policy.
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:

@@ -93,7 +93,7 @@ class AgentSpec(ABC):
         """Whether the agent gets ``run_code``, ``sandbox_put`` and ``sandbox_get``.
 
         True by default: on a host with sandboxes, every agent can run code in
-        the request user's sandbox. Return False for an agent whose model should
+        the sandbox of the request's policy, unless the policy turns it off. Return False for an agent whose model should
         never reach it, such as one that reads untrusted content and holds
         credentials.
         """
@@ -124,7 +124,7 @@ class AgentSpec(ABC):
         return {}
 
     def browser_sites(self) -> List[str]:
-        """The sites this agent may open in the request user's browser.
+        """The sites this agent may open in the browser of the request's policy.
 
         Empty by default, and then the agent gets no browser tools. Each entry
         is an origin, such as ``https://example.com``, whose host may start

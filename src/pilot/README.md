@@ -59,7 +59,7 @@ pilot repl --host guide
 ```
 
 The policy's sandbox starts the first time an agent runs code; `mash sandbox ls`
-lists the sandboxes. its browser starts the first time the guide opens a page;
+lists the sandboxes. Its browser starts the first time the guide opens a page;
 `mash browser ls` lists the browsers, and `mash browser view me` prints
 a link where you can watch the guide drive it. Pages and files the agents make open at the links they
 give you, served by the host on `127.0.0.1:8000`. The agents read your checkout as it is, so edits show up without a
@@ -106,7 +106,7 @@ The builder follows the `build-mash-agent`, `build-mash-workflow`, and
 
 It cannot serve what it builds, because a sandbox has no Docker. Copy the app
 out with `docker cp <container>:/home/agent/workspaces/builder/apps/<name> .`,
-using the container name `mash sandbox ls` shows for your user, and run it as
+using the container name `mash sandbox ls` shows for your policy, and run it as
 any Mash app. Point the CLI at another Mash deployment with
 `--api-base-url`. Treat this package as a reference when structuring your own
 multi-agent app.

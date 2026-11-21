@@ -117,7 +117,7 @@ class Pool:
         return self._agent_provider is not None
 
     def configure_sandboxes(self, sandboxes: "SandboxManager") -> None:
-        """Set where agents' code runs: each request user's sandbox.
+        """Set where agents' code runs: the sandbox of each request's policy.
 
         Without sandboxes, agents get no sandbox tools. The pool owns the
         manager from here and closes it in ``close()``.
@@ -130,7 +130,7 @@ class Pool:
         return self._sandboxes
 
     def configure_browsers(self, browsers: "BrowserManager") -> None:
-        """Set where agents browse: each request user's browser.
+        """Set where agents browse: the browser of each request's policy.
 
         Without browsers, agents get no browser tools. The pool owns the
         manager from here and closes it in ``close()``.
