@@ -15,7 +15,7 @@ from mash.runtime.client import (
     InvalidInteractionResponseError,
 )
 from mash.runtime.errors import RequestStaleError
-from mash.runtime.host.host import AgentDisabledError, AgentInUseError
+from mash.runtime.host.host import AgentInUseError
 from mash.runtime.host.processes import AgentStartError
 from mash.runtime.events import build_reasoning_trace
 from mash.memory.signals import build_default_signal_collector
@@ -56,43 +56,16 @@ SESSIONS_MAX_LIMIT = 500
 async def _cancel_with_children(
     request: Request, agent_id: str, request_id: str
 ) -> dict[str, Any]:
-    """Cancel a request through its agent, then cancel its running children.
-
-    Children are the requests its RunSubAgents calls started. Each is
-    cancelled through the client for its own agent. Splitting is one level
-    deep, so there is no further level to walk. A child whose agent is
-    disabled is skipped, and so is one that fails to cancel: the parent is
-    already cancelled.
-    """
-    client = get_client(request, agent_id)
+    """Cancel a request and its running children (``Pool.cancel_with_children``)."""
+    get_client(request, agent_id)
     try:
-        result = await client.cancel_request(request_id)
+        return await state_from_request(request).pool.cancel_with_children(agent_id, request_id)
     except AgentUnavailableError:
         raise
     except (KeyError, AgentClientError) as exc:
         raise APIError(
             code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
         ) from exc
-    pool = state_from_request(request).pool
-    store = pool.get_runtime_store()
-    if store is None:
-        return result
-    for child in await store.list_child_requests(request_id, status="running"):
-        child_agent_id = child.get("agent_id")
-        if not child_agent_id:
-            continue
-        try:
-            await pool.get_client(child_agent_id).cancel_request(child["request_id"])
-        except (AgentDisabledError, ValueError):
-            continue
-        except AgentClientError as exc:
-            logger.warning(
-                "could not cancel child request %s of %s: %s",
-                child["request_id"],
-                request_id,
-                exc,
-            )
-    return result
 
 
 def _without_request_ids(payload: dict[str, Any], trace_id: str) -> dict[str, Any]:

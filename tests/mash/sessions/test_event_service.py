@@ -58,6 +58,10 @@ class _Pool:
     def get_client(self, agent_id: str) -> _Companion:
         return _Companion(self.requests)
 
+    async def cancel_with_children(self, agent_id: str, request_id: str) -> dict:
+        self.requests.cancelled.append(request_id)
+        return {}
+
     async def submit_host_request(self, host_id: str, *, request_id: str, **kwargs: Any) -> dict:
         if request_id in self.requests.refuse:
             raise AgentRequestRefusedError("POST request refused (status=400): bad")

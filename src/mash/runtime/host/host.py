@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -15,12 +16,14 @@ from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowServic
 from mash.workflows.runs import resolve_runner_id
 from mash.workflows.store import WorkflowStore
 
-from ..client import AgentClient, AgentClientLike
+from ..client import AgentClient, AgentClientError, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
 from ..spec import AgentSpec
 from .processes import STATUS_UNAVAILABLE, AgentProvider
 from .directory import AgentMetadata
 from .types import AgentRegistration, Host
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mash.browser.manager import BrowserManager
@@ -373,6 +376,36 @@ class Pool:
             "policy_id": policy_id,
             "status": "accepted",
         }
+
+    async def cancel_with_children(self, agent_id: str, request_id: str) -> dict[str, Any]:
+        """Cancel a request through its agent, then cancel its running children.
+
+        Children are the requests its RunSubAgents calls started. Each is
+        cancelled through the client for its own agent. Splitting is one level
+        deep, so there is no further level to walk. A child whose agent is
+        disabled is skipped, and so is one that fails to cancel: the parent is
+        already cancelled. The parent's errors propagate.
+        """
+        result = await self.get_client(agent_id).cancel_request(request_id)
+        store = self.get_runtime_store()
+        if store is None:
+            return result
+        for child in await store.list_child_requests(request_id, status="running"):
+            child_agent_id = child.get("agent_id")
+            if not child_agent_id:
+                continue
+            try:
+                await self.get_client(child_agent_id).cancel_request(child["request_id"])
+            except (AgentDisabledError, ValueError):
+                continue
+            except AgentClientError as exc:
+                logger.warning(
+                    "could not cancel child request %s of %s: %s",
+                    child["request_id"],
+                    request_id,
+                    exc,
+                )
+        return result
 
     async def read_policy(self, policy_id: str) -> dict[str, Any]:
         """The policy's document, the snapshot a request or run takes.

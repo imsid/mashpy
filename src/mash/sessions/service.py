@@ -202,7 +202,7 @@ class EventService:
             # instead of submitting.
             self._cancelling.add((session_id, event_id))
         else:
-            await self._companion().cancel_request(request_id)
+            await self._cancel_tree(request_id)
         return record
 
     async def answer(
@@ -386,6 +386,12 @@ class EventService:
 
     # --- the watcher ---------------------------------------------------------
 
+    async def _cancel_tree(self, request_id: str) -> None:
+        """Cancel the event's request and its running children."""
+        from mash.agents.companion import COMPANION_AGENT_ID
+
+        await self._pool.cancel_with_children(COMPANION_AGENT_ID, request_id)
+
     def _companion(self) -> Any:
         from mash.agents.companion import COMPANION_AGENT_ID
 
@@ -436,7 +442,7 @@ class EventService:
                     if key in self._cancelling:
                         # Cancelled while it was being submitted.
                         self._cancelling.discard(key)
-                        await self._companion().cancel_request(request_id)
+                        await self._cancel_tree(request_id)
                 async for frame in self._companion().stream_response(request_id):
                     name = str(frame.get("event") or "")
                     if name in END_FRAMES:

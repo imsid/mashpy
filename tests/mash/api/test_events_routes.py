@@ -19,6 +19,7 @@ from mash.api.config import MashHostConfig
 from mash.runtime import Host, HostBuilder
 from mash.sessions import event_request_id
 from mash.testing.runtime_fixtures import (
+    DelegatingLLMProvider,
     DeterministicLLMProvider,
     ToolCallingLLMProvider,
     build_spec,
@@ -29,7 +30,7 @@ from mash.tools.ask_user import AskUserTool
 
 
 @contextmanager
-def _client(provider: Any = None, *, ask: bool = False):
+def _client(provider: Any = None, *, ask: bool = False, slow_seconds: float = 0.0):
     with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
         stack.enter_context(
             patch.dict(os.environ, {"MASH_DATA_DIR": str(Path(tmp)), "MASH_DATABASE_URL": ""})
@@ -48,7 +49,10 @@ def _client(provider: Any = None, *, ask: bool = False):
             stack.enter_context(patch.object(CompanionSpec, "build_tools", _with_ask))
         pool = (
             HostBuilder()
-            .agent(build_spec(agent_id="fast", response_text="fast-ok"), metadata=metadata())
+            .agent(
+                build_spec(agent_id="fast", response_text="fast-ok", delay_seconds=slow_seconds),
+                metadata=metadata(),
+            )
             .host(Host(host_id="assistant", agents=("fast",)))
             .host(Host(host_id="other", agents=("fast",)))
             .build()
@@ -318,3 +322,28 @@ def test_a_reconnected_stream_misses_no_frame_and_repeats_none() -> None:
                 if line.startswith("id:"):
                     rest.append(int(line[3:].strip()))
         assert rest == [seq for seq in seqs if seq > cut]
+
+
+def test_cancelling_an_event_cancels_its_requests_children() -> None:
+    provider = DelegatingLLMProvider(final_text="done", subagent_id="fast", subagent_prompt="go")
+    with _client(provider, slow_seconds=5.0) as client:
+        _post(client, "e-1")
+        request_id = event_request_id("s-1", "e-1")
+        deadline = time.monotonic() + 10
+        children: list[dict] = []
+        while time.monotonic() < deadline and not children:
+            store = client.app.state.runtime_state.pool.get_runtime_store()
+            children = client.portal.call(store.list_child_requests, request_id)
+            time.sleep(0.03)
+        [child] = children
+        assert child["status"] == "running"
+
+        assert client.post("/api/v1/sessions/s-1/events/e-1/cancel").status_code == 200
+        assert _wait(client, "e-1", {"cancelled"})["status"] == "cancelled"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            [child] = client.portal.call(store.list_child_requests, request_id)
+            if child["status"] != "running":
+                break
+            time.sleep(0.03)
+        assert child["status"] == "cancelled"
