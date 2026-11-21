@@ -66,26 +66,31 @@ with `thinking_level` `low`; `COMPANION_AGENT_THINKING_LEVEL` sets another.
 
 ## How Host Routing Works
 
-Submitting a request to a host runs it on the companion and, for that request
-only, gives it a directory of the host's agents built from their
+Every message to a host is an event in a session. Each event runs as one
+request on the companion, which gets, for that request only, a directory of the host's agents built from their
 `AgentMetadata`. The companion hands work to them with `RunSubAgents`, which
 runs one or more child requests at the same time, each in a session of its
 own; a follow-up goes back to the session that answered. Only the companion
 routes: the host's agents never get `RunSubAgents`. Routing quality is a
-prompt-engineering surface: vague `usage_guidance` produces vague routing. A
-request sent to one agent directly (`POST /v1/agent/{agent_id}/request`)
-bypasses the companion.
+prompt-engineering surface: vague `usage_guidance` produces vague routing. To
+talk to one agent, define a host with only that agent.
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
+curl -X PUT http://127.0.0.1:8000/api/v1/policies/dev \
+  -H "Content-Type: application/json" -d '{"sandbox": true}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/s-1/events \
   -H "Content-Type: application/json" \
-  -d '{"message": "find recent papers", "session_id": "s-1", "user_id": "u-1"}'
-# -> {"request_id": "...", "agent_id": "companion", "session_id": "s-1", "user_id": "u-1"}
+  -d '{"event_id": "e-1", "host_id": "assistant", "app_id": "my-app",
+       "policy_id": "dev", "message": "find recent papers"}'
+# -> {"event_id": "e-1", "request_id": "...", "status": "queued", "seq": 1, ...}
 ```
 
-Stream results from `GET /v1/agent/companion/request/{request_id}/events`.
-Each request snapshots the host composition at submit time, so redefining a
-host never affects in-flight requests.
+Stream results from `GET /v1/sessions/s-1/events/e-1/stream`. A session's
+events run one at a time, and each request snapshots the host composition
+when it starts, so redefining a host never affects running requests. An event
+for a dynamic host that is gone after a restart waits until the host is
+defined again.
 
 ## Code-Defined vs Dynamic Hosts
 
@@ -116,7 +121,8 @@ requests through it, and forget it.
 ## Composing from the CLI
 
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret \
+  --app-id my-app --policy-id dev
 mash agents                                          # what's in the pool
 mash compose --host assistant --agents billing,research
 mash repl                                            # routed through 'assistant'

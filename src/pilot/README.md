@@ -50,17 +50,18 @@ printf 'GEMINI_API_KEY=...\nOPENROUTER_API_KEY=sk-or-...\nMASH_HOST_SECRET=%s\nM
 # 2. Start Postgres and the host, from the repo root
 docker compose -f docker-compose.pilot.yml up -d --build
 
-# 3. Install the CLI, save who you are, and ask. From the repo root,
-#    `mash connect` reads MASH_API_KEY from .env and saves it.
+# 3. Install the CLI, create a policy, save the connection, and ask. From
+#    the repo root, `mash` reads MASH_API_KEY from .env.
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
-mash connect --api-base-url http://127.0.0.1:8000 --user-id me
+echo '{}' | mash policy put me --file - --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id pilot --policy-id me
 pilot repl --host guide
 ```
 
-Your sandbox starts the first time an agent runs code for you; `mash sandbox ls`
-lists the sandboxes. Your browser starts the first time the guide opens a page;
-`mash browser ls` lists the browsers, and `mash browser view <user_id>` prints
-a link where you can watch the guide drive yours. Pages and files the agents make open at the links they
+The policy's sandbox starts the first time an agent runs code; `mash sandbox ls`
+lists the sandboxes. its browser starts the first time the guide opens a page;
+`mash browser ls` lists the browsers, and `mash browser view me` prints
+a link where you can watch the guide drive it. Pages and files the agents make open at the links they
 give you, served by the host on `127.0.0.1:8000`. The agents read your checkout as it is, so edits show up without a
 restart. Pilot's own code is in the image: after changing it, run
 `up -d --build`. After changing the sandbox daemon or `Dockerfile.sandbox`,

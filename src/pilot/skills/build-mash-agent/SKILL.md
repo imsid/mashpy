@@ -55,7 +55,7 @@ Create this file structure:
 Every Mash agent implements `AgentSpec`. Here is the minimal scaffold:
 
 ```python
-from mash import AgentMetadata, AgentSpec, HostBuilder
+from mash import AgentMetadata, AgentSpec, Host, HostBuilder
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.skills import SkillRegistry
@@ -96,6 +96,8 @@ def build_pool():
                 usage_guidance="Default agent for user requests.",
             ),
         )
+        # Messages reach agents through a host; this one holds the one agent.
+        .host(Host(host_id="assistant", agents=("assistant",)))
         .build()
     )
 ```
@@ -338,12 +340,13 @@ class MyAgent(AgentSpec):
 # Start the host server
 mash host serve --host-app {project_name}.spec:build_pool --port 8000
 
-# Save the connection and the user requests act for
-# (validates the URL and key against /health)
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
+# Create a policy, then save the connection with the app and policy every
+# message runs under (connect validates the URL and key against /health)
+echo '{"sandbox": true}' | mash policy put dev --file - --api-base-url http://127.0.0.1:8000 --api-key secret
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --app-id my-app --policy-id dev
 
-# Talk to the agent directly (bare mode, without the companion)
-mash repl --agent assistant
+# Talk to the agent through its host (build_pool defines one with only this agent)
+mash repl --host assistant
 ```
 
 Or run programmatically:
@@ -392,20 +395,22 @@ curl "http://127.0.0.1:8000/api/v1/feedback?agent_id=assistant&after=0&q=trace"
 
 To get typed JSON responses from agents:
 
-```python
-from pydantic import BaseModel
+Give an event a JSON schema in `structured_output`; the event's
+`response.structured_output` carries the typed result:
 
-class AnalysisResult(BaseModel):
-    summary: str
-    score: float
-
-response = await runtime.submit_request(
-    message="Analyze this data",
-    session_id="s1",
-    user_id="u-1",
-    structured_output=AnalysisResult,
-)
+```json
+{
+  "event_id": "e-1", "host_id": "assistant", "app_id": "my-app", "policy_id": "dev",
+  "message": "Analyze this data",
+  "structured_output": {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}, "score": {"type": "number"}},
+    "required": ["summary", "score"]
+  }
+}
 ```
+
+In a workflow, an `AgentStep`'s `output` model sets the same schema.
 
 ## Environment Variables
 

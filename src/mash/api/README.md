@@ -25,8 +25,8 @@ This README lists the exposed routes, the common request/response conventions, a
 - A request body under `/api/v1`, or to `POST /admin/session`, may be at most 4 MiB (`MAX_API_BODY_BYTES` in `middleware.py`). FastAPI reads a body before it checks the key, so `BodyLimitMiddleware` answers a larger one with `413 BODY_TOO_LARGE` first: at once when `Content-Length` says so, otherwise once the body passes the cap.
 - Serving `/admin` sets no cookie. The SPA asks for the key when the API answers `401` and posts it to `POST /admin/session` as `{"api_key": "..."}`. A wrong key is `401 UNAUTHORIZED`; the right one sets the `mash_api_key` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1`, and `Secure` over HTTPS). With no key configured it answers `200` and sets nothing.
 - `/h2a/*` and `/sandbox/*` are the relays agent processes use for the companion's children and workflow runs and for the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
-- `/s/<link token>/*` are users' links into their sandbox (see Sandbox Links). They do not use the API key: the link token names the user and only the host can make one.
-- `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are users' live views of their browser during a sign-in (see Browser Live Views); the view token names the user and the request, and lapses when the handoff ends; a view connected then is closed.
+- `/s/<link token>/*` are links into a policy's sandbox (see Sandbox Links). They do not use the API key: the link token names the policy and only the host can make one.
+- `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are live views of a policy's browser during a sign-in (see Browser Live Views); the view token names the policy and the request, and lapses when the interaction closes or the token expires; a view connected then is closed.
 
 ## H2A Relay
 
@@ -39,7 +39,8 @@ An agent process starts, follows, answers and cancels its `RunSubAgents` childre
 - `agent_id` must be one of the `agents` in the host snapshot stored with the parent request; a parent without a host has no targets.
 - `session_id` is the child's own request id for a new session. Any other session must have no requests yet, or only requests of `agent_id` whose turns name `parent.session_id` as their caller's session.
 - `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id`, `agent_id` is not in the host, or the session is not one the child may continue.
-- Forwards to the agent's client, `mode` included, and returns `202` with the accepted payload.
+- The child gets the parent request's `app_id`, `policy_id` and policy snapshot; a body that names other values gets `403 FORBIDDEN`.
+- Forwards to the agent's client and returns `202` with the accepted payload.
 
 `GET /h2a/agent/{agent_id}/request/{request_id}`
 - Streams the child request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
@@ -48,42 +49,42 @@ An agent process starts, follows, answers and cancels its `RunSubAgents` childre
 - Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.
 
 `POST /h2a/agent/{agent_id}/request/{request_id}/interaction`
-- Body: `{interaction_id, response}`. Answers one of the child's interactions, with the answer the user gave the companion's relayed copy. Only the agent that submitted the child may answer it; others get `403`, and an unknown request `404`. `400 INVALID_RESPONSE` for an answer the schema does not allow, `409 INTERACTION_CLOSED` once the interaction has an answer.
+- Body: `{interaction_id, response}`. Answers one of the child's interactions, with the answer the app gave the companion's relayed copy. Only the agent that submitted the child may answer it; others get `403`, and an unknown request `404`. `400 INVALID_RESPONSE` for an answer the schema does not allow, `409 INTERACTION_CLOSED` once the interaction has an answer.
 
 `POST /h2a/workflow/{workflow_id}/run`
 - Body: `{parent: {request_id}, input, dedup_key?}`. Sent by `RunWorkflow` with the agent's token.
-- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's user. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another. The call's `execute_tool.start` event carries `workflow_run: {workflow_id, dedup_key}`, so a client following the request can find the run in `GET /workflow/{workflow_id}/runs` and read its events.
+- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's app and policy. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another. The call's `execute_tool.start` event carries `workflow_run: {workflow_id, dedup_key}`, so a client following the request can find the run in `GET /workflow/{workflow_id}/runs` and read its events.
 - Returns `{run_id, workflow_id, status, result, error}` with `202`. An input the workflow's `input_model` refuses is `422 INVALID_INPUT` with the validation errors in `error.details`.
 
 `GET /h2a/workflow/{workflow_id}/runs/{run_id}?parent_request_id=`
-- The run's `{run_id, workflow_id, status, result, error}`, when the parent request belongs to the caller and the run acts for the parent's user; `403` otherwise.
+- The run's `{run_id, workflow_id, status, result, error}`, when the parent request belongs to the caller and the run acts for the parent's app and policy; `403` otherwise.
 
 ## Sandbox Relay
 
-Every relay call names the request it serves. The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`. It acts in the sandbox of the request's user, in the caller's folder, starting the sandbox if needed. `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy. No `{data}` envelope.
+Every relay call names the request it serves. The host reads the request's identity: an unknown request returns `404 REQUEST_NOT_FOUND`, another agent's request `403 FORBIDDEN`. It acts in the sandbox of the request's policy, in the caller's folder, starting the sandbox if needed. A request whose policy says `"sandbox": false` gets `403 FORBIDDEN`. `503 SANDBOX_UNAVAILABLE` when the host has no sandboxes or one fails to start; `503 SANDBOX_CAPACITY` when `MASH_SANDBOX_MAX_RUNNING` sandboxes are all busy. No `{data}` envelope.
 
 `POST /sandbox/exec`
 - Body: `{request_id, command, timeout, stdin?}`; `timeout` defaults to 30 seconds and may be at most 1800. Sent by `run_code` with the agent's token.
-- Runs the command with `stdin` as its input and returns `{output, exit_code, timed_out}`. The command sees `MASH_FILES_URL` (the user's link to the caller's folder) and `MASH_PORTS_URL`.
+- Runs the command with `stdin` as its input and returns `{output, exit_code, timed_out}`. The command sees `MASH_FILES_URL` (the link to the caller's folder) and `MASH_PORTS_URL`.
 
 `PUT /sandbox/files?request_id=&path=` and `GET /sandbox/files?request_id=&path=`
 - Write the body to, or read, one file at `path` in the caller's folder; sent by `edit_file`, `sandbox_put` and `sandbox_get`. `path` must stay in the folder (`400` otherwise); a missing file is `404 FILE_NOT_FOUND`; files are limited to 100 MB (`413`).
 
 ## Sandbox Links
 
-Links open in a browser with no API key. `<link token>` is `<base64url(user_id)>.<hmac>`, derived from `MASH_HOST_SECRET`; a token the host did not make is `404`. A link starts a stopped sandbox. Responses carry `Content-Security-Policy: sandbox allow-scripts ...`, so a page the model wrote runs scripts but cannot use the host's origin.
+Links open in a browser with no API key. `<link token>` is `<base64url(policy_id)>.<hmac>`, derived from `MASH_HOST_SECRET`; a token the host did not make is `404`. A link starts a stopped sandbox. Responses carry `Content-Security-Policy: sandbox allow-scripts ...`, so a page the model wrote runs scripts but cannot use the host's origin.
 
 `GET /s/<link token>/files/<agent_id>/<path>`
-- Serves the file from that agent's folder of the user's sandbox, with a content type from its extension. A path ending in `/` serves its `index.html`.
+- Serves the file from that agent's folder of the policy's sandbox, with a content type from its extension. A path ending in `/` serves its `index.html`.
 
 `/s/<link token>/ports/<n>/<path>` (any method)
-- Forwards HTTP to a server listening on port `n` in the user's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Request and response bodies stream through without being held in memory; WebSockets are not forwarded. A `Location` header is passed on only when it is relative, so the server cannot redirect a user to another site from the host's origin.
+- Forwards HTTP to a server listening on port `n` in the policy's sandbox, through the sandbox daemon. `/s/<link token>/ports/<n>` redirects to the trailing slash, so pages can use relative URLs. `502 PORT_UNREACHABLE` when nothing listens. Request and response bodies stream through without being held in memory; WebSockets are not forwarded. A `Location` header is passed on only when it is relative, so the server cannot redirect a user to another site from the host's origin.
 
 Commands get the bases as `MASH_FILES_URL` and `MASH_PORTS_URL`, under `MASH_PUBLIC_URL` (default: the bind address).
 
 ## Browser Relay
 
-Every call names the request it serves, and the host checks it as the sandbox relay does: `404 REQUEST_NOT_FOUND` for an unknown request, `403 FORBIDDEN` for another agent's request or an agent whose spec lists no `browser_sites()`. It acts in the browser of the request's user, on the caller's sites, starting the browser if needed. `503 BROWSER_UNAVAILABLE` when the host has no browsers or one fails to start; `503 BROWSER_CAPACITY` when `MASH_BROWSER_MAX_RUNNING` browsers are all busy. No `{data}` envelope. Results are `{content, images, page_url, is_error}`, where `images` are `{media_type, data}` with base64 data.
+Every call names the request it serves, and the host checks it as the sandbox relay does: `404 REQUEST_NOT_FOUND` for an unknown request, `403 FORBIDDEN` for another agent's request or an agent whose spec lists no `browser_sites()`. It acts in the browser of the request's policy, on the caller's sites intersected with the policy's `browser_sites`, starting the browser if needed. An empty intersection is `403 FORBIDDEN`. `503 BROWSER_UNAVAILABLE` when the host has no browsers or one fails to start; `503 BROWSER_CAPACITY` when `MASH_BROWSER_MAX_RUNNING` browsers are all busy. No `{data}` envelope. Results are `{content, images, page_url, is_error}`, where `images` are `{media_type, data}` with base64 data.
 
 `POST /browser/call`
 - Body: `{request_id, tool, arguments}`. `tool` is one of the relayed Playwright MCP tools (`mash.browser.catalog.RELAYED_TOOLS`); another name is `400 UNKNOWN_TOOL`.
@@ -96,20 +97,20 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Body: `{request_id, path, target, element?}`. Reads `path` from the caller's sandbox folder, clicks `target` to open the file chooser, and picks the file; sent by `browser_upload`.
 
 `POST /browser/handoff` and `POST /browser/handoff/end`
-- Body: `{request_id}`. Start returns `{url, expires_at, timeout_seconds}`, the user's live-view link; end revokes it and returns the page. The runtime sends both around a `browser` interaction.
+- Body: `{request_id}`. Start brings the request's tab to the front and returns `{}`; links are minted later on the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/interactions/{interaction_id}/handoff`). End revokes every link minted for the request and returns the page. The runtime sends both around a `browser` interaction.
 
 ## Browser Live Views
 
-`<view token>` is `<base64url(claims)>.<hmac>` over the user, the request and an expiry (`MASH_BROWSER_HANDOFF_SECONDS`, default 900), derived from `MASH_HOST_SECRET`. A request's token works while its handoff is open; one made by `mash browser view`, for no request, works until it expires. Otherwise `404`.
+`<view token>` is `<base64url(claims)>.<hmac>` over the policy, the request, an expiry (`MASH_BROWSER_HANDOFF_SECONDS` after it is minted, default 900) and a nonce, derived from `MASH_HOST_SECRET`. A request's token works until it expires or the interaction closes; one made by `mash browser view`, for no request, works until it expires. Otherwise `404`.
 
 `GET /s/<view token>/browser/`
 - Redirects to noVNC's client, `vnc.html`, set to connect to the websocket below.
 
 `GET /s/<view token>/browser/<path>`
-- Serves noVNC's client files from the user's browser.
+- Serves noVNC's client files from the policy's browser.
 
 `WS /s/<view token>/browser/websockify`
-- Bridges noVNC to the VNC server on the display Chromium draws to. No `frame-ancestors` restriction, so an app can embed the view. The host closes the socket when the handoff ends or its token expires.
+- Bridges noVNC to the VNC server on the display Chromium draws to. No `frame-ancestors` restriction, so an app can embed the view. The host closes the socket when the interaction closes or its token expires.
 
 ## Response Shape
 - Success responses use the envelope: `{"data": ...}`
@@ -129,14 +130,38 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Runtime client failures return `502` with `code = "RUNTIME_CLIENT_ERROR"`.
 
 ## Bodies
-- `SubmitRequest`
+- A new event (see Sessions And Events)
 
 ```json
 {
+  "event_id": "required: 1 to 255 letters, digits, . _ : -",
+  "host_id": "required",
+  "app_id": "required: 1 to 255 letters, digits, . _ : @ -",
+  "policy_id": "required: an existing policy",
   "message": "required non-empty string",
-  "session_id": "required non-empty string",
-  "user_id": "required: the end user the request acts for",
+  "context": "optional prompt text",
+  "metadata": "optional JSON object, never shown to the model",
   "structured_output": "optional JSON-schema object"
+}
+```
+
+- An answer to an interaction of an existing event
+
+```json
+{
+  "event_id": "required: the event",
+  "interaction_id": "required",
+  "response": "required: fits the interaction's schema"
+}
+```
+
+- A policy
+
+```json
+{
+  "sandbox": true,
+  "browser_sites": null,
+  "wait_max_seconds": 86400
 }
 ```
 
@@ -199,29 +224,6 @@ Every call names the request it serves, and the host checks it as the sandbox re
 `GET /api/v1/hosts/{host_id}`
 - Returns the merged host view; unknown ids return `404 HOST_NOT_FOUND`.
 
-`POST /api/v1/hosts/{host_id}/request`
-- Submits a request to the host: it runs on the built-in `companion`, which
-  routes it to the host's agents and workflows, with the host's composition
-  snapshotted onto the request.
-- Body: `HostSubmitRequest` (`message`, `session_id`, `user_id`, optional
-  `structured_output`, optional `context`, optional `metadata`)
-- `user_id` is required: the end user the request acts for. It is stored on the
-  request and its turns, never reaches the prompt, and the companion's
-  children inherit it. The request's code runs in that user's sandbox. A missing value
-  fails validation with `422`; an invalid one returns `400 INVALID_USER_ID`.
-- `context` is a freeform string the host appends to the companion's
-  system prompt for this request only (after the agent directory).
-  Use it to pass per-request/session facts like user profile, workspace
-  state, or the current date.
-- `metadata` is an opaque JSON object for code, not the model: it never
-  reaches the prompt. It is stored on the request (a crash-replayed request
-  reruns with the same metadata), bound for the duration of the run so tools
-  can read it via `mash.logging.get_request_metadata()`, and inherited by
-  child requests made through `RunSubAgents`.
-- Returns `request_id`, `agent_id` (`companion`), `session_id`, and
-  `user_id`. Stream
-  results from `GET /api/v1/agent/{agent_id}/request/{request_id}/events`.
-
 `GET /api/v1/agent/{agent_id}`
 - Returns `{"agent": ...}`: the agent's metadata, `enabled` and `status`. It does not call the agent.
 - Path params:
@@ -230,67 +232,151 @@ Every call names the request it serves, and the host checks it as the sandbox re
   - `agent`
   - `session`
 
-### Runtime Requests
+### Policies
 
-`POST /api/v1/agent/{agent_id}/request`
-- Submits an async request and returns a request id.
-- Path params:
-  - `agent_id`
-- Body: `SubmitRequest`
-- Returns `request_id`.
-- Optionally accepts a `structured_output` JSON-schema object on the body; when
-  set, the response stream's `request.completed` payload includes a
-  `structured_output` field alongside `text`.
-- Optionally accepts a `metadata` JSON object — opaque caller context that
-  never reaches the model. Readable during execution via
-  `mash.logging.get_request_metadata()` and inherited by `RunSubAgents` children.
-- Requires a `user_id`, as on the host route.
-- Optionally accepts `mode`: `fg` (the default) when the conversation waits on
-  the request, `bg` when the user keeps talking while it runs. The mode does
-  not change how the request runs.
-- Reads a W3C `traceparent` header (and `tracestate`), here and on the host
-  route. A valid one is stored on the request's `invoke_agent.start`, and the
-  request's spans export inside the caller's trace; an invalid one is dropped.
-- A disabled agent returns `409 AGENT_DISABLED` here and on its other request routes.
+`PUT /api/v1/policies/{policy_id}`
+- Creates the policy, or replaces the whole of an existing one. Body: a policy
+  (`sandbox`, `browser_sites`, `wait_max_seconds`); unknown fields fail with
+  `422`.
+  - `sandbox` (default `true`): `false` drops the sandbox tools, `browser_save`
+    and `browser_upload` for requests under the policy, and the `/sandbox`
+    relay refuses them.
+  - `browser_sites` (default `null`): `null` keeps each agent's own sites; a
+    list is intersected with them; `[]` means no browser tools.
+  - `wait_max_seconds` (default 86400, at least 60, `null` for no cap): caps
+    every interaction's deadline.
+- `policy_id`: 1 to 255 letters, digits, `.`, `_`, `:`, `@` or `-`, else
+  `400 INVALID_REQUEST`.
+- Returns the policy with `policy_id`, `created_at` and `updated_at`.
 
-`GET /api/v1/agent/{agent_id}/request/{request_id}/events`
-- Server-Sent Events stream for async request progress.
-- Path params:
-  - `agent_id`
-  - `request_id`
-- Query params:
-  - `after` (optional, default `0`): the `id` of the last event the reader
-    has. The stream starts at the next event. A reader that lost its
-    connection passes the last `id` it saw and misses or repeats nothing.
-- Response type: `text/event-stream`
-- Emits runtime events with:
-  - `id: <seq>`, the event's place in the request's stream, starting at 1
-  - `event: <event_name>`
-  - `data: <json payload>`
-- Streamed token output arrives as `event: agent.trace` frames whose
-  `data.event_type` is `chat.delta`, with the coalesced text chunk at
-  `data.payload.payload.text`. Concatenate these in arrival order to render the
-  answer live before the terminal event. The final, authoritative response is
-  still delivered on `request.completed`.
-- Terminates when event name is `request.completed`, `request.error`, or
-  `request.cancelled`.
+`GET /api/v1/policies/{policy_id}`
+- Returns the policy; `404 POLICY_NOT_FOUND` for an unknown one.
 
-`POST /api/v1/agent/{agent_id}/request/{request_id}/interaction`
-- Answers an interaction the request is waiting on. Body: `{interaction_id, response}`.
-- Interactions arrive on the event stream as `request.interaction.create` with
+`DELETE /api/v1/policies/{policy_id}`
+- Removes the policy's sandbox container and volume and its browser container
+  and profile, then the policy. Returns `{deleted: policy_id}`.
+- `409 POLICY_IN_USE` while a session on the policy has a queued or running
+  event. Sessions and their ledgers stay; a later event naming the policy gets
+  `404 POLICY_NOT_FOUND`.
+
+### Sessions And Events
+
+Every input to a host is an event in a session. Events in a session run one
+at a time, in `seq` order; each runs as one request on the host's companion,
+with the host's composition and the policy snapshotted onto it when it
+starts. An event's status is `queued`, `running`, `waiting` (its request has
+an open interaction, its own or a relayed child's), `completed`, `failed` or
+`cancelled`. When the request ends, its `response` or `error` is copied onto
+the event, which keeps them after retention deletes the request.
+
+`POST /api/v1/sessions/{session_id}/events`
+- A new event: body as in Bodies. The first event creates the session and
+  binds it to its `host_id` and `policy_id`.
+- Returns `202 {session_id, event_id, request_id, seq, status, interactions,
+  response, error, ...timestamps}`. `request_id` is derived from the session
+  and event ids, so it is known while the event is queued.
+- An `event_id` the session already has returns `200` with that event and
+  changes nothing, whatever the body.
+- `404 HOST_NOT_FOUND`, `404 POLICY_NOT_FOUND`; `409 SESSION_HOST_MISMATCH`
+  or `409 SESSION_POLICY_MISMATCH` when the session is bound to another host
+  or policy; `400 INVALID_STRUCTURED_OUTPUT` for a schema that fails
+  validation; `400 INVALID_REQUEST` for a missing field or an unknown one;
+  `400 INVALID_APP_ID` or `INVALID_POLICY_ID` for a malformed id. No event is
+  stored on an error.
+- Reads a W3C `traceparent` header (and `tracestate`). A valid one is stored
+  on the request's `invoke_agent.start`, and the request's spans export inside
+  the caller's trace; an invalid one is dropped.
+- An event for a host that is not defined (an API-defined host after a
+  restart) stays queued until `PUT /hosts/{host_id}` defines it.
+- `context` is a freeform string appended to the companion's system prompt
+  for this request only (after the agent directory). Use it for per-event
+  facts like the thread's channel and author, workspace state, or the current
+  date.
+- `metadata` is an opaque JSON object for code, not the model. It is stored
+  on the request (a crash-replayed request reruns with the same metadata),
+  bound for the duration of the run so tools can read it via
+  `mash.logging.get_request_metadata()`, and inherited by `RunSubAgents`
+  children.
+
+`POST /api/v1/sessions/{session_id}/events` with `interaction_id`
+- An answer: `{event_id, interaction_id, response}` and nothing else, else
+  `400 INVALID_REQUEST`. It goes to the event's request and stores no event.
+- Interactions arrive on the stream as `request.interaction.create` with
   `interaction_id`, `type`, `prompt`, `schema` and `timeout_seconds`:
   - `info`: `response` is text. `choice`: a list of the options picked.
   - `approval`: `approve`, `deny` or `skip`, for an approval-gated tool.
-  - `browser`: a sign-in handoff from `browser_handoff`. The payload adds `url`,
-    the user's live view of their browser, and `expires_at` (unix seconds).
-    Show the user the link (a button that opens it, or the view in an iframe),
-    then answer `done` when they finish or `cancel`.
+  - `browser`: a sign-in handoff from `browser_handoff`. Get a link from the
+    handoff route below, show it to the user (a button that opens it, or the
+    view in an iframe), then answer `done` when they finish or `cancel`.
+- A relayed child interaction carries `origin` (`agent_id`, `request_id`,
+  `session_id`, `trace_id`, `interaction_id`); answer it like any other.
 - `request.interaction.ack` follows with the `response`, plus `timed_out` or
   `cancelled` when set.
-- The `response` must fit the interaction's `schema`, else `400 INVALID_RESPONSE`
-  and the interaction stays open. An approval runs the tool only on `approve`.
-- `404 INTERACTION_NOT_FOUND` for an interaction the request never opened, and
-  `409 INTERACTION_CLOSED` once it has an answer, a timeout or a cancel.
+- Returns `200 {event_id, request_id, status, interaction_id}`.
+- `404 EVENT_NOT_FOUND`; `404 INTERACTION_NOT_FOUND` when the request has no
+  such interaction (a queued event has none); `400
+  INVALID_INTERACTION_RESPONSE` for a response the schema does not allow;
+  `409 INTERACTION_CLOSED` once another answer, a timeout or a cancel closed
+  it. Repeating the stored answer returns `200`.
+
+`GET /api/v1/sessions/{session_id}/events/{event_id}`
+- The event's state: `request_id`, `seq`, `status`, the request's open
+  `interactions`, `response`, `error`, and the timestamps. `404
+  EVENT_NOT_FOUND`.
+
+`GET /api/v1/sessions/{session_id}/events/{event_id}/stream`
+- Server-Sent Events: the request's stream, each frame with `id: <seq>`,
+  `event: <name>` and `data: <json>`.
+- Query params: `after` (default `0`), the `id` of the last frame the reader
+  has. A reader that lost its connection passes it and misses or repeats
+  nothing.
+- While the event is queued the stream holds with an `event.queued` frame and
+  `: keepalive` comments, then relays the request from its first frame. An
+  event cancelled while queued gets one `event.cancelled` frame. An event
+  whose request retention deleted gets one end frame built from the event.
+- Streamed token output arrives as `event: agent.trace` frames whose
+  `data.event_type` is `chat.delta`, with the text chunk at
+  `data.payload.payload.text`. Concatenate them in arrival order to render the
+  answer live. The final response is on `request.completed`.
+- Ends with `request.completed`, `request.error`, `request.cancelled` or
+  `event.cancelled`.
+
+`GET /api/v1/sessions/{session_id}/events`
+`GET /api/v1/hosts/{host_id}/events`
+- The session's events, or every session's on the host, in `seq` order, each
+  in the shape above.
+- Query params: `status` (comma-separated reported statuses, else
+  `400 INVALID_REQUEST`), `after_seq` (default `0`), `limit` (default 100, at
+  most 500). An app that restarted finds what it was following with
+  `status=running,waiting`.
+
+`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`
+- A queued event becomes `cancelled`. A running one has its request
+  cancelled, with its running `RunSubAgents` children and its open
+  interactions acked as cancelled; the event closes when the request ends.
+- Returns the event. `409 EVENT_TERMINAL` once it has ended.
+
+`POST /api/v1/sessions/{session_id}/events/{event_id}/interactions/{interaction_id}/handoff`
+- For an open `browser` interaction of the event's request (or one a child
+  relayed to it), mints a live-view link and returns `{url, expires_at}`. Each
+  call mints a new link, valid `MASH_BROWSER_HANDOFF_SECONDS` (default 900);
+  earlier ones keep working until they expire or the interaction closes. A
+  relayed interaction's link opens the asking child's tab.
+- `404 INTERACTION_NOT_FOUND` for an interaction that is not an open browser
+  one; `503 BROWSER_UNAVAILABLE` when the host has no browsers.
+
+### Runtime Requests
+
+Requests start only from a session's queue. These routes read them.
+
+`GET /api/v1/agent/{agent_id}/request/{request_id}/events`
+- Server-Sent Events stream for one request, the same frames as an event's
+  stream. Use it for a `RunSubAgents` child.
+- Query params:
+  - `after` (optional, default `0`): the `id` of the last frame the reader
+    has.
+- Terminates when event name is `request.completed`, `request.error`, or
+  `request.cancelled`.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/status`
 - Returns the request's recorded status.
@@ -304,67 +390,6 @@ Every call names the request it serves, and the host checks it as the sandbox re
   process crash). A `running` request continues when its agent's process
   restarts.
 
-`POST /api/v1/agent/{agent_id}/request/{request_id}/resume`
-- Continues a failed or cancelled request from its last step.
-- Path params:
-  - `agent_id`
-  - `request_id`
-- Returns:
-  - `request_id`
-  - `status`: `resumed` | `completed` | `running`
-  - `previous_status`: the status before resume (only when `status` is `resumed`)
-  - `message`: human-readable description
-- If the request is already completed or running, returns informational status
-  without changing state.
-- Rejected with `409 REQUEST_STALE` when the request's session has accrued a
-  newer replayable turn (resume replays the original context snapshot, so it is
-  unsafe once the session has moved on).
-- On a successful resume the runtime appends a non-terminal
-  `mash.request.resumed` event (SSE `request.resumed`). Since terminality
-  reads the last event, this flips a previously failed/cancelled request back to
-  non-terminal, so a client whose stream had ended re-opens it after resuming.
-
-`POST /api/v1/agent/{agent_id}/request/{request_id}/cancel`
-- Cancels a running request. The in-flight step finishes and checkpoints;
-  execution stops at the next step boundary. A request parked on an
-  interaction has that prompt acked as cancelled, and the cancel path emits the
-  terminal `invoke_agent.end` with `status: cancelled` (visible as `request.cancelled` on
-  the SSE stream) so streams terminate. The host then cancels the request's
-  running `RunSubAgents` children, each through its own agent, skipping a child
-  whose agent is disabled. Splitting is one level deep, so there is no further
-  level to walk. The trace cancel route does the same.
-- Path params:
-  - `agent_id`
-  - `request_id`
-- Returns:
-  - `request_id`
-  - `workflow_id`
-  - `status`: `cancelled` | current status when already terminal
-  - `message`: human-readable description
-- Cancelling an already-terminal request is an idempotent no-op that reports the
-  current state. Resume the cancelled request to continue from its last
-  checkpoint.
-
-`POST /api/v1/agent/{agent_id}/request/{request_id}/mode`
-- Body: `{"mode": "fg" | "bg"}`. Switches a running request's mode and appends
-  `mash.request.mode_changed`, which the SSE stream shows as `agent.trace`.
-- Returns `request_id`, `agent_id` and `mode`.
-- `409 REQUEST_TERMINAL` once the request is terminal; `404 REQUEST_NOT_FOUND`
-  for an unknown request.
-
-`POST /api/v1/agent/{agent_id}/request/{request_id}/rerun`
-- Starts a previous request over as a brand-new request. Rebuilds from the
-  original `request.accepted` payload (message + full request metadata, including
-  the host snapshot and structured-output request), stamps `rerun_of` provenance,
-  and submits through the normal path — new request id, new trace, and a fresh
-  `context.load` against the session's current history. Works for any previous
-  request regardless of its terminal state; the original is left untouched.
-- Path params:
-  - `agent_id`
-  - `request_id`
-- Returns the new request's accepted payload (`request_id`, `agent_id`,
-  `session_id`, `status`). Stream the new `request_id` as usual.
-
 ### Sessions
 
 `GET /api/v1/agent/{agent_id}/sessions`
@@ -376,7 +401,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
   - `agent_id`
 - Query params:
   - `limit` (default 50, at most 500)
-  - `user_id` optional: only that user's sessions
+  - `app_id` optional: only the sessions with that app's turns
 - Returns `sessions` and `limit`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}`
@@ -398,10 +423,11 @@ Every call names the request it serves, and the host checks it as the sandbox re
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests`
 - Lists the session's requests from every agent in it, newest first, read from
   `runtime_request` on the host.
-- Query params: `mode` (`fg` | `bg`), `status` (`running` | `completed` |
-  `failed` | `cancelled`), `started_by` (`user` or an agent id).
-- Returns `requests`, each with `request_id`, `agent_id`, `message`, `mode`,
-  `status`, `started_by`, `parent_request_id` and `started_at`.
+- Query params: `status` (`running` | `completed` | `failed` |
+  `cancelled`), `started_by` (`user` or an agent id).
+- Returns `requests`, each with `request_id`, `agent_id`, `app_id`,
+  `policy_id`, `message`, `status`, `started_by`, `parent_request_id` and
+  `started_at`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}/history`
 - Returns session history turns.
@@ -478,10 +504,13 @@ Every call names the request it serves, and the host checks it as the sandbox re
   - `input` optional JSON object
   - `session_id` optional; the run executes under this session (e.g. the REPL
     session) so it is a trace within it. Absent → a fresh per-run session.
-  - `user_id`: the user the run acts for. Required when the workflow has an
-    `AgentStep` or a `CodeStep` that declares `agent_ids`
-    (`400 USER_ID_REQUIRED` otherwise); `400 INVALID_USER_ID` when malformed.
-    Every agent step submits for this user, and a resumed run keeps it.
+  - `app_id` and `policy_id`: the app the run acts for and the policy it runs
+    under. Both are required when the workflow has an `AgentStep` or a
+    `CodeStep` that declares `agent_ids` (`400 APP_AND_POLICY_REQUIRED`
+    otherwise); `400 INVALID_APP_ID` or `INVALID_POLICY_ID` when malformed,
+    `404 POLICY_NOT_FOUND` for an unknown policy. The run keeps a snapshot of
+    the policy, every agent step submits under them, and a resumed run keeps
+    both.
 - Returns:
   - `run_id`
   - `workflow_id`
@@ -501,7 +530,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
 - Does not include the run result; call the run detail endpoint for it.
 
 `GET /api/v1/workflow/{workflow_id}/runs/{run_id}`
-- Returns one workflow run with immutable `workflow_input`, `session_id`, `user_id`, final
+- Returns one workflow run with immutable `workflow_input`, `session_id`, `app_id`, `policy_id`, final
   `result`, and ordered step snapshots.
 - Path params:
   - `workflow_id`
@@ -629,47 +658,48 @@ Mounted only when the pool calls `HostBuilder.enable_cortex()`. Entries an app
 creates or edits are pinned (`origin: app`); `cortex-build` never changes or
 deletes them. See `src/mash/agents/cortex/README.md`.
 
-`GET /api/v1/cortex/users/{user_id}`
-- Returns `user_id`, `profile`, `built_through`, `version`, `entry_count`, `updated_at`.
+`GET /api/v1/cortex/apps/{app_id}`
+- Returns `app_id`, `profile`, `built_through`, `version`, `entry_count`, `updated_at`.
 
-`GET /api/v1/cortex/users/{user_id}/entries`
+`GET /api/v1/cortex/apps/{app_id}/entries`
 - Query: optional `q` (every term in topic and content), `origin` (`build` or
   `app`), `limit` (1-200, default 50), `after` (the previous page's `next`).
 - Returns `entries` newest first and `next`.
 
-`POST /api/v1/cortex/users/{user_id}/entries`
-- Body: `topic`, `content`. Creates an `app` entry, and the user's row if missing.
-- Returns `entry` and the user's new `version`.
+`POST /api/v1/cortex/apps/{app_id}/entries`
+- Body: `topic`, `content`. Creates an `app` entry, and the app's row if missing.
+- Returns `entry` and the app's new `version`.
 
-`PATCH /api/v1/cortex/users/{user_id}/entries/{entry_id}`
+`PATCH /api/v1/cortex/apps/{app_id}/entries/{entry_id}`
 - Body: `topic` and/or `content`. The entry becomes `app`.
 - Returns `entry` and `version`.
 
-`DELETE /api/v1/cortex/users/{user_id}/entries/{entry_id}`
+`DELETE /api/v1/cortex/apps/{app_id}/entries/{entry_id}`
 - Returns `deleted` and `version`.
 
-`DELETE /api/v1/cortex/users/{user_id}`
-- Deletes the user's profile and entries and resets the build watermark.
+`DELETE /api/v1/cortex/apps/{app_id}`
+- Deletes the app's profile and entries and resets the build watermark.
 
-Errors: `404 CORTEX_NOT_FOUND` for an unknown user or entry, `400 INVALID_USER_ID`.
+Errors: `404 CORTEX_NOT_FOUND` for an unknown app or entry, `400 INVALID_APP_ID`.
 
 ### Browsers
 
 Present on every host; `503 BROWSER_UNAVAILABLE` when it has no browsers.
 
-`GET /api/v1/browser/users/{user_id}/sites`
-- Returns `{user_id, sites}`: each `{domain, cookies}` the user's browser
-  profile holds cookies for, which is where the user is signed in. Starts the
+`GET /api/v1/browser/policies/{policy_id}/sites`
+- Returns `{policy_id, sites}`: each `{domain, cookies}` the policy's browser
+  profile holds cookies for, which is where someone signed in. Starts the
   browser if it is stopped.
 
-`DELETE /api/v1/browser/users/{user_id}/sites/{domain}`
-- Signs the user out of `domain` and its subdomains: deletes their cookies and
-  clears their storage. Returns `{user_id, domain, cookies}` with the number
-  deleted.
+`DELETE /api/v1/browser/policies/{policy_id}/sites/{domain}`
+- Signs the policy's browser out of `domain` and its subdomains: deletes their
+  cookies and clears their storage. Returns `{policy_id, domain, cookies}` with
+  the number deleted.
 
-`DELETE /api/v1/browser/users/{user_id}`
-- Stops the user's browser and deletes its volume, profile included. Returns
-  `{user_id, deleted: true}`.
+`DELETE /api/v1/browser/policies/{policy_id}`
+- Stops the policy's browser and deletes its volume, profile included. Returns
+  `{policy_id, deleted: true}`. `DELETE /api/v1/policies/{policy_id}` does this
+  too, with the sandbox and the policy.
 
 ### Observability
 
@@ -814,7 +844,7 @@ messages, which can quote inputs; without it a failed span keeps its
 - `401 UNAUTHORIZED`: missing or wrong API key
 - `404 AGENT_NOT_FOUND`: unknown `agent_id`
 - `503 AGENT_UNAVAILABLE`: the agent's server could not be reached, for example because its process is restarting
-- `409 AGENT_DISABLED`: the agent is disabled
+- `409 AGENT_DISABLED`: a `RunSubAgents` child or workflow step for a disabled agent
 - `409 AGENT_IN_USE`: disabling an agent a host or workflow names
 - `503 SESSIONS_UNAVAILABLE`: session reads for an agent that overrides `build_memory_store()`; the host reads sessions from the pool's shared memory store only
 - `400 INVALID_REQUEST`: blank required path/body values after trimming
@@ -825,13 +855,19 @@ messages, which can quote inputs; without it a failed span keeps its
 - `400 INVALID_STRUCTURED_OUTPUT`: `structured_output` is neither a dict nor a Pydantic-serialized schema
 - `400 INVALID_AGENT_WORKFLOW`: workflow validation failed (duplicate task ids, missing `task_message` fields, agent not registered, etc.)
 - `404 REQUEST_NOT_FOUND`: unknown `request_id`, or a request accepted for another agent than the one in the path, on the request routes
-- `409 REQUEST_STALE`: resume rejected because the request's session has newer replayable turns
-- `409 SESSION_USER_MISMATCH`: the `session_id` belongs to another user; a session is the conversation of the user of its first request
+- `404 EVENT_NOT_FOUND`: no such event in the session
+- `404 POLICY_NOT_FOUND`: an event or workflow run names a policy that does not exist
+- `409 SESSION_HOST_MISMATCH`, `409 SESSION_POLICY_MISMATCH`: the session is bound to another host or policy by its first event
+- `409 EVENT_TERMINAL`: cancelling an event that has ended
+- `409 POLICY_IN_USE`: deleting a policy with a queued or running event
+- `409 INTERACTION_CLOSED`: an answer to an interaction that another answer, a timeout or a cancel closed
 
 ## Source Of Truth
 - App composition, auth, lifespan, and exception handlers live in [app.py](/Users/sid/Projects/mashpy/src/mash/api/app.py).
 - Shared route helpers live in [routes/common.py](/Users/sid/Projects/mashpy/src/mash/api/routes/common.py).
 - Agent/session routes live in [routes/agent.py](/Users/sid/Projects/mashpy/src/mash/api/routes/agent.py).
+- Events routes live in [routes/sessions.py](/Users/sid/Projects/mashpy/src/mash/api/routes/sessions.py), over `EventService` in [sessions/service.py](/Users/sid/Projects/mashpy/src/mash/sessions/service.py).
+- Policy routes live in [routes/policies.py](/Users/sid/Projects/mashpy/src/mash/api/routes/policies.py).
 - Workflow routes live in [routes/workflow.py](/Users/sid/Projects/mashpy/src/mash/api/routes/workflow.py).
 - Telemetry routes live in [routes/telemetry.py](/Users/sid/Projects/mashpy/src/mash/api/routes/telemetry.py).
 - The admin dashboard SPA routes live in [admin_ui.py](/Users/sid/Projects/mashpy/src/mash/api/admin_ui.py).

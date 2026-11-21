@@ -22,7 +22,7 @@ pool = HostBuilder().agent(...).enable_evals().build()
 
 `enable_evals()` registers `eval-agent` and `eval-judge-agent` through the
 normal agent path and both workflows, which attach to every host. Their runs
-take a `user_id` like any workflow that uses agents.
+take an `app_id` and a `policy_id` like any workflow that uses agents.
 
 ## Workflows
 

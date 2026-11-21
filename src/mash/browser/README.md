@@ -1,27 +1,30 @@
 # Browser
 
-`src/mash/browser` holds per-user browsers: a Chromium the agents acting for
-one user share, with a profile that keeps the sites the user signed in to. It
-runs in a container of its own, next to the user's sandbox. Agents drive it
-through the host; code in the sandbox has no route to it.
+`src/mash/browser` holds per-policy browsers: a Chromium the agents and
+sessions under one policy share, with a profile that keeps the sites someone
+signed in to. It runs in a container of its own, next to the policy's
+sandbox. Agents drive it through the host; code in the sandbox has no route
+to it.
 
 An agent gets the browser tools when its spec lists sites
-(`AgentSpec.browser_sites()`) and the host has browsers. The host starts
+(`AgentSpec.browser_sites()`) and the host has browsers. A request's policy
+narrows them: its `browser_sites` is intersected with the spec's, and an
+empty intersection takes the tools away. The host starts
 browsers only when some agent lists sites.
 
 ## Call paths
 
 ```
-agent process              host                              browser u-42
+agent process              host                              browser acme-ws
 browser_navigate ──► POST /browser/call ──► BrowserManager ─► POST /requests/<id>/call
-browser_save ──────► POST /browser/save  ─┐  ensure(u-42)       daemon ─► Playwright MCP ─► Chromium
+browser_save ──────► POST /browser/save  ─┐  ensure(acme-ws)    daemon ─► Playwright MCP ─► Chromium
 browser_upload ────► POST /browser/upload ┼► SandboxManager       (one MCP session and tab
   (agent token,       request identity    │  (workspace files)     per request)
-   request_id)        user = u-42, sites  ┘
-                       from the spec
+   request_id)        policy = acme-ws,   ┘
+                      sites = spec ∩ policy
 
-browser_handoff ───► engine: POST /browser/handoff ─► view token ─► interaction "browser"
-                                                                    {url, expires_at}
+browser_handoff ───► engine: POST /browser/handoff ─► front the tab ─► interaction "browser"
+app ───────────────► POST .../events/{eid}/interactions/{iid}/handoff ─► mint_link ─► {url, expires_at}
 user's browser ────► /s/<view token>/browser/ ──────► BrowserManager ─► /view/ (noVNC) ─► x11vnc
 workflow code ─────► ctx.browser() ──────────────────► BrowserManager ─► /cdp ─► Chromium
 ```
@@ -52,11 +55,11 @@ workflow code ─────► ctx.browser() ───────────
   `scripts/update_playwright_tools.py`; change it, the version, and
   `Dockerfile.browser` together.
 - `sites.py`: checks `browser_sites()` entries and matches URLs to them.
-- `tokens.py`: `derive_browser_token(secret, user_id)`, the HMAC of
-  `mash-browser:<user_id>` under `MASH_HOST_SECRET`, and the view tokens in
-  live-view links, which carry a user, a request and an expiry.
+- `tokens.py`: `derive_browser_token(secret, policy_id)`, the HMAC of
+  `mash-browser:<policy_id>` under `MASH_HOST_SECRET`, and the view tokens in
+  live-view links, which carry a policy, a request, an expiry and a nonce.
 - `provider.py`: `DockerBrowserProvider`: container and volume
-  `<ns>-browser-<key>` (the sandbox's `<key>`), labels `mash.browser.user` and
+  `<ns>-browser-<key>` (the sandbox's `<key>`), labels `mash.browser.policy` and
   `mash.namespace`, network `<ns>-browsers`, 1 GB of shared memory, restart
   policy `unless-stopped`. Browsers run
   `ghcr.io/imsid/mash-browser:<mashpy version>` (`Dockerfile.browser`), or
@@ -64,10 +67,13 @@ workflow code ─────► ctx.browser() ───────────
 - `manager.py`: `BrowserManager`, the host's one way into a browser, on the
   sandboxes' lifecycle (`mash.sandbox.containers`):
   `MASH_BROWSER_IDLE_SECONDS` (default 900) and `MASH_BROWSER_MAX_RUNNING`
-  (default 10). It also keeps the open handoffs: `start_handoff` mints a view
-  token valid for `MASH_BROWSER_HANDOFF_SECONDS` (default 900) and
-  `end_handoff` revokes it. `wait_ended` returns when a handoff ends or
-  expires, and the live view closes its websocket then.
+  (default 10). It also keeps the live-view links: `mint_link(policy_id,
+  request_id, interaction_id)` mints a new view token valid for
+  `MASH_BROWSER_HANDOFF_SECONDS` (default 900) each time an app asks, and
+  `end_handoff(request_id)` revokes every link minted for the request when
+  its interaction closes. `wait_ended` returns when a link is revoked or
+  expires, and the live view closes its websocket then. `delete` removes a
+  policy's browser and profile.
 
 `mash.testing.browsers` has `FakeBrowser`, an in-memory stand-in for Chromium
 and Playwright MCP that keeps their sharing of tabs, snapshot files and

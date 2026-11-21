@@ -103,7 +103,10 @@ An interaction's answer is its `mash.interaction.end` event, keyed
 `interaction.ack.<id>`.
 
 - The loop opens one in a memoized step that mints the id, appends
-  `mash.interaction.start`, and records the deadline.
+  `mash.interaction.start`, and records the deadline: the type's timeout,
+  capped by the request policy's `wait_max_seconds`. A browser handoff has no
+  timeout of its own, so its deadline is the cap, and with no cap it has
+  none.
 - It waits on an in-process event until the deadline, then reads the log.
 - `engine.answer_interaction(...)`, behind the agent server's interaction
   route, checks the answer against the interaction's `schema`, appends it and
@@ -129,7 +132,8 @@ cancelled or failed request: it appends `mash.request.resumed`, which records
 the request `running` and gives the new attempt terminal dedupe keys of its
 own, then calls `engine.continue_request(...)`. The loop continues from the
 checkpoint. If the request was cancelled while waiting on an interaction, it
-opens a new one under the next attempt number.
+opens a new one under the next attempt number. The host exposes no route to
+resume a request; it cancels one when its event is cancelled.
 
 ## Recovery
 

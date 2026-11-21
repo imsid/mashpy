@@ -1,6 +1,6 @@
 ---
 title: How to Deploy a Mash Host
-description: Deploy a Mash host, its agent processes, and per-user sandboxes, on your laptop or a server.
+description: Deploy a Mash host, its agent processes, and per-policy sandboxes, on your laptop or a server.
 date: 2026-06-02
 author: imsid
 tags:
@@ -20,24 +20,25 @@ A Mash host is the unit of deploy: one container or one local process. It
 runs the API, host compositions and workflows, and starts one child process
 per agent. Each child serves its agent's runtime behind an H2A HTTP server on
 a localhost port. The code an agent's model writes runs in a sandbox that
-belongs to the user the request acts for, and the user opens what it made at
-links the host serves.
+belongs to the request's policy, and people open what it made at links the
+host serves.
 
 ```
  user app ──HTTP──► Mash host (API, hosts, workflows)
                      │  one child per agent, on 127.0.0.1:
                      │    mash agent serve --agent research
                      │  /h2a relay (companion calls), /sandbox relay (run_code,
-                     │  sandbox_put, sandbox_get), /s/ links (users)
+                     │  sandbox_put, sandbox_get), /s/ links
                      │
                      ▼ Docker socket
    ┌──────────────────────────────────────┐
-   │ mash-sandbox-<key>   (user u-42)     │
+   │ mash-sandbox-<key>   (policy acme-ws)│
    │  mash sandbox serve :9000            │
    │  /home/agent/workspaces/research  ◄── volume mash-sandbox-<key>
    └──────────────────────────────────────┘
 
-   Postgres: events, request checkpoints, sessions, workflow runs (host and agents only)
+   Postgres: policies, sessions and events, request logs and checkpoints,
+             turns, workflow runs (host and agents only)
 ```
 
 - The host imports `build_pool()` and keeps each agent's spec and metadata.
@@ -47,21 +48,23 @@ links the host serves.
 - A child that exits is restarted on the same port, with backoff from 1 to 30
   seconds. While it is down, host routes for that agent return
   `503 AGENT_UNAVAILABLE`. Children live and die with the host.
-- The companion runs a host request's agents and workflows through the host's
-  `/h2a` relay, which checks each call against the request's host composition.
-- Every request carries a `user_id`. A `run_code`, `sandbox_put` or
+- An app posts each message as an event to a session. The host runs a
+  session's events one at a time on the companion, which runs the host's
+  agents and workflows through the host's `/h2a` relay; the relay checks each
+  call against the request's host composition.
+- Every event names an app and a policy. A `run_code`, `sandbox_put` or
   `sandbox_get` call goes from the agent process to the host's `/sandbox`
-  relay with only the request id; the host looks up the request's user and acts
-  in that user's sandbox, in the agent's folder
+  relay with only the request id; the host looks up the request's policy and
+  acts in that policy's sandbox, in the agent's folder
   `/home/agent/workspaces/<agent_id>`.
-- A sandbox holds one user's workspaces and nothing else. It gets no
+- A sandbox holds one policy's workspaces and nothing else. It gets no
   environment from the host and has no database credentials. Each agent's code
   runs as a uid of its own with a clean environment, in a folder only that uid
   can use, so agents cannot read each other's files or variables. The sandbox's daemon accepts only that
-  user's sandbox token, which only the host can derive.
+  policy's sandbox token, which only the host can derive.
 - Files in a workspace and servers the code started open at
   `/s/<link token>/files/<agent_id>/<path>` and `/s/<link token>/ports/<n>/`
-  on the host. The link token names the user, so links need no API key.
+  on the host. The link token names the policy, so links need no API key.
 - Sandboxes start on first use and stop after `MASH_SANDBOX_IDLE_SECONDS`
   (default 900) without a call or a link request. At most `MASH_SANDBOX_MAX_RUNNING` (default
   20) run at once.
@@ -132,8 +135,8 @@ Browsers run Mash's browser image, `ghcr.io/imsid/mash-browser:<mashpy
 version>`, built from [`Dockerfile.browser`](https://github.com/imsid/mashpy/blob/main/Dockerfile.browser).
 It holds Chromium, Playwright MCP, Xvfb, x11vnc and noVNC, run by a `browser`
 user. The host pulls it only when an agent's spec lists `browser_sites()`, and
-starts one browser per user on the first browser call, on its own network,
-`mash-browsers`, with a volume `mash-browser-<key>` for the user's profile.
+starts one browser per policy on the first browser call, on its own network,
+`mash-browsers`, with a volume `mash-browser-<key>` for the policy's profile.
 Sandboxes are not on that network. A sign-in link (`/s/<view token>/browser/`)
 uses `MASH_PUBLIC_URL`, and the live view is a websocket, so a proxy in front
 of the host must pass websockets through.
@@ -142,7 +145,7 @@ of the host must pass websockets through.
 
 This is the production layout, and it works the same on a laptop. Each
 running sandbox has a network of its own, `mash-sandbox-<key>`, named like its
-container, so one user's code cannot reach another user's sandbox. The host
+container, so one policy's code cannot reach another policy's sandbox. The host
 container joins each running sandbox's network and reaches the sandbox by
 container name. Stopping a sandbox removes its network.
 
@@ -195,8 +198,11 @@ volumes:
 
 ```bash
 docker compose up -d
-mash connect --api-base-url http://127.0.0.1:8000 --api-key dev-key --user-id u-1
-mash repl --agent assistant
+echo '{"sandbox": true}' | mash policy put dev --file - \
+  --api-base-url http://127.0.0.1:8000 --api-key dev-key
+mash connect --api-base-url http://127.0.0.1:8000 --api-key dev-key \
+  --app-id my-app --policy-id dev
+mash repl
 ```
 
 On Linux, find the socket's group with `stat -c %g /var/run/docker.sock` and
@@ -214,7 +220,7 @@ To give every sandbox files from the Docker host, list bind mounts in
 `MASH_SANDBOX_MOUNTS=/srv/docs:/home/agent/docs:ro`. The source is a path on
 the Docker host, even when the host runs in a container, because the daemon
 resolves it. A target inside `/home/agent/workspaces` sits on top of the
-user's volume without being copied into it. A target inside one agent's folder,
+policy's volume without being copied into it. A target inside one agent's folder,
 `/home/agent/workspaces/<agent_id>/...`, can be reached by that agent alone,
 because the folder is its uid's. Bound files keep their owner on the
 Docker host, so add `:ro` unless every agent's uid may write them.
@@ -292,7 +298,8 @@ curl http://127.0.0.1:8000/api/v1/agent -H "Authorization: Bearer dev-key"   # e
 - Disable returns `409 AGENT_IN_USE`, naming the references, while a host
   composition or workflow names the agent.
 - Requests in flight are not cancelled. They stay running and continue from
-  their checkpoints when the agent is enabled again. New requests to a disabled agent return
+  their checkpoints when the agent is enabled again. A host cannot name a
+  disabled agent, and a companion child or workflow step for one gets
   `409 AGENT_DISABLED`.
 - The enabled set is in memory and resets on restart. Adding an agent that is
   not in `build_pool()` takes a deploy.
@@ -300,14 +307,14 @@ curl http://127.0.0.1:8000/api/v1/agent -H "Authorization: Bearer dev-key"   # e
 ## Operating sandboxes
 
 These commands run on the Docker host and find sandboxes by their
-`mash.sandbox.user` label. For a namespaced deployment, pass `--namespace` or
+`mash.sandbox.policy` label. For a namespaced deployment, pass `--namespace` or
 set `MASH_SANDBOX_NAMESPACE`.
 
 ```bash
-mash sandbox ls                               # user, status, uptime, container
-mash sandbox shell u-42 --agent research      # a shell as research's uid, in its folder
-mash sandbox shell u-42 --root
-mash sandbox stop u-42                        # stop now and remove its network; the volume is kept
+mash sandbox ls                                  # policy, status, uptime, container
+mash sandbox shell acme-ws --agent research      # a shell as research's uid, in its folder
+mash sandbox shell acme-ws --root
+mash sandbox stop acme-ws                        # stop now and remove its network; the volume is kept
 ```
 
 - `shell` starts a stopped sandbox on its network. Commands run from it are not in the event
@@ -319,8 +326,8 @@ mash sandbox stop u-42                        # stop now and remove its network;
   link fails until the code starts its server again. File links keep working.
 - A sandbox keeps the image it was created from. To pick up a new image,
   remove the containers with
-  `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)`; each user's
-  next call creates a new one on the same volume.
+  `docker rm -f $(docker ps -aq --filter label=mash.sandbox.policy)`; each
+  policy's next call creates a new one on the same volume.
 
 ## Durability
 
@@ -332,8 +339,12 @@ mash sandbox stop u-42                        # stop now and remove its network;
 - Each agent process works on at most `MASH_AGENT_MAX_RUNNING` requests at
   once (default 32). The others stay `running` and wait for a slot, recovered
   requests included, so a restart doesn't start every request at once. A
-  request waiting on the user or on its `RunSubAgents` children gives its slot
-  back. A waiting request's stream shows nothing until it starts.
+  request waiting on an answer or on its `RunSubAgents` children gives its
+  slot back. A waiting request's stream shows nothing until it starts.
+- Events wait in the `events` table. On start the host follows every event
+  that was running and starts the oldest queued event of every idle session,
+  so a restart loses no message. An event whose request never landed is
+  submitted again under the same request id.
 - The host continues the workflow runs under its runner id that are queued
   or running, from their completed steps.
 - The companion's child requests and workflow agent steps submit with fixed request ids, so a
@@ -350,16 +361,18 @@ The host keeps every request, event and workflow run until you set
 hour after:
 
 - requests that finished (completed, failed or cancelled) more than that many
-  days ago, with their events;
-- events that belong to no request, older than the window;
+  days ago, with their event logs, unless the session event they ran is
+  still running;
+- event log rows that belong to no request, older than the window;
 - workflow runs that finished before the window, with their steps and step
   events, unless an eval experiment points at the run;
 - checkpoint images no remaining request references.
 
-A request that is still running is kept however old it is. A deleted request
-can't be resumed or rerun, and its trace is gone from the admin UI and the
-telemetry API. Conversation turns (`memory_turns`), Cortex, feedback and evals
-are never deleted, so history replay, `search_conversations` and
+A request that is still running is kept however old it is. A deleted
+request's trace is gone from the admin UI and the telemetry API; its session
+event keeps the response or error. The `sessions` and `events` ledger,
+conversation turns (`memory_turns`), Cortex, feedback and evals are never
+deleted, so history replay, `search_conversations` and
 `cortex-build` keep working. Deletes run in batches of 100 requests or runs,
 so no statement holds locks for long.
 
@@ -433,7 +446,7 @@ X-API-Key: <api-key>          # alternative header
 The `/h2a` and `/sandbox` relays are for the host's own agent processes and
 authenticate with agent tokens, not the API key. They share the host's port;
 a proxy in front of the host can block both paths from outside. The `/s/`
-links are for users and must stay reachable; the token in each link is its
+links are for people and must stay reachable; the token in each link is its
 only credential.
 
 ### Core API endpoints
@@ -442,27 +455,37 @@ only credential.
 |--------|------|---------|
 | `GET` | `/api/v1/health` | Health check and agent info |
 | `GET` | `/api/v1/agent` | List registered agents with `enabled` and `status` |
-| `POST` | `/api/v1/agent/{agent_id}/request` | Submit a request; `user_id` is required |
-| `GET` | `/api/v1/agent/{agent_id}/request/{request_id}/events` | Stream response (SSE) |
-| `POST` | `/api/v1/agent/{agent_id}/request/{request_id}/interaction` | Respond to an interaction (e.g. AskUser); `interaction_id` goes in the body |
+| `PUT` | `/api/v1/policies/{policy_id}` | Create or replace a policy |
+| `POST` | `/api/v1/sessions/{session_id}/events` | Post a message as an event; or, with `interaction_id`, answer an interaction |
+| `GET` | `/api/v1/sessions/{session_id}/events/{event_id}/stream` | Stream the event's response (SSE) |
+| `GET` | `/api/v1/sessions/{session_id}/events/{event_id}` | The event's status, open interactions and response |
+| `POST` | `/api/v1/sessions/{session_id}/events/{event_id}/cancel` | Cancel the event |
 | `POST` | `/api/v1/agent/{agent_id}/enable` | Start a disabled agent |
 | `POST` | `/api/v1/agent/{agent_id}/disable` | Stop an agent |
 
-### Example: submit a request and stream the response
+### Example: post an event and stream the response
 
 ```bash
-# 1. Submit a request
-REQUEST=$(curl -s -X POST http://localhost:8000/api/v1/agent/assistant/request \
+# 1. A policy, once
+curl -s -X PUT http://localhost:8000/api/v1/policies/dev \
   -H "Authorization: Bearer dev-key" \
   -H "Content-Type: application/json" \
-  -d '{"message": "summarize the open issues", "session_id": "my-session", "user_id": "u-42"}')
+  -d '{"sandbox": true}'
 
-REQUEST_ID=$(echo $REQUEST | jq -r '.data.request_id')
+# 2. Post the message as an event
+curl -s -X POST http://localhost:8000/api/v1/sessions/my-session/events \
+  -H "Authorization: Bearer dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"event_id": "e-1", "host_id": "assistant", "app_id": "my-app",
+       "policy_id": "dev", "message": "summarize the open issues"}'
 
-# 2. Stream the response via SSE
-curl -N http://localhost:8000/api/v1/agent/assistant/request/$REQUEST_ID/events \
+# 3. Stream the response via SSE
+curl -N http://localhost:8000/api/v1/sessions/my-session/events/e-1/stream \
   -H "Authorization: Bearer dev-key"
 ```
+
+Posting the same `event_id` again returns the existing event and runs
+nothing, so a retry is safe.
 
 ### Example: Python client
 
@@ -472,18 +495,23 @@ import httpx
 BASE = "http://localhost:8000/api/v1"
 HEADERS = {"Authorization": "Bearer dev-key"}
 
-# Submit
-resp = httpx.post(
-    f"{BASE}/agent/assistant/request",
+# Post the message as an event
+httpx.post(
+    f"{BASE}/sessions/s1/events",
     headers=HEADERS,
-    json={"message": "summarize the open issues", "session_id": "s1", "user_id": "u-42"},
+    json={
+        "event_id": "e-1",
+        "host_id": "assistant",
+        "app_id": "my-app",
+        "policy_id": "dev",
+        "message": "summarize the open issues",
+    },
 )
-request_id = resp.json()["data"]["request_id"]
 
 # Stream SSE
 with httpx.stream(
     "GET",
-    f"{BASE}/agent/assistant/request/{request_id}/events",
+    f"{BASE}/sessions/s1/events/e-1/stream",
     headers=HEADERS,
     timeout=None,
 ) as stream:
@@ -498,8 +526,9 @@ with httpx.stream(
 mash connect \
   --api-base-url http://your-host:8000 \
   --api-key your-api-key \
-  --user-id u-42
-mash repl --agent assistant
+  --app-id my-app \
+  --policy-id dev
+mash repl --host assistant
 ```
 
 ### CORS configuration
@@ -514,11 +543,13 @@ CLI flag (repeatable) or configure `cors_allow_origins` in `MashHostConfig`.
   Postgres, starts every agent process again, and adopts the running
   sandboxes.
 - **Stop everything:** stop the host, then
-  `docker rm -f $(docker ps -aq --filter label=mash.sandbox.user)`. Postgres
-  and the sandbox volumes keep all state; each user's next call recreates
-  their sandbox on the same volume.
-- **Remove a user's workspaces:** delete their volume, which has the
-  container's name from `mash sandbox ls`, after removing the container.
+  `docker rm -f $(docker ps -aq --filter label=mash.sandbox.policy)`. Postgres
+  and the sandbox volumes keep all state; each policy's next call recreates
+  its sandbox on the same volume.
+- **Remove a policy's workspaces and browser profile:** `mash policy rm
+  <policy_id>` (or `DELETE /api/v1/policies/{policy_id}`) removes the
+  sandbox, the browser and the policy, once no session on it has a queued or
+  running event.
 - **Database migrations:** Mash runs pending migrations automatically on
   startup. See [Schema migrations](#schema-migrations) below.
 
@@ -550,7 +581,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_API_KEY` | host | none | API key for `/api/v1`; required unless `MASH_API_HOST` is a loopback address |
 | `MASH_API_HOST` | host | `127.0.0.1` | Bind host (`0.0.0.0` in containers) |
 | `MASH_API_PORT` | host | `8000` | Bind port |
-| `MASH_PUBLIC_URL` | host | the bind address | Where users reach the host; the base of sandbox links and sign-in links |
+| `MASH_PUBLIC_URL` | host | the bind address | Where people reach the host; the base of sandbox links and sign-in links |
 | `MASH_SANDBOX_IMAGE` | host | `ghcr.io/imsid/mash-sandbox:<mashpy version>` | Sandbox image, pulled when missing |
 | `MASH_SANDBOX_MOUNTS` | host | none | Comma-separated `source:target[:ro]` bind mounts added to every sandbox; sources are Docker-host paths |
 | `MASH_SANDBOX_IDLE_SECONDS` | host | `900` | Idle time before a sandbox stops |
@@ -560,7 +591,7 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_BROWSER_IMAGE` | host | `ghcr.io/imsid/mash-browser:<mashpy version>` | Browser image, pulled when an agent lists sites |
 | `MASH_BROWSER_IDLE_SECONDS` | host | `900` | Idle time before a browser stops; its profile is kept |
 | `MASH_BROWSER_MAX_RUNNING` | host | `10` | Most browsers running at once |
-| `MASH_BROWSER_HANDOFF_SECONDS` | host | `900` | How long a sign-in link works, and how long a request waits for the user |
+| `MASH_BROWSER_HANDOFF_SECONDS` | host | `900` | How long a minted sign-in link works; how long a request waits is the policy's `wait_max_seconds` |
 | `MASH_DATA_DIR` | host | `/var/lib/mash` | Persistent data directory |
 | `MASH_RUNNER_ID` | host | `default` | Workflow runner identity for this deployment |
 | `MASH_AGENT_TOKEN` | agent process | set by the host | The agent's token |
@@ -568,8 +599,8 @@ The baseline (`001_baseline.sql`) is idempotent: all `CREATE TABLE` and `CREATE 
 | `MASH_SANDBOX_ENABLED` | agent process | set by the host | `1` when the host has sandboxes, so the agent gets `run_code`, and `sandbox_put` and `sandbox_get` when its spec declares file roots |
 | `MASH_BROWSER_ENABLED` | agent process | set by the host | `1` when the host has browsers, so an agent whose spec lists sites gets the browser tools |
 | `MASH_PARENT_PID` | agent process | set by the host | The agent process stops when this process exits |
-| `MASH_SANDBOX_TOKEN` | sandbox | set by the host | The user's sandbox token; the sandbox's only variable |
-| `MASH_BROWSER_TOKEN` | browser | set by the host | The user's browser token; the browser's only variable |
+| `MASH_SANDBOX_TOKEN` | sandbox | set by the host | The policy's sandbox token; the sandbox's only variable |
+| `MASH_BROWSER_TOKEN` | browser | set by the host | The policy's browser token; the browser's only variable |
 | `ANTHROPIC_API_KEY` | host | none | Anthropic API key; agent processes inherit it |
 | `OPENAI_API_KEY` | host | none | OpenAI API key; agent processes inherit it |
 | `GEMINI_API_KEY` | host | none | Google Gemini API key; agent processes inherit it |
