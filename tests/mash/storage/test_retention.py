@@ -85,6 +85,8 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             conn.execute("DELETE FROM workflow_step_events WHERE run_id LIKE %s", (like,))
             conn.execute("DELETE FROM workflow_runs WHERE run_id LIKE %s", (like,))
             conn.execute("DELETE FROM eval WHERE eval_id LIKE %s", (like,))
+            conn.execute("DELETE FROM events WHERE session_id LIKE %s", (like,))
+            conn.execute("DELETE FROM sessions WHERE session_id LIKE %s", (like,))
         await release_pool(self.url)
 
     def _sql(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -145,6 +147,33 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
 
     def _exists(self, table: str, column: str, value: str) -> bool:
         return bool(self._sql(f"SELECT 1 FROM {table} WHERE {column} = %s", (value,)))
+
+    async def test_purge_keeps_the_request_of_a_started_event(self) -> None:
+        session_id = f"{self.tag}-s"
+        self._sql(
+            "INSERT INTO sessions (session_id, host_id, policy_id) VALUES (%s, 'h', 'p')",
+            (session_id,),
+        )
+        watched = self._request("watched", "completed", OLD)
+        closed = self._request("closed", "completed", OLD)
+        for event_id, request_id, status in (("e-1", closed, "completed"), ("e-2", watched, "started")):
+            self._sql(
+                "INSERT INTO events (session_id, event_id, status, request_id, body, response) "
+                "VALUES (%s, %s, %s, %s, '{}'::jsonb, %s::jsonb)",
+                (session_id, event_id, status, request_id, '{"text": "kept"}'),
+            )
+
+        await purge(self.pool, cutoff=CUTOFF)
+
+        # The watcher of the started event has not copied its outcome yet.
+        self.assertTrue(self._exists("runtime_request", "request_id", watched))
+        self.assertFalse(self._exists("runtime_request", "request_id", closed))
+        # The ledger outlives the request.
+        [(status, response)] = self._sql(
+            "SELECT status, response FROM events WHERE session_id = %s AND event_id = 'e-1'",
+            (session_id,),
+        )
+        self.assertEqual((status, response), ("completed", {"text": "kept"}))
 
     async def test_purge_deletes_only_what_finished_before_the_cutoff(self) -> None:
         held_blob = self._blob("held", OLD)

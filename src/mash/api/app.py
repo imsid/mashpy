@@ -23,6 +23,7 @@ from mash.api.routes.host import build_host_router
 from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
 from mash.api.routes.policies import build_policies_router
+from mash.api.routes.sessions import build_sessions_router
 from mash.api.routes.browser import (
     build_browser_api_router,
     build_browser_link_router,
@@ -208,6 +209,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             if eval_agent_spec is not None and hasattr(eval_agent_spec, "runtime_context"):
                 eval_agent_spec.runtime_context.bind_eval_service(eval_service)
         await pool.recover_workflow_runs()
+        await pool.start_events()
         otel_exporter = None
         runtime_store = pool.get_runtime_store()
         if runtime_store is not None:
@@ -419,6 +421,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api.include_router(build_agent_router())
     api.include_router(build_host_router())
     api.include_router(build_policies_router())
+    api.include_router(build_sessions_router())
     api.include_router(build_pool_router())
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())

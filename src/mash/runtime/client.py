@@ -20,7 +20,11 @@ class AgentUnavailableError(AgentClientError):
     """The agent's server could not be reached (for example, its process is restarting)."""
 
 
-class SessionPolicyConflictError(AgentClientError):
+class AgentRequestRefusedError(AgentClientError):
+    """The agent refused the submit outright (HTTP 4xx)."""
+
+
+class SessionPolicyConflictError(AgentRequestRefusedError):
     """The session runs under another policy, so the request was refused (HTTP 409)."""
 
 
@@ -377,6 +381,10 @@ class AgentClient:
 
         if response.status_code == 409 and self._error_code(response) == "SESSION_POLICY_MISMATCH":
             raise SessionPolicyConflictError(self._extract_message(response))
+        if 400 <= response.status_code < 500:
+            raise AgentRequestRefusedError(
+                f"POST request refused (status={response.status_code}): {self._extract_message(response)}"
+            )
         if response.status_code not in (200, 202):
             raise AgentClientError(
                 f"POST request failed (status={response.status_code}): {self._extract_message(response)}"
@@ -693,6 +701,7 @@ __all__ = [
     "AgentClientError",
     "AgentClientLike",
     "AgentUnavailableError",
+    "AgentRequestRefusedError",
     "SessionPolicyConflictError",
     "WorkflowInputError",
     "WorkflowRelayClient",

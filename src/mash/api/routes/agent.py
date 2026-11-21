@@ -478,6 +478,8 @@ def build_agent_router() -> APIRouter:
                         for key in (
                             "request_id",
                             "agent_id",
+                            "app_id",
+                            "policy_id",
                             "message",
                             "status",
                             "started_by",

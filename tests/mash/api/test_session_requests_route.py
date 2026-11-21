@@ -75,6 +75,8 @@ def test_session_list_filters_and_orders_newest_first() -> None:
         assert everything[1] == {
             "request_id": second,
             "agent_id": "slow",
+            "app_id": "app-1",
+            "policy_id": "p-1",
             "message": "second",
             "status": "running",
             "started_by": "user",

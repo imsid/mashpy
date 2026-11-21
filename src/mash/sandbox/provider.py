@@ -96,6 +96,8 @@ class SandboxProvider(Protocol):
 
     async def stop(self, policy_id: str) -> None: ...
 
+    async def delete(self, policy_id: str) -> None: ...
+
     async def list(self) -> list[SandboxInfo]: ...
 
     async def close(self) -> None: ...
@@ -420,6 +422,13 @@ class DockerSandboxProvider:
 
     async def stop(self, policy_id: str) -> None:
         await stop_sandbox(self._engine, policy_id, namespace=self.namespace)
+
+    async def delete(self, policy_id: str) -> None:
+        """Remove the policy's sandbox, its network and its volume: the files are gone."""
+        await stop_sandbox(self._engine, policy_id, namespace=self.namespace)
+        name = sandbox_name(policy_id, self.namespace)
+        await self._engine.remove_container(name)
+        await self._engine.remove_volume(name)
 
     async def list(self) -> list[SandboxInfo]:
         containers = await self._engine.list_containers(

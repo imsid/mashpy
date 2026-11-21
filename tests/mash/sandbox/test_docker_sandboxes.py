@@ -189,6 +189,10 @@ class _FakeDaemon:
         if parts[0] == "volumes":
             if method == "GET":
                 return httpx.Response(200 if parts[1] in self.volumes else 404, json={})
+            if method == "DELETE":
+                if self.volumes.pop(parts[1], None) is None:
+                    return httpx.Response(404, json={"message": "no such volume"})
+                return httpx.Response(204)
             self.volumes[body["Name"]] = body["Labels"]
             return httpx.Response(201, json={})
         if parts[0] == "networks":
@@ -403,6 +407,21 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         for user in ("p-1", "p-2"):
             name = sandbox_name(user)
             self.assertEqual(self.daemon.attached(name), {name, "host-ctr"})
+
+    async def test_delete_removes_the_container_network_and_volume(self) -> None:
+        provider = self._in_container_provider()
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
+
+        await provider.delete("p-1")
+        await provider.delete("p-1")  # already gone: nothing to do
+
+        one, two = sandbox_name("p-1"), sandbox_name("p-2")
+        self.assertNotIn(one, self.daemon.containers)
+        self.assertNotIn(one, self.daemon.networks)
+        self.assertNotIn(one, self.daemon.volumes)
+        self.assertIn(two, self.daemon.containers)
+        self.assertIn(two, self.daemon.volumes)
 
     async def test_stop_removes_the_policys_network(self) -> None:
         provider = self._in_container_provider()

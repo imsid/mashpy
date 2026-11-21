@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
 from mash.policies import PolicyNotFoundError, PolicyStore
+from mash.sessions import EventService, EventStore
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.runs import resolve_runner_id
 from mash.workflows.store import WorkflowStore
@@ -84,6 +85,7 @@ class Pool:
         self._shared_memory_store: MemoryStore | None = None
         self._shared_workflow_store: WorkflowStore | None = None
         self._policy_store: PolicyStore | None = None
+        self._event_service: EventService | None = None
         self._workflow_registry = WorkflowRegistry()
         self._default_workflow_ids: list[str] = []
         # CortexSettings when HostBuilder.enable_cortex() was called. Each
@@ -223,6 +225,9 @@ class Pool:
                     f"'{workflow_id}'"
                 ) from None
         self._hosts[host.host_id] = host
+        if self._event_service is not None:
+            # Events of the host's sessions may have waited for it.
+            self._event_service.host_defined(host.host_id)
         return host
 
     def get_host(self, host_id: str) -> Host:
@@ -321,17 +326,22 @@ class Pool:
         metadata: dict[str, Any] | None = None,
         traceparent: str | None = None,
         tracestate: str | None = None,
+        request_id: str | None = None,
+        policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Submit a request to the host's companion.
 
-        Raises ``ValueError`` for an unknown host and ``PolicyNotFoundError``
-        for an unknown policy.
+        ``policy`` is the snapshot to run under; without it the policy is read
+        now. A known ``request_id`` returns the existing request. Raises
+        ``ValueError`` for an unknown host and ``PolicyNotFoundError`` for an
+        unknown policy.
         """
         from mash.agents.companion import COMPANION_AGENT_ID
         from mash.agents.companion.workflows import format_workflow_list
 
         host = self.get_host(host_id)
-        policy = await self.read_policy(policy_id)
+        if policy is None:
+            policy = await self.read_policy(policy_id)
         snapshot = self.snapshot_for(host)
         if snapshot["workflows"]:
             # The companion's workflow directory, built from the registered
@@ -351,6 +361,7 @@ class Pool:
             app_id=app_id,
             policy_id=policy_id,
             policy=policy,
+            request_id=request_id,
             traceparent=traceparent,
             tracestate=tracestate,
         )
@@ -435,6 +446,8 @@ class Pool:
             shared_memory_store = PostgresStore(self.runtime_database_url)
             shared_workflow_store = WorkflowStore(self.runtime_database_url)
             policy_store = PolicyStore(self.runtime_database_url)
+            event_store = EventStore(self.runtime_database_url, policy_store)
+            self._event_service = EventService(self, event_store)
             self._shared_runtime_store = shared_runtime_store
             self._shared_memory_store = shared_memory_store
             self._shared_workflow_store = shared_workflow_store
@@ -443,6 +456,7 @@ class Pool:
             await shared_memory_store.open()
             await shared_workflow_store.open()
             await policy_store.open()
+            await event_store.open()
             # The host's pool plus one per agent process.
             await shared_runtime_store.check_connection_budget(
                 processes=len(self._registered) + 1
@@ -570,6 +584,15 @@ class Pool:
     def get_policy_store(self) -> PolicyStore | None:
         """The policies table, or None before the pool is started."""
         return self._policy_store
+
+    def get_event_service(self) -> EventService | None:
+        """The session queues, or None before the pool is started."""
+        return self._event_service
+
+    async def start_events(self) -> None:
+        """Watch started events and dequeue queued ones; after ``start()``."""
+        if self._event_service is not None:
+            await self._event_service.start()
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry
@@ -701,6 +724,10 @@ class Pool:
         return [{"skill_name": name, **data} for name, data in counts.items()]
 
     async def close(self) -> None:
+        if self._event_service is not None:
+            await self._event_service.close()
+            await self._event_service.store.close()
+            self._event_service = None
         await self._workflow_service.close()
         for client in self._clients.values():
             await client.close()

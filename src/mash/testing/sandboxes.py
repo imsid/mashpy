@@ -37,6 +37,7 @@ class LocalSandboxProvider:
         self._running: dict[str, tuple[_Server, asyncio.Task[None], SandboxEndpoint]] = {}
         self.ensure_calls: list[str] = []
         self.stop_calls: list[str] = []
+        self.deleted: list[str] = []
 
     def workspaces(self, policy_id: str) -> Path:
         """The directory holding the policy's agent folders."""
@@ -73,6 +74,11 @@ class LocalSandboxProvider:
         server, task, _ = running
         server.should_exit = True
         await task
+
+    async def delete(self, policy_id: str) -> None:
+        await self.stop(policy_id)
+        shutil.rmtree(self.workspaces(policy_id), ignore_errors=True)
+        self.deleted.append(policy_id)
 
     async def list(self) -> list[SandboxInfo]:
         return [

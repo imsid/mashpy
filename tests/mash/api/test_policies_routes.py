@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import contextmanager
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -107,3 +108,48 @@ def test_an_empty_site_list_is_kept() -> None:
     with _client() as client:
         data = client.put("/api/v1/policies/p-1", json={"browser_sites": []}).json()["data"]
         assert data["browser_sites"] == []
+
+
+def test_delete_refuses_a_policy_in_use_then_removes_its_sandbox_and_browser() -> None:
+    from unittest.mock import AsyncMock
+
+    from mash.testing.runtime_fixtures import DeterministicLLMProvider, patch_companion_llm
+
+    slow = DeterministicLLMProvider(response_text="done", delay_seconds=0.5)
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(
+        os.environ, {"MASH_DATA_DIR": str(Path(tmp)), "MASH_DATABASE_URL": ""}
+    ), patch_companion_llm(slow):
+        from mash.runtime import Host
+
+        pool = HostBuilder().host(Host(host_id="assistant", agents=())).build()
+        app = create_app(
+            pool, config=MashHostConfig(runtime_database_url="postgresql://test/runtime")
+        )
+        with TestClient(app) as client:
+            sandboxes, browsers = AsyncMock(), AsyncMock()
+            pool.get_sandboxes = lambda: sandboxes
+            pool.get_browsers = lambda: browsers
+            client.put("/api/v1/policies/acme-ws", json={})
+            body = {"host_id": "assistant", "app_id": "app-1", "policy_id": "acme-ws", "message": "hi"}
+            client.post("/api/v1/sessions/s-1/events", json={"event_id": "e-1", **body})
+
+            busy = client.delete("/api/v1/policies/acme-ws")
+            assert busy.status_code == 409
+            assert busy.json()["error"]["code"] == "POLICY_IN_USE"
+            sandboxes.delete.assert_not_called()
+
+            for _ in range(300):
+                state = client.get("/api/v1/sessions/s-1/events/e-1").json()["data"]
+                if state["status"] == "completed":
+                    break
+                time.sleep(0.02)
+            deleted = client.delete("/api/v1/policies/acme-ws")
+            assert deleted.status_code == 200, deleted.text
+            sandboxes.delete.assert_awaited_once_with("acme-ws")
+            browsers.delete.assert_awaited_once_with("acme-ws")
+            assert client.get("/api/v1/policies/acme-ws").status_code == 404
+            assert client.delete("/api/v1/policies/acme-ws").status_code == 404
+            # The ledger stays; a new event under the policy finds none.
+            assert client.get("/api/v1/sessions/s-1/events/e-1").status_code == 200
+            again = client.post("/api/v1/sessions/s-1/events", json={"event_id": "e-2", **body})
+            assert again.json()["error"]["code"] == "POLICY_NOT_FOUND"

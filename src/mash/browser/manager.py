@@ -189,9 +189,7 @@ class BrowserManager(ContainerManager):
 
     async def delete_profile(self, policy_id: str) -> None:
         """Stop the policy's browser and delete its volume."""
-        async with self._policy_locks[policy_id]:
-            await self._stop_locked(policy_id)
-            await self.provider.delete(policy_id)
+        await self.delete(policy_id)
 
     def start_handoff(self, policy_id: str, request_id: str) -> Handoff:
         expires_at = int(self._wall_clock()) + self.handoff_seconds

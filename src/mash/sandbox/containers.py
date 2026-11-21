@@ -36,6 +36,8 @@ class ContainerProvider(Protocol):
 
     async def stop(self, policy_id: str) -> None: ...
 
+    async def delete(self, policy_id: str) -> None: ...
+
     async def list(self) -> list[Any]: ...
 
     async def close(self) -> None: ...
@@ -146,6 +148,12 @@ class ContainerManager:
     async def stop(self, policy_id: str) -> None:
         async with self._policy_locks[policy_id]:
             await self._stop_locked(policy_id)
+
+    async def delete(self, policy_id: str) -> None:
+        """Stop the policy's container and remove it with its volume."""
+        async with self._policy_locks[policy_id]:
+            await self._stop_locked(policy_id)
+            await self.provider.delete(policy_id)
 
     async def reap_idle(self) -> list[str]:
         """Stop every container with nothing in flight and no use for ``idle_seconds``."""

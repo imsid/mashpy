@@ -1,4 +1,4 @@
-"""Policy API routes: ``PUT`` and ``GET /policies/{policy_id}``."""
+"""Policy API routes: ``PUT``, ``GET`` and ``DELETE /policies/{policy_id}``."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from mash.policies import Policy, PolicyStore, validate_policy_id
+from mash.sessions import PolicyInUseError
 
 from .common import APIError, state_from_request, success
 
@@ -49,5 +50,35 @@ def build_policies_router() -> APIRouter:
                 status_code=404,
             )
         return success(record.to_dict())
+
+    @router.delete("/policies/{policy_id}")
+    async def delete_policy(request: Request, policy_id: str) -> dict[str, Any]:
+        """Delete the policy with its sandbox and browser profile.
+
+        Refused while a session on the policy has a queued or active event.
+        Sessions and their ledgers stay.
+        """
+        resolved = _policy_id(policy_id)
+        pool = state_from_request(request).pool
+        events = pool.get_event_service()
+        if events is None:
+            raise APIError(
+                code="POLICY_STORE_UNAVAILABLE",
+                message="policies are not available",
+                status_code=503,
+            )
+
+        async def remove() -> None:
+            sandboxes, browsers = pool.get_sandboxes(), pool.get_browsers()
+            if sandboxes is not None:
+                await sandboxes.delete(resolved)
+            if browsers is not None:
+                await browsers.delete(resolved)
+
+        try:
+            await events.store.delete_policy(resolved, remove)
+        except PolicyInUseError as exc:
+            raise APIError(code="POLICY_IN_USE", message=str(exc), status_code=409) from exc
+        return success({"deleted": resolved})
 
     return router
