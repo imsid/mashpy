@@ -13,7 +13,7 @@ statement holds locks for long:
   and no checkpoint save used within the window.
 
 Conversation turns (``memory_turns``), Cortex, feedback and evals are kept.
-A deleted request can no longer be resumed, rerun or shown in traces.
+A deleted request can no longer be read or shown in traces.
 """
 
 from __future__ import annotations

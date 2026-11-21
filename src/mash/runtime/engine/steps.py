@@ -31,7 +31,6 @@ from ..host.directory import append_context_block
 from ..requests import (
     app_id_from_request_metadata,
     append_runtime_event,
-    fetch_request_attempt,
     policy_from_request_metadata,
 )
 
@@ -1171,7 +1170,6 @@ async def complete_request(
     trace_id: str,
     turn_payload: dict[str, Any],
 ) -> None:
-    attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -1180,7 +1178,7 @@ async def complete_request(
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
-            dedupe_key=f"request.completed.{attempt}",
+            dedupe_key="request.completed",
             lifecycle=RequestStatus.COMPLETED,
             payload={
                 "request_id": request_id,
@@ -1201,7 +1199,6 @@ async def emit_request_cancelled(
     trace_id: str | None,
 ) -> None:
     """Append the cancelled ``invoke_agent.end``. The cancel path owns it."""
-    attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -1210,7 +1207,7 @@ async def emit_request_cancelled(
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
-            dedupe_key=f"request.cancelled.{attempt}",
+            dedupe_key="request.cancelled",
             lifecycle=RequestStatus.CANCELLED,
             payload={
                 "request_id": request_id,
@@ -1230,7 +1227,6 @@ async def fail_request(
     trace_id: str | None,
     error_payload: dict[str, Any],
 ) -> None:
-    attempt = await fetch_request_attempt(runtime, request_id)
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -1239,7 +1235,7 @@ async def fail_request(
             trace_id=trace_id,
             session_id=session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_END.value,
-            dedupe_key=f"request.failed.{attempt}",
+            dedupe_key="request.failed",
             lifecycle=RequestStatus.FAILED,
             payload={
                 "request_id": request_id,

@@ -208,13 +208,6 @@ class RequestEvents:
             payload["attributes"] = {"mash.request.status": "cancelled"}
         return self._add(RuntimeEventType.INVOKE_AGENT_END.value, at, payload)
 
-    def resumed(self, at: float) -> "RequestEvents":
-        return self._add(
-            RuntimeEventType.REQUEST_RESUMED.value,
-            at,
-            {"attributes": {"mash.request_id": self.request_id}},
-        )
-
 
 def _chat_attributes(model: str) -> dict[str, Any]:
     return {

@@ -330,8 +330,7 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                 stored, inserted = await _insert_request_event(cursor, event)
                 # Project even a duplicate: a deduped terminal event was
                 # delivered at the stored row's seq, so the request is terminal
-                # there; skipping this would leave a resumed request stuck
-                # non-terminal.
+                # there.
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
                 await _project_rollup(cursor, event, inserted=inserted)
     return dict_to_event(stored)

@@ -7,7 +7,6 @@ import unittest
 from starlette.testclient import TestClient
 
 from mash.runtime.engine import InteractionClosedError, InvalidInteractionResponseError
-from mash.runtime.errors import RequestStaleError
 from mash.runtime.events import RequestIdentity
 from mash.runtime.server import AgentServer
 
@@ -46,21 +45,13 @@ class _Runtime:
         self.calls.append((name, request_id))
         if request_id == "missing":
             raise KeyError(request_id)
-        if request_id == "stale":
-            raise RequestStaleError("session has newer turns")
         return {"request_id": request_id, "op": name}
 
     async def get_request_status(self, request_id: str) -> dict:
         return await self._record("status", request_id)
 
-    async def resume_request(self, request_id: str) -> dict:
-        return await self._record("resume", request_id)
-
     async def cancel_request(self, request_id: str) -> dict:
         return await self._record("cancel", request_id)
-
-    async def rerun_request(self, request_id: str) -> dict:
-        return await self._record("rerun", request_id)
 
     async def stream_response_events(
         self, request_id: str, *, cursor: int = 0, **_: object
@@ -87,9 +78,7 @@ class _Runtime:
 
 ROUTES = [
     ("GET", "status"),
-    ("POST", "resume"),
     ("POST", "cancel"),
-    ("POST", "rerun"),
 ]
 
 
@@ -129,7 +118,7 @@ class AgentServerControlRouteTests(unittest.TestCase):
                 self.assertEqual(resp.json(), {"request_id": "req-1", "op": op})
         self.assertEqual(
             self.runtime.calls,
-            [("status", "req-1"), ("resume", "req-1"), ("cancel", "req-1"), ("rerun", "req-1")],
+            [("status", "req-1"), ("cancel", "req-1")],
         )
 
     def test_unknown_request_returns_404(self) -> None:
@@ -139,10 +128,12 @@ class AgentServerControlRouteTests(unittest.TestCase):
                 self.assertEqual(resp.status_code, 404)
                 self.assertEqual(resp.json()["error"]["code"], "REQUEST_NOT_FOUND")
 
-    def test_stale_resume_returns_409(self) -> None:
-        resp = self.client.post("/agent/agent-a/request/stale/resume")
-        self.assertEqual(resp.status_code, 409)
-        self.assertEqual(resp.json()["error"]["code"], "REQUEST_STALE")
+    def test_resume_and_rerun_are_gone(self) -> None:
+        for op in ("resume", "rerun"):
+            with self.subTest(op=op):
+                resp = self.client.post(f"/agent/agent-a/request/req-1/{op}")
+                self.assertIn(resp.status_code, (404, 405))
+        self.assertEqual(self.runtime.calls, [])
 
     def test_other_agent_id_returns_route_not_found(self) -> None:
         resp = self.client.get("/agent/agent-b/request/req-1/status")

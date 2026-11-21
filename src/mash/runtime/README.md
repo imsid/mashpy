@@ -355,8 +355,7 @@ lifecycle.
 - [`events/types.py`](./events/types.py)
   - runtime event schema and the event set: each name is the span it bounds
     (`invoke_agent.start`/`.end`, `chat.start`/`.delta`/`.end`, `execute_tool.start`/`.end`,
-    `mash.context_load.*`, `mash.step.end`, `mash.interaction.*`) or a log record name
-    (`mash.request.resumed`)
+    `mash.context_load.*`, `mash.step.end`, `mash.interaction.*`)
   - every `.end` carries `status` (`ok`, `error`, `cancelled`); OpenTelemetry attributes
     live under `payload["attributes"]` with their GenAI convention names
 
@@ -664,8 +663,6 @@ There are three layers of failure handling, each covering a different scenario:
 
 - `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and checkpoints. Idempotent on a request that is already terminal.
 
-- `resume_request(request_id)` and `rerun_request(request_id)` continue a cancelled or failed request from its checkpoint, or start it over as a new request. The agent process serves them, but the host exposes neither: requests start only from a session's queue.
-
 On the host, `GET /api/v1/agent/{agent_id}/request/{request_id}/status` and `GET /api/v1/agent/{agent_id}/trace/{trace_id}/status` read a request's status. Cancelling goes through the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`): `Pool.cancel_with_children` cancels the companion's request and its running `RunSubAgents` children, each through its own agent, skipping a child whose agent is disabled. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `status` and `started_by`.
 
 ## Important Interfaces
@@ -687,7 +684,7 @@ Questions that belong here:
 
 ### Request engine interface
 
-Use this when you need to change how durable work is started or resumed:
+Use this when you need to change how durable work is started or recovered:
 
 - `RequestEngine`
 - `RequestRun`
@@ -696,7 +693,7 @@ Questions that belong here:
 
 - How is a request started durably?
 - What does the checkpoint hold, and when is it saved?
-- How are recovery, cancel and resume handled?
+- How are recovery and cancel handled?
 
 ## Design Rules
 

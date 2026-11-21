@@ -1,7 +1,7 @@
 """The request loop: one agent request, continued from its checkpoint.
 
-The loop runs the same steps in the same order whether a request is new,
-recovered after a crash, or resumed. Its state is one dict, the checkpoint,
+The loop runs the same steps in the same order whether a request is new or
+recovered after a crash. Its state is one dict, the checkpoint,
 saved to ``runtime_request.checkpoint`` after every step:
 
 - ``trace_id``: the request's trace, read from its accepted event

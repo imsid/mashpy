@@ -20,14 +20,6 @@ class SessionPolicyMismatchError(RuntimeError):
     """
 
 
-class RequestStaleError(RuntimeError):
-    """A request cannot be resumed because its session has moved on.
-
-    Resume replays the request's original context snapshot, so allowing it once
-    the session has accrued a later replayable turn would persist a turn that
-    ignores everything after it. The API maps this to HTTP 409.
-    """
-
 DEFAULT_MAX_STEP_RETRIES = 3
 DEFAULT_RETRY_BASE_DELAY = 1.0
 DEFAULT_RETRY_MAX_DELAY = 30.0

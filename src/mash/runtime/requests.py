@@ -19,7 +19,6 @@ from ..logging.trace_context import (
     get_workflow_run_id,
 )
 from .errors import (
-    RequestStaleError,
     SessionPolicyMismatchError,
     classify_error,
 )
@@ -273,24 +272,7 @@ def host_id_from_request_metadata(
     return host_id or None
 
 
-def request_attempt(events: list[RuntimeEvent]) -> int:
-    """Which attempt the request is on: 0 before any resume, +1 per resume.
 
-    Terminal dedupe keys are scoped by this. A fixed key would make the second
-    attempt's terminal event dedupe onto the first attempt's row and append
-    nothing, leaving ``mash.request.resumed`` as the last lifecycle event and
-    the request non-terminal forever.
-    """
-    return sum(
-        1
-        for event in events
-        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value
-    )
-
-
-async def fetch_request_attempt(self: "AgentRuntime", request_id: str) -> int:
-    """``request_attempt`` over the request's stored events."""
-    return request_attempt(await self.runtime_store.list_request_events(request_id))
 
 
 def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
@@ -420,8 +402,7 @@ async def _submit_request_inner(
                 trace_id=accepted_event.trace_id,
                 session_id=target_session_id,
                 event_type=RuntimeEventType.INVOKE_AGENT_END.value,
-                # Submit-time failure: the request has never been resumed.
-                dedupe_key="request.failed.0",
+                dedupe_key="request.failed",
                 lifecycle=RequestStatus.FAILED,
                 payload={
                     "request_id": request_id,
@@ -492,151 +473,6 @@ async def stream_response_events(
         return public_events, next_cursor, done
     finally:
         self.runtime_store.unregister_request_waiter(request_id, waiter)
-
-
-def _session_has_later_turn(
-    turns: list[dict[str, Any]],
-    *,
-    accepted_at: float,
-    request_trace_id: str | None,
-) -> bool:
-    """True if a replayable turn was persisted after the request was accepted.
-
-    Excludes the request's own turn (matched by trace id) so re-resuming a
-    completed request is not treated as stale.
-    """
-    for turn in turns:
-        if not bool(turn.get("replayable", True)):
-            continue
-        if request_trace_id and str(turn.get("trace_id")) == str(request_trace_id):
-            continue
-        if float(turn.get("created_at") or 0.0) > accepted_at:
-            return True
-    return False
-
-
-async def resume_request(
-    self: "AgentRuntime",
-    request_id: str,
-) -> dict[str, Any]:
-    self.require_open()
-    events = await self.runtime_store.list_request_events(request_id)
-    if not events:
-        raise KeyError(request_id)
-    accepted = next(
-        (
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
-        ),
-        None,
-    )
-    accepted_at = float(accepted.created_at) if accepted is not None else 0.0
-    session_id = next((e.session_id for e in events if e.session_id), None)
-    request_trace_id = next((e.trace_id for e in events if e.trace_id), None)
-
-    # A completed request has nothing to replay, so it answers completed even
-    # once the session has moved on, rather than reporting stale.
-    status = await self.runtime_store.get_request_lifecycle(request_id)
-
-    # Stale-session guard: resume replays the request's original context
-    # snapshot, so it is unsafe once the session has a newer replayable turn.
-    if session_id and status is not RequestStatus.COMPLETED:
-        turns = await self.store.get_turns(session_id, self.agent_id)
-        if _session_has_later_turn(
-            turns,
-            accepted_at=accepted_at,
-            request_trace_id=request_trace_id,
-        ):
-            raise RequestStaleError(
-                f"request '{request_id}' cannot be resumed: its session has "
-                f"newer turns"
-            )
-
-    if status is RequestStatus.COMPLETED:
-        return {
-            "request_id": request_id,
-            "status": "completed",
-            "message": "request already completed successfully",
-        }
-    if status is RequestStatus.RUNNING:
-        return {
-            "request_id": request_id,
-            "status": "running",
-            "message": "request is already running",
-        }
-
-    # Recorded before the loop restarts, so the new attempt's terminal event
-    # gets a dedupe key of its own (see request_attempt). Because terminality
-    # reads the last lifecycle event, this also re-opens closed streams.
-    prior_resumes = request_attempt(events)
-    await append_runtime_event(
-        self,
-        RuntimeEvent(
-            request_id=request_id,
-            agent_id=self.agent_id,
-            trace_id=request_trace_id,
-            session_id=session_id,
-            event_type=RuntimeEventType.REQUEST_RESUMED.value,
-            dedupe_key=f"request.resumed.{prior_resumes}",
-            lifecycle=RequestStatus.RUNNING,
-            payload={
-                "request_id": request_id,
-                "agent_id": self.agent_id,
-                "session_id": session_id,
-                "status": "resumed",
-                "previous_status": status.value if status else None,
-                "attributes": {semconv.MASH_REQUEST_ID: request_id},
-            },
-        ),
-    )
-    await self.engine.continue_request(request_id)
-    return {
-        "request_id": request_id,
-        "status": "resumed",
-        "previous_status": status.value if status else None,
-        "message": "request has been resumed from its last step",
-    }
-
-
-async def rerun_request(
-    self: "AgentRuntime",
-    request_id: str,
-) -> dict[str, Any]:
-    """Start a previous request over as a brand-new request.
-
-    Rebuilds from the original ``invoke_agent.start`` payload (message + full
-    request metadata, including the host snapshot and structured-output
-    request), stamps ``rerun_of`` provenance, and submits through the normal
-    path — new request id, new trace, and a fresh ``context.load`` against the
-    session's current history. Works for any previous request regardless of its
-    terminal state.
-    """
-    self.require_open()
-    events = await self.runtime_store.list_request_events(request_id)
-    accepted = next(
-        (
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
-        ),
-        None,
-    )
-    if accepted is None:
-        raise KeyError(request_id)
-    payload = accepted.payload or {}
-    message = str(payload.get("message") or "")
-    session_id = str(payload.get("initial_session_id") or accepted.session_id or "")
-    request_metadata = dict(payload.get("request_metadata") or {})
-    # Provenance for code and the UI; a top-level key, never shown to the model
-    # (which only sees host/context, not sibling metadata keys).
-    request_metadata["rerun_of"] = request_id
-    return await _submit_request(
-        self,
-        message=message,
-        session_id=session_id,
-        request_metadata=request_metadata or None,
-    )
 
 
 async def append_runtime_event(
@@ -732,8 +568,6 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
     if event.event_type == RuntimeEventType.INVOKE_AGENT_END.value:
         frame = _END_FRAMES[end_status(event) or EndStatus.OK.value]
         return {"event": frame, "data": dict(event.payload or {})}
-    if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
-        return {"event": "request.resumed", "data": dict(event.payload or {})}
     return {
         "event": "agent.trace",
         "data": {

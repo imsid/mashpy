@@ -30,7 +30,6 @@ class RuntimeEventType(str, Enum):
     STEP_END = "mash.step.end"
     INTERACTION_START = "mash.interaction.start"
     INTERACTION_END = "mash.interaction.end"
-    REQUEST_RESUMED = "mash.request.resumed"
 
 
 class EndStatus(str, Enum):

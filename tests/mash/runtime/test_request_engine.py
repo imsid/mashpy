@@ -307,27 +307,6 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(ack.payload["timed_out"], True)
         self.assertEqual(end.payload["status"], "ok")
 
-    async def test_resume_after_cancel_opens_a_new_interaction(self) -> None:
-        runtime = await self._runtime(self._ask_spec())
-        accepted = await runtime.submit_request(message="ask", session_id="s-1", **TEST_IDENTITY)
-        request_id = accepted["request_id"]
-        await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
-
-        cancelled = await runtime.cancel_request(request_id)
-        self.assertEqual(cancelled["status"], "cancelled")
-        self.assertTrue(await self.runtime_store.is_request_terminal(request_id))
-
-        resumed = await runtime.resume_request(request_id)
-        self.assertEqual(resumed["status"], "resumed")
-        first, second = await self._wait_for(
-            request_id, RuntimeEventType.INTERACTION_START.value, count=2
-        )
-        self.assertNotEqual(first.payload["interaction_id"], second.payload["interaction_id"])
-
-        await runtime.answer_interaction(request_id, second.payload["interaction_id"], "yes")
-        ends = await self._wait_for(request_id, RuntimeEventType.INVOKE_AGENT_END.value, count=2)
-        self.assertEqual([e.payload["status"] for e in ends], ["cancelled", "ok"])
-
     async def test_a_request_past_the_recovery_limit_fails(self) -> None:
         await self.runtime_store.append_event(
             RuntimeEvent(

@@ -181,60 +181,8 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await runtime.runtime_store.is_request_terminal("req-1"))
 
-    async def test_cancel_after_resume_appends_its_own_terminal_event(self) -> None:
-        """A second cancel must not dedupe onto the first attempt's event.
-
-        Terminal dedupe keys are scoped by attempt. With a fixed key the second
-        ``request.cancelled`` deduped onto the first, appended nothing, and left
-        ``request.resumed`` as the last lifecycle event — so the request stayed
-        non-terminal forever and its stream never closed.
-        """
-        runtime = await self._runtime()
-        await runtime.runtime_store.append_event(
-            RuntimeEvent(
-                request_id="req-3",
-                agent_id=runtime.agent_id,
-                session_id="s-1",
-                trace_id="trace-3",
-                event_type=RuntimeEventType.INVOKE_AGENT_START.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
-                dedupe_key="request.accepted",
-            )
-        )
-
-        await emit_request_cancelled(runtime, "req-3", "s-1", "trace-3")
-        self.assertTrue(await runtime.runtime_store.is_request_terminal("req-3"))
-
-        await runtime.runtime_store.append_event(
-            RuntimeEvent(
-                request_id="req-3",
-                agent_id=runtime.agent_id,
-                session_id="s-1",
-                trace_id="trace-3",
-                event_type=RuntimeEventType.REQUEST_RESUMED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_RESUMED.value),
-                dedupe_key="request.resumed.0",
-            )
-        )
-        self.assertFalse(await runtime.runtime_store.is_request_terminal("req-3"))
-
-        await emit_request_cancelled(runtime, "req-3", "s-1", "trace-3")
-
-        events = await runtime.runtime_store.list_request_events("req-3")
-        cancelled = [
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_END.value
-        ]
-        self.assertEqual(len(cancelled), 2)
-        self.assertEqual(
-            [e.dedupe_key for e in cancelled],
-            ["request.cancelled.0", "request.cancelled.1"],
-        )
-        self.assertTrue(await runtime.runtime_store.is_request_terminal("req-3"))
-
-    async def test_terminal_event_is_idempotent_within_one_attempt(self) -> None:
-        """Replaying the same attempt's terminal step still dedupes."""
+    async def test_a_replayed_terminal_step_appends_nothing(self) -> None:
+        """Replaying the terminal step dedupes onto the stored event."""
         runtime = await self._runtime()
         await runtime.runtime_store.append_event(
             RuntimeEvent(

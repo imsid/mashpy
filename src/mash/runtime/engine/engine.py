@@ -11,8 +11,8 @@ events, so the engine holds nothing that a restart would lose:
   slot back while it waits on the user or on its ``RunSubAgents`` children.
 - ``cancel_request`` records the request cancelled and stops its loop at the
   next step boundary.
-- ``continue_request`` runs a cancelled or failed request again from its
-  checkpoint, after ``resume_request`` has recorded it running.
+- ``continue_request`` runs a request on from its checkpoint; recovery
+  calls it for each running request when the engine opens.
 - ``answer_interaction`` checks the answer against the interaction's schema,
   stores it and wakes the loop waiting on it.
 """

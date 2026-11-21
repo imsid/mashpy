@@ -221,10 +221,6 @@ def _build_reasoning_steps(
                 status = "completed"
             continue
 
-        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
-            status = "in_progress"
-            error = None
-
     return steps, status, error
 
 

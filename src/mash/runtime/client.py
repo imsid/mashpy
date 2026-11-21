@@ -97,21 +97,7 @@ class AgentClientLike(Protocol):
         timeout: float = 10.0,
     ) -> dict[str, Any]: ...
 
-    async def resume_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]: ...
-
     async def cancel_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]: ...
-
-    async def rerun_request(
         self,
         request_id: str,
         *,
@@ -121,7 +107,7 @@ class AgentClientLike(Protocol):
     async def close(self) -> None: ...
 
 
-# Calls that answer at once: submit, status, cancel, resume, answers, health.
+# Calls that answer at once: submit, status, cancel, answers, health.
 CONTROL_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=20)
 # Event streams: one open connection per watcher, no cap.
 STREAM_LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=20)
@@ -197,14 +183,8 @@ class AgentClient:
     def _request_status_url(self, request_id: str) -> str:
         return f"{self._request_url()}/{request_id}/status"
 
-    def _request_resume_url(self, request_id: str) -> str:
-        return f"{self._request_url()}/{request_id}/resume"
-
     def _request_cancel_url(self, request_id: str) -> str:
         return f"{self._request_url()}/{request_id}/cancel"
-
-    def _request_rerun_url(self, request_id: str) -> str:
-        return f"{self._request_url()}/{request_id}/rerun"
 
     def _health_url(self) -> str:
         return f"{self.base_url}/health"
@@ -528,31 +508,6 @@ class AgentClient:
             )
         return response.json()
 
-    async def resume_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        try:
-            async with self._session() as client:
-                response = await client.post(
-                    self._request_resume_url(request_id),
-                    timeout=timeout,
-                )
-        except httpx.HTTPError as exc:
-            raise self._http_error("POST resume request failed", exc) from exc
-        if response.status_code == 404:
-            raise AgentClientError(
-                f"request '{request_id}' not found"
-            )
-        if response.status_code != 200:
-            raise AgentClientError(
-                f"POST resume request failed (status={response.status_code}): "
-                f"{self._extract_message(response)}"
-            )
-        return response.json()
-
     async def cancel_request(
         self,
         request_id: str,
@@ -572,29 +527,6 @@ class AgentClient:
         if response.status_code != 200:
             raise AgentClientError(
                 f"POST cancel request failed (status={response.status_code}): "
-                f"{self._extract_message(response)}"
-            )
-        return response.json()
-
-    async def rerun_request(
-        self,
-        request_id: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        try:
-            async with self._session() as client:
-                response = await client.post(
-                    self._request_rerun_url(request_id),
-                    timeout=timeout,
-                )
-        except httpx.HTTPError as exc:
-            raise self._http_error("POST rerun request failed", exc) from exc
-        if response.status_code == 404:
-            raise AgentClientError(f"request '{request_id}' not found")
-        if response.status_code != 200:
-            raise AgentClientError(
-                f"POST rerun request failed (status={response.status_code}): "
                 f"{self._extract_message(response)}"
             )
         return response.json()

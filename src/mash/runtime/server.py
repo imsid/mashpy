@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine import InteractionClosedError, InvalidInteractionResponseError
-from .errors import RequestStaleError, SessionPolicyMismatchError
+from .errors import SessionPolicyMismatchError
 from .events import PostgresRuntimeStore
 from ..otel.context import normalize_trace_context
 from .requests import (
@@ -121,18 +121,8 @@ class AgentServer:
                     methods=["GET"],
                 ),
                 Route(
-                    "/agent/{agent_id:str}/request/{request_id:str}/resume",
-                    self.resume_request,
-                    methods=["POST"],
-                ),
-                Route(
                     "/agent/{agent_id:str}/request/{request_id:str}/cancel",
                     self.cancel_request,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/agent/{agent_id:str}/request/{request_id:str}/rerun",
-                    self.rerun_request,
                     methods=["POST"],
                 ),
             ],
@@ -335,7 +325,7 @@ class AgentServer:
         """The path's request id when the request is this agent's, else a 404.
 
         Every route that acts on one request starts here. A request accepted
-        for another agent is not found, rather than run, resumed, cancelled or
+        for another agent is not found, rather than read, cancelled or
         answered under this agent's prompt and tools.
         """
         agent_id = request.path_params.get("agent_id", "").strip()
@@ -382,14 +372,8 @@ class AgentServer:
     async def get_request_status(self, request: Request) -> Response:
         return await self._control(request, self.runtime.get_request_status)
 
-    async def resume_request(self, request: Request) -> Response:
-        return await self._control(request, self.runtime.resume_request)
-
     async def cancel_request(self, request: Request) -> Response:
         return await self._control(request, self.runtime.cancel_request)
-
-    async def rerun_request(self, request: Request) -> Response:
-        return await self._control(request, self.runtime.rerun_request)
 
     async def _control(self, request: Request, operation) -> Response:
         request_id = await self._own_request(request)
@@ -398,11 +382,6 @@ class AgentServer:
 
         try:
             result = await operation(request_id)
-        except RequestStaleError as exc:
-            return _json_error(409, "REQUEST_STALE", str(exc))
-        except SessionPolicyMismatchError as exc:
-            # A rerun submits again, onto a session that moved to another policy.
-            return _json_error(409, "SESSION_POLICY_MISMATCH", str(exc))
         except KeyError:
             return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
         return JSONResponse(result)

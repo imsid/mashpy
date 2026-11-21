@@ -7,7 +7,6 @@ test('request status maps onto the trace chip vocabulary', () => {
   assert.equal(traceStatusFromRequest('failed'), 'error');
   assert.equal(traceStatusFromRequest('cancelled'), 'cancelled');
   assert.equal(traceStatusFromRequest('pending'), 'in_progress');
-  assert.equal(traceStatusFromRequest('resumed'), 'in_progress');
   assert.equal(traceStatusFromRequest('nonsense'), null);
 });
 

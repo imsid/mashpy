@@ -33,8 +33,6 @@ def _trace_status(trace_events: list[RuntimeEvent]) -> str:
         key=lambda item: (float(item.created_at), int(item.event_id)),
         reverse=True,
     ):
-        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
-            return "in_progress"
         if event.event_type == RuntimeEventType.INVOKE_AGENT_END.value:
             return by_status.get((event.payload or {}).get("status"), "in_progress")
     return "in_progress"
@@ -50,7 +48,6 @@ def _event_tokens(event: RuntimeEvent) -> int:
 
 _SEED_LIFECYCLE = {
     RuntimeEventType.INVOKE_AGENT_START.value: RequestStatus.RUNNING,
-    RuntimeEventType.REQUEST_RESUMED.value: RequestStatus.RUNNING,
 }
 _END_LIFECYCLE = {
     "ok": RequestStatus.COMPLETED,

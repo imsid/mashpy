@@ -121,19 +121,13 @@ An interaction's answer is its `mash.interaction.end` event, keyed
 After a crash the loop finds the interaction in `memo`, reads its answer from
 the log if one arrived, and otherwise waits out the rest of the deadline.
 
-## Cancel and resume
+## Cancel
 
 `engine.cancel_request(...)` acks an open interaction as cancelled, appends
 the cancelled `invoke_agent.end`, and sets the run's cancel flag. The step
 running at the time finishes and checkpoints; the loop stops before the next.
-
-`resume_request(...)` in [`../requests.py`](../requests.py) accepts a
-cancelled or failed request: it appends `mash.request.resumed`, which records
-the request `running` and gives the new attempt terminal dedupe keys of its
-own, then calls `engine.continue_request(...)`. The loop continues from the
-checkpoint. If the request was cancelled while waiting on an interaction, it
-opens a new one under the next attempt number. The host exposes no route to
-resume a request; it cancels one when its event is cancelled.
+A cancelled or failed request stays ended: nothing resumes or reruns it. The
+host cancels a request when its event is cancelled.
 
 ## Recovery
 

@@ -289,14 +289,6 @@ def test_the_terminal_events_end_the_request() -> None:
     assert stopped.status == CANCELLED
 
 
-def test_a_resumed_request_runs_again() -> None:
-    v = view()
-    apply(v, failed("boom"))
-    apply(v, {"event": "request.resumed", "data": {}})
-    assert v.status == RUNNING
-    assert v.ended_at is None
-
-
 def test_final_text_is_empty_when_the_answer_streamed() -> None:
     v = view()
     apply(v, delta("Streamed answer."), chat_end("response", text="Streamed answer."))

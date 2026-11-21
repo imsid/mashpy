@@ -2,7 +2,7 @@
 //
 // A trace is one request, so the request lifecycle is the trace's status and
 // the server addresses the request by trace id. `cancelled` mirrors the
-// runtime's own terminal state; a resumed request reports `in_progress` again.
+// runtime's own terminal state.
 
 export const TRACE_STATUS = {
   completed: { label: 'completed', tone: 'emerald' },
@@ -20,7 +20,6 @@ const REQUEST_STATUS_TO_TRACE = {
   cancelled: 'cancelled',
   pending: 'in_progress',
   running: 'in_progress',
-  resumed: 'in_progress',
 };
 
 export function traceStatusFromRequest(status) {

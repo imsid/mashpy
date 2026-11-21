@@ -414,11 +414,11 @@ def reduce(view: RequestView, event: Mapping[str, Any], now: float) -> list[Outp
     if name == "agent.trace":
         return _reduce_trace(view, data, now)
 
-    if name in ("request.accepted", "request.started", "request.resumed"):
+    if name in ("request.accepted", "request.started"):
         session_id = str(data.get("session_id") or "").strip()
         if session_id:
             view.session_id = session_id
-        if view.status not in ENDED or name == "request.resumed":
+        if view.status not in ENDED:
             view.status = RUNNING
             view.ended_at = None
         return []

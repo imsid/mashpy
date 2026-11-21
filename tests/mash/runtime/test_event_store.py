@@ -222,7 +222,7 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
         The step that was in flight finishes and checkpoints, so its events
         land after ``request.cancelled``. Terminality reads the last
         *lifecycle* event, so those trailing events must not un-terminate the
-        request; a later ``request.resumed`` still must.
+        request.
         """
         for event_type, dedupe in (
             (RuntimeEventType.INVOKE_AGENT_START.value, "request.accepted"),
@@ -240,18 +240,6 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
         self.assertTrue(await self.store.is_request_terminal(self.request_id))
-
-        await self.store.append_event(
-            RuntimeEvent(
-                agent_id="store-test",
-                request_id=self.request_id,
-                session_id="session-1",
-                event_type=RuntimeEventType.REQUEST_RESUMED.value,
-                lifecycle=seed_lifecycle(RuntimeEventType.REQUEST_RESUMED.value),
-                dedupe_key="request.resumed.0",
-            )
-        )
-        self.assertFalse(await self.store.is_request_terminal(self.request_id))
 
     async def _append(self, event_type: str, dedupe: str | None = None) -> RuntimeEvent:
         status = _end_status(dedupe)
@@ -951,30 +939,14 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             trace_id="t-failed", event_type=END, created_at=201.0, status="error"
         )
         await self._append(trace_id="t-open", event_type=started, created_at=300.0)
-        # A failure, a resume and a completed retry: the latest terminal wins.
-        await self._append(
-            trace_id="t-retried", event_type=END, created_at=400.0, status="error"
-        )
-        await self._append(
-            trace_id="t-retried",
-            event_type=RuntimeEventType.REQUEST_RESUMED.value,
-            created_at=400.5,
-        )
-        await self._append(trace_id="t-retried", event_type=END, created_at=401.0, status="ok")
 
         traces = await self.store.list_recent_traces(self.agent_id)
         by_trace = {item["trace_id"]: item["status"] for item in traces}
         self.assertEqual(by_trace["t-done"], "completed")
         self.assertEqual(by_trace["t-failed"], "error")
         self.assertEqual(by_trace["t-open"], "in_progress")
-        self.assertEqual(by_trace["t-retried"], "completed")
 
-    async def test_cancelled_and_resumed_statuses(self) -> None:
-        """The chip a trace shows must follow cancel and resume.
-
-        A cancelled trace reports cancelled, and resuming it returns the trace
-        to running rather than leaving the stale terminal state on the row.
-        """
+    async def test_a_cancelled_trace_reports_cancelled(self) -> None:
         started = RuntimeEventType.CONTEXT_LOAD_START.value
         await self._append(trace_id="t-cancel", event_type=started, created_at=100.0)
         await self._append(
@@ -983,23 +955,10 @@ class TraceStatusTests(unittest.IsolatedAsyncioTestCase):
             created_at=101.0,
             status="cancelled",
         )
-        await self._append(trace_id="t-resumed", event_type=started, created_at=200.0)
-        await self._append(
-            trace_id="t-resumed",
-            event_type=END,
-            created_at=201.0,
-            status="cancelled",
-        )
-        await self._append(
-            trace_id="t-resumed",
-            event_type=RuntimeEventType.REQUEST_RESUMED.value,
-            created_at=202.0,
-        )
 
         traces = await self.store.list_recent_traces(self.agent_id)
         by_trace = {item["trace_id"]: item["status"] for item in traces}
         self.assertEqual(by_trace["t-cancel"], "cancelled")
-        self.assertEqual(by_trace["t-resumed"], "in_progress")
 
     async def test_request_id_resolves_from_trace(self) -> None:
         """The admin UI addresses a request by the trace it already shows."""
