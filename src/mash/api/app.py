@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -21,6 +22,7 @@ from mash.api.routes.feedback import build_feedback_router
 from mash.api.routes.host import build_host_router
 from mash.api.routes.thoughts import build_thoughts_router
 from mash.api.routes.pool import build_pool_router
+from mash.api.routes.policies import build_policies_router
 from mash.api.routes.browser import (
     build_browser_api_router,
     build_browser_link_router,
@@ -290,7 +292,8 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             content=error_payload(
                 "VALIDATION_ERROR",
                 "request validation failed",
-                {"errors": exc.errors()},
+                # A validator's ValueError rides in each error's ctx.
+                {"errors": jsonable_encoder(exc.errors(), custom_encoder={Exception: str})},
             ),
         )
 
@@ -407,6 +410,7 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
     api.include_router(build_thoughts_router())
     api.include_router(build_agent_router())
     api.include_router(build_host_router())
+    api.include_router(build_policies_router())
     api.include_router(build_pool_router())
     api.include_router(build_workflow_router())
     api.include_router(build_telemetry_router())

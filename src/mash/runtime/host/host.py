@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
+from mash.policies import PolicyStore
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.runs import resolve_runner_id
 from mash.workflows.store import WorkflowStore
@@ -82,6 +83,7 @@ class Pool:
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
         self._shared_workflow_store: WorkflowStore | None = None
+        self._policy_store: PolicyStore | None = None
         self._workflow_registry = WorkflowRegistry()
         self._default_workflow_ids: list[str] = []
         # CortexSettings when HostBuilder.enable_cortex() was called. Each
@@ -409,12 +411,15 @@ class Pool:
             shared_runtime_store = PostgresRuntimeStore(self.runtime_database_url)
             shared_memory_store = PostgresStore(self.runtime_database_url)
             shared_workflow_store = WorkflowStore(self.runtime_database_url)
+            policy_store = PolicyStore(self.runtime_database_url)
             self._shared_runtime_store = shared_runtime_store
             self._shared_memory_store = shared_memory_store
             self._shared_workflow_store = shared_workflow_store
+            self._policy_store = policy_store
             await shared_runtime_store.open()
             await shared_memory_store.open()
             await shared_workflow_store.open()
+            await policy_store.open()
             # The host's pool plus one per agent process.
             await shared_runtime_store.check_connection_budget(
                 processes=len(self._registered) + 1
@@ -538,6 +543,10 @@ class Pool:
     def get_workflow_store(self) -> WorkflowStore | None:
         """Shared workflow run/step store, or None before the pool is started."""
         return self._shared_workflow_store
+
+    def get_policy_store(self) -> PolicyStore | None:
+        """The policies table, or None before the pool is started."""
+        return self._policy_store
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry
@@ -690,6 +699,9 @@ class Pool:
         if self._shared_workflow_store is not None:
             await self._shared_workflow_store.close()
             self._shared_workflow_store = None
+        if self._policy_store is not None:
+            await self._policy_store.close()
+            self._policy_store = None
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
         # Agent steps bind an agent id (optionally with a spec to auto-register).
